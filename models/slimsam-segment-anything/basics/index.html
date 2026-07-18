@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SlimSAM Basics — click, get a mask · Web AI Showcase</title>
+    <meta name="description" content="The fundamental SlimSAM move: click any point on an image and get a precise mask of whatever you clicked, with its predicted IoU. In your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>✂️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">SlimSAM</a></p>
+
+    <header>
+      <p class="eyebrow">use case · basics</p>
+      <h1>Basics: click, get a mask</h1>
+      <p class="lede">
+        The whole idea in its simplest form. Load the model, pick an image, then click on anything —
+        SlimSAM hands back a pixel-perfect mask of the object under your click, plus its own confidence
+        (predicted IoU) in that mask.
+      </p>
+    </header>
+
+    <section class="panel">
+      <button id="load" type="button">Load SlimSAM (~40 MB)</button>
+      <progress id="prog" value="0" max="100" hidden></progress>
+      <p class="status" id="status" role="status" aria-live="polite">Model not loaded yet.</p>
+
+      <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image">
+        <span id="dropText">Drop an image, or click to choose</span>
+        <input type="file" id="file" accept="image/*" hidden />
+      </div>
+      <div class="sample-strip" id="samples">
+        <img class="sample-thumb active" src="../sample-cats.jpg" data-src="../sample-cats.jpg" alt="Two cats on a couch" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-room.jpg" data-src="../sample-room.jpg" alt="A cozy bedroom" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-river.jpg" data-src="../sample-river.jpg" alt="A riverside at golden hour" tabindex="0" role="button" />
+      </div>
+
+      <div class="canvas-wrap">
+        <canvas id="stage" class="stage-canvas" tabindex="0" role="button"
+          aria-label="Image — click a point, or focus and use arrow keys then Enter, to segment the object there"></canvas>
+      </div>
+      <p class="muted" style="font-size:.82rem;margin:.4rem 0">Click the image, or focus it and use arrow keys + Enter. Preset points:</p>
+      <div class="point-grid" id="pointGrid" role="group" aria-label="Preset points">
+        <button type="button" data-x="0.25" data-y="0.25">↖</button>
+        <button type="button" data-x="0.5" data-y="0.25">↑</button>
+        <button type="button" data-x="0.75" data-y="0.25">↗</button>
+        <button type="button" data-x="0.25" data-y="0.5">←</button>
+        <button type="button" data-x="0.5" data-y="0.5">center</button>
+        <button type="button" data-x="0.75" data-y="0.5">→</button>
+        <button type="button" data-x="0.25" data-y="0.75">↙</button>
+        <button type="button" data-x="0.5" data-y="0.75">↓</button>
+        <button type="button" data-x="0.75" data-y="0.75">↘</button>
+      </div>
+      <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>encode <b id="rEmbed">–</b></span><span>segment <b id="rMs">–</b></span><span>IoU <b id="rIou">–</b></span></div>
+    </section>
+
+    <p class="crumbs"><a href="../">← Back to SlimSAM</a> · Next: <a href="../practical/">Practical →</a></p>
+
+    <script type="module">
+      import { SamEngine, fileToDataURL, decodeImage, drawMaskOverlay, eventToNorm, SAM_CSS } from "../sam.js";
+      import { progressReporter } from "/web-ai-showcase/lib/webai.js";
+      const style = document.createElement("style"); style.textContent = SAM_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new SamEngine();
+      let currentImg = null, embedded = false, lastMask = null, cross = { x: 0.5, y: 0.5 };
+
+      function redraw() { if (!currentImg) return; drawMaskOverlay($("stage"), currentImg, lastMask?.mask ?? null, lastMask?.width ?? currentImg.naturalWidth, lastMask?.height ?? currentImg.naturalHeight, [{ x: cross.x, y: cross.y, label: 1 }]); }
+      async function useURL(url) {
+        currentImg = await decodeImage(url); lastMask = null; embedded = false; cross = { x: 0.5, y: 0.5 }; $("readout").hidden = true;
+        const c = $("stage"); c.width = currentImg.naturalWidth; c.height = currentImg.naturalHeight; c.getContext("2d").drawImage(currentImg, 0, 0);
+        if (engine.ready) await embedCurrent();
+      }
+      async function embedCurrent() { if (!currentImg || embedded) return; $("status").textContent = "Encoding image…"; $("status").classList.remove("err"); const r = await engine.embed(currentImg.src); embedded = true; $("rEmbed").textContent = r.ms + " ms"; $("status").textContent = "Ready — click to segment."; $("status").classList.add("ok"); redraw(); }
+
+      async function pickSample(el) { for (const t of $("samples").children) t.classList.toggle("active", t === el); const blob = await (await fetch(el.dataset.src)).blob(); await useURL(await fileToDataURL(new File([blob], "s", { type: blob.type }))); }
+      for (const thumb of $("samples").children) { thumb.addEventListener("click", () => pickSample(thumb)); thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } }); }
+      pickSample($("samples").firstElementChild);
+
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) { for (const t of $("samples").children) t.classList.remove("active"); await useURL(await fileToDataURL(f)); $("dropText").textContent = f.name; }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
+
+      const reporter = progressReporter($("prog"), $("status"));
+      $("load").addEventListener("click", async () => {
+        $("load").disabled = true; $("prog").hidden = false; $("status").classList.remove("err"); $("status").textContent = "Loading SlimSAM…";
+        try { const device = await engine.load((p) => reporter.onProgress(p)); $("rBackend").textContent = device.toUpperCase(); $("prog").hidden = true; $("readout").hidden = false; await embedCurrent(); }
+        catch (err) { reporter.fail(err); $("load").disabled = false; }
+      });
+
+      async function segmentAt(nx, ny) {
+        if (!engine.ready) { $("status").textContent = "Load the model first."; return; }
+        if (!embedded) await embedCurrent();
+        cross = { x: nx, y: ny }; redraw(); $("status").textContent = "Segmenting…"; $("status").classList.remove("err");
+        try { const r = await engine.segment([{ x: nx, y: ny, label: 1 }]); lastMask = r; redraw(); $("readout").hidden = false; $("rMs").textContent = r.ms + " ms"; $("rIou").textContent = r.score.toFixed(3); $("status").textContent = "Done."; $("status").classList.add("ok"); }
+        catch (err) { $("status").textContent = "Segmentation failed: " + err.message; $("status").classList.add("err"); }
+      }
+      const stage = $("stage");
+      stage.addEventListener("click", (e) => { const n = eventToNorm(stage, e); segmentAt(n.x, n.y); });
+      stage.addEventListener("keydown", (e) => {
+        const s = 0.02;
+        if (e.key === "ArrowLeft") { cross.x = Math.max(0, cross.x - s); redraw(); e.preventDefault(); }
+        else if (e.key === "ArrowRight") { cross.x = Math.min(1, cross.x + s); redraw(); e.preventDefault(); }
+        else if (e.key === "ArrowUp") { cross.y = Math.max(0, cross.y - s); redraw(); e.preventDefault(); }
+        else if (e.key === "ArrowDown") { cross.y = Math.min(1, cross.y + s); redraw(); e.preventDefault(); }
+        else if (e.key === "Enter" || e.key === " ") { segmentAt(cross.x, cross.y); e.preventDefault(); }
+      });
+      for (const b of $("pointGrid").children) b.addEventListener("click", () => segmentAt(+b.dataset.x, +b.dataset.y));
+    </script>
+  </body>
+</html>

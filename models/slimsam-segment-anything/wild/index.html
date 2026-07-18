@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SlimSAM Wild — magic background swap · Web AI Showcase</title>
+    <meta name="description" content="Click the subject and SlimSAM keeps it sharp while blurring, recolouring, or knocking out everything else — a portrait-mode / green-screen effect, live in the browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🪄</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">SlimSAM</a></p>
+
+    <header>
+      <p class="eyebrow">use case · wild</p>
+      <h1>Wild: magic background swap</h1>
+      <p class="lede">
+        Portrait mode without the phone. Click the thing you want to keep and SlimSAM masks it, then this
+        page holds it sharp while it blurs, recolours, or knocks out everything behind it. A green-screen
+        effect on any still image — all on-device.
+      </p>
+    </header>
+
+    <section class="panel">
+      <button id="load" type="button">Load SlimSAM (~40 MB)</button>
+      <progress id="prog" value="0" max="100" hidden></progress>
+      <p class="status" id="status" role="status" aria-live="polite">Model not loaded yet.</p>
+
+      <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image">
+        <span id="dropText">Drop an image, or click to choose</span>
+        <input type="file" id="file" accept="image/*" hidden />
+      </div>
+      <div class="sample-strip" id="samples">
+        <img class="sample-thumb active" src="../sample-cats.jpg" data-src="../sample-cats.jpg" alt="Two cats on a couch" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-room.jpg" data-src="../sample-room.jpg" alt="A cozy bedroom" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-river.jpg" data-src="../sample-river.jpg" alt="A riverside at golden hour" tabindex="0" role="button" />
+      </div>
+
+      <p class="muted" style="font-size:.82rem;margin:.5rem 0">Click the subject to keep (or focus the image and use arrow keys + Enter), then choose what happens to the background:</p>
+      <div class="slider-row" style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin:.4rem 0">
+        <span style="font-size:.85rem">Background:</span>
+        <button class="chip" id="mBlur" type="button" aria-pressed="true">Blur</button>
+        <button class="chip" id="mGrey" type="button" aria-pressed="false">Desaturate</button>
+        <button class="chip" id="mColor" type="button" aria-pressed="false">Solid</button>
+        <button class="chip" id="mClear" type="button" aria-pressed="false">Knock out</button>
+        <input type="color" id="bgColor" value="#4b3aff" aria-label="Solid background colour" style="inline-size:2.2rem;block-size:2rem;padding:0" />
+        <span style="flex:1"></span>
+        <button id="download" type="button" class="secondary" disabled>Download PNG</button>
+      </div>
+
+      <div class="canvas-wrap" id="wrap">
+        <canvas id="stage" class="stage-canvas" tabindex="0" role="button" aria-label="Image — click the subject to keep; the background is restyled around it"></canvas>
+      </div>
+      <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>encode <b id="rEmbed">–</b></span><span>segment <b id="rMs">–</b></span><span>IoU <b id="rIou">–</b></span></div>
+      <p class="muted" style="font-size:.85rem">The subject stays at full resolution; only the background is transformed. Knock-out exports true transparency.</p>
+    </section>
+
+    <p class="crumbs"><a href="../practical/">← Practical</a> · <a href="../">SlimSAM</a></p>
+
+    <script type="module">
+      import { SamEngine, fileToDataURL, decodeImage, cutout, eventToNorm, SAM_CSS } from "../sam.js";
+      import { progressReporter } from "/web-ai-showcase/lib/webai.js";
+      const style = document.createElement("style"); style.textContent = SAM_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new SamEngine();
+      let currentImg = null, embedded = false, lastMask = null, cross = { x: 0.5, y: 0.5 }, mode = "blur";
+
+      // Draw the current composite: subject sharp, background per mode. If no mask yet, show plain image.
+      function compose() {
+        if (!currentImg) return;
+        const canvas = $("stage"), w = currentImg.naturalWidth, h = currentImg.naturalHeight;
+        canvas.width = w; canvas.height = h;
+        const ctx = canvas.getContext("2d");
+        ctx.clearRect(0, 0, w, h);
+        if (!lastMask) { ctx.drawImage(currentImg, 0, 0); drawCross(ctx, w, h); return; }
+        // Background layer
+        if (mode !== "clear") {
+          const bg = document.createElement("canvas"); bg.width = w; bg.height = h; const bctx = bg.getContext("2d");
+          if (mode === "blur") { bctx.filter = `blur(${Math.max(6, Math.round(w / 45))}px)`; bctx.drawImage(currentImg, 0, 0); }
+          else if (mode === "grey") { bctx.filter = "grayscale(1) brightness(0.85)"; bctx.drawImage(currentImg, 0, 0); }
+          else if (mode === "color") { bctx.fillStyle = $("bgColor").value; bctx.fillRect(0, 0, w, h); }
+          ctx.drawImage(bg, 0, 0);
+        }
+        // Subject on top
+        const subj = cutout(currentImg, lastMask.mask, w, h);
+        ctx.drawImage(subj, 0, 0);
+        drawCross(ctx, w, h);
+      }
+      function drawCross(ctx, w, h) {
+        const px = cross.x * w, py = cross.y * h, rad = Math.max(5, w / 90);
+        ctx.beginPath(); ctx.arc(px, py, rad, 0, Math.PI * 2); ctx.fillStyle = "#fff"; ctx.fill();
+        ctx.lineWidth = Math.max(2, w / 260); ctx.strokeStyle = "#4b3aff"; ctx.stroke();
+      }
+      $("wrap").classList.toggle("checker", false);
+
+      async function useURL(url) {
+        currentImg = await decodeImage(url); lastMask = null; embedded = false; cross = { x: 0.5, y: 0.5 }; $("readout").hidden = true; $("download").disabled = true;
+        $("wrap").classList.remove("checker"); compose();
+        if (engine.ready) await embedCurrent();
+      }
+      async function embedCurrent() { if (!currentImg || embedded) return; $("status").textContent = "Encoding image…"; $("status").classList.remove("err"); const r = await engine.embed(currentImg.src); embedded = true; $("rEmbed").textContent = r.ms + " ms"; $("status").textContent = "Ready — click the subject to keep."; $("status").classList.add("ok"); }
+
+      async function pickSample(el) { for (const t of $("samples").children) t.classList.toggle("active", t === el); const blob = await (await fetch(el.dataset.src)).blob(); await useURL(await fileToDataURL(new File([blob], "s", { type: blob.type }))); }
+      for (const thumb of $("samples").children) { thumb.addEventListener("click", () => pickSample(thumb)); thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } }); }
+      pickSample($("samples").firstElementChild);
+
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) { for (const t of $("samples").children) t.classList.remove("active"); await useURL(await fileToDataURL(f)); $("dropText").textContent = f.name; }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
+
+      const reporter = progressReporter($("prog"), $("status"));
+      $("load").addEventListener("click", async () => {
+        $("load").disabled = true; $("prog").hidden = false; $("status").classList.remove("err"); $("status").textContent = "Loading SlimSAM…";
+        try { const device = await engine.load((p) => reporter.onProgress(p)); $("rBackend").textContent = device.toUpperCase(); $("prog").hidden = true; $("readout").hidden = false; await embedCurrent(); }
+        catch (err) { reporter.fail(err); $("load").disabled = false; }
+      });
+
+      function setMode(m) { mode = m; for (const [id, key] of [["mBlur", "blur"], ["mGrey", "grey"], ["mColor", "color"], ["mClear", "clear"]]) $(id).setAttribute("aria-pressed", String(key === m)); $("wrap").classList.toggle("checker", m === "clear"); compose(); }
+      $("mBlur").addEventListener("click", () => setMode("blur"));
+      $("mGrey").addEventListener("click", () => setMode("grey"));
+      $("mColor").addEventListener("click", () => setMode("color"));
+      $("mClear").addEventListener("click", () => setMode("clear"));
+      $("bgColor").addEventListener("input", () => { if (mode === "color") compose(); });
+
+      async function segmentAt(nx, ny) {
+        if (!engine.ready) { $("status").textContent = "Load the model first."; return; }
+        if (!embedded) await embedCurrent();
+        cross = { x: nx, y: ny }; compose(); $("status").textContent = "Segmenting…"; $("status").classList.remove("err");
+        try { const r = await engine.segment([{ x: nx, y: ny, label: 1 }]); lastMask = r; compose(); $("download").disabled = false; $("readout").hidden = false; $("rMs").textContent = r.ms + " ms"; $("rIou").textContent = r.score.toFixed(3); $("status").textContent = "Done."; $("status").classList.add("ok"); }
+        catch (err) { $("status").textContent = "Segmentation failed: " + err.message; $("status").classList.add("err"); }
+      }
+      const stage = $("stage");
+      stage.addEventListener("click", (e) => { const n = eventToNorm(stage, e); segmentAt(n.x, n.y); });
+      stage.addEventListener("keydown", (e) => {
+        const s = 0.02;
+        if (e.key === "ArrowLeft") { cross.x = Math.max(0, cross.x - s); compose(); e.preventDefault(); }
+        else if (e.key === "ArrowRight") { cross.x = Math.min(1, cross.x + s); compose(); e.preventDefault(); }
+        else if (e.key === "ArrowUp") { cross.y = Math.max(0, cross.y - s); compose(); e.preventDefault(); }
+        else if (e.key === "ArrowDown") { cross.y = Math.min(1, cross.y + s); compose(); e.preventDefault(); }
+        else if (e.key === "Enter" || e.key === " ") { segmentAt(cross.x, cross.y); e.preventDefault(); }
+      });
+
+      $("download").addEventListener("click", () => { const a = document.createElement("a"); a.download = "background-swap.png"; a.href = $("stage").toDataURL("image/png"); a.click(); });
+    </script>
+  </body>
+</html>

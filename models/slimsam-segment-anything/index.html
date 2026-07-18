@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SlimSAM — click-to-segment in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run SlimSAM (a slimmed Segment Anything) locally in your browser: click any point on an image and get a precise pixel mask of whatever you clicked — no server, real masks with IoU scores you can see inside."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>✂️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">mask-generation · vision · WASM · ~40 MB</p>
+      <h1>SlimSAM — click a point, get its exact mask</h1>
+      <p class="lede">
+        Segment Anything, slimmed to 77M parameters and running on your device. Point at anything in an
+        image — a cat, a lamp, a single book — and SlimSAM returns a pixel-perfect mask of just that
+        thing. The heavy vision encoder runs once; every extra click is near-instant.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/Xenova/slimsam-77-uniform" target="_blank" rel="noopener">Xenova/slimsam-77-uniform</a></td></tr>
+          <tr><th>Task / pipeline</th><td><code>mask-generation</code> (SAM) via <code>SamModel</code> + point prompt</td></tr>
+          <tr><th>Architecture</th><td>ViT vision encoder (pruned to 77M) + prompt encoder + mask decoder</td></tr>
+          <tr><th>Prompt</th><td>One or more points (foreground / background); returns 3 candidate masks + IoU scores</td></tr>
+          <tr><th>Quantization</th><td>q8 vision encoder, fp32 mask decoder (crisper masks)</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (runs anywhere; no WebGPU needed)</td></tr>
+          <tr><th>Download</th><td>~40 MB, cached after first load</td></tr>
+          <tr><th>License</th><td>Apache-2.0 (SlimSAM / Meta SAM)</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers, Canvas, FileReader — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Load the model, pick an image (embedding runs once), then <strong>click anywhere on the picture</strong> — or use the point buttons / arrow keys — to get the mask of whatever's under the point.</p>
+
+      <button id="load" type="button">Load SlimSAM (~40 MB)</button>
+      <progress id="prog" value="0" max="100" hidden></progress>
+      <p class="status" id="status" role="status" aria-live="polite">Model not loaded yet.</p>
+
+      <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image">
+        <span id="dropText">Drop an image here, or click to choose</span>
+        <input type="file" id="file" accept="image/*" hidden />
+      </div>
+      <div class="sample-strip" id="samples" aria-label="Sample images">
+        <img class="sample-thumb active" src="sample-cats.jpg" data-src="sample-cats.jpg" alt="Two cats sleeping on a pink couch" tabindex="0" role="button" />
+        <img class="sample-thumb" src="sample-room.jpg" data-src="sample-room.jpg" alt="A cozy sunlit bedroom with a bookshelf" tabindex="0" role="button" />
+        <img class="sample-thumb" src="sample-river.jpg" data-src="sample-river.jpg" alt="A riverside at golden hour with a swan" tabindex="0" role="button" />
+      </div>
+
+      <div class="canvas-wrap">
+        <canvas id="stage" class="stage-canvas" tabindex="0" role="button"
+          aria-label="Image — click a point, or focus and use arrow keys then Enter, to segment the object there"></canvas>
+      </div>
+
+      <p class="muted" style="font-size:.82rem;margin:.4rem 0">Keyboard: focus the image, move the crosshair with arrow keys, press Enter to segment. Or jump to a preset point:</p>
+      <div class="point-grid" id="pointGrid" role="group" aria-label="Preset points">
+        <button type="button" data-x="0.25" data-y="0.25">↖</button>
+        <button type="button" data-x="0.5" data-y="0.25">↑</button>
+        <button type="button" data-x="0.75" data-y="0.25">↗</button>
+        <button type="button" data-x="0.25" data-y="0.5">←</button>
+        <button type="button" data-x="0.5" data-y="0.5">center</button>
+        <button type="button" data-x="0.75" data-y="0.5">→</button>
+        <button type="button" data-x="0.25" data-y="0.75">↙</button>
+        <button type="button" data-x="0.5" data-y="0.75">↓</button>
+        <button type="button" data-x="0.75" data-y="0.75">↘</button>
+      </div>
+
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>encode <b id="rEmbed">–</b></span>
+        <span>segment <b id="rMs">–</b></span>
+        <span>IoU <b id="rIou">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside</h3>
+      <p class="muted">
+        For one point SAM predicts <strong>three</strong> candidate masks at different scales (the part,
+        the thing, the whole region) and rates each with a <strong>predicted IoU</strong> — its own guess
+        of how good the mask is. The page shows the highest-scoring one. Below are the raw numbers: the
+        point you prompted with, all three IoU scores, which mask won, and its pixel area.
+      </p>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Click a point to see the raw mask numbers.</div>
+      <div id="insideWrap" hidden>
+        <p>Predicted IoU of the shown mask: <span class="iou-badge" id="iouBadge">–</span></p>
+        <table class="inside-table">
+          <tbody>
+            <tr><th>Prompt point (normalized)</th><td id="iPoint">–</td></tr>
+            <tr><th>Candidate IoU scores</th><td id="iScores">–</td></tr>
+            <tr><th>Chosen mask</th><td id="iChosen">–</td></tr>
+            <tr><th>Mask area</th><td id="iArea">–</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        Selecting exactly one object out of a photo used to mean tedious manual masking or a round-trip to
+        a segmentation API. SlimSAM makes "click the thing I mean" a local, interactive operation — the
+        building block under smart selection, cut-out, and annotation tools.
+      </p>
+      <ul>
+        <li><strong>Interactive cut-out</strong> — click a subject and lift it onto a transparent background for stickers, collages, or product shots.</li>
+        <li><strong>Smart selection</strong> — a "magic select" tool in a browser image editor, with no server and no upload.</li>
+        <li><strong>Annotation &amp; labelling</strong> — turn one click into a precise segmentation label, slashing the cost of building vision datasets.</li>
+        <li><strong>Compose with detection</strong> — pair with DETR: detect boxes, then segment the one you tap for an exact mask (see the multi-model demo).</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">One click, one mask — feel point-prompted segmentation first-hand.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Click-to-cutout: lift the object onto transparency and download the PNG.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Magic background swap — keep what you click, blur or recolour the rest.</p></a>
+        <a class="model-card" href="../detr-object-detection/multi-model/"><h3>Multi-model</h3><p class="muted">DETR detects → click a box → SlimSAM returns its exact mask.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>Point-prompted SAM uses <code>SamModel</code> directly. Encode the image once, then decode per click:</p>
+      <pre><code>import { SamModel, AutoProcessor, RawImage, Tensor } from "@huggingface/transformers";
+
+const model = await SamModel.from_pretrained("Xenova/slimsam-77-uniform");
+const processor = await AutoProcessor.from_pretrained("Xenova/slimsam-77-uniform");
+
+// 1. Encode the image ONCE (the expensive part) and cache the embeddings:
+const image = await RawImage.read(imageURL);
+const imageInputs = await processor(image);
+const embeddings = await model.get_image_embeddings(imageInputs);
+
+// 2. Per click, decode a mask from a point (scaled into the model's input space):
+const [rH, rW] = imageInputs.reshaped_input_sizes[0];
+const input_points = new Tensor("float32", [nx * rW, ny * rH], [1, 1, 1, 2]);
+const input_labels = new Tensor("int64", [1n], [1, 1, 1]); // 1 = foreground
+const out = await model({ ...embeddings, input_points, input_labels });
+
+const masks = await processor.post_process_masks(
+  out.pred_masks, imageInputs.original_sizes, imageInputs.reshaped_input_sizes,
+); // masks[0]: [1, 3, H, W] bool — pick the one with the best out.iou_scores</code></pre>
+      <p class="muted">
+        This page runs all of that in a Web Worker and caches the embeddings, so the first click pays for
+        the vision encoder and every click after is just the lightweight mask decoder.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/Xenova/slimsam-77-uniform" target="_blank" rel="noopener">Model card — Xenova/slimsam-77-uniform</a></li>
+        <li><a href="https://ai.meta.com/research/publications/segment-anything/" target="_blank" rel="noopener">Meta AI — Segment Anything (SAM)</a></li>
+        <li><a href="https://arxiv.org/abs/2312.05284" target="_blank" rel="noopener">Paper — SlimSAM: 0.1% Data Makes SAM Slim (arXiv:2312.05284)</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { SamEngine, fileToDataURL, decodeImage, drawMaskOverlay, eventToNorm, SAM_CSS } from "./sam.js";
+      import { progressReporter } from "/web-ai-showcase/lib/webai.js";
+
+      const style = document.createElement("style"); style.textContent = SAM_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new SamEngine();
+      let currentImg = null, embedMs = 0, embedded = false;
+      let cross = { x: 0.5, y: 0.5 };  // crosshair (normalized)
+      let lastMask = null;
+
+      function redraw() {
+        if (!currentImg) return;
+        drawMaskOverlay($("stage"), currentImg, lastMask?.mask ?? null, lastMask?.width ?? currentImg.naturalWidth, lastMask?.height ?? currentImg.naturalHeight, [{ x: cross.x, y: cross.y, label: 1 }]);
+      }
+
+      async function useURL(url) {
+        currentImg = await decodeImage(url);
+        lastMask = null; embedded = false; cross = { x: 0.5, y: 0.5 };
+        $("insideWrap").hidden = true; $("insideEmpty").hidden = false; $("readout").hidden = true;
+        const c = $("stage"); c.width = currentImg.naturalWidth; c.height = currentImg.naturalHeight; c.getContext("2d").drawImage(currentImg, 0, 0);
+        if (engine.ready) await embedCurrent();
+      }
+      async function embedCurrent() {
+        if (!currentImg || embedded) return;
+        $("status").textContent = "Encoding image…"; $("status").classList.remove("err");
+        const r = await engine.embed(currentImg.src);
+        embedMs = r.ms; embedded = true; $("rEmbed").textContent = embedMs + " ms";
+        $("status").textContent = "Ready — click the image to segment."; $("status").classList.add("ok");
+        redraw();
+      }
+
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        const blob = await (await fetch(el.dataset.src)).blob();
+        await useURL(await fileToDataURL(new File([blob], "s", { type: blob.type })));
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } });
+      }
+      pickSample($("samples").firstElementChild);
+
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) { for (const t of $("samples").children) t.classList.remove("active"); await useURL(await fileToDataURL(f)); $("dropText").textContent = f.name; }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
+
+      const reporter = progressReporter($("prog"), $("status"));
+      $("load").addEventListener("click", async () => {
+        $("load").disabled = true; $("prog").hidden = false; $("status").classList.remove("err"); $("status").textContent = "Loading SlimSAM…";
+        try { const device = await engine.load((p) => reporter.onProgress(p)); $("rBackend").textContent = device.toUpperCase(); $("prog").hidden = true; $("readout").hidden = false; await embedCurrent(); }
+        catch (err) { reporter.fail(err); $("load").disabled = false; }
+      });
+
+      async function segmentAt(nx, ny) {
+        if (!engine.ready) { $("status").textContent = "Load the model first."; return; }
+        if (!embedded) { await embedCurrent(); }
+        cross = { x: nx, y: ny }; redraw();
+        $("status").textContent = "Segmenting…"; $("status").classList.remove("err");
+        try {
+          const r = await engine.segment([{ x: nx, y: ny, label: 1 }]);
+          lastMask = r; redraw();
+          $("readout").hidden = false; $("rMs").textContent = r.ms + " ms"; $("rIou").textContent = r.score.toFixed(3);
+          renderInside(r);
+          $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Segmentation failed: " + err.message; $("status").classList.add("err"); }
+      }
+
+      function renderInside(r) {
+        $("insideEmpty").hidden = true; $("insideWrap").hidden = false;
+        $("iouBadge").textContent = r.score.toFixed(3);
+        $("iPoint").textContent = `x ${r.point.x.toFixed(3)}, y ${r.point.y.toFixed(3)}`;
+        $("iScores").textContent = r.allScores.map((s) => s.toFixed(3)).join(" · ");
+        $("iChosen").textContent = `#${r.bestIndex + 1} of ${r.numMasks}`;
+        $("iArea").textContent = `${r.area.toLocaleString()} px (${(100 * r.area / (r.width * r.height)).toFixed(1)}% of image)`;
+      }
+
+      // Click to segment.
+      const stage = $("stage");
+      stage.addEventListener("click", (e) => { const n = eventToNorm(stage, e); segmentAt(n.x, n.y); });
+      // Keyboard: arrows move crosshair, Enter/Space segments.
+      stage.addEventListener("keydown", (e) => {
+        const step = 0.02;
+        if (e.key === "ArrowLeft") { cross.x = Math.max(0, cross.x - step); redraw(); e.preventDefault(); }
+        else if (e.key === "ArrowRight") { cross.x = Math.min(1, cross.x + step); redraw(); e.preventDefault(); }
+        else if (e.key === "ArrowUp") { cross.y = Math.max(0, cross.y - step); redraw(); e.preventDefault(); }
+        else if (e.key === "ArrowDown") { cross.y = Math.min(1, cross.y + step); redraw(); e.preventDefault(); }
+        else if (e.key === "Enter" || e.key === " ") { segmentAt(cross.x, cross.y); e.preventDefault(); }
+      });
+      // Preset points.
+      for (const b of $("pointGrid").children) b.addEventListener("click", () => segmentAt(+b.dataset.x, +b.dataset.y));
+    </script>
+  </body>
+</html>
