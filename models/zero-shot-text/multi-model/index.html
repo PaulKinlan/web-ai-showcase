@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Zero-shot Multi-model — retrieval vs zero-shot agreement · Web AI Showcase</title>
+    <meta name="description" content="Two ways to label a message: MiniLM finds the nearest labelled example (k-NN), and DeBERTa zero-shot scores your labels directly. When they agree, trust it. In your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🏷️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">DeBERTa zero-shot</a></p>
+
+    <header>
+      <p class="eyebrow">use case · multi-model</p>
+      <h1>Multi-model: retrieval and zero-shot, cross-checked</h1>
+      <p class="lede">
+        Two independent ways to label an incoming message.
+        <a href="/web-ai-showcase/models/minilm-embeddings/">MiniLM embeddings</a> find the most similar
+        <em>labelled example</em> you've seen before and borrow its label (nearest-neighbour). DeBERTa
+        <strong>zero-shot</strong> scores your label set directly, using no examples at all. When the two
+        methods agree, you can route automatically; when they disagree, flag it for a human. Both run locally.
+      </p>
+    </header>
+
+    <section class="panel">
+      <p class="muted">Loads two models (~25 MB embeddings + ~70 MB zero-shot). Both auto-initialise when cached.</p>
+      <div class="grid-2">
+        <div><p class="muted" style="font-size:.78rem;margin:0 0 .2rem">Method A · MiniLM k-NN over examples</p><div id="loader-minilm"></div></div>
+        <div><p class="muted" style="font-size:.78rem;margin:0 0 .2rem">Method B · DeBERTa zero-shot</p><div id="loader-zs"></div></div>
+      </div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
+        Labelled examples (format: <code>label :: example text</code>, one per line)
+        <textarea id="memory" rows="7" disabled>billing :: I was double charged for my plan this month.
+billing :: Can I get a refund for the extra invoice?
+bug :: The page crashes when I upload a large file.
+bug :: The save button is greyed out and won't respond.
+feature :: Please add a way to export to CSV.
+feature :: It would help to have keyboard shortcuts.
+access :: I'm locked out of my account after resetting my password.</textarea>
+      </label>
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
+        New message to label
+        <input id="message" type="text" disabled value="I keep getting an error every time I try to attach a photo." style="font:inherit;padding:.4rem .5rem;border:1px solid var(--border);border-radius:6px;background:var(--bg-raised);color:var(--color)" />
+      </label>
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.5rem 0">
+        <button class="chip" type="button" data-m="I keep getting an error every time I try to attach a photo.">a bug</button>
+        <button class="chip" type="button" data-m="Why was I billed twice this week?">billing</button>
+        <button class="chip" type="button" data-m="Could you support logging in with Google?">a feature</button>
+        <button class="chip" type="button" data-m="My reset link expired and now I can't sign in.">access</button>
+      </div>
+      <div style="margin:.3rem 0"><button id="run" type="button" disabled>Label both ways</button></div>
+
+      <div id="verdict" hidden>
+        <div class="agree-box" id="agreeBox"></div>
+        <div class="grid-2" style="margin-top:.6rem">
+          <div>
+            <h3 style="margin-top:.2rem">Method A — nearest example</h3>
+            <div class="nn-box" id="nnBox"></div>
+          </div>
+          <div>
+            <h3 style="margin-top:.2rem">Method B — zero-shot scores</h3>
+            <div class="zs-list" id="scores"></div>
+          </div>
+        </div>
+        <div class="readout" id="readout" hidden><span>embed <b id="rEmbed">–</b></span><span>zero-shot <b id="rZS">–</b></span><span>examples <b id="rN">–</b></span><span>latency <b id="rMs">–</b></span></div>
+      </div>
+    </section>
+
+    <p class="muted" style="font-size:.85rem">
+      Retrieval improves as your labelled memory grows (it's literally learning from examples); zero-shot works
+      from day one with zero examples. Running both and comparing gives you a cheap, on-device confidence signal
+      — a real pattern for bootstrapping a classifier before you have much labelled data.
+    </p>
+
+    <p class="crumbs"><a href="../wild/">← Wild</a> · <a href="../">DeBERTa zero-shot</a></p>
+
+    <style>
+      .agree-box { border-radius: 8px; padding: .6rem .8rem; border: 1px solid var(--border); background: var(--bg-raised);
+        font-family: var(--font-display); font-size: 1.1rem; }
+      .agree-box.agree { border-color: var(--good); color: var(--good); }
+      .agree-box.disagree { border-color: var(--warn); color: var(--warn); }
+      .nn-box { border: 1px solid var(--border); border-radius: 8px; background: var(--bg-raised); padding: .5rem .7rem; }
+      .nn-label { font-family: var(--font-mono); font-size: .74rem; padding: .12rem .5rem; border-radius: 999px;
+        border: 1px solid var(--accent); color: var(--accent); }
+      .nn-ex { font-size: .88rem; margin-top: .35rem; }
+      .nn-cos { font-family: var(--font-mono); font-size: .74rem; color: var(--muted); margin-top: .2rem; }
+    </style>
+
+    <script type="module">
+      import { ZeroShotEngine, escapeHTML, renderScores, ZEROSHOT_CSS } from "../zeroshot.js";
+      import { EmbedEngine, cosine, EMBED_CSS } from "/web-ai-showcase/models/minilm-embeddings/embed.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = ZEROSHOT_CSS + EMBED_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const zs = new ZeroShotEngine();
+      const embedder = new EmbedEngine();
+      let embReady = false, zsReady = false;
+      const maybeEnable = () => { if (embReady && zsReady) { $("memory").disabled = false; $("message").disabled = false; $("run").disabled = false; run(); } };
+      for (const c of document.querySelectorAll(".chip")) c.addEventListener("click", () => { $("message").value = c.dataset.m; if (embReady && zsReady) run(); });
+
+      createModelLoader({
+        mount: $("loader-minilm"),
+        model: { modelId: "Xenova/all-MiniLM-L6-v2", runtime: "transformers.js", dtype: "q8", sizeMB: 25, requiresWebGPU: false },
+        load: async (onProgress) => { await embedder.load(onProgress); return embedder; },
+        onReady: () => { embReady = true; maybeEnable(); },
+      });
+      createModelLoader({
+        mount: $("loader-zs"),
+        model: { modelId: "Xenova/nli-deberta-v3-xsmall", runtime: "transformers.js", dtype: "q8", sizeMB: 70, requiresWebGPU: false },
+        load: async (onProgress) => { await zs.load(onProgress); return zs; },
+        onReady: () => { zsReady = true; maybeEnable(); },
+      });
+
+      $("run").addEventListener("click", run);
+      $("message").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); run(); } });
+
+      function parseMemory(text) {
+        return text.split(/\n/).map((l) => l.trim()).filter(Boolean).map((l) => {
+          const idx = l.indexOf("::");
+          if (idx < 0) return null;
+          return { label: l.slice(0, idx).trim(), text: l.slice(idx + 2).trim() };
+        }).filter((x) => x && x.label && x.text);
+      }
+
+      async function run() {
+        if (!(embReady && zsReady)) return;
+        const mem = parseMemory($("memory").value);
+        const message = $("message").value.trim();
+        if (mem.length < 2 || !message) return;
+        const labels = [...new Set(mem.map((m) => m.label))];
+        $("run").disabled = true;
+        $("runStatus").hidden = false; $("runStatus").classList.remove("err"); $("runStatus").textContent = "Comparing methods…";
+        try {
+          const t0 = performance.now();
+          // Method A: embed message + all examples, take the label of the nearest example.
+          const emb = await embedder.embed([message, ...mem.map((m) => m.text)]);
+          const qv = emb.embeddings[0];
+          let best = 0, bestSim = -Infinity;
+          for (let i = 0; i < mem.length; i++) {
+            const sim = cosine(qv, emb.embeddings[i + 1]);
+            if (sim > bestSim) { bestSim = sim; best = i; }
+          }
+          const nnLabel = mem[best].label;
+          // Method B: zero-shot over the distinct labels.
+          const r = await zs.classify(message, labels, false);
+          const zsLabel = r.scored[0].label;
+          const ms = Math.round(performance.now() - t0);
+          const agree = nnLabel === zsLabel;
+
+          $("verdict").hidden = false;
+          $("agreeBox").className = "agree-box " + (agree ? "agree" : "disagree");
+          $("agreeBox").textContent = agree
+            ? `Both methods agree: "${zsLabel}" — safe to auto-route.`
+            : `Methods disagree: retrieval says "${nnLabel}", zero-shot says "${zsLabel}" — flag for review.`;
+          $("nnBox").innerHTML =
+            `<span class="nn-label">${escapeHTML(nnLabel)}</span>` +
+            `<div class="nn-ex">nearest example: "${escapeHTML(mem[best].text)}"</div>` +
+            `<div class="nn-cos">cosine ${bestSim.toFixed(3)}</div>`;
+          renderScores($("scores"), r.scored, false);
+          $("readout").hidden = false; $("rEmbed").textContent = emb.device.toUpperCase(); $("rZS").textContent = r.device.toUpperCase(); $("rN").textContent = mem.length; $("rMs").textContent = ms + " ms";
+          $("runStatus").textContent = "Done."; $("runStatus").classList.add("ok");
+        } catch (err) { $("runStatus").textContent = "Failed: " + err.message; $("runStatus").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      }
+    </script>
+  </body>
+</html>
