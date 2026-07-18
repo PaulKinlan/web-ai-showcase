@@ -44,9 +44,8 @@
       <h3 id="run-h">Run it</h3>
       <p class="muted">Pick or drop a photo, then estimate depth. Warmer / brighter means <em>closer</em>; darker means further away. Switch the colour map to read the scene differently.</p>
 
-      <button id="load" type="button">Load Depth Anything (~100 MB)</button>
-      <progress id="prog" value="0" max="100" hidden></progress>
-      <p class="status" id="status" role="status" aria-live="polite">Model not loaded yet.</p>
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
 
       <div class="controls-row">
         <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image" style="flex:1 1 240px">
@@ -178,7 +177,7 @@ const { depth, predicted_depth } = await estimator(imageURL);
     <script type="module">
       import { DepthEngine, fileToDataURL, urlToDataURL, renderDepthColor, renderColorLegend, DEPTH_CSS }
         from "./depth.js";
-      import { progressReporter } from "/web-ai-showcase/lib/webai.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
 
       const style = document.createElement("style");
       style.textContent = DEPTH_CSS;
@@ -223,13 +222,16 @@ const { depth, predicted_depth } = await estimator(imageURL);
         if (lastResult) renderDepthColor($("depthCanvas"), lastResult.width, lastResult.height, lastResult.depth, $("cmap").value);
       });
 
-      const reporter = progressReporter($("prog"), $("status"));
-      $("load").addEventListener("click", async () => {
-        $("load").disabled = true; $("prog").hidden = false; $("status").classList.remove("err"); $("status").textContent = "Loading Depth Anything…";
-        try {
-          const device = await engine.load((p) => reporter.onProgress(p));
-          $("status").textContent = `Model ready — running on ${device.toUpperCase()}.`; $("status").classList.add("ok"); $("prog").hidden = true; $("run").disabled = false;
-        } catch (err) { reporter.fail(err); $("load").disabled = false; }
+      // Depth Anything runs fp16 on WebGPU when there's a real adapter, else the q8 WASM build — an
+      // honest fallback (requiresWebGPU:false). Match the loader's recorded dtype to what the worker uses.
+      let depthDtype = "q8";
+      try { if ("gpu" in navigator && await navigator.gpu.requestAdapter()) depthDtype = "fp16"; } catch { /* wasm */ }
+      const autoRun = new URLSearchParams(location.search).has("auto");
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/depth-anything-v2-small", runtime: "transformers.js", dtype: depthDtype, sizeMB: 100, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: () => { $("run").disabled = false; if (autoRun) $("run").click(); },
       });
 
       $("run").addEventListener("click", async () => {
@@ -249,15 +251,6 @@ const { depth, predicted_depth } = await estimator(imageURL);
           $("status").textContent = "Depth estimation failed: " + err.message; $("status").classList.add("err");
         } finally { $("run").disabled = false; }
       });
-
-      // Headless / self-test hook: ?auto=1 loads the model and runs on the default sample.
-      if (new URLSearchParams(location.search).has("auto")) {
-        (async () => {
-          await pickSample($("samples").firstElementChild); // ensure a sample data URL is ready
-          $("load").click();
-          try { await engine.load(); $("run").click(); } catch { /* surfaced on the page */ }
-        })();
-      }
 
       function renderInside(r) {
         $("insideEmpty").hidden = true;

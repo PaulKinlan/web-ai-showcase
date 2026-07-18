@@ -24,9 +24,9 @@
 
     <section class="panel">
       <p class="muted">This page loads <strong>both</strong> models (~270 MB combined, cached after first load). WebGPU accelerates them where available; otherwise both fall back to WebAssembly and the page says so.</p>
-      <button id="load" type="button">Load both models</button>
-      <progress id="prog" value="0" max="100" hidden></progress>
-      <p class="status" id="status" role="status" aria-live="polite">Models not loaded yet.</p>
+      <div id="depth-loader"></div>
+      <div id="rmbg-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
 
       <div class="sample-strip" id="samples">
         <img class="sample-thumb active" src="../sample-portrait.jpg" data-src="../sample-portrait.jpg" alt="Two cats on a couch" tabindex="0" role="button" />
@@ -71,7 +71,7 @@
     <script type="module">
       import { DepthEngine, urlToDataURL, fileToDataURL } from "../depth.js";
       import { RmbgEngine, loadImage } from "../../rmbg-background-removal/rmbg.js";
-      import { progressReporter } from "/web-ai-showcase/lib/webai.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
       import { DEPTH_CSS } from "../depth.js";
       const style = document.createElement("style"); style.textContent = DEPTH_CSS; document.head.append(style);
       const $ = (id) => document.getElementById(id);
@@ -110,13 +110,30 @@
         return out;
       }
 
-      const reporter = progressReporter($("prog"), $("status"));
-      $("load").addEventListener("click", async () => {
-        $("load").disabled = true; $("prog").hidden = false; $("status").classList.remove("err"); $("status").textContent = "Loading depth + background-removal…";
-        try {
-          const [dDev] = await Promise.all([depth.load((p) => reporter.onProgress(p)), rmbg.load((p) => reporter.onProgress(p))]);
-          $("status").textContent = `Both models ready — running on ${dDev.toUpperCase()}.`; $("status").classList.add("ok"); $("prog").hidden = true; $("run").disabled = false;
-        } catch (err) { reporter.fail(err); $("load").disabled = false; }
+      // Two models, two shared auto-init loaders. Each runs fp16/fp32 on a real WebGPU adapter, else q8
+      // WASM — an honest fallback (requiresWebGPU:false). Compose unlocks only once BOTH are ready.
+      let hasGpu = false;
+      try { hasGpu = "gpu" in navigator && !!(await navigator.gpu.requestAdapter()); } catch { /* wasm */ }
+      const autoRun = new URLSearchParams(location.search).has("auto");
+      let depthReady = false, rmbgReady = false;
+      function bothReady() {
+        if (depthReady && rmbgReady) {
+          $("run").disabled = false;
+          $("status").textContent = "Both models ready — pick a photo and compose."; $("status").classList.add("ok");
+          if (autoRun) run();
+        }
+      }
+      createModelLoader({
+        mount: $("depth-loader"),
+        model: { modelId: "onnx-community/depth-anything-v2-small", runtime: "transformers.js", dtype: hasGpu ? "fp16" : "q8", sizeMB: 100, requiresWebGPU: false },
+        load: (onProgress) => depth.load(onProgress),
+        onReady: () => { depthReady = true; bothReady(); },
+      });
+      createModelLoader({
+        mount: $("rmbg-loader"),
+        model: { modelId: "briaai/RMBG-1.4", runtime: "transformers.js", dtype: hasGpu ? "fp32" : "q8", sizeMB: 170, requiresWebGPU: false },
+        load: (onProgress) => rmbg.load(onProgress),
+        onReady: () => { rmbgReady = true; bothReady(); },
       });
 
       const sharpC = document.createElement("canvas"), lightC = document.createElement("canvas"), heavyC = document.createElement("canvas");
@@ -166,9 +183,6 @@
       }
       $("run").addEventListener("click", run);
 
-      if (new URLSearchParams(location.search).has("auto")) {
-        (async () => { await pickSample($("samples").firstElementChild); $("load").click(); try { await Promise.all([depth.load(), rmbg.load()]); await run(); } catch {} })();
-      }
     </script>
   </body>
 </html>
