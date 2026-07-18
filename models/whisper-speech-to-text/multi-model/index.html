@@ -13,6 +13,8 @@
       .step > h3 { margin-top:0; }
       .step .num { font-family:var(--font-mono); color:var(--muted); font-size:.8rem; }
       #edit { inline-size:100%; min-block-size:90px; }
+      .loader-pair { display:grid; gap:1rem; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); }
+      .loader-title { font-family:var(--font-mono); font-size:.78rem; color:var(--muted); margin:0 0 .3rem; text-transform:uppercase; letter-spacing:.05em; }
     </style>
   </head>
   <body>
@@ -29,11 +31,18 @@
     </header>
 
     <section class="panel">
-      <div style="display:flex;flex-wrap:wrap;gap:.5rem;align-items:center">
-        <button id="loadBoth" type="button">Load both models (~210 MB)</button>
-        <progress id="prog" value="0" max="100" hidden></progress>
+      <p class="muted" style="margin-top:0">This loop chains two on-device models — each initialises on its own below (cached copies auto-start, no button).</p>
+      <div class="loader-pair">
+        <div>
+          <p class="loader-title">Whisper — speech-to-text</p>
+          <div id="model-loader-whisper"></div>
+        </div>
+        <div>
+          <p class="loader-title">Kokoro — text-to-speech</p>
+          <div id="model-loader-kokoro"></div>
+        </div>
       </div>
-      <p class="status" id="status" role="status" aria-live="polite">Models not loaded yet.</p>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
     </section>
 
     <div class="steps">
@@ -104,7 +113,7 @@
     <script type="module">
       import { WhisperEngine, urlToMono16k, blobToMono16k, MicRecorder, WHISPER_CSS } from "../whisper.js";
       import { KokoroEngine, wavUrl, groupVoices, drawWaveform, KOKORO_CSS } from "../../kokoro-text-to-speech/kokoro.js";
-      import { progressReporter } from "/web-ai-showcase/lib/webai.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
       const s1 = document.createElement("style"); s1.textContent = WHISPER_CSS + KOKORO_CSS; document.head.append(s1);
       const $ = (id) => document.getElementById(id);
       const whisper = new WhisperEngine();
@@ -143,8 +152,7 @@
         }
       });
 
-      // --- load both models ---
-      const reporter = progressReporter($("prog"), $("status"));
+      // --- load both models (two independent auto-init loaders) ---
       function fillVoices(voices) {
         const sel = $("voice"); sel.replaceChildren();
         for (const [label, list] of groupVoices(voices)) {
@@ -155,17 +163,17 @@
         if ([...sel.options].some((o) => o.value === "af_heart")) sel.value = "af_heart";
         sel.disabled = false;
       }
-      $("loadBoth").addEventListener("click", async () => {
-        $("loadBoth").disabled = true; $("prog").hidden = false; $("status").classList.remove("err"); $("status").textContent = "Loading Whisper…";
-        try {
-          const wd = await whisper.load((p) => reporter.onProgress(p));
-          $("status").textContent = `Whisper ready (${wd.toUpperCase()}). Loading Kokoro…`;
-          const { device: kd, voices } = await kokoro.load((p) => reporter.onProgress(p));
-          fillVoices(voices);
-          $("status").textContent = `Both ready — Whisper ${wd.toUpperCase()}, Kokoro ${kd.toUpperCase()}.`;
-          $("status").classList.add("ok"); $("prog").hidden = true;
-          $("rec").disabled = false; $("upload").disabled = false; $("transcribe").disabled = !pcm; $("speak").disabled = false;
-        } catch (err) { reporter.fail(err); $("loadBoth").disabled = false; }
+      createModelLoader({
+        mount: $("model-loader-whisper"),
+        model: { modelId: "onnx-community/whisper-base_timestamped", runtime: "transformers.js", dtype: "q8", sizeMB: 120, requiresWebGPU: false },
+        load: async (onProgress) => { const device = await whisper.load((p) => onProgress(p)); return { device }; },
+        onReady: () => { $("rec").disabled = false; $("upload").disabled = false; $("transcribe").disabled = !pcm; },
+      });
+      createModelLoader({
+        mount: $("model-loader-kokoro"),
+        model: { modelId: "onnx-community/Kokoro-82M-v1.0-ONNX", runtime: "kokoro-js", dtype: "q8", sizeMB: 90, requiresWebGPU: false },
+        load: async (onProgress) => { const r = await kokoro.load((p) => onProgress(p)); return r; },
+        onReady: (r) => { fillVoices(r.voices); $("speak").disabled = false; },
       });
 
       // --- step 1 → 2: transcribe ---
