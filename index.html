@@ -10,6 +10,14 @@
     />
     <link rel="stylesheet" href="public/styles.css" />
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🧠</text></svg>" />
+    <style>
+      .coverage { border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-raised); padding: 1rem; margin: 1.2rem 0; }
+      .coverage .bar { height: 0.55rem; border-radius: 999px; background: var(--bg-stone, var(--bg-secondary)); overflow: hidden; margin: 0.5rem 0; }
+      .coverage .bar > span { display: block; height: 100%; background: var(--accent); }
+      .task-row { display: flex; justify-content: space-between; gap: 1rem; padding: 0.35rem 0; border-bottom: 1px solid var(--border); font-size: 0.85rem; }
+      .task-row .ex { color: var(--muted); font-family: var(--font-mono); font-size: 0.72rem; }
+      details.pipeline > summary { cursor: pointer; font-family: var(--font-display); font-size: 1.3rem; margin: 2rem 0 0.4rem; }
+    </style>
   </head>
   <body>
     <header>
@@ -23,89 +31,102 @@
     </header>
 
     <p class="status" id="device"></p>
+    <section class="coverage" id="coverage" aria-live="polite"></section>
 
-    <main id="catalogue" aria-live="polite">
+    <main id="catalogue">
       <p class="status">Loading the catalogue…</p>
     </main>
 
     <footer class="byline">
-      Made by
-      <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Models run via
-      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener"
-        >🤗 Transformers.js</a
-      >
-      / WebGPU. Source on
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Models
+      run via <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>
+      / WebLLM / WebGPU. Source on
       <a href="https://github.com/PaulKinlan/web-ai-showcase" target="_blank" rel="noopener">GitHub</a>.
     </footer>
 
     <script type="module">
-      // Device capability line — honest about what this browser can run.
       const dev = document.getElementById("device");
       const hasGPU = "gpu" in navigator;
       dev.textContent = hasGPU
-        ? "✓ WebGPU available — models with a WebGPU build will run accelerated."
-        : "△ No WebGPU here — WASM-backed models still run (slower); WebGPU models will note it.";
-      dev.classList.add(hasGPU ? "ok" : "");
+        ? "✓ WebGPU available — accelerated models will run on your GPU."
+        : "△ No WebGPU here — WASM-backed models still run (slower); WebGPU-only models say so.";
+      if (hasGPU) dev.classList.add("ok");
 
-      const MODALITY_ORDER = ["vision-language", "vision", "audio", "text"];
-      const MODALITY_LABEL = {
-        "vision-language": "Vision · Language",
-        vision: "Vision",
-        audio: "Audio & Speech",
-        text: "Text & Language",
-      };
+      const MOD_ORDER = ["vision-language", "vision", "audio", "text"];
+      const MOD_LABEL = { "vision-language": "Vision · Language", vision: "Vision", audio: "Audio & Speech", text: "Text & Language" };
 
       function card(m) {
-        const runnable = m.status === "built";
-        const href = runnable ? `models/${m.slug}/` : null;
-        const el = document.createElement(href ? "a" : "div");
+        const el = document.createElement("a");
         el.className = "model-card";
-        if (href) el.href = href;
+        el.href = `models/${m.slug}/`;
         el.style.viewTransitionName = `card-${m.slug}`;
-        const backendTag =
-          m.backend === "webgpu"
-            ? '<span class="tag tag-webgpu">WebGPU</span>'
-            : '<span class="tag">WASM</span>';
         el.innerHTML = `
           <h3>${m.name}</h3>
-          <p class="muted">${m.blurb}</p>
+          <p class="muted">${m.blurb || m.task}</p>
           <div class="tags">
             <span class="tag">${m.task}</span>
-            ${backendTag}
-            <span class="tag">~${m.sizeMB} MB</span>
-            ${runnable ? '<span class="tag tag-run">runnable</span>' : '<span class="tag tag-flag">page coming</span>'}
+            ${m.backend === "webgpu" ? '<span class="tag tag-webgpu">WebGPU</span>' : '<span class="tag">WASM</span>'}
+            ${m.sizeMB ? `<span class="tag">~${m.sizeMB} MB</span>` : ""}
+            <span class="tag tag-run">runnable</span>
           </div>
-          <p class="muted" style="font-size:.82rem"><strong>Unlocks:</strong> ${m.unlocks}</p>`;
+          ${m.unlocks && !m.unlocks.startsWith("TODO") ? `<p class="muted" style="font-size:.82rem"><strong>Unlocks:</strong> ${m.unlocks}</p>` : ""}`;
         return el;
       }
 
       try {
         const { models } = await (await fetch("models.json")).json();
+        const built = models.filter((m) => m.status === "built");
+        const pending = models.filter((m) => m.status !== "built");
         const cat = document.getElementById("catalogue");
         cat.innerHTML = "";
+
+        // Coverage header — the honest denominator, front and centre.
+        const tasks = [...new Set(models.map((m) => m.task))];
+        const pct = ((built.length / models.length) * 100).toFixed(1);
+        document.getElementById("coverage").innerHTML = `
+          <strong>${built.length}</strong> interactive demos built ·
+          <strong>${models.length}</strong> browser-runnable model families catalogued across
+          <strong>${tasks.length}</strong> capability tasks.
+          <div class="bar"><span style="width:${Math.max(pct, 1.5)}%"></span></div>
+          <p class="muted" style="font-size:.8rem;margin:0">Built ${built.length}/${models.length} (${pct}%). New model pages ship daily — the routine keeps closing the gap. Evidence: <code>inventory/</code>.</p>`;
+
+        // Built models — full cards, grouped by modality.
         const byMod = new Map();
-        for (const m of models) (byMod.get(m.modality) ?? byMod.set(m.modality, []).get(m.modality)).push(m);
-        const mods = [...byMod.keys()].sort(
-          (a, b) => (MODALITY_ORDER.indexOf(a) + 99) % 100 - ((MODALITY_ORDER.indexOf(b) + 99) % 100),
-        );
-        for (const mod of mods) {
+        for (const m of built) (byMod.get(m.modality) || byMod.set(m.modality, []).get(m.modality)).push(m);
+        for (const mod of [...byMod.keys()].sort((a, b) => (MOD_ORDER.indexOf(a) + 9) - (MOD_ORDER.indexOf(b) + 9))) {
           const h2 = document.createElement("h2");
-          h2.textContent = MODALITY_LABEL[mod] ?? mod;
+          h2.textContent = MOD_LABEL[mod] || mod;
           cat.append(h2);
           const grid = document.createElement("div");
           grid.className = "model-grid";
           for (const m of byMod.get(mod)) grid.append(card(m));
           cat.append(grid);
         }
+
+        // Pending universe — compact, per-task, honest (not a wall of "coming" cards).
+        const byTask = new Map();
+        for (const m of models) {
+          const t = byTask.get(m.task) || { built: 0, total: 0, ex: [] };
+          t.total++;
+          if (m.status === "built") t.built++;
+          else if (t.ex.length < 3) t.ex.push(m.hfId);
+          byTask.set(m.task, t);
+        }
+        const det = document.createElement("details");
+        det.className = "pipeline";
+        det.innerHTML = `<summary>In the pipeline — ${pending.length} more model families across ${tasks.length} tasks</summary>`;
+        for (const [task, t] of [...byTask.entries()].sort((a, b) => b[1].total - a[1].total)) {
+          const row = document.createElement("div");
+          row.className = "task-row";
+          row.innerHTML = `<span><strong>${task}</strong> — ${t.built} built / ${t.total} eligible</span><span class="ex">${t.ex.join(", ")}${t.total > t.built + t.ex.length ? " …" : ""}</span>`;
+          det.append(row);
+        }
+        cat.append(det);
       } catch (e) {
-        document.getElementById("catalogue").innerHTML =
-          `<p class="status err">Couldn't load the catalogue: ${e.message}</p>`;
+        document.getElementById("catalogue").innerHTML = `<p class="status err">Couldn't load the catalogue: ${e.message}</p>`;
       }
 
-      // Offline-capable: register the model-caching service worker.
-      if ("serviceWorker" in navigator) {
-        navigator.serviceWorker.register("sw.js").catch(() => {});
-      }
+      if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
     </script>
   </body>
 </html>
