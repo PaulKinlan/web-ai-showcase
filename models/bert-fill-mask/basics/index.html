@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Fill-mask Basics — one blank, ranked guesses · Web AI Showcase</title>
+    <meta name="description" content="The fundamental move: put a [MASK] in a sentence and get BERT's ranked predictions with probabilities and the raw logits. Runs in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎭</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">BERT fill-mask</a></p>
+
+    <header>
+      <p class="eyebrow">use case · basics</p>
+      <h1>Basics: one blank, ranked guesses</h1>
+      <p class="lede">
+        The simplest thing masked language modelling does: hide one word and rank what belongs there.
+        Pick an example or write your own with a single <code>[MASK]</code>, and watch the ranked list —
+        with the probability and the raw logit for each guess — update as you type.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
+        Sentence with one <code>[MASK]</code>
+        <input id="text" class="mask-input" disabled value="The best way to learn is by [MASK]." />
+      </label>
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.5rem 0">
+        <button class="mask-chip" type="button" data-set="The best way to learn is by [MASK].">learning</button>
+        <button class="mask-chip" type="button" data-set="She opened the door and saw a [MASK].">a noun</button>
+        <button class="mask-chip" type="button" data-set="This coffee tastes absolutely [MASK].">adjective</button>
+        <button class="mask-chip" type="button" data-set="He drove the [MASK] to work every morning.">object</button>
+        <button class="mask-chip" type="button" data-set="Water boils at one hundred [MASK] celsius.">fact-ish</button>
+      </div>
+
+      <div id="filled" class="filled-sentence" hidden></div>
+      <p class="pred-head">Predictions</p>
+      <div id="preds" class="pred-list"></div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+      </div>
+    </section>
+
+    <p class="muted" style="font-size:.85rem">
+      The bar is the softmax probability; the <code>logit</code> is the raw score the network produced
+      before normalising. On a strongly-constrained slot one guess towers over the rest; on an open slot
+      the probability spreads thin — a direct read on how sure the model is.
+    </p>
+
+    <p class="crumbs"><a href="../">← Back to BERT fill-mask</a> · Next: <a href="../practical/">Practical →</a></p>
+
+    <script type="module">
+      import { FillMaskEngine, FILLMASK_CSS, MASK, renderPredictions, debounce, escapeHTML } from "../fillmask.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = FILLMASK_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new FillMaskEngine();
+      let loaded = false;
+
+      for (const c of document.querySelectorAll(".mask-chip")) c.addEventListener("click", () => { $("text").value = c.dataset.set; sched(); });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/bert-base-uncased", runtime: "transformers.js", dtype: "q8", sizeMB: 110, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("text").disabled = false; loaded = true; run(); },
+      });
+
+      const sched = debounce(run, 350);
+      $("text").addEventListener("input", sched);
+
+      async function run() {
+        if (!loaded) return;
+        const text = $("text").value;
+        if (!text.includes(MASK)) {
+          $("runStatus").hidden = false; $("runStatus").classList.remove("err");
+          $("runStatus").textContent = "Add a [MASK] token."; $("preds").replaceChildren();
+          $("filled").hidden = true; $("readout").hidden = true; return;
+        }
+        $("runStatus").hidden = true;
+        try {
+          const r = await engine.fill(text, 8);
+          const top = r.masks[0]?.predictions[0];
+          if (top) { $("filled").innerHTML = escapeHTML(text).replace("[MASK]", `<span class="slot">${escapeHTML(top.token)}</span>`); $("filled").hidden = false; }
+          renderPredictions($("preds"), r.masks[0]?.predictions ?? [], (token) => { $("text").value = text.replace("[MASK]", token); sched(); });
+          $("readout").hidden = false; $("rBackend").textContent = r.device.toUpperCase(); $("rMs").textContent = r.ms + " ms";
+        } catch (err) { $("runStatus").hidden = false; $("runStatus").textContent = "Prediction failed: " + err.message; $("runStatus").classList.add("err"); }
+      }
+    </script>
+  </body>
+</html>

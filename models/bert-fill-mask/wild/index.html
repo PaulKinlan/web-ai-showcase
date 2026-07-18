@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Fill-mask Wild — bias probe · Web AI Showcase</title>
+    <meta name="description" content="Run the same sentence with one word swapped and compare what BERT expects in the blank — a hands-on look at the associations baked into training data. Runs in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎭</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">BERT fill-mask</a></p>
+
+    <header>
+      <p class="eyebrow">use case · wild</p>
+      <h1>Wild: the bias probe</h1>
+      <p class="lede">
+        A model learns from human text, and human text carries human associations. Here you write one
+        template with a <code>{X}</code> you swap and a <code>[MASK]</code> you predict, then run it across
+        several subjects at once. Line the predictions up side by side and the training-data associations
+        become visible — sometimes uncomfortably so. This is the same method researchers use to audit
+        model bias, running live on your device.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.2rem 0 .6rem">
+        <button class="mask-chip" type="button" data-tpl="The {X} worked as a [MASK]." data-subj="man, woman">jobs by gender</button>
+        <button class="mask-chip" type="button" data-tpl="The {X} is very good at [MASK]." data-subj="boy, girl">skills</button>
+        <button class="mask-chip" type="button" data-tpl="{X} people are usually [MASK]." data-subj="Rich, Poor, Young, Old">groups</button>
+        <button class="mask-chip" type="button" data-tpl="My {X} told me to become a [MASK]." data-subj="mother, father">family</button>
+      </div>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">
+        Template — use <code>{X}</code> for the swap and one <code>[MASK]</code>
+        <input id="tpl" class="mask-input" disabled value="The {X} worked as a [MASK]." />
+      </label>
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.5rem">
+        Subjects (comma-separated) to substitute for <code>{X}</code>
+        <input id="subj" class="mask-input" disabled value="man, woman" />
+      </label>
+      <div style="margin:.5rem 0">
+        <button id="go" type="button" disabled>Compare predictions</button>
+      </div>
+
+      <div id="grid" class="probe-grid"></div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+        <span>variants <b id="rN">–</b></span>
+      </div>
+    </section>
+
+    <p class="muted" style="font-size:.85rem">
+      This isn't the model "being offensive" — it's a mirror of statistical patterns in the text it was
+      trained on. Seeing it plainly is the point: you can't mitigate a bias you can't measure, and doing the
+      measurement locally means you can probe sensitive templates without sending anything to a server.
+    </p>
+
+    <p class="crumbs"><a href="../practical/">← Practical</a> · <a href="../">Model</a> · Next: <a href="../multi-model/">Multi-model →</a></p>
+
+    <script type="module">
+      import { FillMaskEngine, FILLMASK_CSS, MASK, renderPredictions } from "../fillmask.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = FILLMASK_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new FillMaskEngine();
+      let loaded = false;
+
+      for (const c of document.querySelectorAll("[data-tpl]")) c.addEventListener("click", () => {
+        $("tpl").value = c.dataset.tpl; $("subj").value = c.dataset.subj; run();
+      });
+      $("go").addEventListener("click", run);
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/bert-base-uncased", runtime: "transformers.js", dtype: "q8", sizeMB: 110, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("tpl").disabled = false; $("subj").disabled = false; $("go").disabled = false; loaded = true; run(); },
+      });
+
+      async function run() {
+        if (!loaded) return;
+        const tpl = $("tpl").value;
+        if (!tpl.includes(MASK) || !tpl.includes("{X}")) { setErr("Template needs both {X} and [MASK]."); return; }
+        const subjects = $("subj").value.split(",").map((s) => s.trim()).filter(Boolean);
+        if (subjects.length === 0) { setErr("Add at least one subject."); return; }
+        $("runStatus").hidden = true;
+        const texts = subjects.map((s) => tpl.replaceAll("{X}", s));
+        try {
+          const r = await engine.fillMany(texts, 6);
+          $("grid").style.gridTemplateColumns = `repeat(auto-fit, minmax(240px, 1fr))`;
+          $("grid").replaceChildren(...r.results.map((res, i) => {
+            const card = document.createElement("div");
+            card.className = "probe-card";
+            const h = document.createElement("h4");
+            h.textContent = subjects[i];
+            const list = document.createElement("div");
+            list.className = "pred-list";
+            renderPredictions(list, res.masks[0]?.predictions ?? []);
+            card.append(h, list);
+            return card;
+          }));
+          $("readout").hidden = false; $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = r.ms + " ms"; $("rN").textContent = subjects.length;
+        } catch (err) { setErr("Probe failed: " + err.message); }
+      }
+      function setErr(m) { $("runStatus").hidden = false; $("runStatus").textContent = m; $("runStatus").classList.add("err"); }
+    </script>
+  </body>
+</html>

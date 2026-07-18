@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Fill-mask Practical — autocomplete &amp; knowledge probing · Web AI Showcase</title>
+    <meta name="description" content="Two shippable uses of masked language modelling: word-by-word autocomplete, and probing what facts BERT learned — all in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎭</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">BERT fill-mask</a></p>
+
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Practical: autocomplete &amp; knowledge probing</h1>
+      <p class="lede">
+        Two things a developer would actually ship. <strong>Autocomplete</strong> appends a mask to the
+        end of your text and suggests the next word — accept one and keep going, entirely offline.
+        <strong>Knowledge probing</strong> turns a fact into a fill-in-the-blank and reads out what the
+        model "knows" — and, just as usefully, where it's unsure.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+    </section>
+
+    <section class="panel" aria-labelledby="ac-h">
+      <h3 id="ac-h">Offline autocomplete</h3>
+      <p class="muted">Type, then let BERT propose the next word. Click a suggestion to append it, and it'll
+        suggest the word after that — a private, on-device compose assist.</p>
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">
+        Your text
+        <input id="acText" class="mask-input" disabled value="I went to the store to buy some" />
+      </label>
+      <div style="display:flex;gap:.4rem;flex-wrap:wrap;margin:.4rem 0">
+        <button id="acGo" type="button" class="secondary" disabled>Suggest next word</button>
+        <button class="mask-chip" type="button" data-ac="The scientist looked into the">science</button>
+        <button class="mask-chip" type="button" data-ac="On Sunday morning we like to">weekend</button>
+        <button class="mask-chip" type="button" data-ac="The most important thing in life is">reflection</button>
+      </div>
+      <p class="muted" style="font-size:.8rem">Suggestions (click to append):</p>
+      <div id="acPreds" class="pred-list"></div>
+    </section>
+
+    <section class="panel" aria-labelledby="kp-h">
+      <h3 id="kp-h">Knowledge probing</h3>
+      <p class="muted">Each template hides the key fact behind <code>[MASK]</code>. A confident, correct
+        top guess means the fact survived pre-training; a spread-out list means it didn't — a quick,
+        honest way to audit what a small model actually encodes.</p>
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.3rem 0 .5rem">
+        <button class="mask-chip" type="button" data-set="The capital of France is [MASK].">capital</button>
+        <button class="mask-chip" type="button" data-set="The chemical symbol for gold is [MASK].">chemistry</button>
+        <button class="mask-chip" type="button" data-set="William Shakespeare wrote the play [MASK].">literature</button>
+        <button class="mask-chip" type="button" data-set="The sun rises in the [MASK].">common sense</button>
+        <button class="mask-chip" type="button" data-set="The speed of light is measured in [MASK].">units</button>
+      </div>
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">
+        Probe template (one <code>[MASK]</code>)
+        <input id="kpText" class="mask-input" disabled value="The capital of France is [MASK]." />
+      </label>
+      <div id="kpFilled" class="filled-sentence" hidden></div>
+      <div id="kpPreds" class="pred-list"></div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+      </div>
+    </section>
+
+    <p class="muted" style="font-size:.85rem">
+      Probing is a real research technique (the "LAMA" probe) — but treat a small uncased BERT as a fuzzy
+      memory, not a fact source: it happily fills capitals it saw often and fumbles rare ones. That gap is
+      exactly what makes probing a useful audit.
+    </p>
+
+    <p class="crumbs"><a href="../basics/">← Basics</a> · <a href="../">Model</a> · Next: <a href="../wild/">Wild →</a></p>
+
+    <script type="module">
+      import { FillMaskEngine, FILLMASK_CSS, MASK, renderPredictions, debounce, escapeHTML } from "../fillmask.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = FILLMASK_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new FillMaskEngine();
+      let loaded = false;
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/bert-base-uncased", runtime: "transformers.js", dtype: "q8", sizeMB: 110, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => {
+          $("acText").disabled = false; $("acGo").disabled = false; $("kpText").disabled = false;
+          loaded = true; probe();
+        },
+      });
+
+      // ---- Autocomplete ----
+      for (const c of document.querySelectorAll("[data-ac]")) c.addEventListener("click", () => { $("acText").value = c.dataset.ac; autocomplete(); });
+      $("acGo").addEventListener("click", autocomplete);
+      async function autocomplete() {
+        if (!loaded) return;
+        const base = $("acText").value.replace(/\s*\[MASK\]\s*$/, "").trimEnd();
+        $("acText").value = base;
+        try {
+          const r = await engine.fill(base + " " + MASK, 6);
+          renderPredictions($("acPreds"), r.masks[0]?.predictions ?? [], (token) => {
+            $("acText").value = base + " " + token; autocomplete();
+          });
+        } catch (err) { setErr("Autocomplete failed: " + err.message); }
+      }
+
+      // ---- Knowledge probing ----
+      for (const c of document.querySelectorAll("[data-set]")) c.addEventListener("click", () => { $("kpText").value = c.dataset.set; probeSched(); });
+      const probeSched = debounce(probe, 300);
+      $("kpText").addEventListener("input", probeSched);
+      async function probe() {
+        if (!loaded) return;
+        const text = $("kpText").value;
+        if (!text.includes(MASK)) { setErr("Add a [MASK] to the probe."); return; }
+        $("runStatus").hidden = true;
+        try {
+          const r = await engine.fill(text, 8);
+          const top = r.masks[0]?.predictions[0];
+          if (top) { $("kpFilled").innerHTML = escapeHTML(text).replace("[MASK]", `<span class="slot">${escapeHTML(top.token)}</span>`); $("kpFilled").hidden = false; }
+          renderPredictions($("kpPreds"), r.masks[0]?.predictions ?? []);
+          $("readout").hidden = false; $("rBackend").textContent = r.device.toUpperCase(); $("rMs").textContent = r.ms + " ms";
+        } catch (err) { setErr("Probe failed: " + err.message); }
+      }
+      function setErr(m) { $("runStatus").hidden = false; $("runStatus").textContent = m; $("runStatus").classList.add("err"); }
+    </script>
+  </body>
+</html>
