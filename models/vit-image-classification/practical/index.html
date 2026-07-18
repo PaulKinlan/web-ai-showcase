@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ViT Practical — auto-tagging pipeline · Web AI Showcase</title>
+    <meta name="description" content="Classify a whole batch of images in the browser, build a searchable tag index, and filter your library by content — a real client-side auto-tagging pipeline." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🏷️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">ViT</a></p>
+
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Practical: an auto-tagging pipeline</h1>
+      <p class="lede">
+        Drop in a batch of images. ViT classifies each one and the page builds a <strong>tag index</strong>
+        from the top labels — then you can filter the library by tag, exactly like the "smart albums" in a
+        photo app, except every pixel stays on your device.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+
+      <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Add images to the batch">
+        <span id="dropText">Drop several images here, or click to add. The three samples are pre-loaded.</span>
+        <input type="file" id="file" accept="image/*" multiple hidden />
+      </div>
+      <div class="field-row" style="margin-top:.6rem">
+        <label style="flex:0 0 auto;font-size:.82rem">Tag threshold
+          <input type="range" id="thresh" min="5" max="60" value="15" style="vertical-align:middle" />
+          <span id="threshVal" style="font-family:var(--font-mono)">15%</span>
+        </label>
+        <button id="run" type="button" disabled>Tag the batch</button>
+        <p class="status" id="runStatus" role="status" aria-live="polite" style="margin:0"></p>
+      </div>
+
+      <div id="tagbar" style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.6rem 0" aria-label="Filter by tag"></div>
+      <div id="grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:.8rem"></div>
+    </section>
+
+    <p class="crumbs"><a href="../">← Back to ViT</a> · Next: <a href="../wild/">Wild →</a></p>
+
+    <style>
+      .tile { border:1px solid var(--border); border-radius:8px; overflow:hidden; background:var(--bg-raised); }
+      .tile img { inline-size:100%; block-size:110px; object-fit:cover; display:block; }
+      .tile .tags { padding:.4rem .5rem; font-size:.72rem; color:var(--muted); display:flex; flex-wrap:wrap; gap:.25rem; }
+      .tile .tags span { background:var(--bg-secondary); border:1px solid var(--border); border-radius:999px; padding:.05rem .4rem; }
+      .tile.dim { opacity:.25; }
+    </style>
+
+    <script type="module">
+      import { ViTEngine, fileToDataURL, cleanLabel, escapeHTML, VIT_CSS } from "../vit.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = VIT_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new ViTEngine();
+
+      // Each item: { url (data URL), name, tags: [{label, prob}] }
+      const items = [];
+      let activeTag = null;
+
+      async function addSamples() {
+        for (const name of ["sample-cats.jpg", "sample-room.jpg", "sample-river.jpg"]) {
+          const blob = await (await fetch("../" + name)).blob();
+          items.push({ url: await fileToDataURL(new File([blob], name, { type: blob.type })), name, tags: null });
+        }
+        renderGrid();
+      }
+      addSamples();
+
+      const file = $("file"), drop = $("drop");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function addFiles(list) {
+        for (const f of list) if (f.type.startsWith("image/")) items.push({ url: await fileToDataURL(f), name: f.name, tags: null });
+        renderGrid();
+      }
+      file.addEventListener("change", () => addFiles(file.files));
+      drop.addEventListener("drop", (e) => addFiles(e.dataTransfer?.files ?? []));
+
+      const thresh = $("thresh");
+      thresh.addEventListener("input", () => { $("threshVal").textContent = thresh.value + "%"; });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/vit-base-patch16-224", runtime: "transformers.js", dtype: "q8", sizeMB: 88, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("run").disabled = false; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        $("run").disabled = true; $("runStatus").classList.remove("err");
+        const cut = Number(thresh.value) / 100;
+        try {
+          for (let i = 0; i < items.length; i++) {
+            $("runStatus").textContent = `Tagging ${i + 1}/${items.length}…`;
+            const r = await engine.classify(items[i].url, 5);
+            items[i].tags = r.top.filter((t) => t.prob >= cut).map((t) => ({ label: cleanLabel(t.label), prob: t.prob }));
+            if (items[i].tags.length === 0) items[i].tags = [{ label: cleanLabel(r.top[0].label), prob: r.top[0].prob }];
+            renderGrid();
+          }
+          $("runStatus").textContent = `Done — ${items.length} image(s) tagged.`; $("runStatus").classList.add("ok");
+        } catch (err) { $("runStatus").textContent = "Failed: " + err.message; $("runStatus").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+
+      function renderTagbar() {
+        const counts = new Map();
+        for (const it of items) for (const t of it.tags ?? []) counts.set(t.label, (counts.get(t.label) ?? 0) + 1);
+        const tags = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+        $("tagbar").replaceChildren(...(tags.length ? [mkChip("all", items.length, activeTag === null)] : []),
+          ...tags.map(([label, n]) => mkChip(label, n, activeTag === label)));
+      }
+      function mkChip(label, n, active) {
+        const b = document.createElement("button");
+        b.className = "chip"; b.type = "button";
+        b.textContent = `${label} (${n})`;
+        if (active) b.style.borderColor = "var(--accent)";
+        b.addEventListener("click", () => { activeTag = label === "all" ? null : label; renderGrid(); });
+        return b;
+      }
+      function renderGrid() {
+        renderTagbar();
+        $("grid").replaceChildren(...items.map((it) => {
+          const tile = document.createElement("div");
+          const match = !activeTag || (it.tags ?? []).some((t) => t.label === activeTag);
+          tile.className = "tile" + (match ? "" : " dim");
+          const tagHTML = (it.tags ?? []).map((t) => `<span>${escapeHTML(t.label)} ${(t.prob * 100) | 0}%</span>`).join("");
+          tile.innerHTML = `<img src="${it.url}" alt="${escapeHTML(it.name)}" /><div class="tags">${tagHTML || "<em>untagged</em>"}</div>`;
+          return tile;
+        }));
+      }
+    </script>
+  </body>
+</html>
