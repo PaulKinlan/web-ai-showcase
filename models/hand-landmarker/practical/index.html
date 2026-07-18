@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>HandLandmarker Practical — gesture UI · Web AI Showcase</title>
+    <meta name="description" content="Turn hand landmarks into a control surface: count raised fingers and recognise simple gestures (fist, peace, thumbs up, point) from a photo or live webcam, in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>👌</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">HandLandmarker</a></p>
+
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Practical: a gesture-driven UI</h1>
+      <p class="lede">
+        Landmarks aren't the point — what you do with them is. This turns the 21 points into a simple
+        controller: it counts how many fingers are raised and names the gesture (fist, peace, point,
+        thumbs up, rock). Try it on a sample hand, or drive it live with your webcam.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="sample-strip" id="samples" aria-label="Sample hand images">
+        <img class="sample-thumb active" src="../sample-victory.jpg" data-src="../sample-victory.jpg" alt="A peace sign" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-thumb.jpg" data-src="../sample-thumb.jpg" alt="A thumbs up" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-hands.jpg" data-src="../sample-hands.jpg" alt="Two open hands" tabindex="0" role="button" />
+      </div>
+      <div class="field-row">
+        <button id="run" type="button" disabled>Read gesture</button>
+        <button id="camBtn" type="button" class="secondary" disabled>Use webcam</button>
+        <span id="camState" class="muted" aria-live="polite"></span>
+      </div>
+
+      <div id="gestureOut" aria-live="polite" style="text-align:center;padding:1.2rem;border-radius:var(--radius);background:var(--bg-raised);border:1px solid var(--border);margin:.6rem 0">
+        <div class="muted" style="font-size:.8rem;text-transform:uppercase;letter-spacing:.06em">Gesture</div>
+        <div id="gLabel" style="font-family:var(--font-display,Georgia,serif);font-size:2.2rem;line-height:1.2">—</div>
+        <div id="gFingers" class="muted" style="font-family:var(--font-mono)">raise a hand…</div>
+      </div>
+
+      <div class="canvas-wrap"><canvas id="stage" class="stage-canvas" tabindex="0" aria-label="Hand with landmarks and detected gesture"></canvas><video id="video" playsinline muted hidden></video></div>
+      <div class="readout" id="readout" hidden><span>delegate <b id="rDelegate">–</b></span><span>latency <b id="rMs">–</b></span><span>hands <b id="rHands">–</b></span></div>
+    </section>
+
+    <section class="panel">
+      <h3>Where this goes</h3>
+      <p class="muted" style="font-size:.9rem">Map each gesture to an action and you have a touchless remote: a fist to pause, an open palm to stop, a point to select, a thumbs up to confirm. Because it's all on-device, it works offline and nothing is streamed anywhere — practical for kiosks, accessibility, cooking/workshop hands-busy scenarios, and presentations.</p>
+    </section>
+
+    <p class="crumbs"><a href="../basics/">← Basics</a> · <a href="../">HandLandmarker</a> · Next: <a href="../wild/">Wild →</a></p>
+
+    <script type="module">
+      import { HandTask, MODEL_URL, drawHands, fingersUp, gestureName, LANDMARK_CSS } from "../hand.js";
+      import { createVisionTask } from "/web-ai-showcase/lib/mediapipe.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = LANDMARK_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      let hand = null, currentImg = null, camOn = false, rafId = null;
+      function setStatus(m, c) { $("status").textContent = m; $("status").classList.remove("err","ok"); if (c) $("status").classList.add(c); }
+      function decode(url) { return new Promise((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = () => rej(new Error("decode failed")); im.src = url; }); }
+      async function useURL(url) { currentImg = await decode(url); const c = $("stage"); c.width = currentImg.naturalWidth; c.height = currentImg.naturalHeight; c.getContext("2d").drawImage(currentImg, 0, 0); $("readout").hidden = true; $("run").disabled = !hand; }
+      async function pickSample(el) { stopCam(); for (const t of $("samples").children) t.classList.toggle("active", t === el); await useURL(el.dataset.src); }
+      for (const thumb of $("samples").children) { thumb.addEventListener("click", () => pickSample(thumb)); thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } }); }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: MODEL_URL, runtime: "mediapipe", sizeMB: 8, requiresWebGPU: false },
+        load: (onProgress) => createVisionTask({ taskClass: "HandLandmarker", modelUrl: MODEL_URL, options: { numHands: 1, runningMode: "IMAGE" }, onProgress }),
+        onReady: (task) => { hand = new HandTask(task); $("run").disabled = !currentImg; $("camBtn").disabled = false; setStatus("Model ready.", "ok"); },
+      });
+      pickSample($("samples").firstElementChild);
+
+      function show(result, ms, source, mirror) {
+        drawHands($("stage"), source, result, { mirror });
+        $("rDelegate").textContent = hand.delegate; $("rMs").textContent = ms + " ms"; $("rHands").textContent = result.landmarks.length; $("readout").hidden = false;
+        if (result.landmarks.length) {
+          const f = fingersUp(result.landmarks[0]);
+          $("gLabel").textContent = gestureName(f);
+          $("gFingers").textContent = `${f.count} finger${f.count === 1 ? "" : "s"} up`;
+        } else { $("gLabel").textContent = "—"; $("gFingers").textContent = "no hand detected"; }
+      }
+
+      $("run").addEventListener("click", async () => {
+        if (!hand || !currentImg) return;
+        $("run").disabled = true; setStatus("Reading…");
+        try { const t0 = performance.now(); const r = await hand.detectImage(currentImg); show(r, Math.round(performance.now()-t0), currentImg, false); setStatus("Done.", "ok"); }
+        catch (e) { setStatus("Failed: " + e.message, "err"); }
+        finally { $("run").disabled = false; }
+      });
+
+      function stopCam() { if (!camOn) return; camOn = false; cancelAnimationFrame(rafId); const v = $("video"); v.srcObject?.getTracks().forEach(t => t.stop()); v.srcObject = null; v.hidden = true; $("camBtn").textContent = "Use webcam"; $("camState").textContent = ""; }
+      async function startCam() {
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
+          const v = $("video"); v.srcObject = stream; await v.play();
+          camOn = true; $("camBtn").textContent = "Stop webcam"; $("camState").innerHTML = '<span class="rec-dot"></span>Live';
+          const loop = async () => { if (!camOn) return; try { const t0 = performance.now(); const r = await hand.detectVideo(v, performance.now()); show(r, Math.round(performance.now()-t0), v, true); } catch (e) { setStatus("Webcam error: " + e.message, "err"); } rafId = requestAnimationFrame(loop); };
+          loop();
+        } catch (e) { $("camState").textContent = "Camera blocked: " + e.message; }
+      }
+      $("camBtn").addEventListener("click", () => { camOn ? stopCam() : startCam(); });
+    </script>
+  </body>
+</html>
