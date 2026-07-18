@@ -1,25 +1,43 @@
 # Agent instructions — web-ai-showcase
 
-`CLAUDE.md` is the canonical operator manual; read it before non-trivial edits. This file is the short
-version for tools that look for `AGENTS.md`.
+`CLAUDE.md` is the canonical operator manual; read it before non-trivial edits. This file is the
+short version for tools that look for `AGENTS.md`.
 
 ## Hard rules
 
 - **Models must really run in-browser.** Real `pipeline()` / WebLLM calls on the visitor's device.
-  Never present a canned result as live output. Degrade honestly (labelled needs-WebGPU / too-large /
-  unsupported) — never fake success.
-- **Errors on the page, not only the console.** Surface every load/inference/WebGPU failure in the UI.
-- **Inference off the main thread**, stream progress/tokens, keep INP low (workers; break up long tasks).
+  Never present a canned result as live output. Degrade honestly (labelled needs-WebGPU / too-large
+  / unsupported) — never fake success.
+- **Errors on the page, not only the console.** Surface every load/inference/WebGPU failure in the
+  UI.
+- **Inference off the main thread**, stream progress/tokens, keep INP low (workers; break up long
+  tasks).
 - **Never double-store models in `sw.js`.** transformers.js owns `transformers-cache`; serve model
   files via `caches.match()` across all caches; only cache the app shell + library JS ourselves.
 - **Design system only** (`public/styles.css`): warm off-white + indigo, Georgia display, humanist
-  sans body, light+dark, WCAG AA. Cross-document view transitions; content-visibility on the catalogue.
+  sans body, light+dark, WCAG AA. Cross-document view transitions; content-visibility on the
+  catalogue.
 - **Ground each page in the real model card + API.** Exact pipeline task, I/O shape, special tokens,
   dtype, size, license. Never invent an API surface.
 - **Frontend is HTML/CSS/clientside-JS** → run `modern-web-guidance` FIRST for any new UI.
-- **Runnable-only catalogue.** Only list models that run in a browser today; tag backend + download size.
+- **Runnable-only catalogue.** Only list models that run in a browser today; tag backend + download
+  size.
+- **Comprehensive + evidence-backed.** Refresh the inventory (`node scripts/inventory.mjs`) before a
+  build wave; work against the real browser-runnable universe (Transformers.js/ONNX, WebLLM/MLC,
+  MediaPipe) with family dedup; gated/too-large = blocked but still counted. Evidence in
+  `inventory/`.
+- **Denominator discipline.** Report built/eligible/pending/blocked vs `inventory/summary.json`.
+  NEVER say "all/complete/done" unless `built === eligible`; blocked + device-only stay in the
+  denominator; "coming soon" is pending. Continue selecting pending eligible models, wave after
+  wave, until closed.
+- **More than a toy per model:** download/progress/cache controls, model-specific params + full
+  a11y, inspectable tokens/tensors/timings/memory/backend/quant, capability+fallback diagnostics,
+  and an expanding use-case matrix (multiple basics/practical/wild + credible multi-model) — all
+  runnable.
 - Verify with headless Chrome + `Read` the screenshot (no chrome-devtools-mcp in the routine).
+- Canonical process: **`.agents/skills/web-ai-showcase/SKILL.md`**.
 
 ## Per-model page structure
-See CLAUDE.md — explainer + at-a-glance + Run-it control UI + See-inside viz + Why-it-matters + use-case
-ladder (basics/practical/wild[/multi-model]) + how-the-API-works + references.
+
+See CLAUDE.md — explainer + at-a-glance + Run-it control UI + See-inside viz + Why-it-matters +
+use-case ladder (basics/practical/wild[/multi-model]) + how-the-API-works + references.
