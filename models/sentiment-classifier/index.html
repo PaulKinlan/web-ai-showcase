@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>DistilBERT SST-2 — live sentiment in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Score text as POSITIVE or NEGATIVE as you type, locally in your browser — and see which exact words move the needle via real occlusion attribution. No server, no PII leaves the tab."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎭</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">text-classification · text · WASM · ~65 MB</p>
+      <h1>DistilBERT SST-2 — read the sentiment as you type</h1>
+      <p class="lede">
+        A distilled BERT fine-tuned on movie reviews, it scores any text as <strong>POSITIVE</strong> or
+        <strong>NEGATIVE</strong> with a confidence. Type below and watch the verdict update live — then look
+        inside to see exactly which words pushed it each way. Nothing leaves your device.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/Xenova/distilbert-base-uncased-finetuned-sst-2-english" target="_blank" rel="noopener">Xenova/distilbert-base-uncased-finetuned-sst-2-english</a></td></tr>
+          <tr><th>Task / pipeline</th><td><code>text-classification</code></td></tr>
+          <tr><th>Labels</th><td><code>POSITIVE</code> / <code>NEGATIVE</code> (binary; softmax over 2 logits)</td></tr>
+          <tr><th>Architecture</th><td>DistilBERT (6-layer) fine-tuned on SST-2 (Stanford Sentiment Treebank)</td></tr>
+          <tr><th>Quantization</th><td>q8 (8-bit) ONNX</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (runs anywhere; no WebGPU needed)</td></tr>
+          <tr><th>Download</th><td>~65 MB, cached after first load</td></tr>
+          <tr><th>License</th><td>Apache-2.0</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Type anything. The verdict re-scores automatically (debounced) a moment after you stop
+        typing. The dual meter shows the full probability split between the two classes.</p>
+
+      <button id="load" type="button">Load DistilBERT (~65 MB)</button>
+      <progress id="prog" value="0" max="100" hidden></progress>
+      <p class="status" id="status" role="status" aria-live="polite">Model not loaded yet.</p>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
+        Your text
+        <textarea id="text" rows="3" disabled>The food was delicious but the service was slow and disappointing.</textarea>
+      </label>
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.5rem 0">
+        <button class="chip" type="button" data-set="The food was delicious but the service was slow and disappointing.">mixed</button>
+        <button class="chip" type="button" data-set="This is honestly the best coffee I have had all year.">glowing</button>
+        <button class="chip" type="button" data-set="The plot was predictable and the acting felt flat.">critical</button>
+        <button class="chip" type="button" data-set="It arrived on Tuesday in a cardboard box.">neutral-ish</button>
+      </div>
+
+      <div class="verdict-row" id="verdictRow" hidden>
+        <span class="verdict-label" id="vLabel">–</span>
+        <span class="verdict-conf">confidence <b id="vConf">–</b></span>
+      </div>
+      <div class="meter-dual" id="meter" hidden>
+        <div class="meter-neg" id="fillNeg" style="inline-size:50%"></div>
+        <div class="meter-pos" id="fillPos" style="inline-size:50%"></div>
+      </div>
+      <div class="meter-labels" id="meterLabels" hidden><span>NEGATIVE</span><span>POSITIVE</span></div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside — which words moved the needle</h3>
+      <p class="muted">
+        This is <strong>occlusion attribution</strong>: we re-run the model with each word removed and see
+        how much the POSITIVE score shifts (measured in <em>log-odds</em>, because the model is so confident
+        that raw percentages barely budge). Remove a word that was pushing "positive" and the score drops —
+        so that word gets a <span style="color:var(--good)">green</span> weight. Remove a negative word and
+        the score rises — <span style="color:var(--bad)">red</span>. No gradients, no hand-waving: just the
+        model's own predictions, N+1 of them.
+      </p>
+      <button id="explain" type="button" class="secondary" disabled>Explain the current text</button>
+      <p class="status" id="attrStatus" role="status" aria-live="polite" hidden></p>
+      <div class="attr-wrap" id="attr" aria-live="polite"></div>
+      <div class="attr-legend" id="attrLegend" hidden>
+        <span><span class="swatch" style="background:var(--good)"></span>pushes POSITIVE</span>
+        <span><span class="swatch" style="background:var(--bad)"></span>pushes NEGATIVE</span>
+        <span>brighter = larger effect</span>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        Sentiment is the entry point to understanding text at scale — and doing it in the browser means you
+        can react to how a user feels <em>as they type</em>, without a round-trip and without their words
+        ever leaving the device. That unlocks fast, private, always-available text intelligence.
+      </p>
+      <ul>
+        <li><strong>Live feedback &amp; review triage</strong> — route angry messages to a human instantly, before submit.</li>
+        <li><strong>Private moderation</strong> — flag hostile drafts client-side; no PII sent to a server.</li>
+        <li><strong>Tone-aware writing aids</strong> — nudge an email that reads harsher than intended.</li>
+        <li><strong>Offline analytics</strong> — score a whole survey export in the tab, no upload.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Type text, get POSITIVE/NEGATIVE + confidence, updating live as you type.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Paste a batch of reviews and auto-triage them into positive / negative buckets.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">"Flip the sentiment" explorer — find the words to change to swap the verdict.</p></a>
+      </div>
+      <p class="muted" style="font-size:.85rem;margin-top:.6rem">See also the MiniLM
+        <a href="/web-ai-showcase/models/minilm-embeddings/multi-model/">multi-model demo</a>, which ranks
+        search hits with embeddings and then labels each hit's tone with this model.</p>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>Classification is one call; <code>topk</code> returns both class scores:</p>
+      <pre><code>import { pipeline } from "@huggingface/transformers";
+
+const classify = await pipeline(
+  "text-classification",
+  "Xenova/distilbert-base-uncased-finetuned-sst-2-english",
+); // downloads + caches ~65 MB once
+
+const out = await classify("best coffee all year", { topk: 2 });
+// → [{ label: "POSITIVE", score: 0.9998 }, { label: "NEGATIVE", score: 0.0002 }]</code></pre>
+      <p class="muted">
+        "See inside" re-uses that same call: it classifies the full text plus one copy per word with that
+        word deleted (batched in a single pass), then subtracts the POSITIVE log-odds to attribute the shift
+        to each word. All of it runs in a Web Worker so typing never janks.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/Xenova/distilbert-base-uncased-finetuned-sst-2-english" target="_blank" rel="noopener">Model card — DistilBERT SST-2 (Xenova ONNX)</a></li>
+        <li><a href="https://arxiv.org/abs/1910.01108" target="_blank" rel="noopener">Paper — DistilBERT (Sanh et al., 2019, arXiv:1910.01108)</a></li>
+        <li><a href="https://nlp.stanford.edu/sentiment/" target="_blank" rel="noopener">SST — the Stanford Sentiment Treebank</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { SentimentEngine, renderVerdict, renderAttribution, debounce, SENTIMENT_CSS }
+        from "./sentiment.js";
+      import { progressReporter } from "/web-ai-showcase/lib/webai.js";
+
+      const style = document.createElement("style");
+      style.textContent = SENTIMENT_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new SentimentEngine();
+      let loaded = false;
+
+      for (const c of document.querySelectorAll(".chip")) {
+        c.addEventListener("click", () => { $("text").value = c.dataset.set; scheduleScore(); clearAttr(); });
+      }
+
+      const reporter = progressReporter($("prog"), $("status"));
+      $("load").addEventListener("click", async () => {
+        $("load").disabled = true;
+        $("prog").hidden = false;
+        $("status").classList.remove("err");
+        $("status").textContent = "Loading DistilBERT…";
+        try {
+          const device = await engine.load((p) => reporter.onProgress(p));
+          $("status").textContent = `Model ready — running on ${device.toUpperCase()}.`;
+          $("status").classList.add("ok");
+          $("prog").hidden = true;
+          $("text").disabled = false;
+          $("explain").disabled = false;
+          loaded = true;
+          score();
+        } catch (err) {
+          reporter.fail(err);
+          $("load").disabled = false;
+        }
+      });
+
+      const scheduleScore = debounce(score, 350);
+      $("text").addEventListener("input", () => { scheduleScore(); clearAttr(); });
+
+      async function score() {
+        if (!loaded) return;
+        const text = $("text").value.trim();
+        if (!text) { $("verdictRow").hidden = true; $("meter").hidden = true; $("meterLabels").hidden = true; return; }
+        try {
+          const r = await engine.classify(text);
+          $("verdictRow").hidden = false; $("meter").hidden = false; $("meterLabels").hidden = false;
+          renderVerdict({
+            label: $("vLabel"), conf: $("vConf"), fillPos: $("fillPos"), fillNeg: $("fillNeg"),
+          }, r);
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = r.ms + " ms";
+        } catch (err) {
+          $("status").textContent = "Scoring failed: " + err.message; $("status").classList.add("err");
+        }
+      }
+
+      function clearAttr() { $("attr").replaceChildren(); $("attrLegend").hidden = true; }
+
+      $("explain").addEventListener("click", async () => {
+        if (!loaded) return;
+        const text = $("text").value.trim();
+        if (!text) return;
+        $("explain").disabled = true;
+        $("attrStatus").hidden = false; $("attrStatus").classList.remove("err");
+        $("attrStatus").textContent = "Scoring each word out…";
+        try {
+          const r = await engine.attribute(text);
+          renderAttribution($("attr"), r.words, r.attributions);
+          $("attrLegend").hidden = false;
+          $("attrStatus").textContent = `${r.words.length} words scored on ${r.device.toUpperCase()} in ${r.ms} ms.`;
+          $("attrStatus").classList.add("ok");
+        } catch (err) {
+          $("attrStatus").textContent = "Attribution failed: " + err.message; $("attrStatus").classList.add("err");
+        } finally { $("explain").disabled = false; }
+      });
+    </script>
+  </body>
+</html>

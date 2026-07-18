@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sentiment Wild — flip the sentiment · Web AI Showcase</title>
+    <meta name="description" content="Find the smallest set of words that flips a sentence from positive to negative (or back). Uses real occlusion attribution to hunt for the words the model leans on most." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎭</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">DistilBERT</a></p>
+
+    <header>
+      <p class="eyebrow">use case · wild</p>
+      <h1>Wild: flip the sentiment</h1>
+      <p class="lede">
+        How few words does it take to swing the verdict? This tool scores every word's pull with occlusion
+        attribution, then <strong>greedily removes the words the model leans on</strong> — the biggest
+        pullers toward the current label — until the sentiment flips. You get the minimal "load-bearing"
+        words laid bare, and a rewritten sentence that crosses the line.
+      </p>
+    </header>
+
+    <section class="panel">
+      <button id="load" type="button">Load DistilBERT (~65 MB)</button>
+      <progress id="prog" value="0" max="100" hidden></progress>
+      <p class="status" id="status" role="status" aria-live="polite">Model not loaded yet.</p>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
+        Starting sentence
+        <textarea id="text" rows="3" disabled>The food was delicious and the staff were wonderful and friendly.</textarea>
+      </label>
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.5rem 0">
+        <button class="chip" type="button" data-set="The food was delicious and the staff were wonderful and friendly.">glowing review</button>
+        <button class="chip" type="button" data-set="The movie was a boring, predictable, forgettable mess.">harsh review</button>
+        <button class="chip" type="button" data-set="A beautiful, thoughtful, and genuinely moving film.">warm praise</button>
+      </div>
+      <button id="run" type="button" disabled>Find the words that flip it</button>
+      <p class="status" id="rowStatus" role="status" aria-live="polite" hidden></p>
+
+      <div id="out" hidden style="margin-top:.8rem">
+        <p style="margin:.2rem 0 .4rem">Starts as
+          <span class="verdict-label" id="startLabel" style="font-size:1.1rem"></span>
+          <span class="verdict-conf" id="startConf"></span>
+        </p>
+        <p class="muted" style="font-size:.82rem">Word pulls toward the starting verdict (occlusion attribution):</p>
+        <div class="attr-wrap" id="attr"></div>
+        <div class="attr-legend">
+          <span><span class="swatch" style="background:var(--good)"></span>pushes POSITIVE</span>
+          <span><span class="swatch" style="background:var(--bad)"></span>pushes NEGATIVE</span>
+        </div>
+
+        <div id="flipWrap" style="margin-top:1rem">
+          <h3 style="margin-top:.2rem">The flip</h3>
+          <p id="flipResult"></p>
+          <p class="muted" style="font-size:.85rem" id="flipDetail"></p>
+        </div>
+        <div class="readout"><span>backend <b id="rBackend">–</b></span><span>passes <b id="rPasses">–</b></span><span>latency <b id="rMs">–</b></span></div>
+      </div>
+    </section>
+
+    <p class="muted" style="font-size:.85rem">
+      This is a search over the model's own predictions, not a language rewrite — it removes words rather
+      than replacing them, so the result reads like a redaction. It's a vivid way to see which tokens carry
+      the sentiment: strip "delicious" and "wonderful" and a rave can collapse to neutral or negative.
+    </p>
+
+    <p class="crumbs"><a href="../">← Back to DistilBERT</a> · <a href="/web-ai-showcase/models/minilm-embeddings/multi-model/">Multi-model demo →</a></p>
+
+    <script type="module">
+      import { SentimentEngine, renderAttribution, escapeHTML, SENTIMENT_CSS } from "../sentiment.js";
+      import { progressReporter } from "/web-ai-showcase/lib/webai.js";
+      const style = document.createElement("style"); style.textContent = SENTIMENT_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new SentimentEngine();
+
+      for (const c of document.querySelectorAll(".chip")) c.addEventListener("click", () => { $("text").value = c.dataset.set; });
+
+      const reporter = progressReporter($("prog"), $("status"));
+      $("load").addEventListener("click", async () => {
+        $("load").disabled = true; $("prog").hidden = false; $("status").classList.remove("err"); $("status").textContent = "Loading DistilBERT…";
+        try {
+          const device = await engine.load((p) => reporter.onProgress(p));
+          $("status").textContent = `Ready on ${device.toUpperCase()}.`; $("status").classList.add("ok"); $("prog").hidden = true;
+          $("text").disabled = false; $("run").disabled = false;
+        } catch (err) { reporter.fail(err); $("load").disabled = false; }
+      });
+
+      $("run").addEventListener("click", async () => {
+        const text = $("text").value.trim();
+        if (!text) { $("rowStatus").hidden = false; $("rowStatus").textContent = "Type a sentence first."; $("rowStatus").classList.add("err"); return; }
+        $("rowStatus").hidden = false; $("rowStatus").classList.remove("err"); $("rowStatus").textContent = "Analyzing…"; $("run").disabled = true;
+        try {
+          const t0 = performance.now();
+          let passes = 0;
+          const attr = await engine.attribute(text); passes++;
+          const startLabel = attr.label;
+          $("out").hidden = false;
+          $("startLabel").textContent = startLabel;
+          $("startLabel").className = "verdict-label " + (startLabel === "POSITIVE" ? "pos" : "neg");
+          $("startConf").textContent = `(${(Math.max(attr.pos, 1 - attr.pos) * 100).toFixed(1)}% ${startLabel === "POSITIVE" ? "positive" : "negative"})`;
+          renderAttribution($("attr"), attr.words, attr.attributions);
+
+          // Iterative occlusion: after each removal, RE-attribute the shorter text. Single-pass attribution
+          // underestimates redundant sentiment words ("boring, predictable, forgettable" all say the same
+          // thing); re-scoring exposes whichever word now carries the signal, so the flip actually lands.
+          const dir = startLabel === "POSITIVE" ? 1 : -1;
+          let cur = attr;
+          let words = attr.words.slice();
+          const removed = [];
+          let flipped = false;
+          let finalPos = attr.pos;
+          for (let iter = 0; iter < 10 && words.length > 1; iter++) {
+            let best = -1, bestPull = 1e-6;
+            cur.words.forEach((w, i) => { const pull = cur.attributions[i] * dir; if (pull > bestPull) { bestPull = pull; best = i; } });
+            if (best < 0) break; // nothing left pulls toward the starting label
+            removed.push(cur.words[best]);
+            words = cur.words.filter((_, i) => i !== best);
+            const reduced = words.join(" ");
+            const r = await engine.classify(reduced); passes++;
+            finalPos = r.pos;
+            if (r.label !== startLabel) { flipped = true; break; }
+            if (words.length <= 1) break;
+            cur = await engine.attribute(reduced); passes++;
+          }
+          const ms = Math.round(performance.now() - t0);
+
+          const newLabel = finalPos >= 0.5 ? "POSITIVE" : "NEGATIVE";
+          const removedChips = removed.map((w) => `<s style="color:var(--bad)">${escapeHTML(w)}</s>`).join(" ");
+          const remaining = words.join(" ");
+          if (flipped) {
+            $("flipResult").innerHTML = `Removing <strong>${removed.length}</strong> word(s) —
+              ${removedChips} — flips it to
+              <span class="verdict-label ${newLabel === "POSITIVE" ? "pos" : "neg"}" style="font-size:1.1rem">${newLabel}</span>
+              (${(Math.max(finalPos, 1 - finalPos) * 100).toFixed(1)}%). What's left:
+              <em>"${escapeHTML(remaining)}"</em>`;
+            $("flipDetail").textContent = `Those were the words carrying the ${startLabel.toLowerCase()} signal — strip them and the verdict crosses over.`;
+          } else {
+            $("flipResult").innerHTML = `Couldn't flip it by removing words alone — even stripped to
+              <em>"${escapeHTML(remaining) || "nothing"}"</em> it stays ${newLabel}. This sentence's sentiment
+              is spread across too many words to remove.`;
+            $("flipDetail").textContent = "";
+          }
+          $("rBackend").textContent = attr.device.toUpperCase(); $("rPasses").textContent = passes; $("rMs").textContent = ms + " ms";
+          $("rowStatus").textContent = "Done."; $("rowStatus").classList.add("ok");
+        } catch (err) { $("rowStatus").textContent = "Failed: " + err.message; $("rowStatus").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>
