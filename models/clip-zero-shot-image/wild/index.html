@@ -32,9 +32,7 @@
     </header>
 
     <section class="panel">
-      <button id="load" type="button">Load CLIP (~90 MB)</button>
-      <progress id="prog" value="0" max="100" hidden></progress>
-      <p class="status" id="status" role="status" aria-live="polite">Model not loaded yet.</p>
+      <div id="model-loader"></div>
 
       <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin:.6rem 0">
         Vibes to score against (comma-separated)
@@ -46,6 +44,7 @@
         <button id="stopCam" type="button" class="secondary" hidden>Stop</button>
         <button id="scanStill" type="button" class="secondary" disabled>No camera? Scan a sample instead</button>
       </div>
+      <p class="status" id="runStatus" role="status" aria-live="polite"></p>
 
       <div id="fallback" class="fallback" hidden>
         <strong>No webcam available here.</strong>
@@ -84,30 +83,24 @@
 
     <script type="module">
       import { ClipEngine, fileToDataURL, parseLabels, renderBars, CLIP_CSS } from "../clip.js";
-      import { progressReporter } from "/web-ai-showcase/lib/webai.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
       const style = document.createElement("style"); style.textContent = CLIP_CSS; document.head.append(style);
       const $ = (id) => document.getElementById(id);
       const engine = new ClipEngine();
       let stream = null, running = false, busy = false, lastT = 0;
       const canvas = document.createElement("canvas");
 
-      const reporter = progressReporter($("prog"), $("status"));
-      $("load").addEventListener("click", ensureModel);
-      async function ensureModel() {
-        if (engine.ready) return true;
-        $("load").disabled = true; $("prog").hidden = false; $("status").classList.remove("err"); $("status").textContent = "Loading CLIP…";
-        try {
-          const device = await engine.load((p) => reporter.onProgress(p));
-          $("status").textContent = `Ready on ${device.toUpperCase()}.`; $("status").classList.add("ok"); $("prog").hidden = true;
-          $("startCam").disabled = false; $("scanStill").disabled = false;
-          return true;
-        } catch (err) { reporter.fail(err); $("load").disabled = false; return false; }
-      }
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/clip-vit-base-patch16", runtime: "transformers.js", dtype: "q8", sizeMB: 90, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("startCam").disabled = false; $("scanStill").disabled = false; },
+      });
 
       // Score a single image (data URL) and render.
       async function score(url, frameMs) {
         const labels = parseLabels($("labels").value);
-        if (labels.length < 2) { $("status").textContent = "Give at least two vibes."; return; }
+        if (labels.length < 2) { $("runStatus").textContent = "Give at least two vibes."; return; }
         const r = await engine.classify(url, labels);
         const items = r.labels.map((label, i) => ({ label, prob: r.probs[i], cosine: r.cosines[i] }));
         const top = [...items].sort((a, b) => b.prob - a.prob)[0];
@@ -120,12 +113,12 @@
 
       // --- webcam loop ---
       $("startCam").addEventListener("click", async () => {
-        if (!(await ensureModel())) return;
+        if (!engine.ready) return;
         try {
           stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
         } catch (err) {
           $("fallback").hidden = false;
-          $("status").textContent = "Camera unavailable — scan a sample instead."; $("status").classList.add("err");
+          $("runStatus").textContent = "Camera unavailable — scan a sample instead."; $("runStatus").classList.add("err");
           return;
         }
         const cam = $("cam");
@@ -150,7 +143,7 @@
           canvas.getContext("2d").drawImage(cam, 0, 0);
           const url = canvas.toDataURL("image/jpeg", 0.85);
           const now = performance.now();
-          try { await score(url, lastT ? now - lastT : 0); } catch (e) { $("status").textContent = "Frame failed: " + e.message; }
+          try { await score(url, lastT ? now - lastT : 0); } catch (e) { $("runStatus").textContent = "Frame failed: " + e.message; }
           lastT = now;
         }
         busy = false;
@@ -171,11 +164,11 @@
       }
       pickSample($("samples").firstElementChild);
       $("scanStill").addEventListener("click", async () => {
-        if (!(await ensureModel())) return;
+        if (!engine.ready) return;
         if (!stillURL) return;
-        $("scanStill").disabled = true; $("status").textContent = "Scoring sample…"; $("status").classList.remove("err");
-        try { await score(stillURL, 0); $("status").textContent = "Done."; $("status").classList.add("ok"); }
-        catch (e) { $("status").textContent = "Failed: " + e.message; $("status").classList.add("err"); }
+        $("scanStill").disabled = true; $("runStatus").textContent = "Scoring sample…"; $("runStatus").classList.remove("err");
+        try { await score(stillURL, 0); $("runStatus").textContent = "Done."; $("runStatus").classList.add("ok"); }
+        catch (e) { $("runStatus").textContent = "Failed: " + e.message; $("runStatus").classList.add("err"); }
         finally { $("scanStill").disabled = false; }
       });
 

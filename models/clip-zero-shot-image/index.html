@@ -45,9 +45,7 @@
       <h3 id="run-h">Run it</h3>
       <p class="muted">Pick or drop an image, type comma-separated labels, and hit Classify. The bars are a softmax over CLIP's similarity between the image and each label.</p>
 
-      <button id="load" type="button">Load CLIP (~90 MB)</button>
-      <progress id="prog" value="0" max="100" hidden></progress>
-      <p class="status" id="status" role="status" aria-live="polite">Model not loaded yet.</p>
+      <div id="model-loader"></div>
 
       <div class="field-row" style="align-items:stretch">
         <div style="flex:1 1 280px">
@@ -71,6 +69,7 @@
             <button id="run" type="button" disabled>Classify</button>
             <button id="clearLabels" type="button" class="secondary">Reset labels</button>
           </div>
+          <p class="status" id="runStatus" role="status" aria-live="polite"></p>
           <div class="bars" id="bars" aria-live="polite"></div>
           <div class="readout" id="readout" hidden>
             <span>backend <b id="rBackend">–</b></span>
@@ -168,7 +167,7 @@ const output = await classify(imageURL, ["a cat", "a dog", "a city street"]);
     <script type="module">
       import { ClipEngine, fileToDataURL, parseLabels, renderBars, escapeHTML, CLIP_CSS }
         from "./clip.js";
-      import { progressReporter } from "/web-ai-showcase/lib/webai.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
 
       const style = document.createElement("style");
       style.textContent = CLIP_CSS;
@@ -224,23 +223,23 @@ const output = await classify(imageURL, ["a cat", "a dog", "a city street"]);
         $("dropText").textContent = f.name;
       }
 
-      // --- load model ---
-      const reporter = progressReporter($("prog"), $("status"));
-      $("load").addEventListener("click", async () => {
-        $("load").disabled = true;
-        $("prog").hidden = false;
-        $("status").classList.remove("err");
-        $("status").textContent = "Loading CLIP…";
-        try {
-          const device = await engine.load((p) => reporter.onProgress(p));
-          $("status").textContent = `Model ready — running on ${device.toUpperCase()}.`;
-          $("status").classList.add("ok");
-          $("prog").hidden = true;
+      // --- load model (shared auto-init loader) ---
+      createModelLoader({
+        mount: $("model-loader"),
+        model: {
+          modelId: "Xenova/clip-vit-base-patch16",
+          runtime: "transformers.js",
+          dtype: "q8",
+          sizeMB: 90,
+          requiresWebGPU: false,
+        },
+        load: async (onProgress) => {
+          await engine.load(onProgress);
+          return engine;
+        },
+        onReady: () => {
           $("run").disabled = false;
-        } catch (err) {
-          reporter.fail(err);
-          $("load").disabled = false;
-        }
+        },
       });
 
       // --- classify ---
@@ -248,11 +247,11 @@ const output = await classify(imageURL, ["a cat", "a dog", "a city street"]);
       $("run").addEventListener("click", classify);
       async function classify() {
         const labels = parseLabels($("labels").value);
-        if (!currentImageURL) { $("status").textContent = "Choose an image first."; return; }
-        if (labels.length < 2) { $("status").textContent = "Give at least two labels."; $("status").classList.add("err"); return; }
-        $("status").classList.remove("err");
+        if (!currentImageURL) { $("runStatus").textContent = "Choose an image first."; return; }
+        if (labels.length < 2) { $("runStatus").textContent = "Give at least two labels."; $("runStatus").classList.add("err"); return; }
+        $("runStatus").classList.remove("err");
         $("run").disabled = true;
-        $("status").textContent = "Classifying…";
+        $("runStatus").textContent = "Classifying…";
         try {
           const r = await engine.classify(currentImageURL, labels);
           const items = r.labels.map((label, i) => ({ label, prob: r.probs[i], cosine: r.cosines[i] }));
@@ -262,11 +261,11 @@ const output = await classify(imageURL, ["a cat", "a dog", "a city street"]);
           $("rMs").textContent = r.ms + " ms";
           $("rN").textContent = labels.length;
           renderInside(r);
-          $("status").textContent = "Done.";
-          $("status").classList.add("ok");
+          $("runStatus").textContent = "Done.";
+          $("runStatus").classList.add("ok");
         } catch (err) {
-          $("status").textContent = "Classification failed: " + err.message;
-          $("status").classList.add("err");
+          $("runStatus").textContent = "Classification failed: " + err.message;
+          $("runStatus").classList.add("err");
         } finally {
           $("run").disabled = false;
         }
