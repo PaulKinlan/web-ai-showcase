@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>RMBG Practical — product & avatar backdrop maker · Web AI Showcase</title>
+    <meta name="description" content="Ship RMBG: cut out the subject and drop it onto a clean colour or backdrop — consistent product shots and profile pics, entirely client-side." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🖼️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">RMBG-1.4</a></p>
+
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Practical: product &amp; avatar backdrop maker</h1>
+      <p class="lede">
+        The shippable version. Cut the subject out once, then drop it onto any backdrop — a clean studio
+        white for product shots, a brand colour for consistency, or a gradient for a profile picture.
+        Every option is composed on a canvas in the browser; the photo never leaves the tab.
+      </p>
+    </header>
+
+    <section class="panel">
+      <button id="load" type="button">Load RMBG-1.4 (~170 MB)</button>
+      <progress id="prog" value="0" max="100" hidden></progress>
+      <p class="status" id="status" role="status" aria-live="polite">Model not loaded yet.</p>
+
+      <div class="controls-row">
+        <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image" style="flex:1 1 240px">
+          <span id="dropText">Drop a photo, or click to choose</span>
+          <input type="file" id="file" accept="image/*" hidden />
+        </div>
+      </div>
+      <div class="sample-strip" id="samples">
+        <img class="sample-thumb active" src="../sample-product.jpg" data-src="../sample-product.jpg" alt="A sunlit bedroom scene" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-portrait.jpg" data-src="../sample-portrait.jpg" alt="Two cats on a couch" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-pet.jpg" data-src="../sample-pet.jpg" alt="A swan on a river" tabindex="0" role="button" />
+      </div>
+
+      <button id="run" type="button" disabled>Remove background</button>
+
+      <div class="controls-row" id="backdropRow" hidden>
+        <span style="font-size:.82rem;color:var(--muted)">Backdrop</span>
+        <div class="swatches" id="swatches" role="group" aria-label="Backdrop colour">
+          <button class="swatch" type="button" data-bg="checker" aria-pressed="true" title="Transparent" style="background:repeating-conic-gradient(#bbb 0% 25%, #fff 0% 50%) 50% / 12px 12px"></button>
+          <button class="swatch" type="button" data-bg="#ffffff" aria-pressed="false" title="Studio white" style="background:#ffffff"></button>
+          <button class="swatch" type="button" data-bg="#111318" aria-pressed="false" title="Charcoal" style="background:#111318"></button>
+          <button class="swatch" type="button" data-bg="#4b3aff" aria-pressed="false" title="Brand indigo" style="background:#4b3aff"></button>
+          <button class="swatch" type="button" data-bg="#1a8a3a" aria-pressed="false" title="Green" style="background:#1a8a3a"></button>
+          <button class="swatch" type="button" data-bg="#e9b949" aria-pressed="false" title="Amber" style="background:#e9b949"></button>
+          <button class="swatch" type="button" data-bg="grad" aria-pressed="false" title="Gradient" style="background:linear-gradient(135deg,#8ab4f8,#4b3aff)"></button>
+        </div>
+        <label style="font-size:.82rem">Custom <input type="color" id="custom" value="#f0eee6" style="inline-size:44px;block-size:30px;padding:0" /></label>
+      </div>
+
+      <div class="canvas-grid">
+        <div class="canvas-card">
+          <h4>Input</h4>
+          <img class="preview-img" id="preview" src="../sample-product.jpg" alt="Selected photo" />
+        </div>
+        <div class="canvas-card">
+          <h4>On your backdrop</h4>
+          <canvas class="viz-canvas" id="out" width="480" height="360" aria-label="Subject on the chosen backdrop"></canvas>
+          <div class="controls-row"><button id="download" type="button" class="secondary" disabled>Download PNG</button></div>
+        </div>
+      </div>
+      <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>latency <b id="rMs">–</b></span><span>kept <b id="rCoverage">–</b></span></div>
+      <p class="muted" style="font-size:.85rem">
+        Swapping backdrops is instant because the model runs only once — the matte is reused and only the
+        canvas composite changes. That's the pattern for a real product pipeline: segment once, re-skin many times.
+      </p>
+    </section>
+
+    <p class="crumbs"><a href="../basics/">← Basics</a> · <a href="../">RMBG-1.4</a> · Next: <a href="../wild/">Wild →</a></p>
+
+    <script type="module">
+      import { RmbgEngine, fileToDataURL, urlToDataURL, loadImage, composeCutout, paintCheckerboard, RMBG_CSS } from "../rmbg.js";
+      import { progressReporter } from "/web-ai-showcase/lib/webai.js";
+      const style = document.createElement("style"); style.textContent = RMBG_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new RmbgEngine();
+      let currentImageURL = null, currentSrc = null, last = null, img = null, backdrop = "checker";
+
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        currentSrc = el.dataset.src; currentImageURL = await urlToDataURL(el.dataset.src); $("preview").src = el.dataset.src;
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } });
+      }
+      pickSample($("samples").firstElementChild);
+
+      const file = $("file"), drop = $("drop");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) { for (const t of $("samples").children) t.classList.remove("active"); currentImageURL = await fileToDataURL(f); currentSrc = currentImageURL; $("preview").src = currentImageURL; $("dropText").textContent = f.name; }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
+
+      // Gradient backdrop needs a painted canvas we can pass as an image.
+      function gradientImage(w, h) {
+        const c = document.createElement("canvas"); c.width = w; c.height = h; const g = c.getContext("2d");
+        const grd = g.createLinearGradient(0, 0, w, h); grd.addColorStop(0, "#8ab4f8"); grd.addColorStop(1, "#4b3aff");
+        g.fillStyle = grd; g.fillRect(0, 0, w, h); const im = new Image(); im.src = c.toDataURL(); return im;
+      }
+
+      function drawBackdrop() {
+        if (!last || !img) return;
+        let bd = backdrop;
+        if (backdrop === "grad") bd = gradientImage(last.width, last.height);
+        composeCutout($("out"), img, last.width, last.height, last.alpha, { backdrop: bd });
+        $("download").disabled = false;
+      }
+      for (const sw of $("swatches").children) {
+        sw.addEventListener("click", () => {
+          for (const s of $("swatches").children) s.setAttribute("aria-pressed", String(s === sw));
+          backdrop = sw.dataset.bg; drawBackdrop();
+        });
+      }
+      $("custom").addEventListener("input", () => {
+        for (const s of $("swatches").children) s.setAttribute("aria-pressed", "false");
+        backdrop = $("custom").value; drawBackdrop();
+      });
+
+      const reporter = progressReporter($("prog"), $("status"));
+      $("load").addEventListener("click", async () => {
+        $("load").disabled = true; $("prog").hidden = false; $("status").classList.remove("err"); $("status").textContent = "Loading RMBG-1.4…";
+        try { const device = await engine.load((p) => reporter.onProgress(p)); $("status").textContent = `Ready on ${device.toUpperCase()}.`; $("status").classList.add("ok"); $("prog").hidden = true; $("run").disabled = false; }
+        catch (err) { reporter.fail(err); $("load").disabled = false; }
+      });
+      $("run").addEventListener("click", async () => {
+        if (!currentImageURL) { $("status").textContent = "Pick a photo first."; return; }
+        $("run").disabled = true; $("status").classList.remove("err"); $("status").textContent = "Removing background…";
+        try {
+          last = await engine.segment(currentImageURL); img = await loadImage(currentSrc);
+          $("backdropRow").hidden = false; drawBackdrop();
+          $("readout").hidden = false; $("rBackend").textContent = last.device.toUpperCase() + (last.dtype ? " · " + last.dtype : ""); $("rMs").textContent = last.ms + " ms"; $("rCoverage").textContent = (last.coverage * 100).toFixed(1) + "%";
+          $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+      $("download").addEventListener("click", () => {
+        const a = document.createElement("a"); a.href = $("out").toDataURL("image/png"); a.download = "backdrop.png"; a.click();
+      });
+
+      if (new URLSearchParams(location.search).has("auto")) {
+        (async () => { await pickSample($("samples").firstElementChild); $("load").click(); try { await engine.load(); $("run").click(); } catch {} })();
+      }
+    </script>
+  </body>
+</html>

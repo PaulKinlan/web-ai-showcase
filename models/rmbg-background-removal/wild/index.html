@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>RMBG Wild — sticker maker with outline &amp; PNG export · Web AI Showcase</title>
+    <meta name="description" content="Turn any photo into a chat-style sticker: cut out the subject, add a white outline, and export a transparent PNG — all in the browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🏷️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">RMBG-1.4</a></p>
+
+    <header>
+      <p class="eyebrow">use case · wild</p>
+      <h1>Wild: sticker maker</h1>
+      <p class="lede">
+        The fun one. Cut out the subject, wrap it in the chunky white outline that says "sticker," and
+        export a transparent PNG you can paste into chats, decks, or a design tool. The outline is a real
+        dilation of the model's matte — not a filter faking it.
+      </p>
+    </header>
+
+    <section class="panel">
+      <button id="load" type="button">Load RMBG-1.4 (~170 MB)</button>
+      <progress id="prog" value="0" max="100" hidden></progress>
+      <p class="status" id="status" role="status" aria-live="polite">Model not loaded yet.</p>
+
+      <div class="controls-row">
+        <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image" style="flex:1 1 240px">
+          <span id="dropText">Drop a photo, or click to choose</span>
+          <input type="file" id="file" accept="image/*" hidden />
+        </div>
+      </div>
+      <div class="sample-strip" id="samples">
+        <img class="sample-thumb active" src="../sample-pet.jpg" data-src="../sample-pet.jpg" alt="A swan on a river" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-portrait.jpg" data-src="../sample-portrait.jpg" alt="Two cats on a couch" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-product.jpg" data-src="../sample-product.jpg" alt="A sunlit bedroom scene" tabindex="0" role="button" />
+      </div>
+
+      <button id="run" type="button" disabled>Make sticker</button>
+
+      <div class="controls-row" id="stickerCtl" hidden>
+        <label style="flex:1 1 200px;font-size:.82rem">Outline width — <b id="owVal">6</b>px
+          <input type="range" id="ow" min="0" max="20" step="1" value="6" style="inline-size:100%" />
+        </label>
+        <div class="swatches" id="ocolors" role="group" aria-label="Outline colour">
+          <button class="swatch" type="button" data-c="#ffffff" aria-pressed="true" title="White" style="background:#fff"></button>
+          <button class="swatch" type="button" data-c="#111318" aria-pressed="false" title="Black" style="background:#111318"></button>
+          <button class="swatch" type="button" data-c="#4b3aff" aria-pressed="false" title="Indigo" style="background:#4b3aff"></button>
+          <button class="swatch" type="button" data-c="#ff2d78" aria-pressed="false" title="Pink" style="background:#ff2d78"></button>
+        </div>
+      </div>
+
+      <div class="canvas-grid">
+        <div class="canvas-card">
+          <h4>Input</h4>
+          <img class="preview-img" id="preview" src="../sample-pet.jpg" alt="Selected photo" />
+        </div>
+        <div class="canvas-card">
+          <h4>Sticker (transparent PNG)</h4>
+          <canvas class="viz-canvas" id="out" width="480" height="360" style="background:repeating-conic-gradient(#bbb 0% 25%, #eee 0% 50%) 50% / 16px 16px" aria-label="Sticker with outline on transparency"></canvas>
+          <div class="controls-row"><button id="download" type="button" disabled>Download sticker PNG</button></div>
+        </div>
+      </div>
+      <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>latency <b id="rMs">–</b></span><span>kept <b id="rCoverage">–</b></span></div>
+      <p class="muted" style="font-size:.85rem">
+        The outline is built by dilating the thresholded matte by the width you choose and painting a
+        solid halo behind the cutout — the same trick sticker apps use, done on-device with the model's
+        own mask.
+      </p>
+    </section>
+
+    <p class="crumbs"><a href="../practical/">← Practical</a> · <a href="../">RMBG-1.4</a> · Next: <a href="../multi-model/">Multi-model →</a></p>
+
+    <script type="module">
+      import { RmbgEngine, fileToDataURL, urlToDataURL, loadImage, cutoutToPNG, RMBG_CSS } from "../rmbg.js";
+      import { progressReporter } from "/web-ai-showcase/lib/webai.js";
+      const style = document.createElement("style"); style.textContent = RMBG_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new RmbgEngine();
+      let currentImageURL = null, currentSrc = null, last = null, img = null, ocolor = "#ffffff";
+
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        currentSrc = el.dataset.src; currentImageURL = await urlToDataURL(el.dataset.src); $("preview").src = el.dataset.src;
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } });
+      }
+      pickSample($("samples").firstElementChild);
+
+      const file = $("file"), drop = $("drop");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) { for (const t of $("samples").children) t.classList.remove("active"); currentImageURL = await fileToDataURL(f); currentSrc = currentImageURL; $("preview").src = currentImageURL; $("dropText").textContent = f.name; }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
+
+      function drawSticker() {
+        if (!last || !img) return;
+        const ow = +$("ow").value; $("owVal").textContent = ow;
+        const out = $("out"); out.width = last.width; out.height = last.height;
+        const ctx = out.getContext("2d"); ctx.clearRect(0, 0, out.width, out.height);
+        ctx.drawImage(buildSticker(ow), 0, 0);
+        $("download").disabled = false;
+      }
+      // Subject cutout with a dilated halo in the chosen outline colour behind it.
+      function buildSticker(ow) {
+        const w = last.width, h = last.height;
+        const subj = cutoutToPNG(img, w, h, last.alpha, 0); // subject only, no outline
+        const c = document.createElement("canvas"); c.width = w; c.height = h; const ctx = c.getContext("2d");
+        if (ow > 0) {
+          // dilate matte and paint halo in ocolor
+          const halo = document.createElement("canvas"); halo.width = w; halo.height = h;
+          const hctx = halo.getContext("2d");
+          const bin = new Uint8Array(w * h);
+          for (let i = 0; i < last.alpha.length; i++) bin[i] = last.alpha[i] >= 128 ? 255 : 0;
+          const id = hctx.createImageData(w, h);
+          const [r, g, b] = [parseInt(ocolor.slice(1, 3), 16), parseInt(ocolor.slice(3, 5), 16), parseInt(ocolor.slice(5, 7), 16)];
+          for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+            let hit = bin[y * w + x] === 255;
+            for (let dy = -ow; dy <= ow && !hit; dy++) { const yy = y + dy; if (yy < 0 || yy >= h) continue; for (let dx = -ow; dx <= ow; dx++) { const xx = x + dx; if (xx < 0 || xx >= w) continue; if (bin[yy * w + xx]) { hit = true; break; } } }
+            const o = (y * w + x) * 4; id.data[o] = r; id.data[o + 1] = g; id.data[o + 2] = b; id.data[o + 3] = hit ? 255 : 0;
+          }
+          hctx.putImageData(id, 0, 0); ctx.drawImage(halo, 0, 0);
+        }
+        ctx.drawImage(subj, 0, 0);
+        return c;
+      }
+      $("ow").addEventListener("input", drawSticker);
+      for (const sw of $("ocolors").children) sw.addEventListener("click", () => { for (const s of $("ocolors").children) s.setAttribute("aria-pressed", String(s === sw)); ocolor = sw.dataset.c; drawSticker(); });
+
+      const reporter = progressReporter($("prog"), $("status"));
+      $("load").addEventListener("click", async () => {
+        $("load").disabled = true; $("prog").hidden = false; $("status").classList.remove("err"); $("status").textContent = "Loading RMBG-1.4…";
+        try { const device = await engine.load((p) => reporter.onProgress(p)); $("status").textContent = `Ready on ${device.toUpperCase()}.`; $("status").classList.add("ok"); $("prog").hidden = true; $("run").disabled = false; }
+        catch (err) { reporter.fail(err); $("load").disabled = false; }
+      });
+      $("run").addEventListener("click", async () => {
+        if (!currentImageURL) { $("status").textContent = "Pick a photo first."; return; }
+        $("run").disabled = true; $("status").classList.remove("err"); $("status").textContent = "Making sticker…";
+        try {
+          last = await engine.segment(currentImageURL); img = await loadImage(currentSrc);
+          $("stickerCtl").hidden = false; drawSticker();
+          $("readout").hidden = false; $("rBackend").textContent = last.device.toUpperCase() + (last.dtype ? " · " + last.dtype : ""); $("rMs").textContent = last.ms + " ms"; $("rCoverage").textContent = (last.coverage * 100).toFixed(1) + "%";
+          $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+      $("download").addEventListener("click", () => { const a = document.createElement("a"); a.href = $("out").toDataURL("image/png"); a.download = "sticker.png"; a.click(); });
+
+      if (new URLSearchParams(location.search).has("auto")) {
+        (async () => { await pickSample($("samples").firstElementChild); $("load").click(); try { await engine.load(); $("run").click(); } catch {} })();
+      }
+    </script>
+  </body>
+</html>

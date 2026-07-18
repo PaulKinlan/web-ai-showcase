@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>RMBG Multi-model — the 3D sticker (background removal + depth) · Web AI Showcase</title>
+    <meta name="description" content="Compose two models: RMBG cuts the subject out, Depth Anything gives it thickness, and the cutout tilts in 3D as you move — a floating sticker, all on-device." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🪄</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">RMBG-1.4</a></p>
+
+    <header>
+      <p class="eyebrow">use case · multi-model</p>
+      <h1>Multi-model: the 3D sticker</h1>
+      <p class="lede">
+        <a href="../">RMBG-1.4</a> cuts the subject out; <a href="../../depth-anything/">Depth Anything</a>
+        gives that cutout <em>thickness</em>. Put them together and the sticker floats — move your pointer
+        and its near parts swing further than its far parts, so a flat cutout reads as a little 3D object.
+        Two models, composed live in the browser.
+      </p>
+    </header>
+
+    <section class="panel">
+      <p class="muted">This page loads <strong>both</strong> models (~270 MB combined, cached after first load). WebGPU accelerates them where available; otherwise both fall back to WebAssembly and the page says so.</p>
+      <button id="load" type="button">Load both models</button>
+      <progress id="prog" value="0" max="100" hidden></progress>
+      <p class="status" id="status" role="status" aria-live="polite">Models not loaded yet.</p>
+
+      <div class="sample-strip" id="samples">
+        <img class="sample-thumb active" src="../sample-pet.jpg" data-src="../sample-pet.jpg" alt="A swan on a river" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-portrait.jpg" data-src="../sample-portrait.jpg" alt="Two cats on a couch" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-product.jpg" data-src="../sample-product.jpg" alt="A sunlit bedroom scene" tabindex="0" role="button" />
+      </div>
+      <div class="controls-row">
+        <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image" style="flex:1 1 220px"><span id="dropText">…or drop / choose your own</span><input type="file" id="file" accept="image/*" hidden /></div>
+        <button id="run" type="button" disabled>Make 3D sticker</button>
+        <label style="flex:1 1 200px;font-size:.82rem">Parallax strength — <b id="ampVal">16</b>
+          <input type="range" id="amp" min="4" max="36" step="1" value="16" style="inline-size:100%" />
+        </label>
+      </div>
+
+      <div class="tilt-stage">
+        <canvas class="viz-canvas" id="stage" width="480" height="360" style="background:repeating-conic-gradient(#bbb 0% 25%, #eee 0% 50%) 50% / 16px 16px" aria-label="3D sticker — move the pointer to tilt" role="img" tabindex="0"></canvas>
+      </div>
+      <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>depth <b id="rDepthMs">–</b></span><span>matte <b id="rRmbgMs">–</b></span></div>
+      <p class="muted" style="font-size:.85rem">
+        The cutout's alpha comes from RMBG; the per-pixel shift comes from the depth map. Each frame every
+        sticker pixel (colour <em>and</em> transparency) samples itself displaced by
+        <code>(depth − ½) × tilt</code>. On <code>prefers-reduced-motion</code> it holds a fixed tilt.
+      </p>
+      <div id="rmHint" class="muted" style="font-size:.8rem" hidden>Reduced-motion is on: showing a fixed tilt rather than following your pointer.</div>
+    </section>
+
+    <p class="crumbs"><a href="../wild/">← Wild</a> · <a href="../">RMBG-1.4</a> · See also: <a href="../../depth-anything/multi-model/">Depth pop-out →</a></p>
+
+    <script type="module">
+      import { RmbgEngine, urlToDataURL, fileToDataURL, loadImage, RMBG_CSS } from "../rmbg.js";
+      import { DepthEngine } from "../../depth-anything/depth.js";
+      import { progressReporter } from "/web-ai-showcase/lib/webai.js";
+      const style = document.createElement("style"); style.textContent = RMBG_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const rmbg = new RmbgEngine(), depth = new DepthEngine();
+      const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+      let currentImageURL = null, currentSrc = null, W = 0, H = 0, subjectBuf = null, depthBuf = null;
+      let tx = 0, ty = 0, tgx = 0, tgy = 0, raf = 0, moving = false, scratch = null;
+
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        currentSrc = el.dataset.src; currentImageURL = await urlToDataURL(el.dataset.src);
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } });
+      }
+      pickSample($("samples").firstElementChild);
+
+      const file = $("file"), drop = $("drop");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) { for (const t of $("samples").children) t.classList.remove("active"); currentImageURL = await fileToDataURL(f); currentSrc = currentImageURL; $("dropText").textContent = f.name; }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
+
+      function resampleU8(data, sw, sh, dw, dh) {
+        const a = document.createElement("canvas"); a.width = sw; a.height = sh; const actx = a.getContext("2d"); const id = actx.createImageData(sw, sh);
+        for (let i = 0; i < data.length; i++) { const o = i * 4; id.data[o] = id.data[o + 1] = id.data[o + 2] = data[i]; id.data[o + 3] = 255; }
+        actx.putImageData(id, 0, 0);
+        const b = document.createElement("canvas"); b.width = dw; b.height = dh; b.getContext("2d").drawImage(a, 0, 0, dw, dh);
+        const out = new Uint8Array(dw * dh); const bd = b.getContext("2d").getImageData(0, 0, dw, dh).data;
+        for (let i = 0; i < out.length; i++) out[i] = bd[i * 4];
+        return out;
+      }
+
+      // Backward-warp an RGBA sticker (colour AND alpha) by depth — the 3D-tilt effect.
+      function warpRGBA(out, src, depthU8, w, h, offX, offY) {
+        for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+          const i = y * w + x; const d = depthU8[i] / 255 - 0.5;
+          let sx = (x + d * offX) | 0, sy = (y + d * offY) | 0;
+          if (sx < 0) sx = 0; else if (sx >= w) sx = w - 1;
+          if (sy < 0) sy = 0; else if (sy >= h) sy = h - 1;
+          const s = (sy * w + sx) * 4, o = i * 4;
+          out[o] = src[s]; out[o + 1] = src[s + 1]; out[o + 2] = src[s + 2]; out[o + 3] = src[s + 3];
+        }
+      }
+
+      const reporter = progressReporter($("prog"), $("status"));
+      $("load").addEventListener("click", async () => {
+        $("load").disabled = true; $("prog").hidden = false; $("status").classList.remove("err"); $("status").textContent = "Loading background-removal + depth…";
+        try {
+          const [rDev] = await Promise.all([rmbg.load((p) => reporter.onProgress(p)), depth.load((p) => reporter.onProgress(p))]);
+          $("status").textContent = `Both models ready — running on ${rDev.toUpperCase()}.`; $("status").classList.add("ok"); $("prog").hidden = true; $("run").disabled = false;
+        } catch (err) { reporter.fail(err); $("load").disabled = false; }
+      });
+
+      async function run() {
+        if (!currentImageURL) { $("status").textContent = "Pick a photo first."; return; }
+        $("run").disabled = true; $("status").classList.remove("err"); $("status").textContent = "Cutting out subject + estimating depth…";
+        try {
+          const [R, D] = await Promise.all([rmbg.segment(currentImageURL), depth.estimate(currentImageURL)]);
+          W = D.width; H = D.height;
+          const alpha = resampleU8(R.alpha, R.width, R.height, W, H);
+          depthBuf = D.depth;
+          const img = await loadImage(currentSrc);
+          const c = document.createElement("canvas"); c.width = W; c.height = H; c.getContext("2d").drawImage(img, 0, 0, W, H);
+          const id = c.getContext("2d").getImageData(0, 0, W, H);
+          for (let i = 0; i < alpha.length; i++) id.data[i * 4 + 3] = alpha[i]; // stamp matte into alpha
+          subjectBuf = id.data;
+          const stage = $("stage"); stage.width = W; stage.height = H; scratch = new ImageData(new Uint8ClampedArray(W * H * 4), W, H);
+          $("readout").hidden = false; $("rBackend").textContent = D.device.toUpperCase() + (D.dtype ? " · " + D.dtype : ""); $("rDepthMs").textContent = D.ms + " ms"; $("rRmbgMs").textContent = R.ms + " ms";
+          if (reduceMotion) { $("rmHint").hidden = false; tgx = 0.4; tgy = -0.25; }
+          renderOnce(); startLoop();
+          $("status").textContent = "Rendered — move the pointer over the sticker to tilt it."; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      }
+      $("run").addEventListener("click", run);
+
+      function renderOnce() {
+        if (!subjectBuf) return;
+        const amp = +$("amp").value;
+        warpRGBA(scratch.data, subjectBuf, depthBuf, W, H, tx * amp, ty * amp);
+        const ctx = $("stage").getContext("2d"); ctx.clearRect(0, 0, W, H); ctx.putImageData(scratch, 0, 0);
+      }
+      function startLoop() {
+        cancelAnimationFrame(raf);
+        const step = () => {
+          tx += (tgx - tx) * 0.12; ty += (tgy - ty) * 0.12; renderOnce();
+          if (Math.abs(tgx - tx) > 0.002 || Math.abs(tgy - ty) > 0.002 || moving) raf = requestAnimationFrame(step); else raf = 0;
+        };
+        raf = requestAnimationFrame(step);
+      }
+      function kick() { if (!raf) startLoop(); }
+      const stage = $("stage");
+      if (!reduceMotion) {
+        stage.addEventListener("pointermove", (e) => { const r = stage.getBoundingClientRect(); tgx = ((e.clientX - r.left) / r.width - 0.5) * 2; tgy = ((e.clientY - r.top) / r.height - 0.5) * 2; moving = true; kick(); });
+        stage.addEventListener("pointerleave", () => { tgx = 0; tgy = 0; moving = false; kick(); });
+        addEventListener("deviceorientation", (e) => { if (e.gamma == null) return; tgx = Math.max(-1, Math.min(1, e.gamma / 30)); tgy = Math.max(-1, Math.min(1, (e.beta - 45) / 30)); moving = true; kick(); }, { passive: true });
+      }
+      $("amp").addEventListener("input", () => { $("ampVal").textContent = $("amp").value; kick(); });
+
+      if (new URLSearchParams(location.search).has("auto")) {
+        (async () => {
+          await pickSample($("samples").firstElementChild); $("load").click();
+          try { await Promise.all([rmbg.load(), depth.load()]); await run();
+            let k = 0; const iv = setInterval(() => { tgx = Math.sin(k) * 0.9; tgy = Math.cos(k) * 0.6; moving = true; kick(); if (++k > 6) { clearInterval(iv); moving = false; } }, 250);
+          } catch {}
+        })();
+      }
+    </script>
+  </body>
+</html>
