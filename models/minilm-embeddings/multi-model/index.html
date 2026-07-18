@@ -24,11 +24,19 @@
     </header>
 
     <section class="panel">
-      <p class="muted">This page loads two models (~25 MB + ~65 MB). Load them, index the corpus once, then
-        search — each hit is ranked by cosine similarity and tagged with its sentiment.</p>
-      <button id="load" type="button">Load both models (~90 MB)</button>
-      <progress id="prog" value="0" max="100" hidden></progress>
-      <p class="status" id="status" role="status" aria-live="polite">Models not loaded yet.</p>
+      <p class="muted">This page loads two models (~25 MB + ~65 MB). A returning visitor with both cached sees
+        them auto-initialise; a first-time visitor gets a Download control for each. Once both are ready, index
+        the corpus once, then search — each hit is ranked by cosine similarity and tagged with its sentiment.</p>
+      <div style="display:flex;flex-wrap:wrap;gap:1rem">
+        <div style="flex:1 1 260px">
+          <p class="muted" style="font-size:.8rem;margin:0 0 .25rem;font-weight:600">MiniLM embeddings (~25 MB)</p>
+          <div id="loader-minilm"></div>
+        </div>
+        <div style="flex:1 1 260px">
+          <p class="muted" style="font-size:.8rem;margin:0 0 .25rem;font-weight:600">DistilBERT sentiment (~65 MB)</p>
+          <div id="loader-sentiment"></div>
+        </div>
+      </div>
 
       <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
         Corpus of reviews (one per line)
@@ -58,6 +66,7 @@ The screen is dim and scratches almost instantly.</textarea>
         <button class="chip" type="button" data-q="how is the customer service?">support</button>
       </div>
 
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
       <div class="sent-list" id="results" aria-live="polite"></div>
       <div class="readout" id="readout" hidden>
         <span>embed backend <b id="rEmbed">–</b></span>
@@ -95,7 +104,7 @@ for (const hit of hits) hit.tone = await classify(hit.t); // POSITIVE / NEGATIVE
     <script type="module">
       import { EmbedEngine, cosine, parseLines, escapeHTML, EMBED_CSS } from "../embed.js";
       import { SentimentEngine, SENTIMENT_CSS } from "/web-ai-showcase/models/sentiment-classifier/sentiment.js";
-      import { progressReporter } from "/web-ai-showcase/lib/webai.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
 
       const style = document.createElement("style");
       style.textContent = EMBED_CSS + SENTIMENT_CSS;
@@ -109,26 +118,21 @@ for (const hit of hits) hit.tone = await classify(hit.t); // POSITIVE / NEGATIVE
 
       for (const c of document.querySelectorAll(".chip")) c.addEventListener("click", () => { $("query").value = c.dataset.q; if (indexed) search(); });
 
-      $("load").addEventListener("click", async () => {
-        $("load").disabled = true; $("prog").hidden = false; $("status").classList.remove("err");
-        $("status").textContent = "Loading MiniLM + DistilBERT…";
-        const files = new Map();
-        const onProg = (p) => {
-          if (p.status === "progress" && p.file) {
-            files.set(p.file, p.progress ?? 0);
-            const avg = [...files.values()].reduce((a, b) => a + b, 0) / files.size;
-            $("prog").value = avg; $("prog").max = 100;
-            $("status").textContent = `Downloading ${files.size} file(s)… ${avg.toFixed(0)}%`;
-          }
-        };
-        try {
-          const [d1, d2] = await Promise.all([embedder.load(onProg), sentiment.load(onProg)]);
-          $("status").textContent = `Ready — MiniLM on ${d1.toUpperCase()}, DistilBERT on ${d2.toUpperCase()}.`;
-          $("status").classList.add("ok"); $("prog").hidden = true; $("index").disabled = false;
-        } catch (err) {
-          $("status").textContent = "Couldn't load the models: " + (err?.message ?? err);
-          $("status").classList.add("err"); $("load").disabled = false;
-        }
+      // Two independent shared loaders — each model auto-initialises when its own cache is current.
+      // The corpus index unlocks only once BOTH are ready.
+      let embReady = false, sentReady = false;
+      const maybeEnable = () => { if (embReady && sentReady) $("index").disabled = false; };
+      createModelLoader({
+        mount: $("loader-minilm"),
+        model: { modelId: "Xenova/all-MiniLM-L6-v2", runtime: "transformers.js", dtype: "q8", sizeMB: 25, requiresWebGPU: false },
+        load: async (onProgress) => { await embedder.load(onProgress); return embedder; },
+        onReady: () => { embReady = true; maybeEnable(); },
+      });
+      createModelLoader({
+        mount: $("loader-sentiment"),
+        model: { modelId: "Xenova/distilbert-base-uncased-finetuned-sst-2-english", runtime: "transformers.js", dtype: "q8", sizeMB: 65, requiresWebGPU: false },
+        load: async (onProgress) => { await sentiment.load(onProgress); return sentiment; },
+        onReady: () => { sentReady = true; maybeEnable(); },
       });
 
       $("index").addEventListener("click", async () => {
@@ -148,7 +152,7 @@ for (const hit of hits) hit.tone = await classify(hit.t); // POSITIVE / NEGATIVE
       $("query").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); if (indexed) search(); } });
 
       async function search() {
-        if (!indexed) { $("status").textContent = "Index the corpus first."; return; }
+        if (!indexed) { $("runStatus").hidden = false; $("runStatus").textContent = "Index the corpus first."; return; }
         const q = $("query").value.trim();
         if (!q) return;
         $("run").disabled = true;
@@ -185,7 +189,7 @@ for (const hit of hits) hit.tone = await classify(hit.t); // POSITIVE / NEGATIVE
           $("rSent").textContent = (ranked[0]?.sentDevice ?? "wasm").toUpperCase();
           $("rN").textContent = indexed.texts.length;
           $("rMs").textContent = ms + " ms";
-        } catch (err) { $("status").textContent = "Search failed: " + err.message; $("status").classList.add("err"); }
+        } catch (err) { $("runStatus").hidden = false; $("runStatus").textContent = "Search failed: " + err.message; $("runStatus").classList.add("err"); }
         finally { $("run").disabled = false; }
       }
     </script>
