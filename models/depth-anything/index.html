@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Depth Anything v2 — turn any photo into a depth map in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run Depth Anything v2 locally with WebGPU: give it any single photo and watch it estimate how far away every pixel is — a colourised depth map, the raw depth range, and 3D parallax, all on-device."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🏔️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">depth-estimation · vision · WebGPU (fp16) · ~100 MB</p>
+      <h1>Depth Anything v2 — how far away is every pixel?</h1>
+      <p class="lede">
+        Give it one ordinary photo — no stereo pair, no depth sensor — and it estimates the distance to
+        every pixel. That single grayscale map is the raw material for 3D parallax, portrait-style
+        background blur, and AR occlusion. It runs entirely on your device; the photo never leaves the tab.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/onnx-community/depth-anything-v2-small" target="_blank" rel="noopener">onnx-community/depth-anything-v2-small</a></td></tr>
+          <tr><th>Task / pipeline</th><td><code>depth-estimation</code> — monocular (single-image) relative depth</td></tr>
+          <tr><th>Architecture</th><td>DINOv2 ViT-S encoder + DPT depth head → one depth value per pixel</td></tr>
+          <tr><th>Quantization</th><td>fp16 (half precision) ONNX</td></tr>
+          <tr><th>Backend</th><td>WebGPU (fp16); falls back to WebAssembly where WebGPU is absent</td></tr>
+          <tr><th>Download</th><td>~100 MB, cached after first load</td></tr>
+          <tr><th>License</th><td>Apache-2.0 (Depth Anything V2 Small)</td></tr>
+          <tr><th>Web APIs</th><td>WebGPU, Web Workers, Canvas 2D, FileReader — WebGPU is the only non-Baseline piece, and the page says so if it's missing</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Pick or drop a photo, then estimate depth. Warmer / brighter means <em>closer</em>; darker means further away. Switch the colour map to read the scene differently.</p>
+
+      <button id="load" type="button">Load Depth Anything (~100 MB)</button>
+      <progress id="prog" value="0" max="100" hidden></progress>
+      <p class="status" id="status" role="status" aria-live="polite">Model not loaded yet.</p>
+
+      <div class="controls-row">
+        <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image" style="flex:1 1 240px">
+          <span id="dropText">Drop a photo, or click to choose</span>
+          <input type="file" id="file" accept="image/*" hidden />
+        </div>
+      </div>
+      <div class="sample-strip" id="samples" aria-label="Sample images">
+        <img class="sample-thumb active" src="sample-portrait.jpg" data-src="sample-portrait.jpg" alt="Two cats on a couch" tabindex="0" role="button" />
+        <img class="sample-thumb" src="sample-room.jpg" data-src="sample-room.jpg" alt="A sunlit bedroom" tabindex="0" role="button" />
+        <img class="sample-thumb" src="sample-street.jpg" data-src="sample-street.jpg" alt="A riverside at golden hour" tabindex="0" role="button" />
+      </div>
+
+      <div class="controls-row">
+        <label style="font-size:.82rem">Colour map
+          <select id="cmap">
+            <option value="turbo">turbo</option>
+            <option value="viridis">viridis</option>
+            <option value="magma">magma</option>
+            <option value="gray">grayscale</option>
+          </select>
+        </label>
+        <button id="run" type="button" disabled>Estimate depth</button>
+      </div>
+
+      <div class="canvas-grid">
+        <div class="canvas-card">
+          <h4>Input</h4>
+          <img class="preview-img" id="preview" src="sample-portrait.jpg" alt="Selected photo" />
+        </div>
+        <div class="canvas-card">
+          <h4>Estimated depth</h4>
+          <canvas class="viz-canvas" id="depthCanvas" width="480" height="360" aria-label="Colourised depth map"></canvas>
+          <div class="legend-row"><span>far</span><canvas class="legend-canvas" id="legend" width="220" height="14"></canvas><span>near</span></div>
+        </div>
+      </div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+        <span>output <b id="rDims">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside</h3>
+      <p class="muted">
+        The model doesn't output a picture — it outputs a <strong>tensor of real numbers</strong>, one
+        per pixel: the raw <em>relative</em> depth. Bigger = nearer. The colour map above is just those
+        numbers, min–max normalized to 0–255. Below is the honest view: the raw range straight from the
+        model and how the depths are distributed across the scene.
+      </p>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Estimate a depth map to see the raw numbers.</div>
+      <div id="insideWrap" hidden>
+        <table class="inside-table">
+          <tbody>
+            <tr><th>predicted_depth shape</th><td id="iDims">–</td></tr>
+            <tr><th>raw depth range</th><td id="iRange">–</td></tr>
+            <tr><th>mean raw depth</th><td id="iMean">–</td></tr>
+            <tr><th>pixels estimated</th><td id="iPix">–</td></tr>
+          </tbody>
+        </table>
+        <h4 style="font-family:var(--font-body);font-size:.8rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:.9rem 0 0">Depth distribution (far → near)</h4>
+        <div class="histo" id="histo" role="img" aria-label="Histogram of estimated depth, far on the left to near on the right"></div>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        Depth used to need special hardware — a stereo rig, a LiDAR sensor, a structured-light camera.
+        Depth Anything estimates it from a single frame, small enough and fast enough to run in a web
+        page. Once you know how far away each pixel is, a whole class of effects opens up client-side:
+      </p>
+      <ul>
+        <li><strong>Portrait-mode blur</strong> — keep the subject sharp and blur the background by depth, no dual camera required.</li>
+        <li><strong>3D parallax "live photos"</strong> — tilt a flat image and watch near objects shift more than far ones.</li>
+        <li><strong>AR occlusion & compositing</strong> — place a virtual object at the right depth, or pop a subject out in front of a scene.</li>
+        <li><strong>Relighting & fog</strong> — drive atmospheric effects, shadows, or depth-of-field from a real distance map instead of guessing.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">One photo in, a colourised depth map out — read distance as colour.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Depth-driven background blur — fake a portrait-mode lens in the browser.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">3D parallax — tilt a flat photo with your mouse and feel the depth.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">Depth + background removal → a pop-out composite: sharp subject over a depth-blurred scene.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>Depth is a one-liner with Transformers.js. The pipeline returns both a ready-to-display image and the raw tensor:</p>
+      <pre><code>import { pipeline } from "@huggingface/transformers";
+
+const estimator = await pipeline(
+  "depth-estimation",
+  "onnx-community/depth-anything-v2-small",
+  { device: "webgpu", dtype: "fp16" },   // ~100 MB, cached after first load
+);
+
+const { depth, predicted_depth } = await estimator(imageURL);
+// depth          → RawImage: grayscale, min–max normalized to 0–255 (great for display)
+// predicted_depth → Tensor:  the raw per-pixel relative depth (dims = [H, W]); bigger = nearer</code></pre>
+      <p class="muted">
+        This page colourises <code>depth</code> on a canvas and reads <code>predicted_depth</code> for
+        the real range + distribution in "See inside". Inference runs in a Web Worker, so estimating a
+        large photo never freezes the page.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/onnx-community/depth-anything-v2-small" target="_blank" rel="noopener">Model card — onnx-community/depth-anything-v2-small</a></li>
+        <li><a href="https://depth-anything-v2.github.io/" target="_blank" rel="noopener">Depth Anything V2 — project page</a></li>
+        <li><a href="https://arxiv.org/abs/2406.09414" target="_blank" rel="noopener">Paper — Depth Anything V2 (arXiv:2406.09414)</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/api/pipelines#module_pipelines.DepthEstimationPipeline" target="_blank" rel="noopener">Transformers.js — DepthEstimationPipeline</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { DepthEngine, fileToDataURL, urlToDataURL, renderDepthColor, renderColorLegend, DEPTH_CSS }
+        from "./depth.js";
+      import { progressReporter } from "/web-ai-showcase/lib/webai.js";
+
+      const style = document.createElement("style");
+      style.textContent = DEPTH_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new DepthEngine();
+      let currentImageURL = null;
+      let lastResult = null;
+
+      renderColorLegend($("legend"), $("cmap").value);
+
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        currentImageURL = await urlToDataURL(el.dataset.src);
+        $("preview").src = el.dataset.src;
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => {
+          if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); }
+        });
+      }
+      pickSample($("samples").firstElementChild);
+
+      const file = $("file"), drop = $("drop");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) {
+        for (const t of $("samples").children) t.classList.remove("active");
+        currentImageURL = await fileToDataURL(f);
+        $("preview").src = currentImageURL;
+        $("dropText").textContent = f.name;
+      }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
+
+      $("cmap").addEventListener("change", () => {
+        renderColorLegend($("legend"), $("cmap").value);
+        if (lastResult) renderDepthColor($("depthCanvas"), lastResult.width, lastResult.height, lastResult.depth, $("cmap").value);
+      });
+
+      const reporter = progressReporter($("prog"), $("status"));
+      $("load").addEventListener("click", async () => {
+        $("load").disabled = true; $("prog").hidden = false; $("status").classList.remove("err"); $("status").textContent = "Loading Depth Anything…";
+        try {
+          const device = await engine.load((p) => reporter.onProgress(p));
+          $("status").textContent = `Model ready — running on ${device.toUpperCase()}.`; $("status").classList.add("ok"); $("prog").hidden = true; $("run").disabled = false;
+        } catch (err) { reporter.fail(err); $("load").disabled = false; }
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!currentImageURL) { $("status").textContent = "Pick a photo first."; return; }
+        $("run").disabled = true; $("status").classList.remove("err"); $("status").textContent = "Estimating depth…";
+        try {
+          const r = await engine.estimate(currentImageURL);
+          lastResult = r;
+          renderDepthColor($("depthCanvas"), r.width, r.height, r.depth, $("cmap").value);
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase() + (r.dtype ? " · " + r.dtype : "");
+          $("rMs").textContent = r.ms + " ms";
+          $("rDims").textContent = `${r.width} × ${r.height}`;
+          renderInside(r);
+          $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (err) {
+          $("status").textContent = "Depth estimation failed: " + err.message; $("status").classList.add("err");
+        } finally { $("run").disabled = false; }
+      });
+
+      // Headless / self-test hook: ?auto=1 loads the model and runs on the default sample.
+      if (new URLSearchParams(location.search).has("auto")) {
+        (async () => {
+          await pickSample($("samples").firstElementChild); // ensure a sample data URL is ready
+          $("load").click();
+          try { await engine.load(); $("run").click(); } catch { /* surfaced on the page */ }
+        })();
+      }
+
+      function renderInside(r) {
+        $("insideEmpty").hidden = true;
+        $("insideWrap").hidden = false;
+        $("iDims").textContent = r.rawDims?.length ? `[${r.rawDims.join(" × ")}]` : `[${r.height} × ${r.width}] (from depth image)`;
+        $("iRange").textContent = r.rawMin != null ? `${r.rawMin.toFixed(3)} … ${r.rawMax.toFixed(3)} (relative units)` : "normalized 0 … 255";
+        $("iMean").textContent = r.rawMean != null ? r.rawMean.toFixed(3) : "–";
+        $("iPix").textContent = (r.width * r.height).toLocaleString();
+        const max = Math.max(...r.hist, 1);
+        $("histo").replaceChildren(...r.hist.map((c) => {
+          const s = document.createElement("span");
+          s.style.blockSize = (c / max * 100).toFixed(1) + "%";
+          s.title = c.toLocaleString() + " px";
+          return s;
+        }));
+      }
+    </script>
+  </body>
+</html>
