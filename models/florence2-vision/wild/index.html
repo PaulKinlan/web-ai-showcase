@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Florence-2 Wild — segment what you name · Web AI Showcase</title>
+    <meta name="description" content="Type a phrase and Florence-2 segments exactly that thing in the image — grounded masks drawn on your GPU, on-device." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🔎</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Florence-2</a></p>
+    <header>
+      <p class="eyebrow">use case · wild</p>
+      <h1>Wild: segment the thing you name</h1>
+      <p class="lede">
+        Give Florence-2 a phrase — "the swan", "the pillow on the left" — and it segments exactly that,
+        returning a polygon mask drawn on the image. Language-grounded selection, entirely on your GPU.
+        This is <code>&lt;REFERRING_EXPRESSION_SEGMENTATION&gt;</code>.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="fallback" class="fallback" hidden></div>
+      <p class="status" id="gpuLine" role="status"></p>
+      <button id="load" type="button">Load Florence-2 (~460 MB)</button>
+      <progress id="prog" value="0" max="100" hidden></progress>
+      <p class="status" id="status" role="status" aria-live="polite">Model not loaded yet.</p>
+
+      <div class="vlm-grid" style="margin-top:.6rem">
+        <div class="vlm-img-col">
+          <div class="sample-strip" id="samples">
+            <img class="sample-thumb active" src="../sample-river.jpg" data-src="../sample-river.jpg" data-phrase="the swan" alt="A riverside at golden hour with a swan" tabindex="0" role="button" />
+            <img class="sample-thumb" src="../sample-cats.jpg" data-src="../sample-cats.jpg" data-phrase="the cat on the left" alt="Two cats on a couch" tabindex="0" role="button" />
+            <img class="sample-thumb" src="../sample-room.jpg" data-src="../sample-room.jpg" data-phrase="the bed" alt="A cozy bedroom" tabindex="0" role="button" />
+          </div>
+          <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image" style="margin-bottom:.5rem">
+            <span id="dropText">…or drop / choose your own</span>
+            <input type="file" id="file" accept="image/*" hidden />
+          </div>
+          <div class="canvas-wrap"><canvas id="canvas" aria-label="Image with the named region segmented"></canvas></div>
+        </div>
+        <div class="vlm-out-col">
+          <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">
+            What should it segment?
+            <input type="text" id="phrase" value="the swan" placeholder="e.g. the red car" />
+          </label>
+          <button id="run" type="button" disabled style="margin:.4rem 0">Segment</button>
+          <div class="answer" id="answer" aria-live="polite"><span class="muted">The result appears here.</span></div>
+          <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>polygons <b id="rN">–</b></span><span>time <b id="rMs">–</b></span></div>
+        </div>
+      </div>
+    </section>
+
+    <p class="crumbs"><a href="../practical/">← Practical</a> · <a href="../">Florence-2</a> · Next: <a href="../multi-model/">Multi-model →</a></p>
+
+    <script type="module">
+      import { FlorenceEngine, probeWebGPUMain, fileToDataURL, drawOverlay, webgpuFallbackHTML, FLOR_CSS } from "../florence.js";
+      const style = document.createElement("style"); style.textContent = FLOR_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new FlorenceEngine();
+      const TASK = "<REFERRING_EXPRESSION_SEGMENTATION>";
+      let gpuOK = false, loaded = false, currentImageURL = null;
+      const srcImg = new Image();
+      srcImg.addEventListener("load", () => { if (srcImg.naturalWidth) drawOverlay($("canvas"), srcImg, "__none__", {}); });
+
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        const blob = await (await fetch(el.dataset.src)).blob();
+        currentImageURL = await fileToDataURL(new File([blob], "s", { type: blob.type })); srcImg.src = currentImageURL;
+        if (el.dataset.phrase) $("phrase").value = el.dataset.phrase;
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } });
+      }
+      pickSample($("samples").firstElementChild);
+      const file = $("file"), drop = $("drop");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) { for (const t of $("samples").children) t.classList.remove("active"); currentImageURL = await fileToDataURL(f); srcImg.src = currentImageURL; $("dropText").textContent = f.name; }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
+
+      (async () => {
+        const probe = await probeWebGPUMain(); gpuOK = probe.ok;
+        if (probe.ok) { $("gpuLine").textContent = "✓ WebGPU ready."; $("gpuLine").classList.add("ok"); }
+        else { $("gpuLine").textContent = "△ No usable WebGPU here."; $("fallback").hidden = false; $("fallback").innerHTML = webgpuFallbackHTML(probe); $("load").disabled = true; }
+      })();
+
+      const files = new Map();
+      function onProgress(p) { if (p.status === "progress" && p.file) { files.set(p.file, p.progress ?? 0); const avg = [...files.values()].reduce((a, b) => a + b, 0) / files.size; $("prog").value = avg; $("status").textContent = `Downloading… ${avg.toFixed(0)}%`; } }
+      $("load").addEventListener("click", async () => {
+        if (!gpuOK) return;
+        $("load").disabled = true; $("prog").hidden = false; $("status").classList.remove("err"); $("status").textContent = "Loading Florence-2…";
+        try { await engine.load(onProgress); $("status").textContent = "Ready on WebGPU."; $("status").classList.add("ok"); $("prog").hidden = true; $("run").disabled = false; loaded = true; }
+        catch (err) { $("status").textContent = "Couldn't load: " + err.message; $("status").classList.add("err"); $("load").disabled = false; }
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!loaded || !currentImageURL) { $("status").textContent = "Pick an image first."; return; }
+        const phrase = $("phrase").value.trim();
+        if (!phrase) { $("status").textContent = "Type a phrase to segment first."; $("status").classList.add("err"); return; }
+        $("run").disabled = true; $("status").classList.remove("err"); $("status").textContent = "Segmenting…";
+        $("answer").innerHTML = '<span class="muted">Working…</span>';
+        try {
+          const res = await engine.run(currentImageURL, TASK, { text: phrase, maxTokens: 1024 });
+          const info = drawOverlay($("canvas"), srcImg, TASK, res.parsed);
+          $("answer").textContent = info.count ? `Segmented "${phrase}" — ${info.count} region(s) drawn on the image.` : `Florence-2 didn't find "${phrase}" in this image. Try a different phrase or image.`;
+          $("readout").hidden = false; $("rBackend").textContent = "WEBGPU"; $("rN").textContent = info.count; $("rMs").textContent = res.ms + " ms";
+          $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (err) { $("answer").innerHTML = '<span class="muted">Failed.</span>'; $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>
