@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>NER Wild — build an entity graph · Web AI Showcase</title>
+    <meta name="description" content="Turn a paragraph into a graph: entities become nodes, and two entities are linked when they appear in the same sentence. Built live, in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🏷️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">BERT NER</a></p>
+
+    <header>
+      <p class="eyebrow">use case · wild</p>
+      <h1>Wild: the entity graph</h1>
+      <p class="lede">
+        Run NER over every sentence in a paragraph and something bigger falls out: a <strong>graph</strong>.
+        Each entity becomes a node; two entities are connected when they're mentioned in the same sentence.
+        Feed it a news story and you get a live map of who's involved with what — the raw material of
+        knowledge graphs, built entirely on your device.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
+        Paragraph
+        <textarea id="text" class="ner-input" rows="5" disabled>Tim Cook met Angela Merkel in Berlin. Angela Merkel later spoke with Emmanuel Macron about the European Union. Emmanuel Macron flew from Paris to Berlin to join Tim Cook and the Apple team.</textarea>
+      </label>
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.5rem 0">
+        <button class="ner-chip" type="button" data-set="Tim Cook met Angela Merkel in Berlin. Angela Merkel later spoke with Emmanuel Macron about the European Union. Emmanuel Macron flew from Paris to Berlin to join Tim Cook and the Apple team.">diplomacy</button>
+        <button class="ner-chip" type="button" data-set="Serena Williams beat Maria Sharapova at Wimbledon. Later, Serena Williams thanked her coach in London. Maria Sharapova flew back to Moscow.">tennis</button>
+        <button class="ner-chip" type="button" data-set="Google acquired DeepMind in London. DeepMind, led by Demis Hassabis, works with Google on AI. Demis Hassabis studied at Cambridge.">tech</button>
+      </div>
+      <div style="margin:.5rem 0">
+        <button id="go" type="button" disabled>Build the graph</button>
+      </div>
+
+      <div id="graph" class="graph-wrap" hidden></div>
+      <div class="ent-legend" id="legend" hidden>
+        <span><span class="sw" style="background:#4b3aff"></span>PER</span>
+        <span><span class="sw" style="background:#1a8a3a"></span>ORG</span>
+        <span><span class="sw" style="background:#c0392b"></span>LOC</span>
+        <span><span class="sw" style="background:#8a6d1a"></span>MISC</span>
+      </div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+        <span>nodes <b id="rN">–</b></span>
+        <span>edges <b id="rE">–</b></span>
+      </div>
+    </section>
+
+    <p class="muted" style="font-size:.85rem">
+      Edges here are simple sentence co-occurrence — the same entity written two ways ("Angela Merkel" /
+      "Merkel") shows as two nodes, and the graph doesn't know the <em>type</em> of relationship. That's
+      where a second model comes in: the <a href="../multi-model/">multi-model demo</a> uses embeddings to
+      link mentions that mean the same thing.
+    </p>
+
+    <p class="crumbs"><a href="../practical/">← Practical</a> · <a href="../">Model</a> · Next: <a href="../multi-model/">Multi-model →</a></p>
+
+    <script type="module">
+      import { NEREngine, NER_CSS, ENTITY_TYPES } from "../ner.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = NER_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new NEREngine();
+      let loaded = false;
+      const COLORS = { PER: "#4b3aff", ORG: "#1a8a3a", LOC: "#c0392b", MISC: "#8a6d1a" };
+
+      for (const c of document.querySelectorAll(".ner-chip")) c.addEventListener("click", () => { $("text").value = c.dataset.set; run(); });
+      $("go").addEventListener("click", run);
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/bert-base-NER", runtime: "transformers.js", dtype: "q8", sizeMB: 110, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("text").disabled = false; $("go").disabled = false; loaded = true; run(); },
+      });
+
+      function splitSentences(text) {
+        return text.split(/(?<=[.!?])\s+/).map((s) => s.trim()).filter(Boolean);
+      }
+
+      async function run() {
+        if (!loaded) return;
+        const text = $("text").value.trim();
+        if (!text) return;
+        $("runStatus").hidden = true;
+        const sentences = splitSentences(text);
+        try {
+          const r = await engine.nerMany(sentences);
+          const nodes = new Map(); // key -> {key,type,count}
+          const edges = new Map(); // "a|b" -> count
+          for (const res of r.results) {
+            const ents = [...new Set(res.spans.map((s) => s.text.trim()).filter(Boolean))]
+              .map((t) => ({ t, type: res.spans.find((s) => s.text.trim() === t).type }));
+            for (const e of ents) {
+              const n = nodes.get(e.t) ?? { key: e.t, type: e.type, count: 0 };
+              n.count++; nodes.set(e.t, n);
+            }
+            for (let i = 0; i < ents.length; i++) {
+              for (let j = i + 1; j < ents.length; j++) {
+                const k = [ents[i].t, ents[j].t].sort().join("|");
+                edges.set(k, (edges.get(k) ?? 0) + 1);
+              }
+            }
+          }
+          drawGraph([...nodes.values()], [...edges.entries()].map(([k, w]) => ({ pair: k.split("|"), w })));
+          $("legend").hidden = false; $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase(); $("rMs").textContent = r.ms + " ms";
+          $("rN").textContent = nodes.size; $("rE").textContent = edges.size;
+        } catch (err) { $("runStatus").hidden = false; $("runStatus").textContent = "Graph failed: " + err.message; $("runStatus").classList.add("err"); }
+      }
+
+      function drawGraph(nodes, edges) {
+        const W = 640, H = 420, cx = W / 2, cy = H / 2, R = Math.min(W, H) / 2 - 70;
+        const NS = "http://www.w3.org/2000/svg";
+        const svg = document.createElementNS(NS, "svg");
+        svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+        svg.setAttribute("role", "img");
+        svg.setAttribute("aria-label", `Entity co-occurrence graph with ${nodes.length} nodes and ${edges.length} links`);
+        const pos = new Map();
+        nodes.forEach((n, i) => {
+          const a = (i / Math.max(1, nodes.length)) * Math.PI * 2 - Math.PI / 2;
+          pos.set(n.key, { x: cx + R * Math.cos(a), y: cy + R * Math.sin(a) });
+        });
+        const maxW = Math.max(1, ...edges.map((e) => e.w));
+        for (const e of edges) {
+          const a = pos.get(e.pair[0]), b = pos.get(e.pair[1]);
+          if (!a || !b) continue;
+          const line = document.createElementNS(NS, "line");
+          line.setAttribute("x1", a.x); line.setAttribute("y1", a.y);
+          line.setAttribute("x2", b.x); line.setAttribute("y2", b.y);
+          line.setAttribute("stroke", "currentColor");
+          line.setAttribute("stroke-opacity", String(0.25 + 0.5 * (e.w / maxW)));
+          line.setAttribute("stroke-width", String(1 + 2 * (e.w / maxW)));
+          svg.append(line);
+        }
+        const maxC = Math.max(1, ...nodes.map((n) => n.count));
+        for (const n of nodes) {
+          const p = pos.get(n.key);
+          const g = document.createElementNS(NS, "g");
+          const c = document.createElementNS(NS, "circle");
+          const rad = 6 + 8 * (n.count / maxC);
+          c.setAttribute("cx", p.x); c.setAttribute("cy", p.y); c.setAttribute("r", rad);
+          c.setAttribute("fill", COLORS[n.type] ?? COLORS.MISC);
+          const t = document.createElementNS(NS, "text");
+          const right = p.x >= cx;
+          t.setAttribute("x", p.x + (right ? rad + 4 : -(rad + 4)));
+          t.setAttribute("y", p.y + 4);
+          t.setAttribute("text-anchor", right ? "start" : "end");
+          t.setAttribute("fill", "currentColor");
+          t.setAttribute("font-size", "13");
+          t.setAttribute("font-family", "var(--font-mono)");
+          t.textContent = n.key;
+          const title = document.createElementNS(NS, "title");
+          title.textContent = `${n.key} · ${ENTITY_TYPES[n.type]?.label ?? n.type} · ${n.count} mention(s)`;
+          g.append(title, c, t);
+          svg.append(g);
+        }
+        const wrap = $("graph");
+        wrap.hidden = false;
+        wrap.style.padding = "8px";
+        wrap.replaceChildren(svg);
+      }
+    </script>
+  </body>
+</html>

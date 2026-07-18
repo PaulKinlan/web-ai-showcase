@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>NER Multi-model — link entity mentions with MiniLM · Web AI Showcase</title>
+    <meta name="description" content="Compose two models: BERT NER finds the entity mentions, then MiniLM embeddings link the ones that refer to the same thing (Angela Merkel ≈ Merkel). Both run in the browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🏷️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">BERT NER</a></p>
+
+    <header>
+      <p class="eyebrow">use case · multi-model</p>
+      <h1>Multi-model: link mentions by meaning</h1>
+      <p class="lede">
+        NER finds mentions but treats "Angela Merkel" and "Merkel" as two unrelated spans. To connect them
+        you need meaning, not spelling — so compose two models: <strong>BERT NER</strong> extracts every
+        entity mention, then <strong>all-MiniLM-L6</strong> embeds each mention in its sentence and links the
+        ones that sit close together in vector space. The result is lightweight coreference / entity
+        linking, running entirely on your device.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="load-h">
+      <h3 id="load-h">Two models, both on-device</h3>
+      <p class="muted">BERT NER (~110 MB) extracts; MiniLM embeddings (~25 MB) links. Each auto-initialises
+        from cache when present.</p>
+      <div id="loader-ner"></div>
+      <div id="loader-minilm" style="margin-top:.5rem"></div>
+    </section>
+
+    <section class="panel">
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.2rem 0 .5rem">
+        <button class="ner-chip" type="button" data-set="Angela Merkel visited Paris on Monday. Merkel met the French president there. The German chancellor then flew home to Berlin.">coreference</button>
+        <button class="ner-chip" type="button" data-set="Apple reported strong sales. The tech giant, led by Tim Cook, credited the iPhone. Cook thanked the Cupertino team.">company</button>
+      </div>
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">
+        Paragraph
+        <textarea id="text" class="ner-input" rows="4" disabled>Angela Merkel visited Paris on Monday. Merkel met the French president there. The German chancellor then flew home to Berlin.</textarea>
+      </label>
+      <div style="display:flex;flex-wrap:wrap;gap:.9rem;align-items:center;margin:.5rem 0">
+        <button id="go" type="button" disabled>Extract, then link</button>
+        <label style="font-size:.78rem;font-family:var(--font-mono);color:var(--muted);display:flex;align-items:center;gap:.4rem">
+          link threshold
+          <input id="thr" type="range" min="0.4" max="0.9" step="0.05" value="0.6" disabled />
+          <span id="thrVal">0.60</span>
+        </label>
+      </div>
+
+      <div id="clusters" class="contact-grid"></div>
+      <div class="readout" id="readout" hidden>
+        <span>NER <b id="rNer">–</b></span>
+        <span>MiniLM <b id="rMini">–</b></span>
+        <span>mentions <b id="rM">–</b></span>
+        <span>links <b id="rL">–</b></span>
+      </div>
+    </section>
+
+    <p class="muted" style="font-size:.85rem">
+      Grouping uses a similarity threshold you control — slide it up for stricter links, down for looser
+      ones. Embedding the mention <em>in its sentence</em> gives the model context, so "Merkel" and "the
+      German chancellor" can land near "Angela Merkel" even though they share no words. It's a demo-grade
+      linker, but the shape is exactly how production entity resolution is built.
+    </p>
+
+    <p class="crumbs"><a href="../wild/">← Wild</a> · <a href="../">Back to BERT NER</a></p>
+
+    <script type="module">
+      import { NEREngine, NER_CSS, ENTITY_TYPES, escapeHTML } from "../ner.js";
+      import { EmbedEngine, cosine } from "/web-ai-showcase/models/minilm-embeddings/embed.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = NER_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const ner = new NEREngine();
+      const embedder = new EmbedEngine();
+      const COLORS = { PER: "#4b3aff", ORG: "#1a8a3a", LOC: "#c0392b", MISC: "#8a6d1a" };
+      let lastMentions = null, lastEmb = null;
+
+      for (const c of document.querySelectorAll(".ner-chip")) c.addEventListener("click", () => { $("text").value = c.dataset.set; run(); });
+      $("go").addEventListener("click", run);
+      $("thr").addEventListener("input", () => { $("thrVal").textContent = Number($("thr").value).toFixed(2); if (lastEmb) recluster(); });
+
+      let nerReady = false, miniReady = false;
+      const maybeEnable = () => { if (nerReady && miniReady) { $("text").disabled = false; $("go").disabled = false; $("thr").disabled = false; run(); } };
+      createModelLoader({
+        mount: $("loader-ner"),
+        model: { modelId: "Xenova/bert-base-NER", runtime: "transformers.js", dtype: "q8", sizeMB: 110, requiresWebGPU: false },
+        load: async (onProgress) => { await ner.load(onProgress); return ner; },
+        onReady: () => { nerReady = true; maybeEnable(); },
+      });
+      createModelLoader({
+        mount: $("loader-minilm"),
+        model: { modelId: "Xenova/all-MiniLM-L6-v2", runtime: "transformers.js", dtype: "q8", sizeMB: 25, requiresWebGPU: false },
+        load: async (onProgress) => { await embedder.load(onProgress); return embedder; },
+        onReady: () => { miniReady = true; maybeEnable(); },
+      });
+
+      function splitSentences(text) { return text.split(/(?<=[.!?])\s+/).map((s) => s.trim()).filter(Boolean); }
+
+      let busy = false;
+      async function run() {
+        if (!nerReady || !miniReady || busy) return;
+        const text = $("text").value.trim();
+        if (!text) return;
+        busy = true; $("go").disabled = true; $("runStatus").hidden = true;
+        try {
+          const sentences = splitSentences(text);
+          // 1) NER extracts mentions, each kept with its sentence for context.
+          const nr = await ner.nerMany(sentences);
+          const mentions = [];
+          nr.results.forEach((res, si) => {
+            for (const s of res.spans) {
+              const t = s.text.trim();
+              if (t) mentions.push({ text: t, type: s.type, sentence: sentences[si] });
+            }
+          });
+          if (mentions.length === 0) { $("clusters").replaceChildren(Object.assign(document.createElement("p"), { className: "muted", textContent: "No entities found." })); return; }
+          // 2) MiniLM embeds each mention IN CONTEXT.
+          const er = await embedder.embed(mentions.map((m) => `${m.text} — ${m.sentence}`));
+          lastMentions = mentions; lastEmb = er.embeddings;
+          $("readout").hidden = false;
+          $("rNer").textContent = nr.device.toUpperCase() + " " + nr.ms + " ms";
+          $("rMini").textContent = er.device.toUpperCase() + " " + er.ms + " ms";
+          $("rM").textContent = mentions.length;
+          recluster();
+        } catch (err) { $("runStatus").hidden = false; $("runStatus").textContent = "Pipeline failed: " + err.message; $("runStatus").classList.add("err"); }
+        finally { busy = false; $("go").disabled = false; }
+      }
+
+      // Single-link clustering over cosine similarity at the chosen threshold (union-find).
+      function recluster() {
+        const m = lastMentions, emb = lastEmb, thr = Number($("thr").value);
+        const parent = m.map((_, i) => i);
+        const find = (x) => { while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; } return x; };
+        const union = (a, b) => { parent[find(a)] = find(b); };
+        let links = 0;
+        for (let i = 0; i < m.length; i++) {
+          for (let j = i + 1; j < m.length; j++) {
+            if (cosine(emb[i], emb[j]) >= thr) { union(i, j); links++; }
+          }
+        }
+        const groups = new Map();
+        m.forEach((mn, i) => { const r = find(i); if (!groups.has(r)) groups.set(r, []); groups.get(r).push(mn); });
+        const cards = [...groups.values()].sort((a, b) => b.length - a.length).map((items, gi) => {
+          const card = document.createElement("div"); card.className = "contact-card";
+          const uniqueTexts = [...new Set(items.map((it) => it.text))];
+          const h = document.createElement("h4"); h.textContent = `Entity ${gi + 1} · ${items.length} mention(s)`;
+          const list = document.createElement("div"); list.className = "contact-list";
+          for (const t of uniqueTexts) {
+            const type = items.find((it) => it.text === t).type;
+            const pill = document.createElement("span");
+            pill.className = "contact-pill ent-" + (ENTITY_TYPES[type]?.css ?? "misc");
+            pill.textContent = t;
+            list.append(pill);
+          }
+          card.append(h, list);
+          return card;
+        });
+        $("clusters").replaceChildren(...cards);
+        $("rL").textContent = links;
+      }
+    </script>
+  </body>
+</html>

@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>NER Practical — redact PII &amp; extract entities · Web AI Showcase</title>
+    <meta name="description" content="Two shippable NER uses: redact people and places from a document client-side, and extract entities into a structured, grouped list. Runs in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🏷️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">BERT NER</a></p>
+
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Practical: redact PII &amp; extract entities</h1>
+      <p class="lede">
+        Two things you'd actually ship. <strong>Redaction</strong> masks the people, places and
+        organizations in a document before it's shared or logged — and because it runs on-device, the
+        sensitive original never leaves the tab. <strong>Extraction</strong> pulls those same entities out
+        into a clean, grouped structure you can hand to the next system.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
+        Text to process
+        <textarea id="text" class="ner-input" rows="4" disabled>Please contact Dr. Sarah Chen at Mercy Hospital in Chicago. Her colleague James Okoro will cover the London office while she is away.</textarea>
+      </label>
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.5rem 0">
+        <button class="ner-chip" type="button" data-set="Please contact Dr. Sarah Chen at Mercy Hospital in Chicago. Her colleague James Okoro will cover the London office while she is away.">medical note</button>
+        <button class="ner-chip" type="button" data-set="Invoice from Acme Corp to Maria Garcia, 42 King Street, Manchester. Approved by Tom Baker.">invoice</button>
+        <button class="ner-chip" type="button" data-set="Meeting notes: Priya Patel (Infosys) and Kevin Lee (Samsung) agreed to meet in Seoul next quarter.">meeting</button>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="redact-h">
+      <h3 id="redact-h">Redaction</h3>
+      <p class="muted">Choose which entity types to mask:</p>
+      <div style="display:flex;flex-wrap:wrap;gap:.9rem;margin:.3rem 0 .5rem;font-size:.82rem">
+        <label><input type="checkbox" class="redact-type" value="PER" checked /> People</label>
+        <label><input type="checkbox" class="redact-type" value="ORG" /> Organizations</label>
+        <label><input type="checkbox" class="redact-type" value="LOC" checked /> Locations</label>
+        <label><input type="checkbox" class="redact-type" value="MISC" /> Misc</label>
+      </div>
+      <div id="redacted" class="ner-out" aria-live="polite"></div>
+    </section>
+
+    <section class="panel" aria-labelledby="extract-h">
+      <h3 id="extract-h">Structured extraction</h3>
+      <p class="muted">Every entity, de-duplicated and grouped by type — the who and where, as data.</p>
+      <div id="extract" class="contact-grid"></div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+        <span>entities <b id="rEnts">–</b></span>
+      </div>
+    </section>
+
+    <p class="muted" style="font-size:.85rem">
+      A statistical NER model won't catch every name, so treat redaction as a strong first pass, not a
+      compliance guarantee — pair it with pattern rules for emails, phone numbers and IDs. The win is that
+      the whole pass happens locally, so the un-redacted text is never transmitted.
+    </p>
+
+    <p class="crumbs"><a href="../basics/">← Basics</a> · <a href="../">Model</a> · Next: <a href="../wild/">Wild →</a></p>
+
+    <script type="module">
+      import { NEREngine, NER_CSS, ENTITY_TYPES, renderHighlighted, escapeHTML, debounce } from "../ner.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = NER_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new NEREngine();
+      let loaded = false;
+      let last = null; // cache last result so toggling redaction types is instant
+
+      for (const c of document.querySelectorAll(".ner-chip")) c.addEventListener("click", () => { $("text").value = c.dataset.set; sched(); });
+      for (const cb of document.querySelectorAll(".redact-type")) cb.addEventListener("change", () => { if (last) redact(last); });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/bert-base-NER", runtime: "transformers.js", dtype: "q8", sizeMB: 110, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("text").disabled = false; loaded = true; run(); },
+      });
+
+      const sched = debounce(run, 350);
+      $("text").addEventListener("input", sched);
+
+      async function run() {
+        if (!loaded) return;
+        const text = $("text").value.trim();
+        if (!text) { $("redacted").replaceChildren(); $("extract").replaceChildren(); $("readout").hidden = true; return; }
+        try {
+          const r = await engine.ner(text);
+          last = r;
+          redact(r);
+          extract(r);
+          $("readout").hidden = false; $("rBackend").textContent = r.device.toUpperCase(); $("rMs").textContent = r.ms + " ms"; $("rEnts").textContent = r.spans.length;
+        } catch (err) { $("runStatus").hidden = false; $("runStatus").textContent = "Processing failed: " + err.message; $("runStatus").classList.add("err"); }
+      }
+
+      function redact(r) {
+        const on = new Set([...document.querySelectorAll(".redact-type:checked")].map((c) => c.value));
+        const ordered = r.spans.filter((s) => s.start != null && on.has(s.type)).sort((a, b) => a.start - b.start);
+        const frag = document.createDocumentFragment();
+        let cursor = 0;
+        for (const s of ordered) {
+          if (s.start < cursor) continue;
+          if (s.start > cursor) frag.append(document.createTextNode(r.text.slice(cursor, s.start)));
+          const mark = document.createElement("span");
+          mark.className = "ent ent-" + (ENTITY_TYPES[s.type]?.css ?? "misc");
+          mark.textContent = "█".repeat(Math.max(3, s.end - s.start));
+          const tag = document.createElement("span"); tag.className = "ent-tag"; tag.textContent = s.type;
+          mark.append(tag);
+          frag.append(mark);
+          cursor = s.end;
+        }
+        if (cursor < r.text.length) frag.append(document.createTextNode(r.text.slice(cursor)));
+        $("redacted").replaceChildren(frag);
+      }
+
+      function extract(r) {
+        const groups = { PER: [], ORG: [], LOC: [], MISC: [] };
+        for (const s of r.spans) {
+          const t = s.text.trim();
+          if (t && groups[s.type] && !groups[s.type].some((e) => e.text.toLowerCase() === t.toLowerCase())) {
+            groups[s.type].push({ text: t, score: s.score });
+          }
+        }
+        const cards = Object.entries(groups).filter(([, v]) => v.length).map(([type, items]) => {
+          const card = document.createElement("div"); card.className = "contact-card";
+          const h = document.createElement("h4"); h.textContent = `${ENTITY_TYPES[type].label} (${items.length})`;
+          const list = document.createElement("div"); list.className = "contact-list";
+          for (const it of items) {
+            const pill = document.createElement("span");
+            pill.className = "contact-pill ent-" + ENTITY_TYPES[type].css;
+            pill.textContent = it.text;
+            pill.title = (it.score * 100).toFixed(1) + "% confidence";
+            list.append(pill);
+          }
+          card.append(h, list);
+          return card;
+        });
+        $("extract").replaceChildren(...(cards.length ? cards : [Object.assign(document.createElement("p"), { className: "muted", textContent: "No entities found." })]));
+      }
+    </script>
+  </body>
+</html>
