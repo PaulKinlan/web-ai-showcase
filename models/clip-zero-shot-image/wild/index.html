@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CLIP Wild — live webcam vibe check · Web AI Showcase</title>
+    <meta name="description" content="Point your webcam at anything and CLIP scores its vibe against moods and aesthetics you invent — live, in the browser, nothing uploaded." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🔮</text></svg>" />
+    <style>
+      .stage { display:flex; flex-wrap:wrap; gap:1rem; align-items:flex-start; }
+      .cam-wrap { position:relative; flex:1 1 320px; max-inline-size:480px; }
+      #cam, #still { inline-size:100%; border-radius:var(--radius); background:#000; display:block; aspect-ratio:4/3; object-fit:cover; }
+      #cam[hidden], #still[hidden] { display:none; }
+      .vibe { flex:1 1 260px; }
+      .vibe-top { font-family:var(--font-display); font-size:1.6rem; margin:.2rem 0; min-block-size:1.8rem; }
+      .fallback { border:1px solid var(--warn); border-radius:var(--radius); background:var(--bg-raised); padding:1rem; }
+      .fallback code { background:var(--bg-secondary); padding:.05rem .3rem; border-radius:4px; }
+    </style>
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">CLIP</a></p>
+
+    <header>
+      <p class="eyebrow">use case · wild</p>
+      <h1>Wild: live webcam vibe check</h1>
+      <p class="lede">
+        CLIP does not need "classes" — so give it moods. Point your camera at your desk, your face, the
+        window, and watch it score the <em>vibe</em> in real time against words no ordinary classifier
+        has a category for. Every frame is scored on-device; nothing is uploaded.
+      </p>
+    </header>
+
+    <section class="panel">
+      <button id="load" type="button">Load CLIP (~90 MB)</button>
+      <progress id="prog" value="0" max="100" hidden></progress>
+      <p class="status" id="status" role="status" aria-live="polite">Model not loaded yet.</p>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin:.6rem 0">
+        Vibes to score against (comma-separated)
+        <textarea id="labels" rows="2">cozy, energetic, gloomy, focused, chaotic, nostalgic, futuristic, serene</textarea>
+      </label>
+
+      <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-bottom:.6rem">
+        <button id="startCam" type="button" disabled>Start webcam</button>
+        <button id="stopCam" type="button" class="secondary" hidden>Stop</button>
+        <button id="scanStill" type="button" class="secondary" disabled>No camera? Scan a sample instead</button>
+      </div>
+
+      <div id="fallback" class="fallback" hidden>
+        <strong>No webcam available here.</strong>
+        <p class="muted" style="margin:.3rem 0">
+          This device or context didn't grant camera access (common in headless / embedded views). The
+          model still works — use <em>Scan a sample</em> below to score a still image against your vibes.
+          To enable the live version, open this page in a normal browser tab and allow the camera when
+          prompted (or in Chrome: <code>Settings → Privacy and security → Site settings → Camera</code>).
+        </p>
+      </div>
+
+      <div class="stage">
+        <div class="cam-wrap">
+          <video id="cam" playsinline muted hidden></video>
+          <img id="still" src="../sample-room.jpg" alt="Sample to score" />
+          <div class="sample-strip" id="samples" style="margin-top:.5rem">
+            <img class="sample-thumb active" src="../sample-room.jpg" data-src="../sample-room.jpg" alt="A cozy bedroom" tabindex="0" role="button" />
+            <img class="sample-thumb" src="../sample-cats.jpg" data-src="../sample-cats.jpg" alt="Two cats on a couch" tabindex="0" role="button" />
+            <img class="sample-thumb" src="../sample-river.jpg" data-src="../sample-river.jpg" alt="A riverside at golden hour" tabindex="0" role="button" />
+          </div>
+        </div>
+        <div class="vibe">
+          <p class="muted" style="font-size:.8rem;margin:0">Top vibe</p>
+          <div class="vibe-top" id="vibeTop">—</div>
+          <div class="bars" id="bars" aria-live="polite"></div>
+          <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>frame <b id="rMs">–</b></span><span>fps <b id="rFps">–</b></span></div>
+        </div>
+      </div>
+      <p class="muted" style="font-size:.85rem">
+        The live loop grabs a frame, classifies it, and schedules the next one only after the last
+        finishes — so it never piles up work or blocks the page. All inference is in a Web Worker.
+      </p>
+    </section>
+
+    <p class="crumbs"><a href="../practical/">← Practical</a> · <a href="../">CLIP</a></p>
+
+    <script type="module">
+      import { ClipEngine, fileToDataURL, parseLabels, renderBars, CLIP_CSS } from "../clip.js";
+      import { progressReporter } from "/web-ai-showcase/lib/webai.js";
+      const style = document.createElement("style"); style.textContent = CLIP_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new ClipEngine();
+      let stream = null, running = false, busy = false, lastT = 0;
+      const canvas = document.createElement("canvas");
+
+      const reporter = progressReporter($("prog"), $("status"));
+      $("load").addEventListener("click", ensureModel);
+      async function ensureModel() {
+        if (engine.ready) return true;
+        $("load").disabled = true; $("prog").hidden = false; $("status").classList.remove("err"); $("status").textContent = "Loading CLIP…";
+        try {
+          const device = await engine.load((p) => reporter.onProgress(p));
+          $("status").textContent = `Ready on ${device.toUpperCase()}.`; $("status").classList.add("ok"); $("prog").hidden = true;
+          $("startCam").disabled = false; $("scanStill").disabled = false;
+          return true;
+        } catch (err) { reporter.fail(err); $("load").disabled = false; return false; }
+      }
+
+      // Score a single image (data URL) and render.
+      async function score(url, frameMs) {
+        const labels = parseLabels($("labels").value);
+        if (labels.length < 2) { $("status").textContent = "Give at least two vibes."; return; }
+        const r = await engine.classify(url, labels);
+        const items = r.labels.map((label, i) => ({ label, prob: r.probs[i], cosine: r.cosines[i] }));
+        const top = [...items].sort((a, b) => b.prob - a.prob)[0];
+        $("vibeTop").textContent = top.label;
+        renderBars($("bars"), items, { showCosine: false });
+        $("readout").hidden = false; $("rBackend").textContent = r.device.toUpperCase();
+        $("rMs").textContent = r.ms + " ms";
+        if (frameMs) $("rFps").textContent = (1000 / frameMs).toFixed(1);
+      }
+
+      // --- webcam loop ---
+      $("startCam").addEventListener("click", async () => {
+        if (!(await ensureModel())) return;
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
+        } catch (err) {
+          $("fallback").hidden = false;
+          $("status").textContent = "Camera unavailable — scan a sample instead."; $("status").classList.add("err");
+          return;
+        }
+        const cam = $("cam");
+        cam.srcObject = stream; cam.hidden = false; $("still").hidden = true;
+        $("startCam").hidden = true; $("stopCam").hidden = false;
+        await cam.play();
+        running = true; loop();
+      });
+      $("stopCam").addEventListener("click", stopCam);
+      function stopCam() {
+        running = false;
+        stream?.getTracks().forEach((t) => t.stop()); stream = null;
+        $("cam").hidden = true; $("still").hidden = false;
+        $("stopCam").hidden = true; $("startCam").hidden = false;
+      }
+      async function loop() {
+        if (!running || busy) return;
+        busy = true;
+        const cam = $("cam");
+        if (cam.videoWidth) {
+          canvas.width = cam.videoWidth; canvas.height = cam.videoHeight;
+          canvas.getContext("2d").drawImage(cam, 0, 0);
+          const url = canvas.toDataURL("image/jpeg", 0.85);
+          const now = performance.now();
+          try { await score(url, lastT ? now - lastT : 0); } catch (e) { $("status").textContent = "Frame failed: " + e.message; }
+          lastT = now;
+        }
+        busy = false;
+        if (running) setTimeout(loop, 200); // yield to the page between frames
+      }
+
+      // --- still fallback ---
+      let stillURL = null;
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        const blob = await (await fetch(el.dataset.src)).blob();
+        stillURL = await fileToDataURL(new File([blob], "s", { type: blob.type }));
+        $("still").src = el.dataset.src;
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } });
+      }
+      pickSample($("samples").firstElementChild);
+      $("scanStill").addEventListener("click", async () => {
+        if (!(await ensureModel())) return;
+        if (!stillURL) return;
+        $("scanStill").disabled = true; $("status").textContent = "Scoring sample…"; $("status").classList.remove("err");
+        try { await score(stillURL, 0); $("status").textContent = "Done."; $("status").classList.add("ok"); }
+        catch (e) { $("status").textContent = "Failed: " + e.message; $("status").classList.add("err"); }
+        finally { $("scanStill").disabled = false; }
+      });
+
+      // If there's clearly no camera API at all, reveal the fallback hint up front.
+      if (!navigator.mediaDevices?.getUserMedia) $("fallback").hidden = false;
+      addEventListener("pagehide", stopCam);
+    </script>
+  </body>
+</html>

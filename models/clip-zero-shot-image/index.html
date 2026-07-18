@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CLIP — zero-shot image classification in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run OpenAI's CLIP locally in your browser: type ANY labels and watch it score how well each one matches your image — no training, no server, real embeddings you can see inside."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎯</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">zero-shot-image-classification · vision + language · WASM · ~90 MB</p>
+      <h1>CLIP — classify an image against <em>any</em> labels you invent</h1>
+      <p class="lede">
+        CLIP learned a shared space for pictures and words. Give it an image and a handful of labels
+        you make up on the spot — <code>a sleeping cat</code>, <code>a rainy street</code>,
+        <code>cozy</code> — and it scores how well each one matches. No training, no categories baked
+        in, nothing leaves your device.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/Xenova/clip-vit-base-patch16" target="_blank" rel="noopener">Xenova/clip-vit-base-patch16</a></td></tr>
+          <tr><th>Task / pipeline</th><td><code>zero-shot-image-classification</code></td></tr>
+          <tr><th>Architecture</th><td>ViT-B/16 vision encoder + text transformer → shared 512-d space</td></tr>
+          <tr><th>Quantization</th><td>q8 (8-bit) ONNX</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (runs anywhere; no WebGPU needed)</td></tr>
+          <tr><th>Download</th><td>~90 MB, cached after first load</td></tr>
+          <tr><th>License</th><td>MIT (OpenAI CLIP)</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers, FileReader — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Pick or drop an image, type comma-separated labels, and hit Classify. The bars are a softmax over CLIP's similarity between the image and each label.</p>
+
+      <button id="load" type="button">Load CLIP (~90 MB)</button>
+      <progress id="prog" value="0" max="100" hidden></progress>
+      <p class="status" id="status" role="status" aria-live="polite">Model not loaded yet.</p>
+
+      <div class="field-row" style="align-items:stretch">
+        <div style="flex:1 1 280px">
+          <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image">
+            <span id="dropText">Drop an image here, or click to choose</span>
+            <input type="file" id="file" accept="image/*" hidden />
+          </div>
+          <div class="sample-strip" id="samples" aria-label="Sample images">
+            <img class="sample-thumb active" src="sample-cats.jpg" data-src="sample-cats.jpg" alt="Two cats sleeping on a pink couch" tabindex="0" role="button" />
+            <img class="sample-thumb" src="sample-room.jpg" data-src="sample-room.jpg" alt="A cozy sunlit bedroom with a bookshelf" tabindex="0" role="button" />
+            <img class="sample-thumb" src="sample-river.jpg" data-src="sample-river.jpg" alt="A riverside at golden hour with a swan" tabindex="0" role="button" />
+          </div>
+          <div class="preview-wrap"><img class="preview-img" id="preview" src="sample-cats.jpg" alt="Selected image preview" /></div>
+        </div>
+        <div style="flex:1 1 280px">
+          <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">
+            Candidate labels (comma-separated)
+            <textarea id="labels" rows="4">a photo of two cats, a photo of a dog, a sleeping animal, a city street, a bowl of food</textarea>
+          </label>
+          <div style="margin:.5rem 0">
+            <button id="run" type="button" disabled>Classify</button>
+            <button id="clearLabels" type="button" class="secondary">Reset labels</button>
+          </div>
+          <div class="bars" id="bars" aria-live="polite"></div>
+          <div class="readout" id="readout" hidden>
+            <span>backend <b id="rBackend">–</b></span>
+            <span>latency <b id="rMs">–</b></span>
+            <span>labels <b id="rN">–</b></span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside</h3>
+      <p class="muted">
+        Under the hood CLIP turns your image into one 512-number vector and each label into its own
+        512-number vector, then measures the <strong>cosine similarity</strong> (the angle) between the
+        image vector and every label vector. Those similarities are scaled (×≈100, CLIP's learned
+        temperature) into <strong>logits</strong>, and a softmax turns the logits into the percentages
+        above. Same picture, different words → different winner. That is the whole trick.
+      </p>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Run a classification to see the raw numbers.</div>
+      <div id="insideWrap" hidden>
+        <div class="readout">
+          <span>image embedding <b id="iImg">–</b></span>
+          <span>text embeddings <b id="iTxt">–</b></span>
+          <span>shared space <b>512-d, unit-normalized</b></span>
+        </div>
+        <table class="inside-table">
+          <thead><tr><th>Label</th><th>cosine sim</th><th>logit (×scale)</th><th>softmax</th></tr></thead>
+          <tbody id="insideRows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        Every other image classifier is stuck with the categories it was trained on. CLIP isn't: the
+        label set is an <em>input</em>, decided at runtime, in the browser, for free. That flips a lot
+        of problems from "collect a dataset and fine-tune a model" into "write a list of words."
+      </p>
+      <ul>
+        <li><strong>On-the-fly moderation</strong> — score images against your own policy labels (<code>weapon</code>, <code>graphic</code>, <code>safe</code>) without shipping a training pipeline.</li>
+        <li><strong>Auto-tagging &amp; search</strong> — tag a photo library against a vocabulary you control, then search it by meaning, all client-side.</li>
+        <li><strong>Vibe / aesthetic sorting</strong> — rank images by abstract qualities (<code>minimalist</code>, <code>nostalgic</code>, <code>chaotic</code>) that no fixed classifier has a class for.</li>
+        <li><strong>Private triage</strong> — the image and the labels never leave the tab, so it works on sensitive photos and offline.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">One image, your labels — feel zero-shot classification first-hand.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Auto-tagging &amp; content moderation against a fixed label set.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Live webcam "vibe check" — classify the camera against moods in real time.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>The whole thing is three lines with Transformers.js. The label list is just an argument:</p>
+      <pre><code>import { pipeline } from "@huggingface/transformers";
+
+const classify = await pipeline(
+  "zero-shot-image-classification",
+  "Xenova/clip-vit-base-patch16",
+); // downloads + caches ~90 MB once
+
+const output = await classify(imageURL, ["a cat", "a dog", "a city street"]);
+// → [{ label: "a cat", score: 0.94 }, { label: "a city street", score: 0.05 }, …]
+//   score is the softmax over CLIP's image↔label cosine similarities</code></pre>
+      <p class="muted">
+        This page goes one level deeper for "See inside": it reuses the pipeline's own model,
+        processor, and tokenizer to read the raw <code>logits_per_image</code> and the image/text
+        embedding tensors from a single forward pass — the same call, just keeping the intermediate
+        numbers. Inference runs in a Web Worker so the page never janks.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/Xenova/clip-vit-base-patch16" target="_blank" rel="noopener">Model card — Xenova/clip-vit-base-patch16</a></li>
+        <li><a href="https://openai.com/research/clip" target="_blank" rel="noopener">OpenAI — Learning Transferable Visual Models (CLIP)</a></li>
+        <li><a href="https://arxiv.org/abs/2103.00020" target="_blank" rel="noopener">Paper — Radford et al., 2021 (arXiv:2103.00020)</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { ClipEngine, fileToDataURL, parseLabels, renderBars, escapeHTML, CLIP_CSS }
+        from "./clip.js";
+      import { progressReporter } from "/web-ai-showcase/lib/webai.js";
+
+      const style = document.createElement("style");
+      style.textContent = CLIP_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new ClipEngine();
+      let currentImageURL = null; // data URL passed to the worker
+      const DEFAULT_LABELS = $("labels").value;
+
+      // --- image selection: samples, upload, drop ---
+      async function useURL(url, previewSrc) {
+        currentImageURL = url;
+        $("preview").src = previewSrc ?? url;
+      }
+      // Samples: fetch → data URL so the worker gets a self-contained image.
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        const src = el.dataset.src;
+        const blob = await (await fetch(src)).blob();
+        const url = await fileToDataURL(new File([blob], "sample", { type: blob.type }));
+        await useURL(url, src);
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => {
+          if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); }
+        });
+      }
+      // Preload the default sample as a data URL.
+      pickSample($("samples").firstElementChild);
+
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); }
+      });
+      file.addEventListener("change", async () => {
+        if (file.files[0]) await loadFile(file.files[0]);
+      });
+      ["dragover", "dragenter"].forEach((ev) =>
+        drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) =>
+        drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      drop.addEventListener("drop", async (e) => {
+        const f = e.dataTransfer?.files?.[0];
+        if (f && f.type.startsWith("image/")) await loadFile(f);
+      });
+      async function loadFile(f) {
+        for (const t of $("samples").children) t.classList.remove("active");
+        const url = await fileToDataURL(f);
+        await useURL(url);
+        $("dropText").textContent = f.name;
+      }
+
+      // --- load model ---
+      const reporter = progressReporter($("prog"), $("status"));
+      $("load").addEventListener("click", async () => {
+        $("load").disabled = true;
+        $("prog").hidden = false;
+        $("status").classList.remove("err");
+        $("status").textContent = "Loading CLIP…";
+        try {
+          const device = await engine.load((p) => reporter.onProgress(p));
+          $("status").textContent = `Model ready — running on ${device.toUpperCase()}.`;
+          $("status").classList.add("ok");
+          $("prog").hidden = true;
+          $("run").disabled = false;
+        } catch (err) {
+          reporter.fail(err);
+          $("load").disabled = false;
+        }
+      });
+
+      // --- classify ---
+      $("clearLabels").addEventListener("click", () => { $("labels").value = DEFAULT_LABELS; });
+      $("run").addEventListener("click", classify);
+      async function classify() {
+        const labels = parseLabels($("labels").value);
+        if (!currentImageURL) { $("status").textContent = "Choose an image first."; return; }
+        if (labels.length < 2) { $("status").textContent = "Give at least two labels."; $("status").classList.add("err"); return; }
+        $("status").classList.remove("err");
+        $("run").disabled = true;
+        $("status").textContent = "Classifying…";
+        try {
+          const r = await engine.classify(currentImageURL, labels);
+          const items = r.labels.map((label, i) => ({ label, prob: r.probs[i], cosine: r.cosines[i] }));
+          renderBars($("bars"), items, { showCosine: true });
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = r.ms + " ms";
+          $("rN").textContent = labels.length;
+          renderInside(r);
+          $("status").textContent = "Done.";
+          $("status").classList.add("ok");
+        } catch (err) {
+          $("status").textContent = "Classification failed: " + err.message;
+          $("status").classList.add("err");
+        } finally {
+          $("run").disabled = false;
+        }
+      }
+
+      function renderInside(r) {
+        $("insideEmpty").hidden = true;
+        $("insideWrap").hidden = false;
+        $("iImg").textContent = r.imgDims ? `[${r.imgDims.join(" × ")}]` : "512-d";
+        $("iTxt").textContent = r.txtDims ? `[${r.txtDims.join(" × ")}]` : `${r.labels.length} × 512-d`;
+        const order = r.labels.map((_, i) => i).sort((a, b) => r.probs[b] - r.probs[a]);
+        $("insideRows").replaceChildren(...order.map((i) => {
+          const tr = document.createElement("tr");
+          tr.innerHTML = `<td>${escapeHTML(r.labels[i])}</td>
+            <td>${r.cosines[i].toFixed(4)}</td>
+            <td>${r.logits[i].toFixed(2)}</td>
+            <td>${(r.probs[i] * 100).toFixed(2)}%</td>`;
+          return tr;
+        }));
+      }
+    </script>
+  </body>
+</html>

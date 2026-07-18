@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CLIP Basics — one image, your labels · Web AI Showcase</title>
+    <meta name="description" content="The fundamental CLIP move: pick an image, type any labels, and watch it score the match. Zero-shot, in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎯</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">CLIP</a></p>
+
+    <header>
+      <p class="eyebrow">use case · basics</p>
+      <h1>Basics: one image, your labels</h1>
+      <p class="lede">
+        This is the whole idea in its simplest form. Give CLIP a picture and a list of words. It tells
+        you how well each word matches — even words it has never been "trained on," because to CLIP a
+        label is just more text to compare against the image.
+      </p>
+    </header>
+
+    <section class="panel">
+      <button id="load" type="button">Load CLIP (~90 MB)</button>
+      <progress id="prog" value="0" max="100" hidden></progress>
+      <p class="status" id="status" role="status" aria-live="polite">Model not loaded yet.</p>
+
+      <div class="field-row" style="align-items:stretch">
+        <div style="flex:1 1 260px">
+          <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image">
+            <span id="dropText">Drop an image, or click to choose</span>
+            <input type="file" id="file" accept="image/*" hidden />
+          </div>
+          <div class="sample-strip" id="samples">
+            <img class="sample-thumb active" src="../sample-cats.jpg" data-src="../sample-cats.jpg" alt="Two cats on a couch" tabindex="0" role="button" />
+            <img class="sample-thumb" src="../sample-room.jpg" data-src="../sample-room.jpg" alt="A cozy bedroom" tabindex="0" role="button" />
+            <img class="sample-thumb" src="../sample-river.jpg" data-src="../sample-river.jpg" alt="A riverside at golden hour" tabindex="0" role="button" />
+          </div>
+          <div class="preview-wrap"><img class="preview-img" id="preview" src="../sample-cats.jpg" alt="Selected image" /></div>
+        </div>
+        <div style="flex:1 1 260px">
+          <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">
+            Your labels (comma-separated)
+            <textarea id="labels" rows="3">a cat, a dog, a bird, a car</textarea>
+          </label>
+          <p class="muted" style="font-size:.8rem;margin:.3rem 0">Try a preset:</p>
+          <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin-bottom:.5rem">
+            <button class="chip" type="button" data-set="a cat, a dog, a bird, a car">animals vs. cars</button>
+            <button class="chip" type="button" data-set="indoors, outdoors">indoors / outdoors</button>
+            <button class="chip" type="button" data-set="morning, afternoon, night">time of day</button>
+            <button class="chip" type="button" data-set="happy, calm, tense, lonely">a feeling</button>
+          </div>
+          <button id="run" type="button" disabled>Classify</button>
+          <div class="bars" id="bars" aria-live="polite"></div>
+          <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>latency <b id="rMs">–</b></span></div>
+        </div>
+      </div>
+      <p class="muted" style="font-size:.85rem">
+        The bars are a softmax over the whole label set, so they always add up to 100%. Change the words
+        and the same picture can "become" a different thing — that is zero-shot classification.
+      </p>
+    </section>
+
+    <p class="crumbs"><a href="../">← Back to CLIP</a> · Next: <a href="../practical/">Practical →</a></p>
+
+    <script type="module">
+      import { ClipEngine, fileToDataURL, parseLabels, renderBars, CLIP_CSS } from "../clip.js";
+      import { progressReporter } from "/web-ai-showcase/lib/webai.js";
+      const style = document.createElement("style"); style.textContent = CLIP_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new ClipEngine();
+      let currentImageURL = null;
+
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        const blob = await (await fetch(el.dataset.src)).blob();
+        currentImageURL = await fileToDataURL(new File([blob], "s", { type: blob.type }));
+        $("preview").src = el.dataset.src;
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } });
+      }
+      pickSample($("samples").firstElementChild);
+
+      const file = $("file"), drop = $("drop");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) {
+        for (const t of $("samples").children) t.classList.remove("active");
+        currentImageURL = await fileToDataURL(f); $("preview").src = currentImageURL; $("dropText").textContent = f.name;
+      }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
+
+      for (const c of document.querySelectorAll(".chip")) c.addEventListener("click", () => { $("labels").value = c.dataset.set; });
+
+      const reporter = progressReporter($("prog"), $("status"));
+      $("load").addEventListener("click", async () => {
+        $("load").disabled = true; $("prog").hidden = false; $("status").classList.remove("err"); $("status").textContent = "Loading CLIP…";
+        try {
+          const device = await engine.load((p) => reporter.onProgress(p));
+          $("status").textContent = `Ready on ${device.toUpperCase()}.`; $("status").classList.add("ok"); $("prog").hidden = true; $("run").disabled = false;
+        } catch (err) { reporter.fail(err); $("load").disabled = false; }
+      });
+
+      $("run").addEventListener("click", async () => {
+        const labels = parseLabels($("labels").value);
+        if (!currentImageURL) { $("status").textContent = "Pick an image first."; return; }
+        if (labels.length < 2) { $("status").textContent = "Give at least two labels."; $("status").classList.add("err"); return; }
+        $("run").disabled = true; $("status").classList.remove("err"); $("status").textContent = "Classifying…";
+        try {
+          const r = await engine.classify(currentImageURL, labels);
+          renderBars($("bars"), r.labels.map((label, i) => ({ label, prob: r.probs[i], cosine: r.cosines[i] })), { showCosine: true });
+          $("readout").hidden = false; $("rBackend").textContent = r.device.toUpperCase(); $("rMs").textContent = r.ms + " ms";
+          $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>

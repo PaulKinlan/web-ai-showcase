@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CLIP Practical — auto-tagging & moderation · Web AI Showcase</title>
+    <meta name="description" content="Ship CLIP: tag a photo against a fixed vocabulary you control, or moderate it against a policy — entirely client-side, no training pipeline." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🏷️</text></svg>" />
+    <style>
+      .tag-chips { display:flex; flex-wrap:wrap; gap:.4rem; margin:.5rem 0; }
+      .tag-applied { border-color: var(--good); color: var(--good); font-weight:600; }
+      .verdict { font-family: var(--font-display); font-size:1.4rem; padding:.4rem 0; }
+      .verdict.ok { color: var(--good); }
+      .verdict.flag { color: var(--bad); }
+      .seg { display:inline-flex; border:1px solid var(--border-strong); border-radius:8px; overflow:hidden; }
+      .seg button { border:0; border-radius:0; background:var(--bg-raised); color:var(--color); }
+      .seg button[aria-pressed=true] { background:var(--accent); color:var(--accent-ink); }
+    </style>
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">CLIP</a></p>
+
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Practical: auto-tagging &amp; moderation</h1>
+      <p class="lede">
+        The shippable version. You define a <strong>fixed label set</strong> — your tag vocabulary or
+        your moderation policy — and CLIP scores every image against it. No dataset, no fine-tuning, no
+        server: the whole classifier is a list of words plus a threshold you own.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div class="seg" role="group" aria-label="Mode">
+        <button id="modeTag" type="button" aria-pressed="true">Auto-tag (multi-label)</button>
+        <button id="modeMod" type="button" aria-pressed="false">Moderate (single verdict)</button>
+      </div>
+
+      <div style="margin-top:.6rem">
+        <button id="load" type="button">Load CLIP (~90 MB)</button>
+        <progress id="prog" value="0" max="100" hidden></progress>
+        <p class="status" id="status" role="status" aria-live="polite">Model not loaded yet.</p>
+      </div>
+
+      <div class="field-row" style="align-items:stretch">
+        <div style="flex:1 1 260px">
+          <div class="sample-strip" id="samples">
+            <img class="sample-thumb active" src="../sample-cats.jpg" data-src="../sample-cats.jpg" alt="Two cats on a couch" tabindex="0" role="button" />
+            <img class="sample-thumb" src="../sample-room.jpg" data-src="../sample-room.jpg" alt="A cozy bedroom" tabindex="0" role="button" />
+            <img class="sample-thumb" src="../sample-river.jpg" data-src="../sample-river.jpg" alt="A riverside at golden hour" tabindex="0" role="button" />
+          </div>
+          <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image" style="margin-bottom:.5rem">
+            <span id="dropText">…or drop / choose your own</span>
+            <input type="file" id="file" accept="image/*" hidden />
+          </div>
+          <div class="preview-wrap"><img class="preview-img" id="preview" src="../sample-cats.jpg" alt="Selected image" /></div>
+        </div>
+        <div style="flex:1 1 280px">
+          <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">
+            <span id="labelHead">Tag vocabulary (comma-separated)</span>
+            <textarea id="labels" rows="4">cat, dog, person, food, indoors, outdoors, nature, vehicle, text or document, sunset</textarea>
+          </label>
+          <label id="threshWrap" style="display:flex;flex-direction:column;gap:.2rem;font-size:.82rem;margin-top:.5rem">
+            <span>Tag threshold — apply a tag when cosine ≥ <b id="threshVal">0.22</b></span>
+            <input type="range" id="thresh" min="0.15" max="0.30" step="0.005" value="0.22" />
+          </label>
+          <div style="margin:.6rem 0">
+            <button id="run" type="button" disabled>Run</button>
+          </div>
+          <div id="verdict" class="verdict" hidden></div>
+          <div class="tag-chips" id="applied" aria-live="polite"></div>
+          <div class="bars" id="bars" aria-live="polite"></div>
+          <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>latency <b id="rMs">–</b></span><span>labels <b id="rN">–</b></span></div>
+        </div>
+      </div>
+      <p class="muted" style="font-size:.85rem" id="explain">
+        Auto-tag mode uses the raw <strong>cosine similarity</strong> per tag and a threshold, so an
+        image can get many tags (or none) — the honest way to do multi-label. Moderation mode uses the
+        <strong>softmax</strong> across mutually-exclusive policy classes and takes the top one as the verdict.
+      </p>
+    </section>
+
+    <p class="crumbs"><a href="../basics/">← Basics</a> · <a href="../">CLIP</a> · Next: <a href="../wild/">Wild →</a></p>
+
+    <script type="module">
+      import { ClipEngine, fileToDataURL, parseLabels, renderBars, escapeHTML, CLIP_CSS } from "../clip.js";
+      import { progressReporter } from "/web-ai-showcase/lib/webai.js";
+      const style = document.createElement("style"); style.textContent = CLIP_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new ClipEngine();
+      let currentImageURL = null;
+      let mode = "tag";
+      const PRESETS = {
+        tag: "cat, dog, person, food, indoors, outdoors, nature, vehicle, text or document, sunset",
+        mod: "a safe everyday photo, violence or weapons, nudity or sexual content, gore or injury, hateful symbols",
+      };
+
+      function setMode(m) {
+        mode = m;
+        $("modeTag").setAttribute("aria-pressed", String(m === "tag"));
+        $("modeMod").setAttribute("aria-pressed", String(m === "mod"));
+        $("labelHead").textContent = m === "tag" ? "Tag vocabulary (comma-separated)" : "Policy classes (mutually exclusive)";
+        $("labels").value = PRESETS[m];
+        $("threshWrap").style.display = m === "tag" ? "" : "none";
+        $("applied").replaceChildren(); $("verdict").hidden = true; $("bars").replaceChildren(); $("readout").hidden = true;
+      }
+      $("modeTag").addEventListener("click", () => setMode("tag"));
+      $("modeMod").addEventListener("click", () => setMode("mod"));
+      $("thresh").addEventListener("input", () => { $("threshVal").textContent = (+$("thresh").value).toFixed(3); });
+
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        const blob = await (await fetch(el.dataset.src)).blob();
+        currentImageURL = await fileToDataURL(new File([blob], "s", { type: blob.type }));
+        $("preview").src = el.dataset.src;
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } });
+      }
+      pickSample($("samples").firstElementChild);
+
+      const file = $("file"), drop = $("drop");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) {
+        for (const t of $("samples").children) t.classList.remove("active");
+        currentImageURL = await fileToDataURL(f); $("preview").src = currentImageURL; $("dropText").textContent = f.name;
+      }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
+
+      const reporter = progressReporter($("prog"), $("status"));
+      $("load").addEventListener("click", async () => {
+        $("load").disabled = true; $("prog").hidden = false; $("status").classList.remove("err"); $("status").textContent = "Loading CLIP…";
+        try {
+          const device = await engine.load((p) => reporter.onProgress(p));
+          $("status").textContent = `Ready on ${device.toUpperCase()}.`; $("status").classList.add("ok"); $("prog").hidden = true; $("run").disabled = false;
+        } catch (err) { reporter.fail(err); $("load").disabled = false; }
+      });
+
+      $("run").addEventListener("click", async () => {
+        const labels = parseLabels($("labels").value);
+        if (!currentImageURL) { $("status").textContent = "Pick an image first."; return; }
+        if (labels.length < 2) { $("status").textContent = "Give at least two labels."; $("status").classList.add("err"); return; }
+        $("run").disabled = true; $("status").classList.remove("err"); $("status").textContent = "Scoring…";
+        try {
+          const r = await engine.classify(currentImageURL, labels);
+          $("readout").hidden = false; $("rBackend").textContent = r.device.toUpperCase(); $("rMs").textContent = r.ms + " ms"; $("rN").textContent = labels.length;
+          const items = r.labels.map((label, i) => ({ label, prob: r.probs[i], cosine: r.cosines[i] }));
+
+          if (mode === "tag") {
+            $("verdict").hidden = true;
+            const th = +$("thresh").value;
+            const applied = items.filter((it) => it.cosine >= th).sort((a, b) => b.cosine - a.cosine);
+            $("applied").replaceChildren(...(applied.length ? applied : []).map((it) => {
+              const s = document.createElement("span"); s.className = "tag chip tag-applied";
+              s.textContent = `${it.label} · ${it.cosine.toFixed(3)}`; return s;
+            }));
+            if (!applied.length) { const s = document.createElement("span"); s.className = "muted"; s.style.fontSize = ".85rem"; s.textContent = "No tags cleared the threshold."; $("applied").replaceChildren(s); }
+            renderBars($("bars"), items, { showCosine: true });
+          } else {
+            $("applied").replaceChildren();
+            const top = [...items].sort((a, b) => b.prob - a.prob)[0];
+            const safe = /safe|everyday/i.test(top.label);
+            const v = $("verdict"); v.hidden = false;
+            v.className = "verdict " + (safe ? "ok" : "flag");
+            v.textContent = safe ? `✓ OK — “${top.label}” (${(top.prob * 100).toFixed(0)}%)` : `⚠ Flagged — “${top.label}” (${(top.prob * 100).toFixed(0)}%)`;
+            renderBars($("bars"), items, { showCosine: false });
+          }
+          $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>
