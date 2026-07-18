@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Captioning Practical — alt-text generator · Web AI Showcase</title>
+    <meta name="description" content="Generate accessible alt text for any image in the browser and copy a ready-to-paste <img alt> snippet — captioning as an accessibility tool." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>💬</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">ViT-GPT2</a></p>
+
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Practical: an alt-text generator</h1>
+      <p class="lede">
+        Every image on the web should have <code>alt</code> text, and almost none do. Drop an image, get a
+        draft description, tidy it if you like, and copy a ready-to-paste <code>&lt;img&gt;</code> tag —
+        a starting point for accessible markup, generated on your device.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+
+      <div class="field-row" style="align-items:stretch">
+        <div style="flex:1 1 260px">
+          <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image">
+            <span id="dropText">Drop an image, or click to choose</span>
+            <input type="file" id="file" accept="image/*" hidden />
+          </div>
+          <div class="sample-strip" id="samples">
+            <img class="sample-thumb active" src="../sample-cats.jpg" data-src="../sample-cats.jpg" alt="Two cats on a couch" tabindex="0" role="button" />
+            <img class="sample-thumb" src="../sample-room.jpg" data-src="../sample-room.jpg" alt="A cozy bedroom" tabindex="0" role="button" />
+            <img class="sample-thumb" src="../sample-river.jpg" data-src="../sample-river.jpg" alt="A riverside at golden hour" tabindex="0" role="button" />
+          </div>
+          <div class="preview-wrap"><img class="preview-img" id="preview" src="../sample-cats.jpg" alt="Selected image" /></div>
+        </div>
+        <div style="flex:1 1 260px">
+          <button id="run" type="button" disabled>Generate alt text</button>
+          <p class="status" id="runStatus" role="status" aria-live="polite"></p>
+          <label style="display:block;font-size:.82rem;margin-top:.4rem">Draft alt text (edit freely)
+            <textarea id="alt" rows="2" style="inline-size:100%" placeholder="The generated description appears here…"></textarea>
+          </label>
+          <p class="muted" style="font-size:.78rem;margin:.3rem 0">Copy-ready snippet:</p>
+          <pre class="code-snippet" id="snippet" aria-live="polite">&lt;img src="…" alt=""&gt;</pre>
+          <button id="copy" type="button" class="secondary" disabled>Copy &lt;img&gt; tag</button>
+          <span id="copied" class="status ok" style="margin-inline-start:.5rem"></span>
+        </div>
+      </div>
+      <p class="muted" style="font-size:.85rem">
+        A model draft is a <em>starting point</em>, not a rubber stamp — always read it in context.
+        Decorative images should get empty <code>alt=""</code>; informative ones deserve a human check.
+      </p>
+    </section>
+
+    <p class="crumbs"><a href="../">← Back to ViT-GPT2</a> · Next: <a href="../wild/">Wild →</a></p>
+
+    <script type="module">
+      import { CaptionEngine, fileToDataURL, escapeHTML, CAP_CSS } from "../cap.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = CAP_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new CaptionEngine();
+      let currentImageURL = null, currentName = "image.jpg";
+
+      function updateSnippet() {
+        const alt = $("alt").value.trim();
+        $("snippet").textContent = `<img src="${currentName}" alt="${alt.replace(/"/g, "&quot;")}">`;
+        $("copy").disabled = alt.length === 0;
+      }
+      $("alt").addEventListener("input", updateSnippet);
+
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        currentName = el.dataset.src.split("/").pop();
+        const blob = await (await fetch(el.dataset.src)).blob();
+        currentImageURL = await fileToDataURL(new File([blob], "s", { type: blob.type }));
+        $("preview").src = el.dataset.src; updateSnippet();
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } });
+      }
+      pickSample($("samples").firstElementChild);
+
+      const file = $("file"), drop = $("drop");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) { for (const t of $("samples").children) t.classList.remove("active"); currentName = f.name; currentImageURL = await fileToDataURL(f); $("preview").src = currentImageURL; $("dropText").textContent = f.name; updateSnippet(); }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/vit-gpt2-image-captioning", runtime: "transformers.js", dtype: "q8", sizeMB: 250, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("run").disabled = false; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!currentImageURL) { $("runStatus").textContent = "Pick an image first."; return; }
+        $("run").disabled = true; $("runStatus").classList.remove("err"); $("runStatus").textContent = "Generating…"; $("copied").textContent = "";
+        let text = ""; $("alt").value = "";
+        try {
+          const r = await engine.caption(currentImageURL, 30, (m) => { text += m.token; $("alt").value = text.trim(); updateSnippet(); });
+          // Capitalise the first letter for a cleaner alt string.
+          const clean = r.caption.charAt(0).toUpperCase() + r.caption.slice(1);
+          $("alt").value = clean; updateSnippet();
+          $("runStatus").textContent = "Done — review and edit before shipping."; $("runStatus").classList.add("ok");
+        } catch (err) { $("runStatus").textContent = "Failed: " + err.message; $("runStatus").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+
+      $("copy").addEventListener("click", async () => {
+        try { await navigator.clipboard.writeText($("snippet").textContent); $("copied").textContent = "Copied ✓"; }
+        catch { $("copied").textContent = "Copy failed — select manually."; }
+      });
+    </script>
+  </body>
+</html>

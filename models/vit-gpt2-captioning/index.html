@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ViT-GPT2 — image captioning in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run ViT-GPT2 image captioning locally in your browser: drop an image and watch a full-sentence description generate token by token — with real per-token timing. No server, nothing leaves your device."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>💬</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">image-to-text · vision → language · WASM · ~250 MB</p>
+      <h1>ViT-GPT2 — write a sentence about any picture</h1>
+      <p class="lede">
+        A Vision Transformer reads the image; a GPT-2 decoder writes about it, one word at a time. The
+        result is a plain-English caption — <code>a cat laying on top of a bed</code> — generated
+        entirely on your device, no captioning API in sight.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/Xenova/vit-gpt2-image-captioning" target="_blank" rel="noopener">Xenova/vit-gpt2-image-captioning</a></td></tr>
+          <tr><th>Task / pipeline</th><td><code>image-to-text</code></td></tr>
+          <tr><th>Architecture</th><td>ViT-B/16 encoder → GPT-2 decoder (encoder–decoder, cross-attention)</td></tr>
+          <tr><th>Output</th><td>Free-form English caption, generated token by token</td></tr>
+          <tr><th>Quantization</th><td>q8 (8-bit) ONNX — separate encoder + decoder graphs</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (runs anywhere; no WebGPU needed)</td></tr>
+          <tr><th>Download</th><td>~250 MB, cached after first load</td></tr>
+          <tr><th>License</th><td>Apache-2.0 (nlpconnect/vit-gpt2-image-captioning)</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers, FileReader — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Pick or drop an image and hit Caption. Words appear as the decoder generates them — that streaming is the real generation, not an animation.</p>
+
+      <div id="model-loader"></div>
+
+      <div class="field-row" style="align-items:stretch">
+        <div style="flex:1 1 280px">
+          <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image">
+            <span id="dropText">Drop an image here, or click to choose</span>
+            <input type="file" id="file" accept="image/*" hidden />
+          </div>
+          <div class="sample-strip" id="samples" aria-label="Sample images">
+            <img class="sample-thumb active" src="sample-cats.jpg" data-src="sample-cats.jpg" alt="Two cats sleeping on a pink couch" tabindex="0" role="button" />
+            <img class="sample-thumb" src="sample-room.jpg" data-src="sample-room.jpg" alt="A cozy sunlit bedroom with a bookshelf" tabindex="0" role="button" />
+            <img class="sample-thumb" src="sample-river.jpg" data-src="sample-river.jpg" alt="A riverside at golden hour with a swan" tabindex="0" role="button" />
+          </div>
+          <div class="preview-wrap"><img class="preview-img" id="preview" src="sample-cats.jpg" alt="Selected image preview" /></div>
+        </div>
+        <div style="flex:1 1 280px">
+          <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">
+            Max caption length <span id="maxVal" style="font-family:var(--font-mono)">30 tokens</span>
+            <input type="range" id="maxtok" min="8" max="50" value="30" />
+          </label>
+          <div style="margin:.5rem 0">
+            <button id="run" type="button" disabled>Caption</button>
+          </div>
+          <p class="status" id="runStatus" role="status" aria-live="polite"></p>
+          <div class="caption-box" id="caption" aria-live="polite"></div>
+          <div class="readout" id="readout" hidden>
+            <span>backend <b id="rBackend">–</b></span>
+            <span>tokens <b id="rTok">–</b></span>
+            <span>total <b id="rMs">–</b></span>
+            <span>speed <b id="rTps">–</b></span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside</h3>
+      <p class="muted">
+        Captioning is <strong>autoregressive</strong>: after the ViT encoder turns the image into patch
+        embeddings once, the GPT-2 decoder produces the caption one token at a time, each token
+        conditioned on the image <em>and</em> everything written so far. The trace below shows every token
+        as it arrived, with the elapsed time — you can literally watch the sentence being built and see
+        where the model hesitates. The first token is the slow one (it includes the image encode); the
+        rest come faster.
+      </p>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Generate a caption to see the token-by-token trace.</div>
+      <div id="insideWrap" hidden>
+        <div class="token-trace" id="trace"></div>
+        <div class="readout" style="margin-top:.6rem">
+          <span>first token <b id="iFirst">–</b></span>
+          <span>tokens/sec <b id="iTps">–</b></span>
+        </div>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        A caption is structured meaning you can act on — search it, read it aloud, translate it, gate on
+        it. Doing it locally makes it free, private, and offline-capable, which changes where you can put
+        it.
+      </p>
+      <ul>
+        <li><strong>Accessibility at scale</strong> — auto-generate <code>alt</code> text for user-uploaded images so screen-reader users aren't left with "image".</li>
+        <li><strong>Searchable media libraries</strong> — turn a folder of untitled photos into text you can full-text search, without uploading a single file.</li>
+        <li><strong>Content pipelines</strong> — draft social captions, product blurbs, or thumbnail descriptions client-side, then let a human polish.</li>
+        <li><strong>Assistive & offline capture</strong> — describe what a camera sees on-device, useful for low-connectivity or privacy-sensitive settings.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Caption a sample and watch the sentence stream in token by token.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">An alt-text generator with a copy-ready <code>&lt;img alt&gt;</code> snippet — accessibility, done client-side.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Caption a live webcam frame — point your camera and let the model narrate it.</p></a>
+        <a class="model-card" href="multimodel/"><h3>Multi-model</h3><p class="muted">Caption → sentiment: describe the image, then read the mood of the description.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>The base call is two lines with Transformers.js:</p>
+      <pre><code>import { pipeline } from "@huggingface/transformers";
+
+const captioner = await pipeline(
+  "image-to-text",
+  "Xenova/vit-gpt2-image-captioning",
+); // downloads + caches ~250 MB once
+
+const output = await captioner(imageURL, { max_new_tokens: 30 });
+// → [{ generated_text: "a cat laying on top of a bed" }]</code></pre>
+      <p class="muted">
+        For "See inside", this page passes a <code>TextStreamer</code> into the same call. The streamer's
+        callback fires once per decoded token, so the page can render the caption as it forms and record
+        each token's arrival time — all off the main thread in a Web Worker, so the page never janks.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/Xenova/vit-gpt2-image-captioning" target="_blank" rel="noopener">Model card — Xenova/vit-gpt2-image-captioning</a></li>
+        <li><a href="https://huggingface.co/nlpconnect/vit-gpt2-image-captioning" target="_blank" rel="noopener">Original weights — nlpconnect/vit-gpt2-image-captioning</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { CaptionEngine, fileToDataURL, escapeHTML, CAP_CSS } from "./cap.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = CAP_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new CaptionEngine();
+      let currentImageURL = null;
+
+      async function useURL(url, previewSrc) { currentImageURL = url; $("preview").src = previewSrc ?? url; }
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        const src = el.dataset.src;
+        const blob = await (await fetch(src)).blob();
+        await useURL(await fileToDataURL(new File([blob], "sample", { type: blob.type })), src);
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } });
+      }
+      pickSample($("samples").firstElementChild);
+
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      file.addEventListener("change", async () => { if (file.files[0]) await loadFile(file.files[0]); });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      drop.addEventListener("drop", async (e) => { const f = e.dataTransfer?.files?.[0]; if (f && f.type.startsWith("image/")) await loadFile(f); });
+      async function loadFile(f) { for (const t of $("samples").children) t.classList.remove("active"); await useURL(await fileToDataURL(f)); $("dropText").textContent = f.name; }
+
+      const maxtok = $("maxtok");
+      maxtok.addEventListener("input", () => { $("maxVal").textContent = maxtok.value + " tokens"; });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/vit-gpt2-image-captioning", runtime: "transformers.js", dtype: "q8", sizeMB: 250, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("run").disabled = false; },
+      });
+
+      $("run").addEventListener("click", caption);
+      async function caption() {
+        if (!currentImageURL) { $("runStatus").textContent = "Choose an image first."; return; }
+        $("runStatus").classList.remove("err"); $("run").disabled = true;
+        $("runStatus").textContent = "Generating…"; $("caption").innerHTML = '<span class="cursor">&nbsp;</span>';
+        $("trace").replaceChildren(); $("insideEmpty").hidden = true; $("insideWrap").hidden = false;
+        let text = ""; let firstT = null;
+        try {
+          const r = await engine.caption(currentImageURL, Number(maxtok.value), (m) => {
+            if (firstT === null) firstT = m.t;
+            text += m.token;
+            $("caption").innerHTML = escapeHTML(text) + '<span class="cursor">&nbsp;</span>';
+            const tok = document.createElement("span");
+            tok.className = "tok";
+            tok.innerHTML = escapeHTML(m.token) + `<small>${m.t}ms</small>`;
+            $("trace").append(tok);
+          });
+          $("caption").textContent = r.caption;
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rTok").textContent = r.tokens;
+          $("rMs").textContent = r.ms + " ms";
+          const tps = r.tokens > 0 ? (r.tokens / (r.ms / 1000)).toFixed(1) : "–";
+          $("rTps").textContent = tps + " tok/s";
+          $("iFirst").textContent = (firstT ?? r.ms) + " ms";
+          $("iTps").textContent = tps;
+          $("runStatus").textContent = "Done."; $("runStatus").classList.add("ok");
+        } catch (err) {
+          $("runStatus").textContent = "Captioning failed: " + err.message; $("runStatus").classList.add("err");
+          $("caption").textContent = "";
+        } finally { $("run").disabled = false; }
+      }
+    </script>
+  </body>
+</html>
