@@ -83,6 +83,32 @@ viz renders; errors surface on the page; console/network are clean of unhandled 
 both pass WCAG AA; the SW does not double-store (Cache Storage). Record a **browser/device matrix**
 note (what path ran, what needs a GPU device). Frontend UI → run `modern-web-guidance` first.
 
+## 4b. Model-loading UX — auto-init, shared architecture (MANDATORY)
+
+Every page loads its model through `lib/model-loader.js` `createModelLoader(...)` (backed by
+`lib/model-cache.js`). Do NOT hand-roll a bespoke "Load model" button.
+
+- **A valid current on-device model auto-initialises** — a browser-native runtime exposes it, or
+  it's already downloaded + validated in the local cache. Returning users never click "Load" for a
+  current local version. Show an accessible `checking → initialising → ready` status while
+  auto-starting.
+- Surface a user action ONLY for: **Download** (absent — would transfer assets), **Re-download**
+  (partial — assets evicted), **Update** (live revision newer than the validated cached one; the
+  cached version still auto-inits, Update is optional). **Never silently re-download a large
+  model.**
+- The cache/version layer distinguishes **current / stale(update) / partial / evicted / absent** and
+  verifies integrity (recorded files still present) before "ready". Provide a per-model
+  **clear-cache** control and surface storage usage.
+- Failed auto-init → **Retry / re-download / recovery**, never fake output. WebGPU-only runtimes
+  gate on a real adapter probe (honest unsupported state).
+- Every control + status reflects actual model/cache/runtime state, with keyboard + screen-reader
+  semantics (`role="status"` `aria-live`, labelled buttons, focus).
+
+**State-matrix re-test (every built + retrofitted page):** first visit · current cached (auto-init,
+no button) · stale/update (auto-init cached + Update offered) · partial/corrupt cache (Re-download)
+· offline cached use · eviction · unsupported device/browser. The visible control MUST match the
+state.
+
 ## 5. Cache / SW versioning + eviction
 
 `sw.js` owns only the app-shell cache (bump `SW_VERSION` on shell changes); transformers.js owns

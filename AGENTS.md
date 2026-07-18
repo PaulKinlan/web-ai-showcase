@@ -34,6 +34,14 @@ short version for tools that look for `AGENTS.md`.
   a11y, inspectable tokens/tensors/timings/memory/backend/quant, capability+fallback diagnostics,
   and an expanding use-case matrix (multiple basics/practical/wild + credible multi-model) — all
   runnable.
+- **Auto-initialise on-device models — no unnecessary "Load" button.** Every page uses
+  `lib/model-loader.js` `createModelLoader(...)` (backed by `lib/model-cache.js`). A valid current
+  local model (browser-native or validated in cache) initialises AUTOMATICALLY with an accessible
+  checking→initialising→ready status. Only show Download (absent), Re-download (partial/evicted), or
+  Update (newer revision than the validated cached one). Never silently re-download; verify
+  integrity before "ready"; failed init → retry/recovery, never fake output; per-model "clear cache"
+  control. Re-test states: first visit / current cached / stale-update / partial-corrupt / offline
+  cached / eviction / unsupported device. Do NOT hand-roll a bespoke Load button.
 - Verify with headless Chrome + `Read` the screenshot (no chrome-devtools-mcp in the routine).
 - Canonical process: **`.agents/skills/web-ai-showcase/SKILL.md`**.
 

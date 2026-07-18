@@ -85,6 +85,13 @@ internals, capability/fallback diagnostics, and an expanding use-case matrix: mu
 basics/practical/wild + credible multi-model — all runnable). Keep building pending eligible models
 until the gap is closed.
 
+**Model loading MUST use the shared auto-init architecture** (`lib/model-loader.js`
+`createModelLoader(...)`): a valid current on-device model auto-initialises (no "Load" button for a
+returning user); only Download (absent) / Re-download (partial) / Update (newer revision) appear;
+never silently re-download; failed init → retry/recovery, never fake output. Never hand-roll a
+bespoke Load button. Re-test the state matrix (first visit / current cached / stale / partial /
+offline / eviction / unsupported). See CLAUDE.md invariant 12 + the skill §4b.
+
 ## Safety
 
 - Never fake model output. A model page that doesn't actually run the model in-browser is a failure.

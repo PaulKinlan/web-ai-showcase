@@ -145,6 +145,29 @@ diagnostics; and an **expanding use-case matrix** — _multiple_ basics, _multip
 (business/developer), _multiple_ ambitious/wild, and credible multi-model compositions — each a real
 runnable demo, never a static card or fake output.
 
+### 12. Auto-initialise on-device models — no unnecessary "Load" button
+
+Model loading is a SHARED architecture. **Every page uses `lib/model-loader.js`
+`createModelLoader(...)`** (backed by `lib/model-cache.js`):
+
+- If a **valid current** version is already on-device — a browser-native runtime exposes it, OR it's
+  already downloaded + validated in the local cache — the page **auto-initialises it and just
+  works.** Returning users never click "Load" for an already-local current version.
+- Show an accessible **checking → initialising → ready** status while auto-starting (`role="status"`
+  `aria-live`).
+- Only surface **Download** (model absent — loading would transfer assets), **Re-download** (cache
+  partial — assets evicted), or **Update** (live revision newer than the validated cached one; the
+  cached version still auto-inits — Update is optional). **Never silently re-download a large
+  model.**
+- Distinguish **current / stale(update) / partial / evicted / absent**; verify integrity (recorded
+  files still present) before "ready".
+- Failed auto-init exposes **Retry / re-download / recovery** — never fake output. WebGPU-only
+  runtimes gate on a real adapter probe (honest unsupported state). Provide a per-model **"Clear
+  cached model"** control + storage usage. The visible control + status MUST match actual state,
+  with keyboard + SR semantics.
+- Re-test every built page across: **first visit · current cached · stale/update · partial/corrupt ·
+  offline cached · eviction · unsupported device.**
+
 > Canonical process: **`.agents/skills/web-ai-showcase/SKILL.md`** (inventory refresh, dedup,
 > license/ security review, build requirements, cache versioning/eviction, verification, coverage
 > denominators, completion discipline). AGENTS.md has the short rules.
