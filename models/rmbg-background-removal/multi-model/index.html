@@ -7,6 +7,10 @@
     <meta name="description" content="Compose two models: RMBG cuts the subject out, Depth Anything gives it thickness, and the cutout tilts in 3D as you move — a floating sticker, all on-device." />
     <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🪄</text></svg>" />
+    <style>
+      .loader-pair { display:grid; gap:1rem; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); margin:.6rem 0; }
+      .loader-title { font-family:var(--font-mono); font-size:.78rem; color:var(--muted); margin:0 0 .3rem; text-transform:uppercase; letter-spacing:.05em; }
+    </style>
   </head>
   <body>
     <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">RMBG-1.4</a></p>
@@ -23,10 +27,18 @@
     </header>
 
     <section class="panel">
-      <p class="muted">This page loads <strong>both</strong> models (~270 MB combined, cached after first load). WebGPU accelerates them where available; otherwise both fall back to WebAssembly and the page says so.</p>
-      <button id="load" type="button">Load both models</button>
-      <progress id="prog" value="0" max="100" hidden></progress>
-      <p class="status" id="status" role="status" aria-live="polite">Models not loaded yet.</p>
+      <p class="muted">This page composes <strong>two</strong> on-device models (~270 MB combined, cached after first load). Each initialises on its own below — a cached copy auto-starts, no button. WebGPU accelerates them where available; otherwise both fall back to WebAssembly and the page says so.</p>
+      <div class="loader-pair">
+        <div>
+          <p class="loader-title">RMBG-1.4 — background removal</p>
+          <div id="model-loader-rmbg"></div>
+        </div>
+        <div>
+          <p class="loader-title">Depth Anything v2 — monocular depth</p>
+          <div id="model-loader-depth"></div>
+        </div>
+      </div>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
 
       <div class="sample-strip" id="samples">
         <img class="sample-thumb active" src="../sample-pet.jpg" data-src="../sample-pet.jpg" alt="A swan on a river" tabindex="0" role="button" />
@@ -58,7 +70,7 @@
     <script type="module">
       import { RmbgEngine, urlToDataURL, fileToDataURL, loadImage, RMBG_CSS } from "../rmbg.js";
       import { DepthEngine } from "../../depth-anything/depth.js";
-      import { progressReporter } from "/web-ai-showcase/lib/webai.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
       const style = document.createElement("style"); style.textContent = RMBG_CSS; document.head.append(style);
       const $ = (id) => document.getElementById(id);
       const rmbg = new RmbgEngine(), depth = new DepthEngine();
@@ -107,13 +119,19 @@
         }
       }
 
-      const reporter = progressReporter($("prog"), $("status"));
-      $("load").addEventListener("click", async () => {
-        $("load").disabled = true; $("prog").hidden = false; $("status").classList.remove("err"); $("status").textContent = "Loading background-removal + depth…";
-        try {
-          const [rDev] = await Promise.all([rmbg.load((p) => reporter.onProgress(p)), depth.load((p) => reporter.onProgress(p))]);
-          $("status").textContent = `Both models ready — running on ${rDev.toUpperCase()}.`; $("status").classList.add("ok"); $("prog").hidden = true; $("run").disabled = false;
-        } catch (err) { reporter.fail(err); $("load").disabled = false; }
+      // Both models init independently; "Make 3D sticker" unlocks once BOTH are ready.
+      function maybeEnableRun() { if (rmbg.ready && depth.ready) $("run").disabled = false; }
+      createModelLoader({
+        mount: $("model-loader-rmbg"),
+        model: { modelId: "briaai/RMBG-1.4", runtime: "transformers.js", dtype: "fp32", sizeMB: 170, requiresWebGPU: false },
+        load: async (onProgress) => { const device = await rmbg.load((p) => onProgress(p)); return { device }; },
+        onReady: maybeEnableRun,
+      });
+      createModelLoader({
+        mount: $("model-loader-depth"),
+        model: { modelId: "onnx-community/depth-anything-v2-small", runtime: "transformers.js", dtype: "fp16", sizeMB: 100, requiresWebGPU: false },
+        load: async (onProgress) => { const device = await depth.load((p) => onProgress(p)); return { device }; },
+        onReady: maybeEnableRun,
       });
 
       async function run() {
@@ -164,10 +182,17 @@
 
       if (new URLSearchParams(location.search).has("auto")) {
         (async () => {
-          await pickSample($("samples").firstElementChild); $("load").click();
-          try { await Promise.all([rmbg.load(), depth.load()]); await run();
+          await pickSample($("samples").firstElementChild);
+          for (const id of ["model-loader-rmbg", "model-loader-depth"]) {
+            const btn = $(id).querySelector(".loader-actions button");
+            if (btn) btn.click();
+          }
+          const t0 = Date.now();
+          while (!(rmbg.ready && depth.ready) && Date.now() - t0 < 120000) await new Promise((r) => setTimeout(r, 200));
+          if (rmbg.ready && depth.ready) {
+            await run();
             let k = 0; const iv = setInterval(() => { tgx = Math.sin(k) * 0.9; tgy = Math.cos(k) * 0.6; moving = true; kick(); if (++k > 6) { clearInterval(iv); moving = false; } }, 250);
-          } catch {}
+          }
         })();
       }
     </script>
