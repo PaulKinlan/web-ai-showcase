@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>DETR Practical — privacy redaction · Web AI Showcase</title>
+    <meta name="description" content="Detect a class of object and blur or black-box every instance on-device — a shippable privacy redaction tool. Nothing is uploaded; export the redacted image." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎯</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">DETR</a></p>
+
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Practical: privacy redaction</h1>
+      <p class="lede">
+        A concrete thing you could ship: detect a class of object — people, screens, licence plates'
+        parent objects — and blur or black-box every instance before the image leaves the browser. The
+        detection and the redaction both happen on-device; the original pixels never travel.
+      </p>
+    </header>
+
+    <section class="panel">
+      <button id="load" type="button">Load DETR (~160 MB)</button>
+      <progress id="prog" value="0" max="100" hidden></progress>
+      <p class="status" id="status" role="status" aria-live="polite">Model not loaded yet.</p>
+
+      <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image">
+        <span id="dropText">Drop an image, or click to choose</span>
+        <input type="file" id="file" accept="image/*" hidden />
+      </div>
+      <div class="sample-strip" id="samples">
+        <img class="sample-thumb active" src="../sample-cats.jpg" data-src="../sample-cats.jpg" alt="Two cats on a couch" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-room.jpg" data-src="../sample-room.jpg" alt="A cozy bedroom" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-river.jpg" data-src="../sample-river.jpg" alt="A riverside at golden hour" tabindex="0" role="button" />
+      </div>
+
+      <div style="margin:.6rem 0"><button id="run" type="button" disabled>Detect &amp; find classes</button></div>
+
+      <fieldset style="border:1px solid var(--border);border-radius:8px;padding:.6rem;margin:.6rem 0">
+        <legend style="font-size:.8rem;color:var(--muted)">Redact which classes?</legend>
+        <div class="count-chips" id="classChips" role="group" aria-label="Classes to redact"><span class="muted" style="font-size:.82rem">Run detection to list classes.</span></div>
+      </fieldset>
+
+      <div class="slider-row">
+        <span style="font-size:.85rem">Style:</span>
+        <button class="chip" id="modeBlur" type="button" aria-pressed="true">Blur</button>
+        <button class="chip" id="modeBox" type="button" aria-pressed="false">Black box</button>
+        <span style="flex:1"></span>
+        <button id="download" type="button" class="secondary" disabled>Download redacted</button>
+      </div>
+
+      <div class="canvas-wrap">
+        <canvas id="stage" class="stage-canvas" aria-label="Redacted image preview"></canvas>
+      </div>
+      <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>latency <b id="rMs">–</b></span><span>redacted <b id="rN">–</b></span></div>
+      <p class="muted" style="font-size:.85rem">
+        Blur copies a heavily blurred version of just the detected regions over the original; black box
+        paints solid. Either way the underlying pixels in those regions are gone from the exported image.
+      </p>
+    </section>
+
+    <p class="crumbs"><a href="../basics/">← Basics</a> · <a href="../">DETR</a> · Next: <a href="../wild/">Wild →</a></p>
+
+    <script type="module">
+      import { DetrEngine, fileToDataURL, countByLabel, colorForLabel, escapeHTML, DETR_CSS } from "../detr.js";
+      import { progressReporter } from "/web-ai-showcase/lib/webai.js";
+      const style = document.createElement("style"); style.textContent = DETR_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new DetrEngine();
+      let currentImageURL = null, currentImg = null, allDetections = [], lastMs = 0;
+      const redactClasses = new Set();
+      let mode = "blur";
+      const THRESH = 0.5;
+
+      function decode(url) { return new Promise((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = () => rej(new Error("decode failed")); im.src = url; }); }
+      async function useURL(url) {
+        currentImageURL = url; currentImg = await decode(url); allDetections = []; redactClasses.clear();
+        $("classChips").replaceChildren(Object.assign(document.createElement("span"), { className: "muted", textContent: "Run detection to list classes.", style: "font-size:.82rem" }));
+        $("readout").hidden = true; $("download").disabled = true;
+        const c = $("stage"); c.width = currentImg.naturalWidth; c.height = currentImg.naturalHeight; c.getContext("2d").drawImage(currentImg, 0, 0);
+      }
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        const blob = await (await fetch(el.dataset.src)).blob();
+        await useURL(await fileToDataURL(new File([blob], "s", { type: blob.type })));
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } });
+      }
+      pickSample($("samples").firstElementChild);
+
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) { for (const t of $("samples").children) t.classList.remove("active"); await useURL(await fileToDataURL(f)); $("dropText").textContent = f.name; }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
+
+      const reporter = progressReporter($("prog"), $("status"));
+      $("load").addEventListener("click", async () => {
+        $("load").disabled = true; $("prog").hidden = false; $("status").classList.remove("err"); $("status").textContent = "Loading DETR…";
+        try { const device = await engine.load((p) => reporter.onProgress(p)); $("status").textContent = `Ready on ${device.toUpperCase()}.`; $("status").classList.add("ok"); $("prog").hidden = true; $("run").disabled = false; $("rBackend").textContent = device.toUpperCase(); }
+        catch (err) { reporter.fail(err); $("load").disabled = false; }
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!currentImageURL) { $("status").textContent = "Pick an image first."; return; }
+        $("run").disabled = true; $("status").classList.remove("err"); $("status").textContent = "Detecting…";
+        try {
+          const r = await engine.detect(currentImageURL); lastMs = r.ms; $("rBackend").textContent = r.device.toUpperCase();
+          allDetections = r.detections.filter((d) => d.score >= THRESH);
+          buildClassChips();
+          // default: redact people if present, else the most common class
+          const counts = countByLabel(allDetections);
+          if (counts.length) { redactClasses.add(counts.find((c) => c.label === "person")?.label ?? counts[0].label); syncChips(); }
+          render();
+          $("status").textContent = `Detected ${allDetections.length} objects across ${counts.length} classes. Pick what to hide.`;
+          $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Detection failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+
+      function buildClassChips() {
+        const counts = countByLabel(allDetections);
+        if (!counts.length) { $("classChips").replaceChildren(Object.assign(document.createElement("span"), { className: "muted", textContent: "No objects detected.", style: "font-size:.82rem" })); return; }
+        $("classChips").replaceChildren(...counts.map(({ label, count }) => {
+          const b = document.createElement("button");
+          b.type = "button"; b.className = "chip"; b.dataset.label = label; b.setAttribute("aria-pressed", "false");
+          b.innerHTML = `<span class="swatch" style="display:inline-block;inline-size:.6rem;block-size:.6rem;border-radius:2px;background:${colorForLabel(label)};margin-inline-end:.3rem"></span>${escapeHTML(label)} ×${count}`;
+          b.addEventListener("click", () => { redactClasses.has(label) ? redactClasses.delete(label) : redactClasses.add(label); syncChips(); render(); });
+          return b;
+        }));
+      }
+      function syncChips() { for (const b of $("classChips").querySelectorAll(".chip")) b.setAttribute("aria-pressed", String(redactClasses.has(b.dataset.label))); }
+
+      $("modeBlur").addEventListener("click", () => setMode("blur"));
+      $("modeBox").addEventListener("click", () => setMode("box"));
+      function setMode(m) { mode = m; $("modeBlur").setAttribute("aria-pressed", String(m === "blur")); $("modeBox").setAttribute("aria-pressed", String(m === "box")); if (allDetections.length) render(); }
+
+      function render() {
+        const canvas = $("stage"), w = currentImg.naturalWidth, h = currentImg.naturalHeight;
+        canvas.width = w; canvas.height = h;
+        const ctx = canvas.getContext("2d");
+        ctx.filter = "none"; ctx.drawImage(currentImg, 0, 0);
+        const targets = allDetections.filter((d) => redactClasses.has(d.label));
+        if (mode === "blur" && targets.length) {
+          const off = document.createElement("canvas"); off.width = w; off.height = h;
+          const octx = off.getContext("2d"); octx.filter = `blur(${Math.max(6, Math.round(w / 40))}px)`; octx.drawImage(currentImg, 0, 0);
+          for (const d of targets) { const { xmin, ymin, xmax, ymax } = d.box; const bw = xmax - xmin, bh = ymax - ymin; ctx.drawImage(off, xmin, ymin, bw, bh, xmin, ymin, bw, bh); }
+        } else if (mode === "box") {
+          ctx.fillStyle = "#000"; for (const d of targets) { const { xmin, ymin, xmax, ymax } = d.box; ctx.fillRect(xmin, ymin, xmax - xmin, ymax - ymin); }
+        }
+        $("readout").hidden = false; $("rMs").textContent = lastMs + " ms"; $("rN").textContent = targets.length;
+        $("download").disabled = targets.length === 0;
+      }
+
+      $("download").addEventListener("click", () => {
+        const a = document.createElement("a"); a.download = "redacted.png"; a.href = $("stage").toDataURL("image/png"); a.click();
+      });
+    </script>
+  </body>
+</html>
