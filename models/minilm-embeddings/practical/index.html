@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MiniLM Practical — semantic search over your text · Web AI Showcase</title>
+    <meta name="description" content="Paste a small corpus, ask a question in plain language, and rank every line by meaning — not keywords. On-device semantic search with MiniLM embeddings." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🧭</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">MiniLM</a></p>
+
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Practical: semantic search over a pasted corpus</h1>
+      <p class="lede">
+        Keyword search fails when the words don't match but the meaning does. Here, every line of your corpus
+        becomes a vector once; your query becomes a vector too; and results rank by <strong>cosine
+        similarity</strong>. Ask "how do I get my money back?" and a line about <em>refunds</em> wins even
+        though it never says "money back."
+      </p>
+    </header>
+
+    <section class="panel">
+      <button id="load" type="button">Load MiniLM (~25 MB)</button>
+      <progress id="prog" value="0" max="100" hidden></progress>
+      <p class="status" id="status" role="status" aria-live="polite">Model not loaded yet.</p>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
+        Corpus (one entry per line)
+        <textarea id="corpus" rows="9">Our return policy lets you send items back within 30 days for a full refund.
+Orders over $50 qualify for free standard shipping.
+You can reset your password from the account settings page.
+We ship to over 40 countries worldwide.
+Gift cards never expire and can be used on any order.
+To cancel a subscription, open Billing and choose "End plan".
+Damaged items are replaced free of charge — just send a photo.
+Our support team is available 9am–6pm on weekdays.</textarea>
+      </label>
+      <button id="index" type="button" disabled style="margin:.5rem 0">Index corpus</button>
+      <p class="status" id="idxStatus" role="status" aria-live="polite" hidden></p>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.4rem">
+        Your query
+        <input type="text" id="query" value="how do I get my money back?" />
+      </label>
+      <div style="margin:.5rem 0;display:flex;gap:.4rem;flex-wrap:wrap">
+        <button id="run" type="button" disabled>Search</button>
+        <button class="chip" type="button" data-q="how do I get my money back?">refunds</button>
+        <button class="chip" type="button" data-q="I forgot my login details">password</button>
+        <button class="chip" type="button" data-q="when can I talk to a human?">support hours</button>
+        <button class="chip" type="button" data-q="do you deliver internationally?">shipping</button>
+      </div>
+
+      <div class="sent-list" id="results" aria-live="polite"></div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>corpus <b id="rN">–</b></span>
+        <span>query embed <b id="rMs">–</b></span>
+      </div>
+    </section>
+
+    <p class="muted" style="font-size:.85rem">
+      The corpus is embedded once and reused for every query — that's the whole trick behind a fast vector
+      index. In a real app you'd store those vectors (IndexedDB, a vector DB) so you only embed new content.
+      Everything here stays in the tab.
+    </p>
+
+    <p class="crumbs"><a href="../">← Back to MiniLM</a> · Next: <a href="../wild/">Wild →</a></p>
+
+    <script type="module">
+      import { EmbedEngine, cosine, parseLines, escapeHTML, EMBED_CSS } from "../embed.js";
+      import { progressReporter } from "/web-ai-showcase/lib/webai.js";
+      const style = document.createElement("style"); style.textContent = EMBED_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new EmbedEngine();
+      let indexed = null; // { texts, embeddings }
+
+      for (const c of document.querySelectorAll(".chip")) c.addEventListener("click", () => { $("query").value = c.dataset.q; if (indexed) search(); });
+
+      const reporter = progressReporter($("prog"), $("status"));
+      $("load").addEventListener("click", async () => {
+        $("load").disabled = true; $("prog").hidden = false; $("status").classList.remove("err"); $("status").textContent = "Loading MiniLM…";
+        try {
+          const device = await engine.load((p) => reporter.onProgress(p));
+          $("status").textContent = `Ready on ${device.toUpperCase()}.`; $("status").classList.add("ok"); $("prog").hidden = true; $("index").disabled = false;
+        } catch (err) { reporter.fail(err); $("load").disabled = false; }
+      });
+
+      $("index").addEventListener("click", async () => {
+        const texts = parseLines($("corpus").value);
+        if (texts.length < 2) { $("idxStatus").hidden = false; $("idxStatus").textContent = "Add at least two lines."; $("idxStatus").classList.add("err"); return; }
+        $("idxStatus").hidden = false; $("idxStatus").classList.remove("err"); $("idxStatus").textContent = "Indexing…"; $("index").disabled = true;
+        try {
+          const r = await engine.embed(texts);
+          indexed = { texts: r.texts, embeddings: r.embeddings };
+          $("idxStatus").textContent = `Indexed ${texts.length} entries on ${r.device.toUpperCase()} in ${r.ms} ms.`; $("idxStatus").classList.add("ok");
+          $("run").disabled = false;
+          search();
+        } catch (err) { $("idxStatus").textContent = "Indexing failed: " + err.message; $("idxStatus").classList.add("err"); }
+        finally { $("index").disabled = false; }
+      });
+
+      $("run").addEventListener("click", search);
+      $("query").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); if (indexed) search(); } });
+
+      async function search() {
+        if (!indexed) { $("status").textContent = "Index the corpus first."; return; }
+        const q = $("query").value.trim();
+        if (!q) return;
+        $("run").disabled = true;
+        try {
+          const r = await engine.embed([q]);
+          const qv = r.embeddings[0];
+          const ranked = indexed.texts
+            .map((t, i) => ({ t, sim: cosine(qv, indexed.embeddings[i]) }))
+            .sort((a, b) => b.sim - a.sim);
+          const top = ranked[0].sim;
+          $("results").replaceChildren(...ranked.map((row, rank) => {
+            const div = document.createElement("div");
+            div.className = "result-row";
+            const pct = Math.max(0, Math.min(1, row.sim)) * 100;
+            div.innerHTML = `<div class="result-head">
+                <span>${rank === 0 ? "★ " : ""}${escapeHTML(row.t)}</span>
+                <span class="result-score">cos ${row.sim.toFixed(3)}</span>
+              </div>
+              <div class="result-bar"><div class="result-fill" style="inline-size:${pct.toFixed(0)}%;${row.sim === top ? "" : "background:var(--muted)"}"></div></div>`;
+            return div;
+          }));
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rN").textContent = indexed.texts.length;
+          $("rMs").textContent = r.ms + " ms";
+        } catch (err) { $("status").textContent = "Search failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      }
+    </script>
+  </body>
+</html>

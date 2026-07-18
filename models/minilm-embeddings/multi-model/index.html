@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MiniLM × DistilBERT — semantic search with tone · Web AI Showcase</title>
+    <meta name="description" content="Two models, one pipeline: MiniLM embeddings rank a corpus by meaning, then DistilBERT labels each hit's tone as positive or negative. Both run locally in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🧭</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">MiniLM</a></p>
+
+    <header>
+      <p class="eyebrow">use case · multi-model · MiniLM + DistilBERT</p>
+      <h1>Multi-model: semantic search, with tone</h1>
+      <p class="lede">
+        Rank by <em>meaning</em>, then read the <em>mood</em>. First <a href="../">MiniLM</a> embeds a corpus
+        of reviews and finds the entries closest to your query; then
+        <a href="/web-ai-showcase/models/sentiment-classifier/">DistilBERT</a> labels each hit POSITIVE or
+        NEGATIVE. Search "battery life" and instantly see who's praising it and who's complaining — two tiny
+        models, one on-device pipeline, no server.
+      </p>
+    </header>
+
+    <section class="panel">
+      <p class="muted">This page loads two models (~25 MB + ~65 MB). Load them, index the corpus once, then
+        search — each hit is ranked by cosine similarity and tagged with its sentiment.</p>
+      <button id="load" type="button">Load both models (~90 MB)</button>
+      <progress id="prog" value="0" max="100" hidden></progress>
+      <p class="status" id="status" role="status" aria-live="polite">Models not loaded yet.</p>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
+        Corpus of reviews (one per line)
+        <textarea id="corpus" rows="10">The battery life is incredible and easily lasts all day.
+The battery is terrible and dies before lunch.
+The camera takes stunning, gorgeous photos.
+The camera is awful and every shot comes out blurry.
+Setup was wonderful: quick, simple, and painless.
+Setup was a frustrating, confusing nightmare.
+Customer support was fantastic and incredibly helpful.
+Customer support was rude, slow, and useless.
+The screen is bright, sharp, and beautiful.
+The screen is dim and scratches almost instantly.</textarea>
+      </label>
+      <button id="index" type="button" disabled style="margin:.5rem 0">Index corpus</button>
+      <p class="status" id="idxStatus" role="status" aria-live="polite" hidden></p>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.4rem">
+        Search query
+        <input type="text" id="query" value="how good is the battery life?" />
+      </label>
+      <div style="margin:.5rem 0;display:flex;gap:.4rem;flex-wrap:wrap">
+        <button id="run" type="button" disabled>Search &amp; tag tone</button>
+        <button class="chip" type="button" data-q="how good is the battery life?">battery</button>
+        <button class="chip" type="button" data-q="what is the photo quality like?">camera</button>
+        <button class="chip" type="button" data-q="is it easy to set up?">setup</button>
+        <button class="chip" type="button" data-q="how is the customer service?">support</button>
+      </div>
+
+      <div class="sent-list" id="results" aria-live="polite"></div>
+      <div class="readout" id="readout" hidden>
+        <span>embed backend <b id="rEmbed">–</b></span>
+        <span>sentiment backend <b id="rSent">–</b></span>
+        <span>corpus <b id="rN">–</b></span>
+        <span>query latency <b id="rMs">–</b></span>
+      </div>
+    </section>
+
+    <section aria-labelledby="how-h">
+      <h2 id="how-h">How the two models compose</h2>
+      <p>Each model does the one thing it's good at, and the output of the first shapes the work of the second:</p>
+      <pre><code>// 1. MiniLM — rank the corpus by meaning (cosine over 384-d embeddings)
+const q = await embed([query]);
+const hits = corpus
+  .map((t, i) =&gt; ({ t, sim: dot(q[0], corpusVecs[i]) }))
+  .sort((a, b) =&gt; b.sim - a.sim)
+  .slice(0, TOP_K);
+
+// 2. DistilBERT — label just the top hits' tone (cheap: only TOP_K, not the whole corpus)
+for (const hit of hits) hit.tone = await classify(hit.t); // POSITIVE / NEGATIVE</code></pre>
+      <p class="muted">Only the top hits get the sentiment pass, so adding the second model costs almost
+        nothing. Both run in their own Web Workers — the embedding worker and the sentiment worker — so the
+        page stays responsive throughout.</p>
+    </section>
+
+    <p class="muted" style="font-size:.85rem">
+      Ranking and tone are independent signals: a highly-relevant hit can still be scathing. That's the
+      point — you find what's <em>about</em> your query, then immediately see whether it's praise or a
+      complaint, without reading every line.
+    </p>
+
+    <p class="crumbs"><a href="../">← Back to MiniLM</a> · <a href="/web-ai-showcase/models/sentiment-classifier/">DistilBERT →</a></p>
+
+    <script type="module">
+      import { EmbedEngine, cosine, parseLines, escapeHTML, EMBED_CSS } from "../embed.js";
+      import { SentimentEngine, SENTIMENT_CSS } from "/web-ai-showcase/models/sentiment-classifier/sentiment.js";
+      import { progressReporter } from "/web-ai-showcase/lib/webai.js";
+
+      const style = document.createElement("style");
+      style.textContent = EMBED_CSS + SENTIMENT_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const embedder = new EmbedEngine();
+      const sentiment = new SentimentEngine();
+      const TOP_K = 5;
+      let indexed = null; // { texts, embeddings }
+
+      for (const c of document.querySelectorAll(".chip")) c.addEventListener("click", () => { $("query").value = c.dataset.q; if (indexed) search(); });
+
+      $("load").addEventListener("click", async () => {
+        $("load").disabled = true; $("prog").hidden = false; $("status").classList.remove("err");
+        $("status").textContent = "Loading MiniLM + DistilBERT…";
+        const files = new Map();
+        const onProg = (p) => {
+          if (p.status === "progress" && p.file) {
+            files.set(p.file, p.progress ?? 0);
+            const avg = [...files.values()].reduce((a, b) => a + b, 0) / files.size;
+            $("prog").value = avg; $("prog").max = 100;
+            $("status").textContent = `Downloading ${files.size} file(s)… ${avg.toFixed(0)}%`;
+          }
+        };
+        try {
+          const [d1, d2] = await Promise.all([embedder.load(onProg), sentiment.load(onProg)]);
+          $("status").textContent = `Ready — MiniLM on ${d1.toUpperCase()}, DistilBERT on ${d2.toUpperCase()}.`;
+          $("status").classList.add("ok"); $("prog").hidden = true; $("index").disabled = false;
+        } catch (err) {
+          $("status").textContent = "Couldn't load the models: " + (err?.message ?? err);
+          $("status").classList.add("err"); $("load").disabled = false;
+        }
+      });
+
+      $("index").addEventListener("click", async () => {
+        const texts = parseLines($("corpus").value);
+        if (texts.length < 2) { $("idxStatus").hidden = false; $("idxStatus").textContent = "Add at least two lines."; $("idxStatus").classList.add("err"); return; }
+        $("idxStatus").hidden = false; $("idxStatus").classList.remove("err"); $("idxStatus").textContent = "Indexing…"; $("index").disabled = true;
+        try {
+          const r = await embedder.embed(texts);
+          indexed = { texts: r.texts, embeddings: r.embeddings };
+          $("idxStatus").textContent = `Indexed ${texts.length} entries on ${r.device.toUpperCase()} in ${r.ms} ms.`; $("idxStatus").classList.add("ok");
+          $("run").disabled = false; search();
+        } catch (err) { $("idxStatus").textContent = "Indexing failed: " + err.message; $("idxStatus").classList.add("err"); }
+        finally { $("index").disabled = false; }
+      });
+
+      $("run").addEventListener("click", search);
+      $("query").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); if (indexed) search(); } });
+
+      async function search() {
+        if (!indexed) { $("status").textContent = "Index the corpus first."; return; }
+        const q = $("query").value.trim();
+        if (!q) return;
+        $("run").disabled = true;
+        try {
+          const t0 = performance.now();
+          // 1. MiniLM ranks by meaning.
+          const qr = await embedder.embed([q]);
+          const qv = qr.embeddings[0];
+          const ranked = indexed.texts
+            .map((t, i) => ({ t, sim: cosine(qv, indexed.embeddings[i]) }))
+            .sort((a, b) => b.sim - a.sim)
+            .slice(0, TOP_K);
+          // 2. DistilBERT tags the tone of just the top hits.
+          for (const hit of ranked) {
+            const s = await sentiment.classify(hit.t);
+            hit.label = s.label; hit.conf = Math.max(s.pos, s.neg); hit.sentDevice = s.device;
+          }
+          const ms = Math.round(performance.now() - t0);
+          const top = ranked[0]?.sim ?? 1;
+          $("results").replaceChildren(...ranked.map((hit, rank) => {
+            const div = document.createElement("div");
+            div.className = "result-row";
+            const pct = Math.max(0, Math.min(1, hit.sim)) * 100;
+            const toneClass = hit.label === "POSITIVE" ? "tone-pos" : "tone-neg";
+            div.innerHTML = `<div class="result-head">
+                <span>${rank === 0 ? "★ " : ""}${escapeHTML(hit.t)}<span class="tone ${toneClass}">${hit.label} ${(hit.conf * 100).toFixed(0)}%</span></span>
+                <span class="result-score">cos ${hit.sim.toFixed(3)}</span>
+              </div>
+              <div class="result-bar"><div class="result-fill" style="inline-size:${pct.toFixed(0)}%;${hit.sim === top ? "" : "background:var(--muted)"}"></div></div>`;
+            return div;
+          }));
+          $("readout").hidden = false;
+          $("rEmbed").textContent = qr.device.toUpperCase();
+          $("rSent").textContent = (ranked[0]?.sentDevice ?? "wasm").toUpperCase();
+          $("rN").textContent = indexed.texts.length;
+          $("rMs").textContent = ms + " ms";
+        } catch (err) { $("status").textContent = "Search failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      }
+    </script>
+  </body>
+</html>

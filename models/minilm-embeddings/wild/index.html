@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MiniLM Wild — spot the odd one out · Web AI Showcase</title>
+    <meta name="description" content="Drop in a list of sentences and let the embeddings find the one that doesn't belong — plus a live 2D map and automatic grouping. Meaning as geometry, in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🧭</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">MiniLM</a></p>
+
+    <header>
+      <p class="eyebrow">use case · wild</p>
+      <h1>Wild: spot the odd one out</h1>
+      <p class="lede">
+        Give the model a list and it finds the sentence that belongs the least — the one whose average
+        similarity to everything else is lowest. No categories, no rules: just geometry. It also groups the
+        rest into loose clusters and plots them all on a 2D map, so you can see the outlier float away.
+      </p>
+    </header>
+
+    <section class="panel">
+      <button id="load" type="button">Load MiniLM (~25 MB)</button>
+      <progress id="prog" value="0" max="100" hidden></progress>
+      <p class="status" id="status" role="status" aria-live="polite">Model not loaded yet.</p>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
+        Sentences (one per line)
+        <textarea id="sentences" rows="7">A golden retriever chasing a ball.
+A tabby cat curled up asleep.
+A parrot repeating a phrase.
+A goldfish swimming in circles.
+The quarterly revenue report is due Friday.
+A rabbit nibbling on lettuce.</textarea>
+      </label>
+      <div style="margin:.5rem 0;display:flex;gap:.4rem;flex-wrap:wrap">
+        <button id="run" type="button" disabled>Find the odd one out</button>
+        <button class="chip" type="button" data-set="A golden retriever chasing a ball.&#10;A tabby cat curled up asleep.&#10;A parrot repeating a phrase.&#10;A goldfish swimming in circles.&#10;The quarterly revenue report is due Friday.&#10;A rabbit nibbling on lettuce.">pets + 1 intruder</button>
+        <button class="chip" type="button" data-set="Paris is the capital of France.&#10;Tokyo is the capital of Japan.&#10;Cairo is the capital of Egypt.&#10;I really need a coffee right now.&#10;Ottawa is the capital of Canada.">capitals + 1 intruder</button>
+        <button class="chip" type="button" data-set="Preheat the oven to 200 degrees.&#10;Whisk the eggs and sugar together.&#10;Fold in the sifted flour gently.&#10;The Wi-Fi router needs rebooting.&#10;Bake for 25 minutes until golden.">recipe + 1 intruder</button>
+      </div>
+      <p class="status" id="rowStatus" role="status" aria-live="polite" hidden></p>
+
+      <div id="out" hidden>
+        <p style="margin:.6rem 0 .2rem">Odd one out: <strong id="odd"></strong></p>
+        <p class="muted" id="oddWhy" style="font-size:.85rem"></p>
+        <div class="grid-2" style="margin-top:.6rem">
+          <div>
+            <h3 style="margin-top:.2rem">Ranked by "belonging" (avg similarity to the rest)</h3>
+            <div class="sent-list" id="ranked"></div>
+          </div>
+          <div>
+            <h3 style="margin-top:.2rem">2D map — colour = cluster</h3>
+            <div id="projection"></div>
+            <div class="legend" id="legend"></div>
+          </div>
+        </div>
+        <div class="readout"><span>backend <b id="rBackend">–</b></span><span>latency <b id="rMs">–</b></span><span>sentences <b id="rN">–</b></span></div>
+      </div>
+    </section>
+
+    <p class="muted" style="font-size:.85rem">
+      "Belonging" here is each sentence's mean cosine similarity to all the others. The lowest scorer is the
+      outlier. Clustering is a tiny greedy pass over the same similarities — enough to colour the map, not a
+      production k-means. It all runs on the 384-d vectors the model just produced.
+    </p>
+
+    <p class="crumbs"><a href="../">← Back to MiniLM</a> · Next: <a href="../multi-model/">Multi-model →</a></p>
+
+    <script type="module">
+      import { EmbedEngine, cosine, simMatrix, pca2d, parseLines, renderProjection, escapeHTML, EMBED_CSS } from "../embed.js";
+      import { progressReporter } from "/web-ai-showcase/lib/webai.js";
+      const style = document.createElement("style"); style.textContent = EMBED_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new EmbedEngine();
+      const palette = ["var(--accent)", "var(--good)", "var(--bad)", "var(--warn)", "#0e7490", "#9333ea"];
+
+      for (const c of document.querySelectorAll(".chip")) c.addEventListener("click", () => { $("sentences").value = c.dataset.set; });
+
+      const reporter = progressReporter($("prog"), $("status"));
+      $("load").addEventListener("click", async () => {
+        $("load").disabled = true; $("prog").hidden = false; $("status").classList.remove("err"); $("status").textContent = "Loading MiniLM…";
+        try {
+          const device = await engine.load((p) => reporter.onProgress(p));
+          $("status").textContent = `Ready on ${device.toUpperCase()}.`; $("status").classList.add("ok"); $("prog").hidden = true; $("run").disabled = false;
+        } catch (err) { reporter.fail(err); $("load").disabled = false; }
+      });
+
+      // Greedy threshold clustering over the similarity matrix — cheap, just enough to colour the map.
+      function cluster(matrix, threshold = 0.45) {
+        const n = matrix.length;
+        const group = new Array(n).fill(-1);
+        let g = 0;
+        for (let i = 0; i < n; i++) {
+          if (group[i] !== -1) continue;
+          group[i] = g;
+          for (let j = i + 1; j < n; j++) if (group[j] === -1 && matrix[i][j] >= threshold) group[j] = g;
+          g++;
+        }
+        return group;
+      }
+
+      $("run").addEventListener("click", run);
+      async function run() {
+        const texts = parseLines($("sentences").value);
+        if (texts.length < 3) { $("rowStatus").hidden = false; $("rowStatus").textContent = "Give at least three sentences."; $("rowStatus").classList.add("err"); return; }
+        $("rowStatus").hidden = false; $("rowStatus").classList.remove("err"); $("rowStatus").textContent = "Embedding…"; $("run").disabled = true;
+        try {
+          const r = await engine.embed(texts);
+          const m = simMatrix(r.embeddings);
+          const n = texts.length;
+          // avg similarity to the rest (exclude self)
+          const belong = texts.map((_, i) => {
+            let s = 0; for (let j = 0; j < n; j++) if (j !== i) s += m[i][j];
+            return s / (n - 1);
+          });
+          const order = texts.map((_, i) => i).sort((a, b) => belong[b] - belong[a]);
+          const oddIdx = order[order.length - 1];
+          $("out").hidden = false;
+          $("odd").textContent = texts[oddIdx];
+          $("oddWhy").textContent = `Its average similarity to the others is only ${belong[oddIdx].toFixed(3)} — the lowest in the set.`;
+          $("ranked").replaceChildren(...order.map((i) => {
+            const div = document.createElement("div"); div.className = "result-row";
+            const pct = Math.max(0, Math.min(1, belong[i])) * 100;
+            div.innerHTML = `<div class="result-head"><span>${i === oddIdx ? "⚠ " : ""}${escapeHTML(texts[i])}</span><span class="result-score">belong ${belong[i].toFixed(3)}</span></div>
+              <div class="result-bar"><div class="result-fill" style="inline-size:${pct.toFixed(0)}%;${i === oddIdx ? "background:var(--bad)" : ""}"></div></div>`;
+            return div;
+          }));
+          const groups = cluster(m);
+          const { points } = pca2d(r.embeddings);
+          renderProjection($("projection"), points, texts, { groups });
+          const nGroups = Math.max(...groups) + 1;
+          $("legend").replaceChildren(...Array.from({ length: nGroups }, (_, gi) => {
+            const span = document.createElement("span");
+            span.innerHTML = `<span class="swatch" style="background:${palette[gi % palette.length]}"></span>cluster ${gi + 1}`;
+            return span;
+          }));
+          $("rBackend").textContent = r.device.toUpperCase(); $("rMs").textContent = r.ms + " ms"; $("rN").textContent = n;
+          $("rowStatus").textContent = "Done."; $("rowStatus").classList.add("ok");
+        } catch (err) { $("rowStatus").textContent = "Failed: " + err.message; $("rowStatus").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      }
+    </script>
+  </body>
+</html>
