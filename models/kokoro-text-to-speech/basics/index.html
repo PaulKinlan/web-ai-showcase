@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Kokoro Basics — type a line, hear a voice · Web AI Showcase</title>
+    <meta name="description" content="The fundamental Kokoro move: type text, pick a voice, and hear it spoken in your browser. Nothing uploaded." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🔊</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Kokoro</a></p>
+
+    <header>
+      <p class="eyebrow">use case · basics</p>
+      <h1>Basics: type a line, hear a voice</h1>
+      <p class="lede">
+        The whole idea, plainly. Write a sentence, choose a voice, press Speak. Kokoro turns your text
+        into a 24 kHz waveform on this device and plays it back — no server in the loop.
+      </p>
+    </header>
+
+    <section class="panel">
+      <button id="load" type="button">Load Kokoro (~90 MB)</button>
+      <progress id="prog" value="0" max="100" hidden></progress>
+      <p class="status" id="status" role="status" aria-live="polite">Model not loaded yet.</p>
+
+      <label style="display:block;font-size:.82rem;margin:.6rem 0 .2rem">Text to speak</label>
+      <textarea id="text">Hello! This voice is running entirely inside your web browser.</textarea>
+
+      <div class="tts-grid">
+        <label>Voice
+          <select id="voice" disabled><option>Load the model to list voices</option></select>
+        </label>
+        <label>Speed <span class="muted" id="speedVal">1.0×</span>
+          <span class="speed-row"><input type="range" id="speed" min="0.5" max="2" step="0.1" value="1" /></span>
+        </label>
+        <button id="run" type="button" disabled>Speak</button>
+      </div>
+
+      <div class="audio-row"><audio id="player" controls preload="none"></audio></div>
+      <div class="wave-wrap"><canvas id="wave" class="wave" aria-label="Generated speech waveform"></canvas></div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span><span>voice <b id="rVoice">–</b></span>
+        <span>gen time <b id="rMs">–</b></span><span>audio <b id="rDur">–</b></span>
+      </div>
+    </section>
+
+    <p class="crumbs"><a href="../">← Back to Kokoro</a> · Next: <a href="../practical/">Practical →</a></p>
+
+    <script type="module">
+      import { KokoroEngine, wavUrl, groupVoices, drawWaveform, KOKORO_CSS } from "../kokoro.js";
+      import { progressReporter } from "/web-ai-showcase/lib/webai.js";
+      const style = document.createElement("style"); style.textContent = KOKORO_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new KokoroEngine();
+      let pcm = null, curUrl = null;
+
+      $("speed").addEventListener("input", () => { $("speedVal").textContent = (+$("speed").value).toFixed(1) + "×"; });
+      function fillVoices(voices) {
+        const sel = $("voice"); sel.replaceChildren();
+        for (const [label, list] of groupVoices(voices)) {
+          const og = document.createElement("optgroup"); og.label = label;
+          for (const v of list) { const o = document.createElement("option"); o.value = v.id; o.textContent = `${v.name}${v.grade ? ` (${v.grade})` : ""}`; og.append(o); }
+          sel.append(og);
+        }
+        if ([...sel.options].some((o) => o.value === "af_heart")) sel.value = "af_heart";
+        sel.disabled = false;
+      }
+
+      const reporter = progressReporter($("prog"), $("status"));
+      $("load").addEventListener("click", async () => {
+        $("load").disabled = true; $("prog").hidden = false; $("status").classList.remove("err"); $("status").textContent = "Loading Kokoro…";
+        try {
+          const { device, voices } = await engine.load((p) => reporter.onProgress(p));
+          fillVoices(voices);
+          $("status").textContent = `Ready on ${device.toUpperCase()} — ${voices.length} voices.`; $("status").classList.add("ok"); $("prog").hidden = true; $("run").disabled = false;
+        } catch (err) { reporter.fail(err); $("load").disabled = false; }
+      });
+
+      $("run").addEventListener("click", async () => {
+        const text = $("text").value.trim();
+        if (!text) { $("status").textContent = "Type something first."; return; }
+        $("run").disabled = true; $("status").classList.remove("err"); $("status").textContent = "Synthesizing…";
+        try {
+          const r = await engine.speak(text, $("voice").value, +$("speed").value);
+          pcm = r.pcm; if (curUrl) URL.revokeObjectURL(curUrl); curUrl = wavUrl(r.wav);
+          $("player").src = curUrl; drawWaveform($("wave"), pcm, 0);
+          $("readout").hidden = false; $("rBackend").textContent = r.device.toUpperCase(); $("rVoice").textContent = r.voice;
+          $("rMs").textContent = (r.ms / 1000).toFixed(2) + " s"; $("rDur").textContent = r.durSec.toFixed(2) + " s";
+          $("status").textContent = "Done — press play."; $("status").classList.add("ok"); $("player").play().catch(() => {});
+        } catch (err) { $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+      $("player").addEventListener("timeupdate", () => { if (pcm && $("player").duration) drawWaveform($("wave"), pcm, $("player").currentTime / $("player").duration); });
+      $("player").addEventListener("ended", () => pcm && drawWaveform($("wave"), pcm, 1));
+      addEventListener("resize", () => pcm && drawWaveform($("wave"), pcm, 0));
+    </script>
+  </body>
+</html>

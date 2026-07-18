@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Kokoro Practical — read-aloud &amp; accessibility · Web AI Showcase</title>
+    <meta name="description" content="Paste an article and have Kokoro read it aloud sentence by sentence, on-device — a private, free read-aloud/accessibility layer for any page." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🔊</text></svg>" />
+    <style>
+      .reader { padding:1rem; background:var(--bg-raised); border:1px solid var(--border); border-radius:var(--radius); font-size:1.05rem; line-height:1.8; }
+      .reader .s { transition:background .15s; padding:0 .1em; border-radius:4px; cursor:pointer; }
+      .reader .s.on { background:var(--accent); color:var(--accent-ink); }
+      .reader .s.done { color:var(--muted); }
+    </style>
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Kokoro</a></p>
+
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Practical: read-aloud &amp; accessibility</h1>
+      <p class="lede">
+        Paste any text and Kokoro reads it aloud, sentence by sentence, highlighting the line it's
+        speaking — a private, free read-aloud layer you could bolt onto any article, email, or document.
+        Nothing is uploaded and there's no per-character bill.
+      </p>
+    </header>
+
+    <section class="panel">
+      <button id="load" type="button">Load Kokoro (~90 MB)</button>
+      <progress id="prog" value="0" max="100" hidden></progress>
+      <p class="status" id="status" role="status" aria-live="polite">Model not loaded yet.</p>
+
+      <label style="display:block;font-size:.82rem;margin:.6rem 0 .2rem">Text to read aloud</label>
+      <textarea id="text" style="inline-size:100%;min-block-size:120px">Web AI is having a moment. Models that once needed a data centre now fit in a browser tab. You can transcribe speech, describe images, and — right here — turn text into a natural voice, all without a server. The privacy story is simple: the data never leaves the device. The cost story is simpler still: there isn't one.</textarea>
+
+      <div class="tts-grid">
+        <label>Voice
+          <select id="voice" disabled><option>Load the model to list voices</option></select>
+        </label>
+        <label>Speed <span class="muted" id="speedVal">1.0×</span>
+          <span class="speed-row"><input type="range" id="speed" min="0.5" max="2" step="0.1" value="1" /></span>
+        </label>
+        <button id="run" type="button" disabled>Read aloud</button>
+        <button id="stop" type="button" class="secondary" disabled>Stop</button>
+      </div>
+
+      <div class="audio-row"><audio id="player" controls preload="none"></audio></div>
+
+      <h3>Reader</h3>
+      <div class="reader" id="reader" aria-live="polite">The text will appear here, one sentence highlighted as it's read.</div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span><span>voice <b id="rVoice">–</b></span>
+        <span>sentence <b id="rIdx">–</b></span><span>gen time <b id="rMs">–</b></span>
+      </div>
+      <p class="muted" style="font-size:.85rem">
+        Each sentence is synthesized just before it plays, so a long article starts reading almost
+        immediately instead of waiting for the whole thing. Click any sentence to jump there.
+      </p>
+    </section>
+
+    <p class="crumbs"><a href="../basics/">← Basics</a> · <a href="../">Kokoro</a> · Next: <a href="../wild/">Wild →</a></p>
+
+    <script type="module">
+      import { KokoroEngine, wavUrl, groupVoices, escapeHTML, KOKORO_CSS } from "../kokoro.js";
+      import { progressReporter } from "/web-ai-showcase/lib/webai.js";
+      const style = document.createElement("style"); style.textContent = KOKORO_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new KokoroEngine();
+      let sentences = [], idx = -1, playing = false, curUrl = null, totalMs = 0;
+
+      $("speed").addEventListener("input", () => { $("speedVal").textContent = (+$("speed").value).toFixed(1) + "×"; });
+
+      function splitSentences(text) {
+        return (text.match(/[^.!?]+[.!?]*/g) || [text]).map((s) => s.trim()).filter(Boolean);
+      }
+      function renderReader() {
+        $("reader").replaceChildren(...sentences.map((s, i) => {
+          const el = document.createElement("span"); el.className = "s"; el.dataset.i = i; el.textContent = s + " ";
+          el.addEventListener("click", () => { if (engine.ready && !$("run").disabled === false) { idx = i - 1; if (!playing) startFrom(i); } });
+          return el;
+        }));
+      }
+      function mark(i) {
+        for (const el of $("reader").children) {
+          const n = +el.dataset.i;
+          el.classList.toggle("on", n === i);
+          el.classList.toggle("done", n < i);
+        }
+      }
+
+      function fillVoices(voices) {
+        const sel = $("voice"); sel.replaceChildren();
+        for (const [label, list] of groupVoices(voices)) {
+          const og = document.createElement("optgroup"); og.label = label;
+          for (const v of list) { const o = document.createElement("option"); o.value = v.id; o.textContent = `${v.name}${v.grade ? ` (${v.grade})` : ""}`; og.append(o); }
+          sel.append(og);
+        }
+        if ([...sel.options].some((o) => o.value === "af_heart")) sel.value = "af_heart";
+        sel.disabled = false;
+      }
+
+      const reporter = progressReporter($("prog"), $("status"));
+      $("load").addEventListener("click", async () => {
+        $("load").disabled = true; $("prog").hidden = false; $("status").classList.remove("err"); $("status").textContent = "Loading Kokoro…";
+        try {
+          const { device, voices } = await engine.load((p) => reporter.onProgress(p));
+          fillVoices(voices);
+          $("status").textContent = `Ready on ${device.toUpperCase()} — ${voices.length} voices.`; $("status").classList.add("ok"); $("prog").hidden = true; $("run").disabled = false;
+        } catch (err) { reporter.fail(err); $("load").disabled = false; }
+      });
+
+      async function speakSentence(i) {
+        mark(i);
+        $("rIdx").textContent = `${i + 1} / ${sentences.length}`;
+        const t0 = performance.now();
+        const r = await engine.speak(sentences[i], $("voice").value, +$("speed").value);
+        totalMs = Math.round(performance.now() - t0);
+        if (curUrl) URL.revokeObjectURL(curUrl); curUrl = wavUrl(r.wav);
+        $("player").src = curUrl;
+        $("readout").hidden = false; $("rBackend").textContent = r.device.toUpperCase(); $("rVoice").textContent = r.voice; $("rMs").textContent = (totalMs / 1000).toFixed(2) + " s";
+        await $("player").play().catch(() => {});
+      }
+
+      async function startFrom(start) {
+        playing = true; $("run").disabled = true; $("stop").disabled = false; $("status").classList.remove("err");
+        for (idx = start; idx < sentences.length && playing; idx++) {
+          $("status").textContent = `Reading sentence ${idx + 1}…`;
+          try { await speakSentence(idx); await waitForEnd(); }
+          catch (err) { $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); break; }
+        }
+        if (playing) { mark(sentences.length); $("status").textContent = "Finished reading."; $("status").classList.add("ok"); }
+        playing = false; $("run").disabled = false; $("stop").disabled = true;
+      }
+      function waitForEnd() {
+        return new Promise((res) => {
+          const p = $("player");
+          if (!playing) return res();
+          p.addEventListener("ended", res, { once: true });
+        });
+      }
+
+      $("run").addEventListener("click", () => { sentences = splitSentences($("text").value); renderReader(); if (sentences.length) startFrom(0); });
+      $("stop").addEventListener("click", () => { playing = false; $("player").pause(); $("status").textContent = "Stopped."; $("stop").disabled = true; $("run").disabled = false; });
+    </script>
+  </body>
+</html>

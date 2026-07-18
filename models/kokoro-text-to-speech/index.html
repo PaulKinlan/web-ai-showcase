@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Kokoro — text-to-speech in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run Kokoro-82M locally in your browser: type text, pick from dozens of voices, set the speed, and hear natural speech synthesized on-device — WebGPU-accelerated, nothing uploaded, no per-character billing."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🔊</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">text-to-speech · audio · WebGPU (WASM fallback) · ~90 MB</p>
+      <h1>Kokoro — natural text-to-speech, on your device</h1>
+      <p class="lede">
+        Kokoro is a tiny (82M-parameter) speech model that sounds far bigger than it is. Type any text,
+        choose from dozens of <strong>named voices</strong>, set the speaking speed, and hear it spoken —
+        synthesized entirely in your browser. No API key, no per-character bill, nothing uploaded.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="seg-table" style="inline-size:100%;border-collapse:collapse">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX" target="_blank" rel="noopener">onnx-community/Kokoro-82M-v1.0-ONNX</a></td></tr>
+          <tr><th>Task</th><td><code>text-to-speech</code> (via the <a href="https://github.com/hexgrad/kokoro" target="_blank" rel="noopener">kokoro-js</a> library)</td></tr>
+          <tr><th>Architecture</th><td>StyleTTS2-style decoder, 82M params, per-voice style embeddings → 24 kHz waveform</td></tr>
+          <tr><th>Quantization</th><td>q8 (8-bit) ONNX</td></tr>
+          <tr><th>Backend</th><td>WebGPU when available, honest WebAssembly fallback</td></tr>
+          <tr><th>Download</th><td>~90 MB (model + voices), cached after first load</td></tr>
+          <tr><th>License</th><td>Apache-2.0</td></tr>
+          <tr><th>Web APIs</th><td>WebGPU / WebAssembly, Web Workers, Web Audio (playback), Blob URLs</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">
+        Load the model, type something, pick a voice and a speed, then hit Speak. Synthesis runs in a
+        Web Worker; the audio and waveform below are the real output for this device.
+      </p>
+
+      <button id="load" type="button">Load Kokoro (~90 MB)</button>
+      <progress id="prog" value="0" max="100" hidden></progress>
+      <p class="status" id="status" role="status" aria-live="polite">Model not loaded yet.</p>
+
+      <label style="display:block;font-size:.82rem;margin:.6rem 0 .2rem">Text to speak</label>
+      <textarea id="text">Kokoro runs entirely in your browser. No servers, no API keys — just words turning into a voice on your own device.</textarea>
+      <div class="sample-row" id="samples">
+        <button class="chip" type="button" data-t="Kokoro runs entirely in your browser. No servers, no API keys — just words turning into a voice on your own device.">intro</button>
+        <button class="chip" type="button" data-t="The quick brown fox jumps over the lazy dog. Pack my box with five dozen liquor jugs.">pangrams</button>
+        <button class="chip" type="button" data-t="In a hole in the ground there lived a hobbit. Not a nasty, dirty, wet hole, filled with the ends of worms and an oozy smell.">a story</button>
+        <button class="chip" type="button" data-t="Your appointment is confirmed for Tuesday at half past nine. Reply to reschedule.">a notification</button>
+      </div>
+
+      <div class="tts-grid">
+        <label>Voice
+          <select id="voice" disabled><option>Load the model to list voices</option></select>
+        </label>
+        <label>Speed <span class="muted" id="speedVal">1.0×</span>
+          <span class="speed-row"><input type="range" id="speed" min="0.5" max="2" step="0.1" value="1" /></span>
+        </label>
+        <button id="run" type="button" disabled>Speak</button>
+      </div>
+
+      <div class="audio-row">
+        <audio id="player" controls preload="none"></audio>
+        <a id="download" class="button secondary" download="kokoro.wav" hidden>Download .wav</a>
+      </div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>voice <b id="rVoice">–</b></span>
+        <span>gen time <b id="rMs">–</b></span>
+        <span>audio <b id="rDur">–</b></span>
+        <span>real-time factor <b id="rRtf">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside</h3>
+      <p class="muted">
+        Text-to-speech isn't magic sound — it's a <em>waveform</em>, a long list of amplitude samples the
+        model predicts from your text and the chosen voice's style vector. Below is the actual 24 kHz
+        waveform Kokoro just generated (the bar fills as it plays). The real-time factor above is
+        measured: below 1.0× means it synthesized faster than the audio's own length.
+      </p>
+      <div class="wave-wrap"><canvas id="wave" class="wave" aria-label="Generated speech waveform"></canvas></div>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Speak something to see its waveform and stats.</div>
+      <div class="readout" id="insideStats" hidden>
+        <span>samples <b id="iSamples">–</b></span>
+        <span>sample rate <b id="iRate">–</b></span>
+        <span>duration <b id="iDur">–</b></span>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        Cloud TTS is metered per character and sends your text to a third party. Kokoro turns
+        high-quality narration into a free, private, offline feature of your page — the text never
+        leaves the tab, and there's no bill no matter how much you generate.
+      </p>
+      <ul>
+        <li><strong>Accessibility read-aloud</strong> — give any article, form, or message a natural voice, with no service to sign up for.</li>
+        <li><strong>Narration &amp; voiceover</strong> — turn scripts, docs, or notifications into audio clips, downloadable as WAV, entirely client-side.</li>
+        <li><strong>Voice for agents &amp; assistants</strong> — pair with an on-device LLM so a private assistant can actually speak back.</li>
+        <li><strong>Localized, branded voices</strong> — dozens of voices across accents and genders, chosen at runtime, no per-voice licensing.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Type a line, pick a voice, hear it — the core move.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Read-aloud / accessibility: paste an article and listen to it.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Voice-swap: give the same passage to every voice and compare.</p></a>
+        <a class="model-card" href="../whisper-speech-to-text/multi-model/"><h3>Multi-model</h3><p class="muted">Voice loop: speak → Whisper → edit → Kokoro speaks it back.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>Kokoro has its own tiny library (which wraps Transformers.js). Two calls: load, then generate.</p>
+      <pre><code>import { KokoroTTS } from "kokoro-js";
+
+const tts = await KokoroTTS.from_pretrained(
+  "onnx-community/Kokoro-82M-v1.0-ONNX",
+  { dtype: "q8", device: "webgpu" }, // WASM fallback when WebGPU is absent
+);
+
+const audio = await tts.generate("Hello from your browser.", {
+  voice: "af_heart",  // one of tts.voices — dozens across accents/genders
+  speed: 1,
+});
+// audio.audio         → Float32Array waveform
+// audio.sampling_rate → 24000
+// audio.toBlob()      → a WAV Blob you can play or download</code></pre>
+      <p class="muted">
+        This page runs <code>from_pretrained</code> and <code>generate</code> inside a Web Worker so
+        synthesis never blocks the interface, encodes the returned Float32 samples to a WAV blob for the
+        <code>&lt;audio&gt;</code> element, and draws the same samples as the waveform under "See inside".
+        The voice list comes straight from <code>tts.voices</code> — nothing hard-coded.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX" target="_blank" rel="noopener">Model card — onnx-community/Kokoro-82M-v1.0-ONNX</a></li>
+        <li><a href="https://huggingface.co/hexgrad/Kokoro-82M" target="_blank" rel="noopener">Original Kokoro-82M (hexgrad)</a></li>
+        <li><a href="https://github.com/hexgrad/kokoro" target="_blank" rel="noopener">kokoro-js — the JavaScript library</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/hexgrad/kokoro" target="_blank" rel="noopener">kokoro-js</a> +
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { KokoroEngine, wavUrl, groupVoices, drawWaveform, escapeHTML, KOKORO_CSS } from "./kokoro.js";
+      import { progressReporter } from "/web-ai-showcase/lib/webai.js";
+
+      const style = document.createElement("style");
+      style.textContent = KOKORO_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new KokoroEngine();
+      let pcm = null, curUrl = null;
+
+      // Samples + speed
+      for (const c of $("samples").children) c.addEventListener("click", () => { $("text").value = c.dataset.t; });
+      $("speed").addEventListener("input", () => { $("speedVal").textContent = (+$("speed").value).toFixed(1) + "×"; });
+
+      function fillVoices(voices) {
+        const sel = $("voice");
+        sel.replaceChildren();
+        const groups = groupVoices(voices);
+        for (const [label, list] of groups) {
+          const og = document.createElement("optgroup");
+          og.label = label;
+          for (const v of list) {
+            const o = document.createElement("option");
+            o.value = v.id;
+            o.textContent = `${v.name}${v.grade ? ` (${v.grade})` : ""}`;
+            og.append(o);
+          }
+          sel.append(og);
+        }
+        // Default to af_heart when present.
+        if ([...sel.options].some((o) => o.value === "af_heart")) sel.value = "af_heart";
+        sel.disabled = false;
+      }
+
+      const reporter = progressReporter($("prog"), $("status"));
+      $("load").addEventListener("click", async () => {
+        $("load").disabled = true; $("prog").hidden = false;
+        $("status").classList.remove("err"); $("status").textContent = "Loading Kokoro…";
+        try {
+          const { device, voices } = await engine.load((p) => reporter.onProgress(p));
+          fillVoices(voices);
+          $("status").textContent = `Model ready — running on ${device.toUpperCase()}. ${voices.length} voices.`;
+          $("status").classList.add("ok"); $("prog").hidden = true; $("run").disabled = false;
+        } catch (err) {
+          reporter.fail(err); $("load").disabled = false;
+        }
+      });
+
+      $("run").addEventListener("click", async () => {
+        const text = $("text").value.trim();
+        if (!text) { $("status").textContent = "Type something to speak."; return; }
+        $("run").disabled = true; $("status").classList.remove("err"); $("status").textContent = "Synthesizing…";
+        try {
+          const r = await engine.speak(text, $("voice").value, +$("speed").value);
+          pcm = r.pcm;
+          if (curUrl) URL.revokeObjectURL(curUrl);
+          curUrl = wavUrl(r.wav);
+          $("player").src = curUrl;
+          $("download").href = curUrl; $("download").hidden = false;
+          drawWaveform($("wave"), pcm, 0);
+          $("insideEmpty").hidden = true; $("insideStats").hidden = false;
+          $("iSamples").textContent = pcm.length.toLocaleString();
+          $("iRate").textContent = r.rate + " Hz";
+          $("iDur").textContent = r.durSec.toFixed(2) + " s";
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rVoice").textContent = r.voice;
+          $("rMs").textContent = (r.ms / 1000).toFixed(2) + " s";
+          $("rDur").textContent = r.durSec.toFixed(2) + " s";
+          $("rRtf").textContent = r.rtf ? r.rtf.toFixed(2) + "×" : "–";
+          $("status").textContent = "Done — press play."; $("status").classList.add("ok");
+          $("player").play().catch(() => {});
+        } catch (err) {
+          $("status").textContent = "Synthesis failed: " + err.message;
+          $("status").classList.add("err");
+        } finally {
+          $("run").disabled = false;
+        }
+      });
+
+      // Waveform playback progress.
+      $("player").addEventListener("timeupdate", () => {
+        if (pcm && $("player").duration) drawWaveform($("wave"), pcm, $("player").currentTime / $("player").duration);
+      });
+      $("player").addEventListener("ended", () => pcm && drawWaveform($("wave"), pcm, 1));
+      addEventListener("resize", () => pcm && drawWaveform($("wave"), pcm, 0));
+    </script>
+  </body>
+</html>
