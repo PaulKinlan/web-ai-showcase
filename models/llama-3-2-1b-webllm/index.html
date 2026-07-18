@@ -42,16 +42,13 @@
           <tr><th>Web APIs</th><td>WebGPU, Web Workers, ES module imports</td></tr>
         </tbody>
       </table>
-      <p class="status" id="gpuLine" role="status"></p>
     </section>
 
     <section class="panel" aria-labelledby="run-h">
       <h3 id="run-h">Run it — chat</h3>
+      <div id="model-loader"></div>
       <div id="fallback" class="fallback" hidden></div>
-
-      <button id="load" type="button">Load Llama 3.2 1B (~880 MB)</button>
-      <progress id="prog" value="0" max="100" hidden></progress>
-      <p class="status" id="status" role="status" aria-live="polite">Model not loaded yet.</p>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
 
       <div class="sysbox" style="margin-top:.6rem">
         <label for="sys">System prompt (sets the assistant's behaviour)</label>
@@ -194,13 +191,17 @@ if (!(await webGPUAdapterAvailable())) {
     </style>
 
     <script type="module">
-      import { WebLLMChatEngine, webGPUAdapterAvailable, probeWebGPU, escapeHTML, estimateTokens, webgpuFallbackHTML, CHAT_CSS }
+      import { WebLLMChatEngine, probeWebGPU, escapeHTML, estimateTokens, webgpuFallbackHTML, CHAT_CSS }
         from "./webllm-chat.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
       const style = document.createElement("style"); style.textContent = CHAT_CSS; document.head.append(style);
       const $ = (id) => document.getElementById(id);
       const engine = new WebLLMChatEngine();
-      let gpuOK = false, generating = false;
+      let generating = false;
       const history = []; // { role:"user"|"assistant", content }
+
+      // The MLC build id — cache scanning matches how WebLLM stores its files on-device.
+      const MODEL = { modelId: "Llama-3.2-1B-Instruct-q4f16_1-MLC", runtime: "webllm", dtype: "q4f16_1", sizeMB: 880, requiresWebGPU: true };
 
       // Sampling controls — reflect live.
       const bind = (r, out, fmt) => { const el = $(r), o = $(out); const upd = () => o.textContent = fmt(el.value); el.addEventListener("input", upd); upd(); };
@@ -208,39 +209,26 @@ if (!(await webGPUAdapterAvailable())) {
       bind("topp", "toppV", (v) => (+v).toFixed(2));
       bind("maxtok", "maxtokV", (v) => String(v));
 
-      // WebGPU gate — the task mandates gating on webGPUAdapterAvailable().
-      (async () => {
-        gpuOK = await webGPUAdapterAvailable();
-        if (gpuOK) {
-          $("gpuLine").textContent = "✓ WebGPU adapter found — this device can run Llama 3.2 1B locally.";
-          $("gpuLine").classList.add("ok");
-        } else {
-          const probe = await probeWebGPU();
-          $("gpuLine").textContent = "△ No usable WebGPU here — see the note below.";
-          $("fallback").hidden = false;
-          $("fallback").innerHTML = webgpuFallbackHTML(probe);
-          $("load").disabled = true;
-        }
-      })();
-
-      // Load (~880 MB) with real progress.
-      $("load").addEventListener("click", async () => {
-        if (!gpuOK) return;
-        $("load").disabled = true; $("prog").hidden = false; $("status").classList.remove("err");
-        $("status").textContent = "Downloading & compiling Llama 3.2 1B…";
-        try {
-          await engine.load((p) => {
-            if (typeof p.progress === "number") { $("prog").value = p.progress * 100; }
-            $("status").textContent = p.text || "Loading…";
-          });
-          $("status").textContent = "Model ready on WebGPU."; $("status").classList.add("ok"); $("prog").hidden = true;
+      // Shared auto-init model-loading architecture — replaces the bespoke WebGPU gate + Load button.
+      // A real WebGPU adapter is required (requiresWebGPU); no adapter → honest needs-WebGPU state, no fake tokens.
+      createModelLoader({
+        mount: $("model-loader"),
+        model: MODEL,
+        load: async (onProgress) => {
+          await engine.load((p) => { if (typeof p.progress === "number") onProgress({ status: "progress", progress: p.progress * 100 }); });
+          return engine;
+        },
+        onReady: () => {
           $("input").disabled = false; $("send").disabled = false; $("reset").disabled = false;
           $("log").querySelector(".msg.system .bubble").textContent = "Model ready. Say hello 👋";
           $("input").focus();
-        } catch (err) {
-          $("status").textContent = "Couldn't load the model: " + err.message; $("status").classList.add("err");
-          $("load").disabled = false; $("prog").hidden = true;
-        }
+        },
+        onError: async (err) => {
+          if (String(err?.message ?? err).includes("needs-webgpu")) {
+            const probe = await probeWebGPU();
+            $("fallback").hidden = false; $("fallback").innerHTML = webgpuFallbackHTML(probe);
+          }
+        },
       });
 
       // Render helpers.
