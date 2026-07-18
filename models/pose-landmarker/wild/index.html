@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>PoseLandmarker Wild — pose-match game · Web AI Showcase</title>
+    <meta name="description" content="Strike a pose to match the target: PoseLandmarker scores how closely your body matches a reference pose, live from your webcam — or score one sample photo against another. In your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎯</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">PoseLandmarker</a></p>
+
+    <header>
+      <p class="eyebrow">use case · wild</p>
+      <h1>Wild: a pose-match game</h1>
+      <p class="lede">
+        Copy the pose. Pick a target, then match it — the model scores how close your body is to the
+        reference, scale- and position-independent, so it's about the <em>shape</em> of the pose, not
+        where you stand. Play it live on your webcam, or score one sample photo against another.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="field-row">
+        <span class="muted">Target pose:</span>
+        <div class="sample-strip" id="targets" role="group" aria-label="Target pose">
+          <img class="sample-thumb active" src="../sample-yoga.jpg" data-src="../sample-yoga.jpg" alt="Yoga warrior pose" tabindex="0" role="button" />
+          <img class="sample-thumb" src="../sample-athlete.jpg" data-src="../sample-athlete.jpg" alt="Crouching athlete" tabindex="0" role="button" />
+        </div>
+      </div>
+      <div class="field-row">
+        <button id="scoreSample" type="button" class="secondary" disabled>Score the other sample</button>
+        <button id="camBtn" type="button" disabled>Play with webcam</button>
+        <span id="camState" class="muted" aria-live="polite"></span>
+      </div>
+
+      <div style="text-align:center;padding:1rem;border-radius:var(--radius);background:var(--bg-raised);border:1px solid var(--border);margin:.6rem 0">
+        <div class="muted" style="font-size:.8rem;text-transform:uppercase;letter-spacing:.05em">Match score</div>
+        <div id="score" aria-live="polite" style="font-family:var(--font-display,Georgia,serif);font-size:3rem">–</div>
+        <div id="scoreMsg" class="muted" style="font-family:var(--font-mono)">pick a target, then match it</div>
+      </div>
+
+      <div style="display:flex;gap:.8rem;flex-wrap:wrap">
+        <div style="flex:1 1 240px"><div class="muted" style="font-size:.8rem">Target</div><div class="canvas-wrap"><canvas id="targetCanvas" class="stage-canvas" aria-label="The target pose skeleton"></canvas></div></div>
+        <div style="flex:1 1 240px"><div class="muted" style="font-size:.8rem">You</div><div class="canvas-wrap"><canvas id="stage" class="stage-canvas" aria-label="Your pose skeleton"></canvas><video id="video" playsinline muted hidden></video></div></div>
+      </div>
+      <div class="readout" id="readout" hidden><span>delegate <b id="rDelegate">–</b></span><span>best <b id="rBest">0</b></span></div>
+    </section>
+
+    <p class="crumbs"><a href="../practical/">← Practical</a> · <a href="../">PoseLandmarker</a> · Next: <a href="../multi-model/">Multi-model →</a></p>
+
+    <script type="module">
+      import { PoseTask, MODEL_URL, drawPoses, LANDMARK_CSS } from "../pose.js";
+      import { createVisionTask } from "/web-ai-showcase/lib/mediapipe.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = LANDMARK_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      let pose = null, camOn = false, rafId = null, targetNorm = null, best = 0;
+      const KEY = [11,12,13,14,15,16,23,24,25,26,27,28];
+      function setStatus(m, c) { $("status").textContent = m; $("status").classList.remove("err","ok"); if (c) $("status").classList.add(c); }
+
+      // Normalize a pose: center on hip midpoint, scale by shoulder-hip torso length.
+      function normalize(lm) {
+        if (!lm) return null;
+        const hip = { x: (lm[23].x + lm[24].x) / 2, y: (lm[23].y + lm[24].y) / 2 };
+        const sho = { x: (lm[11].x + lm[12].x) / 2, y: (lm[11].y + lm[12].y) / 2 };
+        const scale = Math.hypot(sho.x - hip.x, sho.y - hip.y) || 1e-3;
+        return KEY.map((i) => ({ x: (lm[i].x - hip.x) / scale, y: (lm[i].y - hip.y) / scale }));
+      }
+      function matchScore(a, b) {
+        if (!a || !b) return 0;
+        let s = 0; for (let i = 0; i < a.length; i++) s += Math.hypot(a[i].x - b[i].x, a[i].y - b[i].y);
+        const mean = s / a.length;
+        return Math.max(0, Math.round(100 * (1 - mean / 1.6)));
+      }
+      function showScore(v) {
+        $("score").textContent = v; best = Math.max(best, v); $("rBest").textContent = best; $("readout").hidden = false;
+        $("scoreMsg").textContent = v >= 85 ? "Perfect! 🎉" : v >= 65 ? "Close — adjust a little" : v >= 40 ? "Getting there" : "Not yet — copy the shape";
+      }
+
+      function decode(url) { return new Promise((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = () => rej(new Error("decode failed")); im.src = url; }); }
+      async function setTarget(el) {
+        stopCam();
+        for (const t of $("targets").children) t.classList.toggle("active", t === el);
+        if (!pose) return;
+        const img = await decode(el.dataset.src);
+        const r = await pose.detectImage(img);
+        drawPoses($("targetCanvas"), img, r, { minVisibility: 0.4, color: "#1a7a3a" });
+        targetNorm = r.landmarks[0] ? normalize(r.landmarks[0]) : null;
+        best = 0; $("rBest").textContent = 0;
+        setStatus(targetNorm ? "Target set — now match it." : "Couldn't read the target pose.", targetNorm ? "ok" : "err");
+      }
+      for (const t of $("targets").children) { t.addEventListener("click", () => setTarget(t)); t.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setTarget(t); } }); }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: MODEL_URL, runtime: "mediapipe", sizeMB: 10, requiresWebGPU: false },
+        load: (onProgress) => createVisionTask({ taskClass: "PoseLandmarker", modelUrl: MODEL_URL, options: { numPoses: 1, runningMode: "IMAGE" }, onProgress }),
+        onReady: async (task) => { pose = new PoseTask(task); $("scoreSample").disabled = false; $("camBtn").disabled = false; await setTarget($("targets").firstElementChild); },
+      });
+
+      $("scoreSample").addEventListener("click", async () => {
+        if (!pose || !targetNorm) return;
+        const other = [...$("targets").children].find((t) => !t.classList.contains("active")) || $("targets").children[0];
+        const img = await decode(other.dataset.src);
+        const r = await pose.detectImage(img);
+        drawPoses($("stage"), img, r, { minVisibility: 0.4 });
+        $("rDelegate").textContent = pose.delegate;
+        showScore(matchScore(targetNorm, r.landmarks[0] ? normalize(r.landmarks[0]) : null));
+      });
+
+      function stopCam() { if (!camOn) return; camOn = false; cancelAnimationFrame(rafId); const v = $("video"); v.srcObject?.getTracks().forEach(t => t.stop()); v.srcObject = null; v.hidden = true; $("camBtn").textContent = "Play with webcam"; $("camState").textContent = ""; }
+      async function startCam() {
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
+          const v = $("video"); v.srcObject = stream; await v.play();
+          camOn = true; $("camBtn").textContent = "Stop"; $("camState").innerHTML = '<span class="rec-dot"></span>Live';
+          const loop = async () => {
+            if (!camOn) return;
+            try { const r = await pose.detectVideo(v, performance.now()); drawPoses($("stage"), v, r, { mirror: true, minVisibility: 0.4 }); $("rDelegate").textContent = pose.delegate; if (r.landmarks[0]) showScore(matchScore(targetNorm, normalize(r.landmarks[0]))); }
+            catch (e) { setStatus("Webcam error: " + e.message, "err"); }
+            rafId = requestAnimationFrame(loop);
+          };
+          loop();
+        } catch (e) { $("camState").textContent = "Camera blocked: " + e.message; }
+      }
+      $("camBtn").addEventListener("click", () => { camOn ? stopCam() : startCam(); });
+    </script>
+  </body>
+</html>

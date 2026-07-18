@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>PoseLandmarker — 33 body landmarks in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run Google's MediaPipe PoseLandmarker locally: point a photo or your webcam at a person and it plots a 33-point body skeleton with per-joint visibility — real landmark coordinates, no server."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🤸</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">pose-landmark-detection · vision · MediaPipe · ~10 MB</p>
+      <h1>PoseLandmarker — a 33-point body skeleton</h1>
+      <p class="lede">
+        MediaPipe's PoseLandmarker finds a person in an image or video and returns <strong>33 body
+        landmarks</strong> — eyes, shoulders, elbows, wrists, hips, knees, ankles, feet — each with a
+        normalized position and a visibility score. It's a real downloadable <code>.task</code> model
+        that runs on-device via WebAssembly. Drop a photo or turn on your webcam.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://ai.google.dev/edge/mediapipe/solutions/vision/pose_landmarker" target="_blank" rel="noopener">MediaPipe PoseLandmarker Lite (Google)</a></td></tr>
+          <tr><th>Runtime</th><td>MediaPipe Tasks Vision (<code>@mediapipe/tasks-vision</code>) — <code>.task</code> bundle</td></tr>
+          <tr><th>Output</th><td>33 landmarks (x, y, z normalized + visibility), plus world landmarks in metres</td></tr>
+          <tr><th>People</th><td>1 by default (configurable)</td></tr>
+          <tr><th>Delegate</th><td>GPU when a WebGPU/WebGL adapter exists, otherwise CPU (XNNPACK)</td></tr>
+          <tr><th>Download</th><td>~10 MB <code>.task</code> file (Lite), cached by the browser after first load</td></tr>
+          <tr><th>License</th><td>Apache-2.0 (Google MediaPipe)</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Canvas, getUserMedia, requestVideoFrameCallback — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Pick a sample photo, drop your own, or use your webcam. The 33 landmarks and the body skeleton are drawn straight onto the canvas; the visibility slider hides low-confidence joints.</p>
+
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image of a person">
+        <span id="dropText">Drop a photo of a person here, or click to choose</span>
+        <input type="file" id="file" accept="image/*" hidden />
+      </div>
+      <div class="sample-strip" id="samples" aria-label="Sample photos">
+        <img class="sample-thumb active" src="sample-yoga.jpg" data-src="sample-yoga.jpg" alt="A person in a yoga warrior pose on a beach" tabindex="0" role="button" />
+        <img class="sample-thumb" src="sample-athlete.jpg" data-src="sample-athlete.jpg" alt="An athlete crouching to tie a shoe" tabindex="0" role="button" />
+      </div>
+
+      <div class="field-row">
+        <button id="run" type="button" disabled>Detect pose</button>
+        <button id="camBtn" type="button" class="secondary" disabled>Use webcam</button>
+        <span id="camState" class="muted" aria-live="polite"></span>
+      </div>
+
+      <div class="slider-row">
+        <label for="vis">Min visibility</label>
+        <input type="range" id="vis" min="0" max="0.9" step="0.05" value="0.5" />
+        <output id="visOut" for="vis">0.50</output>
+      </div>
+
+      <div class="canvas-wrap">
+        <canvas id="stage" class="stage-canvas" tabindex="0" aria-label="Result: the photo with the 33-point body skeleton drawn on it"></canvas>
+        <video id="video" playsinline muted hidden></video>
+      </div>
+      <div class="readout" id="readout" hidden>
+        <span>delegate <b id="rDelegate">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+        <span>people <b id="rPeople">–</b></span>
+        <span>visible joints <b id="rVisible">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside</h3>
+      <p class="muted">
+        The pose comes back as 33 named landmarks, each a normalized <code>x, y</code> (0–1 across the
+        image), a relative depth <code>z</code>, and a <code>visibility</code> (how confident the model
+        is that the joint is actually in frame — low for occluded or off-screen parts). The slider above
+        uses exactly this number. Below is the raw list for the detected person.
+      </p>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Detect a pose to see its 33 landmark coordinates.</div>
+      <div id="insideWrap" hidden>
+        <table class="inside-table">
+          <thead><tr><th>#</th><th>landmark</th><th>x</th><th>y</th><th>z</th><th>visibility</th></tr></thead>
+          <tbody id="insideRows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        Body tracking used to mean a Kinect or a cloud vision API. PoseLandmarker turns "where is this
+        person's body?" into a local function call in any browser — private, offline, and fast enough
+        for a live camera.
+      </p>
+      <ul>
+        <li><strong>Fitness &amp; physio</strong> — count reps, check squat depth or plank alignment, and give form feedback with nothing uploaded.</li>
+        <li><strong>Motion control</strong> — drive an avatar, a game, or a presentation with your body.</li>
+        <li><strong>Ergonomics &amp; safety</strong> — flag slouching at a desk or unsafe lifting posture, on-device.</li>
+        <li><strong>Sports &amp; dance</strong> — compare a learner's pose to a target and score the match.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Detect a pose on a sample photo and read all 33 landmark coordinates and visibilities.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">A live squat / rep counter and posture check that reads your joint angles from the webcam.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">A pose-match game: strike the target silhouette and score how close your skeleton gets.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">Pose + Hands: full-body skeleton with detailed 21-point finger tracking layered on top.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>MediaPipe Tasks loads a <code>.task</code> bundle and gives you a landmarker you call per image or per video frame:</p>
+      <pre><code>import { FilesetResolver, PoseLandmarker } from "@mediapipe/tasks-vision";
+
+const vision = await FilesetResolver.forVisionTasks(".../wasm");
+const pose = await PoseLandmarker.createFromOptions(vision, {
+  baseOptions: {
+    modelAssetPath: ".../pose_landmarker_lite.task",  // ~10 MB
+    delegate: "GPU",                                   // or "CPU"
+  },
+  numPoses: 1,
+  runningMode: "IMAGE",                                // or "VIDEO"
+});
+
+const result = pose.detect(imageElement);
+// result.landmarks → [ [ {x,y,z,visibility} × 33 ] ]  (normalized 0–1)
+// result.worldLandmarks → the same in real-world metres, hip-centred</code></pre>
+      <p class="muted">This page loads the model through the showcase's shared auto-init loader and draws the skeleton on a canvas at the image's natural resolution; for the webcam it switches the task to <code>VIDEO</code> mode and calls <code>detectForVideo</code> each frame.</p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://ai.google.dev/edge/mediapipe/solutions/vision/pose_landmarker" target="_blank" rel="noopener">MediaPipe PoseLandmarker — task guide</a></li>
+        <li><a href="https://ai.google.dev/edge/mediapipe/solutions/vision/pose_landmarker/web_js" target="_blank" rel="noopener">PoseLandmarker for Web (JS)</a></li>
+        <li><a href="https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task" target="_blank" rel="noopener">The model file (pose_landmarker_lite.task)</a></li>
+        <li><a href="https://www.npmjs.com/package/@mediapipe/tasks-vision" target="_blank" rel="noopener">@mediapipe/tasks-vision on npm</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://ai.google.dev/edge/mediapipe" target="_blank" rel="noopener">MediaPipe Tasks</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { PoseTask, MODEL_URL, POSE_LANDMARK_NAMES, drawPoses, escapeHTML, LANDMARK_CSS } from "./pose.js";
+      import { createVisionTask } from "/web-ai-showcase/lib/mediapipe.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style"); style.textContent = LANDMARK_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      let pose = null, currentImg = null, lastResult = null, camOn = false, rafId = null;
+
+      function setStatus(msg, cls) { $("status").textContent = msg; $("status").classList.remove("err","ok"); if (cls) $("status").classList.add(cls); }
+      function minVis() { return +$("vis").value; }
+
+      function decode(url) { return new Promise((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = () => rej(new Error("decode failed")); im.src = url; }); }
+      async function useURL(url) {
+        currentImg = await decode(url); lastResult = null;
+        const c = $("stage"); c.width = currentImg.naturalWidth; c.height = currentImg.naturalHeight;
+        c.getContext("2d").drawImage(currentImg, 0, 0);
+        $("readout").hidden = true; $("insideWrap").hidden = true; $("insideEmpty").hidden = false;
+        $("run").disabled = !pose;
+      }
+      async function pickSample(el) {
+        stopCam();
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        await useURL(el.dataset.src);
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } });
+      }
+
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover","dragenter"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave","drop"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) { stopCam(); for (const t of $("samples").children) t.classList.remove("active"); $("dropText").textContent = f.name; await useURL(URL.createObjectURL(f)); }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", e => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
+
+      $("vis").addEventListener("input", () => {
+        $("visOut").textContent = minVis().toFixed(2);
+        if (lastResult && !camOn) renderResult(lastResult, +$("rMs").textContent || 0);
+      });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: MODEL_URL, runtime: "mediapipe", sizeMB: 10, requiresWebGPU: false },
+        load: (onProgress) => createVisionTask({ taskClass: "PoseLandmarker", modelUrl: MODEL_URL, options: { numPoses: 1, runningMode: "IMAGE" }, onProgress }),
+        onReady: (task) => { pose = new PoseTask(task); $("run").disabled = !currentImg; $("camBtn").disabled = false; setStatus("Model ready.", "ok"); },
+      });
+      pickSample($("samples").firstElementChild);
+
+      function renderResult(result, ms) {
+        lastResult = result;
+        drawPoses($("stage"), camOn ? $("video") : currentImg, result, { mirror: camOn, minVisibility: minVis() });
+        const n = result.landmarks.length;
+        const visible = n ? result.landmarks[0].filter(p => (p.visibility ?? 1) >= minVis()).length : 0;
+        $("rDelegate").textContent = pose.delegate; $("rMs").textContent = ms + " ms";
+        $("rPeople").textContent = n; $("rVisible").textContent = visible + " / 33";
+        $("readout").hidden = false;
+        if (n > 0) {
+          $("insideEmpty").hidden = true; $("insideWrap").hidden = false;
+          $("insideRows").replaceChildren(...result.landmarks[0].map((p, i) => {
+            const tr = document.createElement("tr");
+            const dim = (p.visibility ?? 1) < minVis();
+            tr.style.opacity = dim ? "0.45" : "1";
+            tr.innerHTML = `<td>${i}</td><td>${escapeHTML(POSE_LANDMARK_NAMES[i] ?? "")}</td><td>${p.x.toFixed(3)}</td><td>${p.y.toFixed(3)}</td><td>${p.z.toFixed(3)}</td><td>${(p.visibility ?? 1).toFixed(2)}</td>`;
+            return tr;
+          }));
+        } else { $("insideEmpty").hidden = false; $("insideWrap").hidden = true; $("insideEmpty").textContent = "No person found in this frame."; }
+      }
+
+      $("run").addEventListener("click", async () => {
+        if (!pose || !currentImg) return;
+        $("run").disabled = true; setStatus("Detecting…");
+        try {
+          const t0 = performance.now();
+          const result = await pose.detectImage(currentImg);
+          renderResult(result, Math.round(performance.now() - t0));
+          setStatus(`Found ${result.landmarks.length} person(s).`, "ok");
+        } catch (e) { setStatus("Detection failed: " + e.message, "err"); }
+        finally { $("run").disabled = false; }
+      });
+
+      function stopCam() {
+        if (!camOn) return; camOn = false; cancelAnimationFrame(rafId);
+        const v = $("video"); v.srcObject?.getTracks().forEach(t => t.stop()); v.srcObject = null; v.hidden = true;
+        $("camBtn").textContent = "Use webcam"; $("camState").textContent = "";
+      }
+      async function startCam() {
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
+          const v = $("video"); v.srcObject = stream; await v.play();
+          camOn = true; $("camBtn").textContent = "Stop webcam"; $("camState").innerHTML = '<span class="rec-dot"></span>Live';
+          const loop = async () => {
+            if (!camOn) return;
+            try { const t0 = performance.now(); const result = await pose.detectVideo(v, performance.now()); renderResult(result, Math.round(performance.now() - t0)); }
+            catch (e) { setStatus("Webcam detect error: " + e.message, "err"); }
+            rafId = requestAnimationFrame(loop);
+          };
+          loop();
+        } catch (e) { $("camState").textContent = "Camera blocked: " + e.message; }
+      }
+      $("camBtn").addEventListener("click", () => { camOn ? stopCam() : startCam(); });
+    </script>
+  </body>
+</html>
