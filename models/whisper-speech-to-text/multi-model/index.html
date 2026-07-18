@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Voice loop — Whisper → Kokoro · Web AI Showcase</title>
+    <meta name="description" content="A full on-device voice loop: record speech, Whisper transcribes it, you edit the text, and Kokoro speaks it back in a voice you pick. Two models, one pipeline, nothing uploaded." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🔁</text></svg>" />
+    <style>
+      .steps { display:grid; gap:1rem; }
+      .step { border:1px solid var(--border); border-radius:var(--radius); background:var(--bg-secondary); padding:1rem; }
+      .step > h3 { margin-top:0; }
+      .step .num { font-family:var(--font-mono); color:var(--muted); font-size:.8rem; }
+      #edit { inline-size:100%; min-block-size:90px; }
+    </style>
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Whisper</a></p>
+
+    <header>
+      <p class="eyebrow">use case · multi-model · Whisper + Kokoro</p>
+      <h1>Voice loop: speak → transcribe → edit → speak back</h1>
+      <p class="lede">
+        Two browser models wired into one pipeline. <a href="../">Whisper</a> turns your voice into text;
+        you tweak the words; then <a href="../../kokoro-text-to-speech/">Kokoro</a> speaks them back in a
+        voice you choose. Speech in, speech out — and nothing ever leaves the device.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div style="display:flex;flex-wrap:wrap;gap:.5rem;align-items:center">
+        <button id="loadBoth" type="button">Load both models (~210 MB)</button>
+        <progress id="prog" value="0" max="100" hidden></progress>
+      </div>
+      <p class="status" id="status" role="status" aria-live="polite">Models not loaded yet.</p>
+    </section>
+
+    <div class="steps">
+      <section class="step">
+        <p class="num">step 1 — Whisper</p>
+        <h3>Speak or pick a clip</h3>
+        <div class="audio-row">
+          <button id="rec" type="button" class="secondary" disabled>● Record</button>
+          <button id="upload" type="button" class="secondary" disabled>Upload audio</button>
+          <input type="file" id="file" accept="audio/*" hidden />
+          <span class="muted" style="font-size:.82rem">or a sample:</span>
+          <span class="sample-row" id="samples"><button class="chip" type="button" data-src="jfk.wav" data-label="JFK — inaugural (11s)">JFK inaugural</button></span>
+        </div>
+        <div id="micFallback" class="fallback" hidden>
+          <strong>No microphone here.</strong>
+          <p class="muted" style="margin:.3rem 0">In headless / embedded views there's no mic — use the sample or upload a file. The loop is identical.</p>
+        </div>
+        <div class="audio-row">
+          <audio id="player" controls preload="metadata"></audio>
+          <span class="muted" id="clipLabel" style="font-size:.82rem">JFK — inaugural (11s)</span>
+        </div>
+        <button id="transcribe" type="button" disabled>Transcribe →</button>
+        <span class="readout" id="wRead" hidden><span>backend <b id="wBackend">–</b></span><span>time <b id="wMs">–</b></span></span>
+      </section>
+
+      <section class="step">
+        <p class="num">step 2 — you</p>
+        <h3>Edit the transcript</h3>
+        <textarea id="edit" placeholder="The transcript lands here — change any words before Kokoro speaks them."></textarea>
+      </section>
+
+      <section class="step">
+        <p class="num">step 3 — Kokoro</p>
+        <h3>Speak it back</h3>
+        <div class="tts-grid">
+          <label>Voice
+            <select id="voice" disabled><option>Load the models to list voices</option></select>
+          </label>
+          <label>Speed <span class="muted" id="speedVal">1.0×</span>
+            <span class="speed-row"><input type="range" id="speed" min="0.5" max="2" step="0.1" value="1" /></span>
+          </label>
+          <button id="speak" type="button" disabled>Speak ←</button>
+        </div>
+        <div class="audio-row"><audio id="out" controls preload="none"></audio></div>
+        <div class="wave-wrap"><canvas id="wave" class="wave" aria-label="Synthesized speech waveform"></canvas></div>
+        <span class="readout" id="kRead" hidden><span>backend <b id="kBackend">–</b></span><span>voice <b id="kVoice">–</b></span><span>gen time <b id="kMs">–</b></span></span>
+      </section>
+    </div>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why this is the interesting part</h2>
+      <p>
+        On their own, each model is useful. Chained, they're a template for a whole class of app: a
+        private voice assistant, a pronunciation coach, a "re-voice this in a calmer tone" tool, a
+        hands-free note-taker that reads your notes back. Drop an on-device LLM between steps 2 and 3 and
+        you have a full voice agent — with no server, no API bill, and no audio ever leaving the tab.
+      </p>
+    </section>
+
+    <p class="crumbs"><a href="../">← Whisper</a> · <a href="../../kokoro-text-to-speech/">Kokoro →</a></p>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Whisper + Kokoro,
+      both local via <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { WhisperEngine, urlToMono16k, blobToMono16k, MicRecorder, WHISPER_CSS } from "../whisper.js";
+      import { KokoroEngine, wavUrl, groupVoices, drawWaveform, KOKORO_CSS } from "../../kokoro-text-to-speech/kokoro.js";
+      import { progressReporter } from "/web-ai-showcase/lib/webai.js";
+      const s1 = document.createElement("style"); s1.textContent = WHISPER_CSS + KOKORO_CSS; document.head.append(s1);
+      const $ = (id) => document.getElementById(id);
+      const whisper = new WhisperEngine();
+      const kokoro = new KokoroEngine();
+      let pcm = null, outPcm = null, curOut = null;
+
+      $("speed").addEventListener("input", () => { $("speedVal").textContent = (+$("speed").value).toFixed(1) + "×"; });
+
+      // --- audio source (step 1) ---
+      async function useAudio(url, label, revoke = false) {
+        $("player").src = url; $("clipLabel").textContent = label;
+        try { pcm = (await urlToMono16k(url)).pcm; $("transcribe").disabled = !whisper.ready; }
+        catch (err) { $("status").textContent = "Couldn't decode audio: " + err.message; $("status").classList.add("err"); pcm = null; }
+        if (revoke) $("player").addEventListener("emptied", () => URL.revokeObjectURL(url), { once: true });
+      }
+      for (const chip of $("samples").children) chip.addEventListener("click", () => useAudio(chip.dataset.src, chip.dataset.label));
+      useAudio("jfk.wav", "JFK — inaugural (11s)");
+
+      $("upload").addEventListener("click", () => $("file").click());
+      $("file").addEventListener("change", () => { const f = $("file").files[0]; if (f) useAudio(URL.createObjectURL(f), f.name, true); });
+
+      const mic = new MicRecorder(); let recording = false;
+      if (!MicRecorder.supported()) $("micFallback").hidden = false;
+      $("rec").addEventListener("click", async () => {
+        if (!recording) {
+          try { await mic.start(); } catch { $("micFallback").hidden = false; $("status").textContent = "Mic unavailable — use the sample or upload."; $("status").classList.add("err"); return; }
+          recording = true; $("rec").innerHTML = '<span class="rec-dot"></span>Stop'; $("rec").classList.remove("secondary");
+          $("status").textContent = "Recording… click Stop when done."; $("status").classList.remove("err");
+        } else {
+          recording = false; $("rec").textContent = "● Record"; $("rec").classList.add("secondary");
+          const { blob, url } = await mic.stop();
+          $("player").src = url; $("clipLabel").textContent = "Your recording";
+          $("player").addEventListener("emptied", () => URL.revokeObjectURL(url), { once: true });
+          try { pcm = (await blobToMono16k(blob)).pcm; $("status").textContent = "Recorded — hit Transcribe."; }
+          catch (err) { $("status").textContent = "Couldn't process recording: " + err.message; $("status").classList.add("err"); }
+        }
+      });
+
+      // --- load both models ---
+      const reporter = progressReporter($("prog"), $("status"));
+      function fillVoices(voices) {
+        const sel = $("voice"); sel.replaceChildren();
+        for (const [label, list] of groupVoices(voices)) {
+          const og = document.createElement("optgroup"); og.label = label;
+          for (const v of list) { const o = document.createElement("option"); o.value = v.id; o.textContent = `${v.name}${v.grade ? ` (${v.grade})` : ""}`; og.append(o); }
+          sel.append(og);
+        }
+        if ([...sel.options].some((o) => o.value === "af_heart")) sel.value = "af_heart";
+        sel.disabled = false;
+      }
+      $("loadBoth").addEventListener("click", async () => {
+        $("loadBoth").disabled = true; $("prog").hidden = false; $("status").classList.remove("err"); $("status").textContent = "Loading Whisper…";
+        try {
+          const wd = await whisper.load((p) => reporter.onProgress(p));
+          $("status").textContent = `Whisper ready (${wd.toUpperCase()}). Loading Kokoro…`;
+          const { device: kd, voices } = await kokoro.load((p) => reporter.onProgress(p));
+          fillVoices(voices);
+          $("status").textContent = `Both ready — Whisper ${wd.toUpperCase()}, Kokoro ${kd.toUpperCase()}.`;
+          $("status").classList.add("ok"); $("prog").hidden = true;
+          $("rec").disabled = false; $("upload").disabled = false; $("transcribe").disabled = !pcm; $("speak").disabled = false;
+        } catch (err) { reporter.fail(err); $("loadBoth").disabled = false; }
+      });
+
+      // --- step 1 → 2: transcribe ---
+      $("transcribe").addEventListener("click", async () => {
+        if (!pcm) { $("status").textContent = "Pick or record audio first."; return; }
+        $("transcribe").disabled = true; $("status").classList.remove("err"); $("status").textContent = "Transcribing…";
+        try {
+          const r = await whisper.transcribe(pcm);
+          $("edit").value = r.text || "";
+          $("wRead").hidden = false; $("wBackend").textContent = r.device.toUpperCase(); $("wMs").textContent = (r.ms / 1000).toFixed(1) + " s";
+          $("status").textContent = "Transcribed — edit the text, then Speak."; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Transcription failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("transcribe").disabled = false; }
+      });
+
+      // --- step 2 → 3: speak ---
+      $("speak").addEventListener("click", async () => {
+        const text = $("edit").value.trim();
+        if (!text) { $("status").textContent = "Nothing to speak — transcribe or type something."; return; }
+        $("speak").disabled = true; $("status").classList.remove("err"); $("status").textContent = "Kokoro synthesizing…";
+        try {
+          const r = await kokoro.speak(text, $("voice").value, +$("speed").value);
+          outPcm = r.pcm; if (curOut) URL.revokeObjectURL(curOut); curOut = wavUrl(r.wav);
+          $("out").src = curOut; drawWaveform($("wave"), outPcm, 0);
+          $("kRead").hidden = false; $("kBackend").textContent = r.device.toUpperCase(); $("kVoice").textContent = r.voice; $("kMs").textContent = (r.ms / 1000).toFixed(2) + " s";
+          $("status").textContent = "Loop complete — press play on step 3."; $("status").classList.add("ok");
+          $("out").play().catch(() => {});
+        } catch (err) { $("status").textContent = "Synthesis failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("speak").disabled = false; }
+      });
+      $("out").addEventListener("timeupdate", () => { if (outPcm && $("out").duration) drawWaveform($("wave"), outPcm, $("out").currentTime / $("out").duration); });
+      $("out").addEventListener("ended", () => outPcm && drawWaveform($("wave"), outPcm, 1));
+      addEventListener("resize", () => outPcm && drawWaveform($("wave"), outPcm, 0));
+    </script>
+  </body>
+</html>

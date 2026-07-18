@@ -1,0 +1,312 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Whisper — speech-to-text in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run OpenAI's Whisper locally in your browser: record from the mic, drop an audio file, or use a sample, and get a transcript with real word-level timestamps — WebGPU-accelerated, nothing uploaded."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎙️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">automatic-speech-recognition · audio · WebGPU (WASM fallback) · ~120 MB</p>
+      <h1>Whisper — turn speech into text, on your device</h1>
+      <p class="lede">
+        Whisper listens to audio and writes down what was said — in your browser, with no server and no
+        upload. Record from your microphone, drop in an audio file, or use a sample clip, and get a
+        transcript with <strong>word-level timestamps</strong> you can see line up with the waveform.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="seg-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/onnx-community/whisper-base_timestamped" target="_blank" rel="noopener">onnx-community/whisper-base_timestamped</a> <span class="muted">(whisper-base, exported for word timestamps)</span></td></tr>
+          <tr><th>Task / pipeline</th><td><code>automatic-speech-recognition</code></td></tr>
+          <tr><th>Architecture</th><td>Whisper encoder-decoder transformer (74M params), 80-bin log-Mel input → text tokens; cross-attentions exported so word timings align</td></tr>
+          <tr><th>Quantization</th><td>q8 (8-bit) ONNX</td></tr>
+          <tr><th>Backend</th><td>WebGPU when available, honest WebAssembly fallback</td></tr>
+          <tr><th>Download</th><td>~120 MB, cached after first load</td></tr>
+          <tr><th>License</th><td>MIT (OpenAI Whisper)</td></tr>
+          <tr><th>Web APIs</th><td>WebGPU / WebAssembly, Web Workers, Web Audio (decode + resample), MediaRecorder (mic)</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">
+        Load the model, then choose audio: record from your mic, upload a file, or pick a sample. The
+        page decodes it to 16 kHz mono (what Whisper expects), draws the waveform, and transcribes it in
+        a Web Worker so the UI never janks.
+      </p>
+
+      <button id="load" type="button">Load Whisper (~120 MB)</button>
+      <progress id="prog" value="0" max="100" hidden></progress>
+      <p class="status" id="status" role="status" aria-live="polite">Model not loaded yet.</p>
+
+      <div class="audio-row">
+        <button id="rec" type="button" class="secondary" disabled>● Record</button>
+        <button id="upload" type="button" class="secondary" disabled>Upload audio</button>
+        <input type="file" id="file" accept="audio/*" hidden />
+        <span class="muted" style="font-size:.82rem">or a sample:</span>
+        <span class="sample-row" id="samples">
+          <button class="chip" type="button" data-src="jfk.wav" data-label="JFK — inaugural (11s)">JFK inaugural</button>
+          <button class="chip" type="button" data-src="ted.wav" data-label="TED talk clip (12s)">TED clip</button>
+        </span>
+      </div>
+
+      <div id="micFallback" class="fallback" hidden>
+        <strong>No microphone available here.</strong>
+        <p class="muted" style="margin:.3rem 0">
+          This context didn't grant mic access (common in headless / embedded views). Whisper still
+          works — use a <em>sample</em> above or <em>Upload audio</em>. For live recording, open this in a
+          normal browser tab and allow the microphone when prompted.
+        </p>
+      </div>
+
+      <div class="audio-row">
+        <audio id="player" controls preload="metadata"></audio>
+        <span class="muted" id="clipLabel" style="font-size:.82rem">JFK — inaugural (11s)</span>
+      </div>
+      <div class="wave-wrap"><canvas id="wave" class="wave" aria-label="Audio waveform"></canvas></div>
+
+      <button id="run" type="button" disabled>Transcribe</button>
+
+      <h3>Transcript</h3>
+      <div class="transcript" id="transcript" aria-live="polite">Transcribe a clip to see the text here.</div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>audio <b id="rDur">–</b></span>
+        <span>time <b id="rMs">–</b></span>
+        <span>tokens <b id="rTok">–</b></span>
+        <span>tok/s <b id="rTps">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside</h3>
+      <p class="muted">
+        Whisper doesn't emit a single blob of text — it decodes a stream of tokens and, with word
+        timestamps on, attaches a start/end time to each run of speech. Below is that raw timestamped
+        segment stream: the model's own view of <em>who said what, when</em>. The tok/s and backend
+        readout above are measured on this device, not claimed.
+      </p>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Run a transcription to see the timestamped segment stream.</div>
+      <div id="insideWrap" hidden>
+        <table class="seg-table">
+          <thead><tr><th>Start</th><th>End</th><th>Segment</th></tr></thead>
+          <tbody id="segRows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        Speech-to-text used to mean shipping audio to a cloud API — a bill, a privacy problem, and a
+        network dependency. Whisper-base runs on the visitor's own device, so transcription becomes a
+        free, private, offline capability of your page.
+      </p>
+      <ul>
+        <li><strong>Private dictation</strong> — notes, forms, and search-by-voice where the audio never leaves the tab (medical, legal, journaling).</li>
+        <li><strong>Captions &amp; subtitles</strong> — generate timed captions for user-recorded video/audio client-side, with real word timings to align them.</li>
+        <li><strong>Voice commands</strong> — a hands-free control layer for any web app, with no per-request inference cost.</li>
+        <li><strong>Meeting / voice-note transcripts</strong> — turn a recording into searchable, timestamped text without uploading a thing.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">One clip in, a timestamped transcript out — the core move.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Live captions / dictation: transcribe as you speak, segment by segment.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Karaoke — subtitle the sample and highlight each word as it's spoken.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">Voice loop: speak → Whisper → edit → Kokoro speaks it back.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>Transcription is one pipeline call. Word timestamps are a single option:</p>
+      <pre><code>import { pipeline } from "@huggingface/transformers";
+
+const transcribe = await pipeline(
+  "automatic-speech-recognition",
+  "onnx-community/whisper-base_timestamped", // whisper-base, exported for word timestamps
+  { device: "webgpu", dtype: "q8" }, // WASM fallback when WebGPU is absent
+);
+
+// audio = a 16 kHz mono Float32Array (decode with Web Audio, then resample)
+const out = await transcribe(audio, {
+  return_timestamps: "word",   // "word" | true (segment) | false
+  chunk_length_s: 30,          // long-audio chunking
+  stride_length_s: 5,
+});
+// out.text  → the full transcript
+// out.chunks → [{ text: " country", timestamp: [9.8, 10.2] }, …]</code></pre>
+      <p class="muted">
+        This page decodes the mic/file/sample to 16 kHz mono with the Web Audio API on the main thread,
+        then transfers just the Float32 samples to a Web Worker where the pipeline runs — so the model
+        never blocks the interface. Word chunks are grouped into the sentence-level segments shown under
+        "See inside".
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/onnx-community/whisper-base_timestamped" target="_blank" rel="noopener">Model card — onnx-community/whisper-base_timestamped</a></li>
+        <li><a href="https://openai.com/research/whisper" target="_blank" rel="noopener">OpenAI — Robust Speech Recognition (Whisper)</a></li>
+        <li><a href="https://arxiv.org/abs/2212.04356" target="_blank" rel="noopener">Paper — Radford et al., 2022 (arXiv:2212.04356)</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import {
+        WhisperEngine, urlToMono16k, blobToMono16k, MicRecorder,
+        drawWaveform, fmtTime, escapeHTML, WHISPER_CSS,
+      } from "./whisper.js";
+      import { progressReporter } from "/web-ai-showcase/lib/webai.js";
+
+      const style = document.createElement("style");
+      style.textContent = WHISPER_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new WhisperEngine();
+      let pcm = null;        // 16 kHz mono Float32Array for the model
+      let lastResult = null;
+
+      // --- audio source selection ---
+      async function useAudio(url, label, { revoke = false } = {}) {
+        $("player").src = url;
+        $("clipLabel").textContent = label;
+        $("transcript").textContent = "Transcribe a clip to see the text here.";
+        $("readout").hidden = true;
+        $("insideWrap").hidden = true; $("insideEmpty").hidden = false;
+        try {
+          const decoded = await urlToMono16k(url);
+          pcm = decoded.pcm;
+          drawWaveform($("wave"), pcm, 0);
+          $("run").disabled = !engine.ready;
+        } catch (err) {
+          $("status").textContent = "Couldn't decode that audio: " + err.message;
+          $("status").classList.add("err");
+          pcm = null;
+        }
+        if (revoke) $("player").addEventListener("emptied", () => URL.revokeObjectURL(url), { once: true });
+      }
+
+      // Samples
+      for (const chip of $("samples").children) {
+        chip.addEventListener("click", () => useAudio(chip.dataset.src, chip.dataset.label));
+      }
+      // Preload the first sample.
+      useAudio("jfk.wav", "JFK — inaugural (11s)");
+
+      // Upload
+      $("upload").addEventListener("click", () => $("file").click());
+      $("file").addEventListener("change", async () => {
+        const f = $("file").files[0];
+        if (f) await useAudio(URL.createObjectURL(f), f.name, { revoke: true });
+      });
+
+      // Mic record
+      const mic = new MicRecorder();
+      let recording = false;
+      if (!MicRecorder.supported()) $("micFallback").hidden = false;
+      $("rec").addEventListener("click", async () => {
+        if (!recording) {
+          try {
+            await mic.start();
+          } catch (err) {
+            $("micFallback").hidden = false;
+            $("status").textContent = "Microphone unavailable — use a sample or upload.";
+            $("status").classList.add("err");
+            return;
+          }
+          recording = true;
+          $("rec").innerHTML = '<span class="rec-dot"></span>Stop';
+          $("rec").classList.remove("secondary");
+          $("status").textContent = "Recording… click Stop when done.";
+          $("status").classList.remove("err");
+        } else {
+          recording = false;
+          $("rec").textContent = "● Record";
+          $("rec").classList.add("secondary");
+          const { url } = await mic.stop();
+          await useAudio(url, "Your recording", { revoke: true });
+          $("status").textContent = "Recorded. Hit Transcribe.";
+        }
+      });
+
+      // --- load model ---
+      const reporter = progressReporter($("prog"), $("status"));
+      $("load").addEventListener("click", async () => {
+        $("load").disabled = true; $("prog").hidden = false;
+        $("status").classList.remove("err"); $("status").textContent = "Loading Whisper…";
+        try {
+          const device = await engine.load((p) => reporter.onProgress(p));
+          $("status").textContent = `Model ready — running on ${device.toUpperCase()}.`;
+          $("status").classList.add("ok"); $("prog").hidden = true;
+          $("rec").disabled = false; $("upload").disabled = false;
+          $("run").disabled = !pcm;
+        } catch (err) {
+          reporter.fail(err); $("load").disabled = false;
+        }
+      });
+
+      // --- transcribe ---
+      $("run").addEventListener("click", async () => {
+        if (!pcm) { $("status").textContent = "Pick or record some audio first."; return; }
+        $("run").disabled = true; $("status").classList.remove("err"); $("status").textContent = "Transcribing…";
+        try {
+          const r = await engine.transcribe(pcm);
+          lastResult = r;
+          $("transcript").textContent = r.text || "(no speech detected)";
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rDur").textContent = fmtTime(pcm.length / 16000);
+          $("rMs").textContent = (r.ms / 1000).toFixed(1) + " s";
+          $("rTok").textContent = r.tokens ?? "–";
+          $("rTps").textContent = r.tokPerSec ? r.tokPerSec.toFixed(1) : "–";
+          renderInside(r);
+          $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (err) {
+          $("status").textContent = "Transcription failed: " + err.message;
+          $("status").classList.add("err");
+        } finally {
+          $("run").disabled = false;
+        }
+      });
+
+      function renderInside(r) {
+        $("insideEmpty").hidden = true; $("insideWrap").hidden = false;
+        $("segRows").replaceChildren(...(r.segments || []).map((s) => {
+          const tr = document.createElement("tr");
+          tr.innerHTML = `<td class="t">${fmtTime(s.start)}</td><td class="t">${fmtTime(s.end)}</td>
+            <td>${escapeHTML(s.text)}</td>`;
+          return tr;
+        }));
+      }
+
+      // Redraw waveform on resize so it stays crisp.
+      addEventListener("resize", () => pcm && drawWaveform($("wave"), pcm, 0));
+    </script>
+  </body>
+</html>
