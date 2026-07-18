@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AST Wild — what's that sound? · Web AI Showcase</title>
+    <meta name="description" content="Hold anything up to your mic — tap a glass, whistle, jingle keys, play music — and AST guesses what it is in real time, live in your browser. A running feed of everything it hears." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎧</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">AST</a></p>
+
+    <header>
+      <p class="eyebrow">use case · wild</p>
+      <h1>Wild: what's that sound?</h1>
+      <p class="lede">
+        Point your microphone at the world and let AST call it out, live. Tap a mug, jingle your keys,
+        hum a tune, run the tap, play a song — the model updates its best guess every second and keeps a
+        running feed of everything it recognises. Nothing is uploaded.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="field-row">
+        <button id="listen" type="button" disabled>Start listening</button>
+        <span id="listenState" class="muted" aria-live="polite"></span>
+      </div>
+
+      <div id="bigGuess" aria-live="polite" style="text-align:center;padding:1.4rem 1rem;border-radius:var(--radius);background:var(--bg-raised);border:1px solid var(--border);margin:.6rem 0">
+        <div class="muted" style="font-size:.8rem;text-transform:uppercase;letter-spacing:.06em">Best guess</div>
+        <div id="guessLabel" style="font-family:var(--font-display,Georgia,serif);font-size:2rem;line-height:1.2">—</div>
+        <div id="guessScore" class="muted" style="font-family:var(--font-mono)">waiting for sound…</div>
+      </div>
+
+      <h3>Top 5 right now</h3>
+      <div class="scores" id="live" aria-live="polite" aria-label="Live sound labels"></div>
+      <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>window latency <b id="rMs">–</b></span><span>windows <b id="rCount">0</b></span></div>
+    </section>
+
+    <section class="panel">
+      <h3>Recognised feed</h3>
+      <p class="muted" style="font-size:.85rem">Each new confident sound AST hears gets logged here, newest first.</p>
+      <ul id="feed" style="list-style:none;padding:0;margin:.4rem 0;display:flex;flex-direction:column;gap:.3rem"></ul>
+    </section>
+
+    <p class="crumbs"><a href="../practical/">← Practical</a> · <a href="../">AST</a> · Next: <a href="../multi-model/">Multi-model →</a></p>
+
+    <script type="module">
+      import { AstEngine, LiveListener, renderScoreBars, escapeHTML, AST_CSS } from "../ast.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = AST_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new AstEngine();
+      let ready = false, listener = null, busy = false, count = 0, lastLogged = null;
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/ast-finetuned-audioset-10-10-0.4593", runtime: "transformers.js", dtype: "q8", sizeMB: 90, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: () => { ready = true; $("listen").disabled = false; $("status").textContent = "Model ready. Hit Start listening and make some noise."; },
+      });
+
+      if (!LiveListener.supported()) { $("listen").disabled = true; $("listenState").textContent = "No microphone API in this browser."; }
+
+      function logHeard(label, score) {
+        if (label === lastLogged) return;
+        lastLogged = label;
+        const li = document.createElement("li");
+        li.style.cssText = "display:flex;gap:.6rem;align-items:baseline;font-size:.9rem;padding:.3rem .5rem;border:1px solid var(--border);border-radius:8px;background:var(--bg-raised)";
+        const t = new Date().toLocaleTimeString();
+        li.innerHTML = `<span style="font-family:var(--font-mono);color:var(--muted);font-size:.78rem">${t}</span><strong>${escapeHTML(label)}</strong><span class="muted" style="margin-inline-start:auto;font-family:var(--font-mono)">${(score*100).toFixed(0)}%</span>`;
+        $("feed").prepend(li);
+        while ($("feed").children.length > 20) $("feed").lastElementChild.remove();
+      }
+
+      async function onWindow(pcm) {
+        if (busy || !ready) return;
+        busy = true;
+        try {
+          const r = await engine.classify(pcm, { topK: 10 });
+          count++;
+          const top = r.labels[0];
+          $("guessLabel").textContent = top?.label ?? "—";
+          $("guessScore").textContent = top ? (top.score * 100).toFixed(0) + "% confident" : "…";
+          renderScoreBars($("live"), r.labels, 5);
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = r.ms + " ms";
+          $("rCount").textContent = count;
+          $("readout").hidden = false;
+          if (top && top.score >= 0.15) logHeard(top.label, top.score);
+        } catch (e) {
+          $("status").textContent = "Classify error: " + e.message; $("status").classList.add("err");
+        } finally { busy = false; }
+      }
+
+      $("listen").addEventListener("click", async () => {
+        if (listener) { listener.stop(); listener = null; $("listen").textContent = "Start listening"; $("listenState").textContent = "Stopped."; return; }
+        try {
+          listener = new LiveListener({ windowS: 2, hopS: 1, onWindow });
+          await listener.start();
+          $("listen").textContent = "Stop listening";
+          $("listenState").innerHTML = '<span class="rec-dot"></span>Listening…';
+        } catch (e) { $("listenState").textContent = "Mic blocked: " + e.message; listener = null; }
+      });
+    </script>
+  </body>
+</html>

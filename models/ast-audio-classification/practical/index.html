@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AST Practical — sound-event monitor · Web AI Showcase</title>
+    <meta name="description" content="A live, on-device sound-event monitor: pick a sound to watch for (alarm, doorbell, dog, baby, applause) and AST flashes an alert when it hears it — an accessibility alerter that never sends audio anywhere." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🔔</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">AST</a></p>
+
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Practical: a sound-event monitor</h1>
+      <p class="lede">
+        Choose a sound to watch for. AST listens to your mic in ~2-second windows and flashes a big,
+        obvious alert the moment it hears a match — a private accessibility alerter for anyone who can't
+        rely on hearing an alarm, doorbell, or a crying baby. Audio never leaves the device.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <fieldset style="border:1px solid var(--border);border-radius:var(--radius);padding:.7rem 1rem;margin:.6rem 0">
+        <legend>Watch for a sound</legend>
+        <div class="sample-row" id="targets" role="group" aria-label="Target sounds">
+          <button class="chip" type="button" data-match="Speech" aria-pressed="true">🗣 Speech / talking</button>
+          <button class="chip" type="button" data-match="Music" aria-pressed="false">🎵 Music</button>
+          <button class="chip" type="button" data-match="Whistling,Whistle" aria-pressed="false">😗 Whistle</button>
+          <button class="chip" type="button" data-match="Clapping,Applause" aria-pressed="false">👏 Applause / clap</button>
+          <button class="chip" type="button" data-match="Alarm,Siren,Smoke detector,Fire alarm,Beep" aria-pressed="false">🚨 Alarm / siren</button>
+          <button class="chip" type="button" data-match="Knock,Door,Doorbell,Tap" aria-pressed="false">🚪 Knock / door</button>
+          <button class="chip" type="button" data-match="Dog,Bark,Animal" aria-pressed="false">🐕 Dog</button>
+        </div>
+        <div class="field-row">
+          <label for="thresh">Sensitivity (min score)</label>
+          <input type="range" id="thresh" min="0.02" max="0.6" step="0.02" value="0.12" />
+          <output id="threshOut" for="thresh">0.12</output>
+        </div>
+      </fieldset>
+
+      <div class="field-row">
+        <button id="listen" type="button" disabled>Start listening</button>
+        <span id="listenState" class="muted" aria-live="polite"></span>
+      </div>
+
+      <div id="alert" role="alert" hidden style="margin:.6rem 0;padding:1rem 1.2rem;border-radius:var(--radius);background:var(--accent);color:var(--accent-ink);font-weight:700;font-size:1.15rem">
+        Heard it!
+      </div>
+
+      <h3 style="margin-top:1rem">Live — what AST hears right now</h3>
+      <div class="scores" id="live" aria-live="polite" aria-label="Live sound labels"></div>
+      <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>window latency <b id="rMs">–</b></span><span>windows <b id="rCount">0</b></span></div>
+    </section>
+
+    <section class="panel">
+      <h3>Why this is only possible on-device</h3>
+      <p class="muted">A cloud alerter would mean streaming your home's microphone to a server — a privacy non-starter and useless offline. Running AST locally means the audio never leaves the room, there's no latency round-trip, and it keeps working with no network.</p>
+    </section>
+
+    <p class="crumbs"><a href="../basics/">← Basics</a> · <a href="../">AST</a> · Next: <a href="../wild/">Wild →</a></p>
+
+    <script type="module">
+      import { AstEngine, LiveListener, renderScoreBars, AST_CSS } from "../ast.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = AST_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new AstEngine();
+      let ready = false, listener = null, busy = false, count = 0, alertTimer = null;
+      let targets = ["Speech"];
+
+      for (const b of $("targets").children) {
+        b.addEventListener("click", () => {
+          for (const o of $("targets").children) o.setAttribute("aria-pressed", String(o === b));
+          targets = b.dataset.match.split(",").map((s) => s.trim().toLowerCase());
+        });
+      }
+      $("thresh").addEventListener("input", () => { $("threshOut").textContent = (+$("thresh").value).toFixed(2); });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/ast-finetuned-audioset-10-10-0.4593", runtime: "transformers.js", dtype: "q8", sizeMB: 90, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: () => { ready = true; $("listen").disabled = false; $("status").textContent = "Model ready. Pick a sound and start listening."; },
+      });
+
+      if (!LiveListener.supported()) { $("listen").disabled = true; $("listenState").textContent = "No microphone API in this browser."; }
+
+      function fireAlert(label, score) {
+        const a = $("alert");
+        a.hidden = false;
+        a.textContent = `Heard it — ${label} (${(score * 100).toFixed(0)}%)`;
+        clearTimeout(alertTimer);
+        alertTimer = setTimeout(() => { a.hidden = true; }, 2500);
+      }
+
+      async function onWindow(pcm) {
+        if (busy || !ready) return;
+        busy = true;
+        try {
+          const r = await engine.classify(pcm, { topK: 10 });
+          count++;
+          renderScoreBars($("live"), r.labels, 5);
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = r.ms + " ms";
+          $("rCount").textContent = count;
+          $("readout").hidden = false;
+          const hit = r.labels.find((l) => l.score >= +$("thresh").value && targets.some((t) => l.label.toLowerCase().includes(t)));
+          if (hit) fireAlert(hit.label, hit.score);
+        } catch (e) {
+          $("status").textContent = "Classify error: " + e.message; $("status").classList.add("err");
+        } finally { busy = false; }
+      }
+
+      $("listen").addEventListener("click", async () => {
+        if (listener) {
+          listener.stop(); listener = null;
+          $("listen").textContent = "Start listening";
+          $("listenState").textContent = "Stopped.";
+          return;
+        }
+        try {
+          listener = new LiveListener({ windowS: 2, hopS: 1, onWindow });
+          await listener.start();
+          $("listen").textContent = "Stop listening";
+          $("listenState").innerHTML = '<span class="rec-dot"></span>Listening…';
+        } catch (e) {
+          $("listenState").textContent = "Mic blocked: " + e.message;
+          listener = null;
+        }
+      });
+    </script>
+  </body>
+</html>
