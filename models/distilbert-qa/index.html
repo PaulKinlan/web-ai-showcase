@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>DistilBERT SQuAD — extractive question answering in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Give it a passage and a question and it points at the exact answer span — locally in your browser. Watch the real start/end token probabilities the model uses to pick the span. No server."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>❓</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">question-answering · text · WASM · ~65 MB</p>
+      <h1>DistilBERT SQuAD — find the answer inside a passage</h1>
+      <p class="lede">
+        This is <strong>extractive</strong> question answering: give it a passage and a question, and instead
+        of writing a new sentence it points at the exact span of the passage that answers you — and tells you
+        how confident it is. Type a question below and watch it highlight the answer, then look inside to see
+        the real start/end token probabilities it used to pick that span. Nothing leaves your device.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/Xenova/distilbert-base-cased-distilled-squad" target="_blank" rel="noopener">Xenova/distilbert-base-cased-distilled-squad</a></td></tr>
+          <tr><th>Task / pipeline</th><td><code>question-answering</code> (extractive span prediction)</td></tr>
+          <tr><th>How it works</th><td>predicts two distributions over the passage tokens — where the answer <strong>starts</strong> and where it <strong>ends</strong></td></tr>
+          <tr><th>Architecture</th><td>DistilBERT (6-layer, cased) fine-tuned on SQuAD 1.1</td></tr>
+          <tr><th>Quantization</th><td>q8 (8-bit) ONNX</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (runs anywhere; no WebGPU needed)</td></tr>
+          <tr><th>Download</th><td>~65 MB, cached after first load</td></tr>
+          <tr><th>License</th><td>Apache-2.0</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Paste any passage, ask a question about it, and the model highlights the answer span in
+        the passage. The candidate list shows its next-best guesses with their probabilities.</p>
+
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
+        Context passage
+        <textarea id="context" rows="6" disabled>The Eiffel Tower is a wrought-iron lattice tower on the Champ de Mars in Paris, France. It is named after the engineer Gustave Eiffel, whose company designed and built the tower. Constructed from 1887 to 1889, it was initially criticised by some of France's leading artists and intellectuals for its design, but it has become a global cultural icon of France. The tower is 330 metres tall and was the tallest man-made structure in the world until the Chrysler Building in New York was finished in 1930.</textarea>
+      </label>
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
+        Question
+        <input id="question" type="text" disabled value="How tall is the Eiffel Tower?" style="font:inherit;padding:.4rem .5rem;border:1px solid var(--border);border-radius:6px;background:var(--bg-raised);color:var(--color)" />
+      </label>
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.5rem 0">
+        <button class="chip" type="button" data-q="Who designed the tower?">who designed it</button>
+        <button class="chip" type="button" data-q="When was it constructed?">when built</button>
+        <button class="chip" type="button" data-q="Where is the Eiffel Tower?">where</button>
+        <button class="chip" type="button" data-q="What is the tower made of?">material</button>
+      </div>
+      <div style="margin:.3rem 0"><button id="ask" type="button" disabled>Answer the question</button></div>
+
+      <div id="answerWrap" hidden>
+        <p class="muted" style="font-size:.8rem;margin-bottom:.1rem">Answer</p>
+        <p class="qa-answer" id="answer">–</p>
+        <div class="qa-context" id="ctxHi" aria-live="polite"></div>
+        <div class="unanswerable-note" id="unanswerable" hidden></div>
+        <h3 style="margin-top:.8rem">Candidate spans</h3>
+        <div class="cand-list" id="cands" aria-live="polite"></div>
+        <div class="readout" id="readout" hidden>
+          <span>backend <b id="rBackend">–</b></span>
+          <span>latency <b id="rMs">–</b></span>
+          <span>top score <b id="rScore">–</b></span>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside — the start/end token probabilities</h3>
+      <p class="muted">
+        The model never "reads" an answer out — it outputs two numbers per passage token: how likely that
+        token is the <span style="color:var(--accent)">first</span> word of the answer, and how likely it is
+        the <span style="color:var(--good)">last</span>. The answer is just the span from the best start to
+        the best end. Below is the real (softmaxed) distribution over the passage tokens for your last
+        question — the outlined tokens are the chosen start and end.
+      </p>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Answer a question above to inspect the token probabilities.</div>
+      <div id="insideWrap" hidden>
+        <div class="tok-strip" id="tokStrip"></div>
+        <div class="tok-legend">
+          <span><span class="swatch" style="background:var(--accent)"></span>P(start)</span>
+          <span><span class="swatch" style="background:var(--good)"></span>P(end)</span>
+          <span>outline = chosen start / end token · bar height = probability</span>
+        </div>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        Extractive QA is the quiet engine behind "answer from my documents". Because it returns a span of the
+        source rather than inventing text, the answer is always grounded — it literally can't hallucinate a
+        fact that isn't in the passage. And at 65 MB it runs in a tab, so you can query private documents,
+        contracts, or logs without any of it leaving the device.
+      </p>
+      <ul>
+        <li><strong>Doc search that answers</strong> — not "here are 10 matching pages" but "here's the exact sentence".</li>
+        <li><strong>FAQ bots over your own text</strong> — point it at a help-centre article and let users ask.</li>
+        <li><strong>Grounded RAG</strong> — pull the precise supporting span to cite alongside a generated answer.</li>
+        <li><strong>Private extraction</strong> — pull dates, amounts, and names out of a pasted document, on-device.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Ask a question about a short passage and watch the exact answer span light up.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Paste your own document and query it — a tiny FAQ bot over text you control.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Trick it: adversarial and unanswerable questions, and spotting when it's guessing.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">MiniLM retrieves the right paragraph, then this model pulls the exact answer from it.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>The pipeline takes a question and a context and returns the best span with a score:</p>
+      <pre><code>import { pipeline } from "@huggingface/transformers";
+
+const qa = await pipeline(
+  "question-answering",
+  "Xenova/distilbert-base-cased-distilled-squad",
+); // downloads + caches ~65 MB once
+
+const out = await qa(
+  "How tall is the Eiffel Tower?",
+  "The tower is 330 metres tall …",
+  { topk: 5 },
+);
+// → [{ answer: "330 metres", score: 0.97, start: 12, end: 22 }, …]</code></pre>
+      <p class="muted">
+        "See inside" reuses that same loaded model instance (<code>qa.model</code> + <code>qa.tokenizer</code>)
+        to read the raw <code>start_logits</code> / <code>end_logits</code>, softmax them over the passage
+        tokens, and draw the distribution. All of it runs in a Web Worker so the UI never janks.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/Xenova/distilbert-base-cased-distilled-squad" target="_blank" rel="noopener">Model card — DistilBERT SQuAD (Xenova ONNX)</a></li>
+        <li><a href="https://arxiv.org/abs/1910.01108" target="_blank" rel="noopener">Paper — DistilBERT (Sanh et al., 2019, arXiv:1910.01108)</a></li>
+        <li><a href="https://rajpurkar.github.io/SQuAD-explorer/" target="_blank" rel="noopener">SQuAD — the Stanford Question Answering Dataset</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { QAEngine, renderHighlighted, renderCandidates, renderTokenStrip, QA_CSS } from "./qa.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = QA_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new QAEngine();
+      let loaded = false;
+
+      for (const c of document.querySelectorAll(".chip")) {
+        c.addEventListener("click", () => { $("question").value = c.dataset.q; if (loaded) ask(); });
+      }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: {
+          modelId: "Xenova/distilbert-base-cased-distilled-squad",
+          runtime: "transformers.js",
+          dtype: "q8",
+          sizeMB: 65,
+          requiresWebGPU: false,
+        },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => {
+          $("context").disabled = false;
+          $("question").disabled = false;
+          $("ask").disabled = false;
+          loaded = true;
+          ask();
+        },
+      });
+
+      $("ask").addEventListener("click", ask);
+      $("question").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); ask(); } });
+
+      async function ask() {
+        if (!loaded) return;
+        const context = $("context").value.trim();
+        const question = $("question").value.trim();
+        if (!context || !question) {
+          $("runStatus").hidden = false;
+          $("runStatus").textContent = "Give both a passage and a question.";
+          $("runStatus").classList.add("err");
+          return;
+        }
+        $("runStatus").hidden = false;
+        $("runStatus").classList.remove("err");
+        $("runStatus").textContent = "Reading the passage…";
+        $("ask").disabled = true;
+        try {
+          const r = await engine.ask(question, context, 5);
+          $("answerWrap").hidden = false;
+          const top = r.answers[0];
+          if (top && top.answer) {
+            $("answer").textContent = top.answer;
+            $("answer").className = "qa-answer";
+            renderHighlighted($("ctxHi"), context, top.start, top.end);
+          } else {
+            $("answer").textContent = "No span found";
+            $("answer").className = "qa-answer empty";
+            $("ctxHi").textContent = context;
+          }
+          renderCandidates($("cands"), r.answers);
+          // Low peak start probability → the model isn't confident where the answer begins.
+          if (r.startPeak < 0.35) {
+            $("unanswerable").hidden = false;
+            $("unanswerable").textContent =
+              `Low confidence: the start distribution peaks at only ${(r.startPeak * 100).toFixed(0)}%. ` +
+              `This passage may not actually contain the answer — a SQuAD-1.1 model always returns its best span, even when there isn't a real answer.`;
+          } else {
+            $("unanswerable").hidden = true;
+          }
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = r.ms + " ms";
+          $("rScore").textContent = top ? (top.score * 100).toFixed(1) + "%" : "–";
+          renderTokenStrip($("tokStrip"), r.tokens, r.startProbs, r.endProbs, r.argStart, r.argEnd);
+          $("insideEmpty").hidden = true;
+          $("insideWrap").hidden = false;
+          $("runStatus").textContent = "Done.";
+          $("runStatus").classList.add("ok");
+        } catch (err) {
+          $("runStatus").textContent = "Answering failed: " + err.message;
+          $("runStatus").classList.add("err");
+        } finally {
+          $("ask").disabled = false;
+        }
+      }
+    </script>
+  </body>
+</html>

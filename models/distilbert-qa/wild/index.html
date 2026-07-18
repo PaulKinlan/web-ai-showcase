@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>QA Wild — catching unanswerable questions · Web AI Showcase</title>
+    <meta name="description" content="A SQuAD-1.1 model always returns its best span — even when the passage has no answer. Watch its confidence collapse on adversarial and unanswerable questions, and use that as a no-answer signal. In your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>❓</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">DistilBERT SQuAD</a></p>
+
+    <header>
+      <p class="eyebrow">use case · wild</p>
+      <h1>Wild: catching the questions it can't answer</h1>
+      <p class="lede">
+        A SQuAD-1.1 model has a blind spot: it was only ever trained on answerable questions, so it
+        <em>always</em> returns its best span — even when the passage doesn't contain the answer at all. That's
+        dangerous for a real bot. The fix is to watch its <strong>confidence</strong>: when the start-token
+        distribution is diffuse (no token clearly begins an answer), it's probably guessing. Try an
+        unanswerable question and watch the confidence gauge collapse.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
+        Passage
+        <textarea id="context" rows="4" disabled>The 2019 Nobel Prize in Physics was awarded to James Peebles for theoretical discoveries in physical cosmology, and jointly to Michel Mayor and Didier Queloz for the discovery of an exoplanet orbiting a solar-type star. The prize was announced in Stockholm.</textarea>
+      </label>
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
+        Question
+        <input id="question" type="text" disabled value="Who won the 2019 Nobel Prize in Physics?" style="font:inherit;padding:.4rem .5rem;border:1px solid var(--border);border-radius:6px;background:var(--bg-raised);color:var(--color)" />
+      </label>
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.5rem 0">
+        <button class="chip" type="button" data-q="Who won the 2019 Nobel Prize in Physics?">answerable</button>
+        <button class="chip" type="button" data-q="Where was the prize announced?">answerable</button>
+        <button class="chip" type="button" data-q="How much prize money did they receive?">unanswerable</button>
+        <button class="chip" type="button" data-q="What year did Mayor retire?">unanswerable</button>
+        <button class="chip" type="button" data-q="What is the capital of Brazil?">off-topic</button>
+      </div>
+      <div style="margin:.3rem 0"><button id="ask" type="button" disabled>Answer &amp; judge confidence</button></div>
+
+      <div id="answerWrap" hidden>
+        <div class="conf-gauge" id="gauge" aria-live="polite"></div>
+        <p class="muted" style="font-size:.8rem;margin:.6rem 0 .1rem">Best span the model returns anyway</p>
+        <p class="qa-answer" id="answer">–</p>
+        <div class="qa-context" id="ctxHi" aria-live="polite"></div>
+        <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>latency <b id="rMs">–</b></span><span>start peak <b id="rPeak">–</b></span></div>
+      </div>
+    </section>
+
+    <p class="muted" style="font-size:.85rem">
+      The threshold here (35% start-peak) is a simple, transparent heuristic — production systems train a
+      dedicated "no-answer" head (that's what SQuAD 2.0 added). But even this crude confidence read catches
+      most of the model's confident nonsense, which is exactly what you want before showing an answer to a
+      user.
+    </p>
+
+    <p class="crumbs"><a href="../practical/">← Practical</a> · <a href="../">DistilBERT SQuAD</a> · Next: <a href="../multi-model/">Multi-model →</a></p>
+
+    <style>
+      .conf-gauge { border: 1px solid var(--border); border-radius: 8px; padding: .6rem .8rem; background: var(--bg-raised); }
+      .conf-track { block-size: .7rem; background: var(--bg-secondary); border: 1px solid var(--border);
+        border-radius: 999px; overflow: hidden; margin-top: .35rem; }
+      .conf-fill { block-size: 100%; }
+      .conf-verdict { font-family: var(--font-display); font-size: 1.15rem; }
+      .conf-verdict.ok { color: var(--good); }
+      .conf-verdict.warn { color: var(--warn); }
+    </style>
+
+    <script type="module">
+      import { QAEngine, renderHighlighted, QA_CSS } from "../qa.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = QA_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new QAEngine();
+      let loaded = false;
+      const THRESH = 0.35;
+      for (const c of document.querySelectorAll(".chip")) c.addEventListener("click", () => { $("question").value = c.dataset.q; if (loaded) ask(); });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/distilbert-base-cased-distilled-squad", runtime: "transformers.js", dtype: "q8", sizeMB: 65, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("context").disabled = false; $("question").disabled = false; $("ask").disabled = false; loaded = true; ask(); },
+      });
+
+      $("ask").addEventListener("click", ask);
+      $("question").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); ask(); } });
+      async function ask() {
+        if (!loaded) return;
+        const context = $("context").value.trim(), question = $("question").value.trim();
+        if (!context || !question) return;
+        $("ask").disabled = true;
+        try {
+          const r = await engine.ask(question, context, 1);
+          const top = r.answers[0];
+          $("answerWrap").hidden = false;
+          const conf = r.startPeak;
+          const answerable = conf >= THRESH;
+          const pct = Math.max(0, Math.min(1, conf)) * 100;
+          $("gauge").innerHTML =
+            `<span class="conf-verdict ${answerable ? "ok" : "warn"}">${answerable ? "Looks answerable" : "Probably unanswerable — treat with caution"}</span>` +
+            `<div class="conf-track"><div class="conf-fill" style="inline-size:${pct.toFixed(0)}%;background:${answerable ? "var(--good)" : "var(--warn)"}"></div></div>` +
+            `<p class="muted" style="font-size:.76rem;margin:.3rem 0 0;font-family:var(--font-mono)">start-token peak confidence ${(conf * 100).toFixed(0)}% (threshold ${THRESH * 100}%)</p>`;
+          $("answer").textContent = top?.answer || "No span";
+          $("answer").className = "qa-answer" + (answerable ? "" : " empty");
+          renderHighlighted($("ctxHi"), context, top?.start, top?.end);
+          $("readout").hidden = false; $("rBackend").textContent = r.device.toUpperCase(); $("rMs").textContent = r.ms + " ms"; $("rPeak").textContent = (conf * 100).toFixed(0) + "%";
+        } catch (err) { $("runStatus").hidden = false; $("runStatus").textContent = "Failed: " + err.message; $("runStatus").classList.add("err"); }
+        finally { $("ask").disabled = false; }
+      }
+    </script>
+  </body>
+</html>

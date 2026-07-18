@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>QA Multi-model — retrieve then read · Web AI Showcase</title>
+    <meta name="description" content="MiniLM embeddings retrieve the right paragraph from a document, then DistilBERT extracts the exact answer from it — the classic retrieve-then-read RAG pattern, all in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>❓</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">DistilBERT SQuAD</a></p>
+
+    <header>
+      <p class="eyebrow">use case · multi-model</p>
+      <h1>Multi-model: retrieve the paragraph, then read the answer</h1>
+      <p class="lede">
+        Extractive QA works on one passage at a time — but real documents are long. The fix is the classic
+        <strong>retrieve-then-read</strong> pattern: <a href="/web-ai-showcase/models/minilm-embeddings/">MiniLM
+        embeddings</a> first find the paragraph most likely to hold the answer, then DistilBERT extracts the
+        exact span from just that paragraph. Two small models compose into open-document QA — the backbone of
+        on-device RAG. Both run locally; nothing is uploaded.
+      </p>
+    </header>
+
+    <section class="panel">
+      <p class="muted">This page loads two models (~25 MB embeddings + ~65 MB QA). Both auto-initialise when
+        cached. Once ready, the pipeline splits your document into paragraphs, retrieves the best one, then
+        answers from it.</p>
+      <div class="grid-2">
+        <div><p class="muted" style="font-size:.78rem;margin:0 0 .2rem">Retriever · MiniLM embeddings</p><div id="loader-minilm"></div></div>
+        <div><p class="muted" style="font-size:.78rem;margin:0 0 .2rem">Reader · DistilBERT SQuAD</p><div id="loader-qa"></div></div>
+      </div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
+        Document (paragraphs separated by blank lines)
+        <textarea id="doc" rows="10" disabled>The company was founded in 2011 in Berlin by two former university classmates. It started as a side project building tools for local musicians.
+
+The company is now headquartered in Amsterdam, having relocated there in 2018 to be closer to its largest customer base. It employs around 240 people across four offices.
+
+We offer a 30-day free trial on all plans. No credit card is required to start, and you can cancel at any time from your account settings.
+
+Customer data is encrypted at rest and in transit. We are ISO 27001 certified and undergo an annual third-party security audit. We never sell customer data to advertisers.
+
+Support is available in English, German, and Dutch, from 9am to 6pm CET on weekdays. Enterprise customers get a dedicated account manager and 24/7 phone support.</textarea>
+      </label>
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
+        Question
+        <input id="question" type="text" disabled value="Where is the company headquartered?" style="font:inherit;padding:.4rem .5rem;border:1px solid var(--border);border-radius:6px;background:var(--bg-raised);color:var(--color)" />
+      </label>
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.5rem 0">
+        <button class="chip" type="button" data-q="Where is the company headquartered?">HQ</button>
+        <button class="chip" type="button" data-q="How long is the free trial?">trial</button>
+        <button class="chip" type="button" data-q="Which security certification does the company have?">security</button>
+        <button class="chip" type="button" data-q="What languages is support available in?">support langs</button>
+        <button class="chip" type="button" data-q="When was the company founded?">founded</button>
+      </div>
+      <div style="margin:.3rem 0"><button id="ask" type="button" disabled>Retrieve &amp; answer</button></div>
+
+      <div id="answerWrap" hidden>
+        <p class="muted" style="font-size:.8rem;margin-bottom:.1rem">Answer</p>
+        <p class="qa-answer" id="answer">–</p>
+        <p class="muted" style="font-size:.8rem;margin:.6rem 0 .1rem">Retrieved paragraph (cosine <b id="cos">–</b>) — answer highlighted</p>
+        <div class="qa-context" id="ctxHi" aria-live="polite"></div>
+        <div class="readout" id="readout" hidden><span>retriever <b id="rEmbed">–</b></span><span>reader <b id="rQA">–</b></span><span>paragraphs <b id="rN">–</b></span><span>latency <b id="rMs">–</b></span></div>
+      </div>
+    </section>
+
+    <p class="muted" style="font-size:.85rem">
+      This is RAG in miniature: retrieval narrows a big document to the relevant chunk, extraction pins the
+      exact answer. Swap the reader for a generative LLM and you have the architecture behind most
+      "chat with your docs" products — except here it's 90 MB and runs entirely on-device.
+    </p>
+
+    <p class="crumbs"><a href="../wild/">← Wild</a> · <a href="../">DistilBERT SQuAD</a></p>
+
+    <script type="module">
+      import { QAEngine, renderHighlighted, QA_CSS } from "../qa.js";
+      import { EmbedEngine, cosine, EMBED_CSS } from "/web-ai-showcase/models/minilm-embeddings/embed.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = QA_CSS + EMBED_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const qa = new QAEngine();
+      const embedder = new EmbedEngine();
+      let embReady = false, qaReady = false;
+      const maybeEnable = () => { if (embReady && qaReady) { $("doc").disabled = false; $("question").disabled = false; $("ask").disabled = false; ask(); } };
+
+      for (const c of document.querySelectorAll(".chip")) c.addEventListener("click", () => { $("question").value = c.dataset.q; if (embReady && qaReady) ask(); });
+
+      createModelLoader({
+        mount: $("loader-minilm"),
+        model: { modelId: "Xenova/all-MiniLM-L6-v2", runtime: "transformers.js", dtype: "q8", sizeMB: 25, requiresWebGPU: false },
+        load: async (onProgress) => { await embedder.load(onProgress); return embedder; },
+        onReady: () => { embReady = true; maybeEnable(); },
+      });
+      createModelLoader({
+        mount: $("loader-qa"),
+        model: { modelId: "Xenova/distilbert-base-cased-distilled-squad", runtime: "transformers.js", dtype: "q8", sizeMB: 65, requiresWebGPU: false },
+        load: async (onProgress) => { await qa.load(onProgress); return qa; },
+        onReady: () => { qaReady = true; maybeEnable(); },
+      });
+
+      $("ask").addEventListener("click", ask);
+      $("question").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); ask(); } });
+
+      function paragraphs(text) {
+        return text.split(/\n\s*\n/).map((p) => p.replace(/\s+/g, " ").trim()).filter(Boolean);
+      }
+
+      async function ask() {
+        if (!(embReady && qaReady)) return;
+        const paras = paragraphs($("doc").value);
+        const question = $("question").value.trim();
+        if (paras.length < 1 || !question) return;
+        $("ask").disabled = true;
+        $("runStatus").hidden = false; $("runStatus").classList.remove("err"); $("runStatus").textContent = "Retrieving…";
+        try {
+          const t0 = performance.now();
+          // 1. Retrieve: embed the question + every paragraph, rank by cosine.
+          const emb = await embedder.embed([question, ...paras]);
+          const qv = emb.embeddings[0];
+          let best = 0, bestSim = -Infinity;
+          for (let i = 0; i < paras.length; i++) {
+            const sim = cosine(qv, emb.embeddings[i + 1]);
+            if (sim > bestSim) { bestSim = sim; best = i; }
+          }
+          const passage = paras[best];
+          $("runStatus").textContent = "Reading the retrieved paragraph…";
+          // 2. Read: extract the answer from just the retrieved paragraph.
+          const r = await qa.ask(question, passage, 1);
+          const top = r.answers[0];
+          const ms = Math.round(performance.now() - t0);
+          $("answerWrap").hidden = false;
+          $("answer").textContent = top?.answer || "No answer found";
+          $("answer").className = "qa-answer" + (top?.answer ? "" : " empty");
+          $("cos").textContent = bestSim.toFixed(3);
+          renderHighlighted($("ctxHi"), passage, top?.start, top?.end);
+          $("readout").hidden = false;
+          $("rEmbed").textContent = emb.device.toUpperCase();
+          $("rQA").textContent = r.device.toUpperCase();
+          $("rN").textContent = paras.length;
+          $("rMs").textContent = ms + " ms";
+          $("runStatus").textContent = "Done."; $("runStatus").classList.add("ok");
+        } catch (err) { $("runStatus").textContent = "Failed: " + err.message; $("runStatus").classList.add("err"); }
+        finally { $("ask").disabled = false; }
+      }
+    </script>
+  </body>
+</html>
