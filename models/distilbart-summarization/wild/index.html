@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Summarization Wild — collapse text to one sentence · Web AI Showcase</title>
+    <meta name="description" content="Recursively summarize a summary — again and again — and watch a whole article collapse toward a single sentence, all locally in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>📝</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">DistilBART</a></p>
+
+    <header>
+      <p class="eyebrow">use case · wild</p>
+      <h1>Wild: boil it down to one sentence</h1>
+      <p class="lede">
+        What happens if you summarize the summary — and keep going? Each pass feeds the previous result
+        back in with a smaller budget, so the text collapses round after round toward its single most
+        essential sentence. You get to watch information being distilled in real time.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.6rem 0">
+        <button class="chip" type="button" data-sample="climate">Climate report</button>
+        <button class="chip" type="button" data-sample="startup">Startup story</button>
+      </div>
+
+      <label style="display:flex;flex-direction:column;gap:.3rem;font-size:.82rem">
+        Starting text
+        <textarea id="src" disabled style="min-block-size:160px;inline-size:100%;resize:vertical"></textarea>
+      </label>
+      <div class="controls-grid">
+        <button id="run" type="button" disabled>Distill to one sentence</button>
+      </div>
+
+      <div class="recap-chain" id="chain" aria-live="polite"></div>
+      <div class="readout" id="readout" hidden>
+        <span>rounds <b id="rRounds">–</b></span><span>start→end tokens <b id="rTok">–</b></span>
+        <span>backend <b id="rBackend">–</b></span><span>total time <b id="rMs">–</b></span>
+      </div>
+    </section>
+
+    <p class="muted" style="font-size:.85rem">
+      This is a genuine fixed-point search: the loop stops when a pass stops shrinking the text, or when
+      what's left is already a single short sentence. Some ideas resist compression — watch which details
+      survive to the end. Each round is a real, separate model call.
+    </p>
+
+    <p class="crumbs"><a href="../">← Back to DistilBART</a> · Next: <a href="../multi-model/">Multi-model →</a></p>
+
+    <script type="module">
+      import { SummarizeEngine, escapeHTML, SUMMARIZE_CSS } from "../summarize.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = SUMMARIZE_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new SummarizeEngine();
+      let loaded = false;
+
+      const SAMPLES = {
+        climate: "A major international report has concluded that the world is on track to exceed key climate targets unless emissions fall much faster than currently planned. The report, compiled from thousands of studies by scientists across dozens of countries, finds that while renewable energy is now cheaper than fossil fuels in most markets and is being deployed at record rates, the pace is still not enough to offset rising demand for energy overall. The authors stress that the technologies needed to cut emissions largely already exist, and that the main barriers are political and financial rather than technical. They warn that every fraction of a degree of additional warming increases the risk of severe heatwaves, flooding, and crop failures, but they also emphasize that rapid action in this decade could still keep the most dangerous outcomes within reach. Governments are expected to respond with updated pledges at the next round of climate negotiations.",
+        startup: "The company began as a side project between two friends who were frustrated that the software their small business relied on was clumsy and expensive. Working nights and weekends, they built a simpler alternative and shared it with a handful of other shop owners, who quickly became paying customers. Word spread, and within a year the founders quit their jobs to work on it full time. Growth was steady but not explosive; they deliberately avoided taking large investments, preferring to grow only as fast as revenue allowed so they could keep control of the product and the culture. Over several years the team grew to a few dozen people spread across many countries, all working remotely. Today the tool is used by tens of thousands of small businesses, and the founders say their proudest achievement is not the size of the company but the fact that it remains profitable, independent, and focused on the customers they set out to help.",
+      };
+      for (const c of document.querySelectorAll(".chip")) c.addEventListener("click", () => { $("src").value = SAMPLES[c.dataset.sample]; });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/distilbart-cnn-6-6", runtime: "transformers.js", dtype: "q8", sizeMB: 250, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("src").disabled = false; $("run").disabled = false; loaded = true; if (!$("src").value) $("src").value = SAMPLES.climate; },
+      });
+
+      function addStep(step) {
+        const div = document.createElement("div");
+        div.className = "recap-step";
+        div.innerHTML = `<div class="meta">round ${step.round} · ${step.inTokens} → ${step.outTokens} tokens · ${(step.ms / 1000).toFixed(1)} s</div><div>${escapeHTML(step.summary)}</div>`;
+        $("chain").append(div);
+      }
+
+      $("run").addEventListener("click", async () => {
+        if (!loaded) return;
+        const text = $("src").value.trim();
+        if (!text) { $("runStatus").hidden = false; $("runStatus").textContent = "Pick or paste some text first."; return; }
+        $("run").disabled = true; $("chain").replaceChildren();
+        $("runStatus").hidden = false; $("runStatus").classList.remove("err"); $("runStatus").textContent = "Distilling round by round…";
+        const startTok = text.split(/\s+/).length;
+        const t0 = performance.now();
+        try {
+          const r = await engine.recap(text, { maxRounds: 6, floor: 16, numBeams: 1 }, (step) => addStep(step));
+          const ms = Math.round(performance.now() - t0);
+          $("rRounds").textContent = r.rounds.length;
+          $("rTok").textContent = `${r.rounds[0]?.inTokens ?? startTok} → ${r.rounds.at(-1)?.outTokens ?? "–"}`;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = (ms / 1000).toFixed(1) + " s";
+          $("readout").hidden = false;
+          $("runStatus").textContent = `Collapsed in ${r.rounds.length} round(s).`; $("runStatus").classList.add("ok");
+        } catch (err) { $("runStatus").textContent = "Failed: " + err.message; $("runStatus").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>
