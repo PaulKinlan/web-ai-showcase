@@ -1,0 +1,386 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SAM 2.1 — promptable segmentation in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run SAM 2.1 (Segment Anything 2, Hiera backbone) locally in your browser: click a point or drag a box on an image and get high-quality pixel masks — three candidates with real IoU scores, no server."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎯</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">mask-generation · vision · WASM · ~90 MB</p>
+      <h1>SAM 2.1 — click or box a point, get its mask</h1>
+      <p class="lede">
+        Segment Anything 2 is Meta's newer promptable segmenter: a hierarchical <strong>Hiera</strong>
+        backbone that emits a multi-scale feature pyramid, driving a prompt encoder and mask decoder.
+        Point at anything — or drag a box around it — and SAM 2.1 returns <strong>three</strong> candidate
+        masks with predicted-IoU scores. The heavy image encoder runs once; every extra prompt is fast.
+        The same architecture powers SAM 2 <em>video</em> tracking; this page runs the image path, on-device.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/onnx-community/sam2.1-hiera-tiny-ONNX" target="_blank" rel="noopener">onnx-community/sam2.1-hiera-tiny-ONNX</a></td></tr>
+          <tr><th>Task / pipeline</th><td><code>mask-generation</code> (SAM 2) via <code>Sam2Model</code> + <code>Sam2Processor</code>, point / box prompt</td></tr>
+          <tr><th>Architecture</th><td>Hiera hierarchical ViT encoder (multi-scale pyramid) + prompt encoder + mask decoder</td></tr>
+          <tr><th>Prompt</th><td>Points (foreground / background) and/or a box; returns 3 candidate masks + predicted-IoU + object score</td></tr>
+          <tr><th>Quantization</th><td>fp16 vision encoder (~67 MB), fp32 prompt/mask decoder (crisp masks)</td></tr>
+          <tr><th>Backend</th><td>WebAssembly — runs anywhere; no WebGPU required</td></tr>
+          <tr><th>Download</th><td>~90 MB, cached after first load</td></tr>
+          <tr><th>License</th><td>Apache-2.0 (SAM 2 / Meta)</td></tr>
+          <tr><th>Runtime</th><td>Transformers.js v4 (<code>Sam2Model</code> — not present in v3.7.5)</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers, Canvas, FileReader — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Load the model, pick an image (the encoder runs once), then choose a prompt mode:
+        <strong>click a point</strong> on the picture, or switch to <strong>Box</strong> and drag a rectangle.
+        SAM 2 returns three candidate masks — pick whichever fits best.</p>
+
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image">
+        <span id="dropText">Drop an image here, or click to choose</span>
+        <input type="file" id="file" accept="image/*" hidden />
+      </div>
+      <div class="sample-strip" id="samples" aria-label="Sample images">
+        <img class="sample-thumb active" src="sample-cats.jpg" data-src="sample-cats.jpg" alt="Two cats sleeping on a pink couch" tabindex="0" role="button" />
+        <img class="sample-thumb" src="sample-room.jpg" data-src="sample-room.jpg" alt="A cozy sunlit bedroom with a bookshelf" tabindex="0" role="button" />
+        <img class="sample-thumb" src="sample-river.jpg" data-src="sample-river.jpg" alt="A riverside at golden hour with a swan" tabindex="0" role="button" />
+      </div>
+
+      <div class="toolbar" role="group" aria-label="Prompt controls">
+        <span class="muted" style="font-size:.8rem">Prompt:</span>
+        <button type="button" class="chip" id="modePoint" aria-pressed="true">Point</button>
+        <button type="button" class="chip" id="modeBox" aria-pressed="false">Box</button>
+        <span class="muted" style="font-size:.8rem;margin-inline-start:.6rem" id="labelWrap">Next point:</span>
+        <button type="button" class="chip" id="labelFg" aria-pressed="true">Foreground +</button>
+        <button type="button" class="chip" id="labelBg" aria-pressed="false">Background −</button>
+        <button type="button" class="chip" id="resetPrompt">Reset prompt</button>
+      </div>
+
+      <div class="canvas-wrap">
+        <canvas id="stage" class="stage-canvas" tabindex="0" role="button"
+          aria-label="Image — in Point mode click to add a point (or focus and use arrow keys then Enter); in Box mode drag a rectangle to segment"></canvas>
+      </div>
+
+      <p class="muted" style="font-size:.82rem;margin:.4rem 0" id="kbdHint">Keyboard: focus the image, move the crosshair with arrow keys, press Enter to add a point. Or jump to a preset point:</p>
+      <div class="point-grid" id="pointGrid" role="group" aria-label="Preset points">
+        <button type="button" data-x="0.25" data-y="0.25">↖</button>
+        <button type="button" data-x="0.5" data-y="0.25">↑</button>
+        <button type="button" data-x="0.75" data-y="0.25">↗</button>
+        <button type="button" data-x="0.25" data-y="0.5">←</button>
+        <button type="button" data-x="0.5" data-y="0.5">center</button>
+        <button type="button" data-x="0.75" data-y="0.5">→</button>
+        <button type="button" data-x="0.25" data-y="0.75">↙</button>
+        <button type="button" data-x="0.5" data-y="0.75">↓</button>
+        <button type="button" data-x="0.75" data-y="0.75">↘</button>
+      </div>
+
+      <p class="muted" style="font-size:.82rem;margin:.6rem 0 .2rem" id="candLabel" hidden>Candidate masks (SAM 2 predicts three — pick one):</p>
+      <div class="cand-row" id="candRow" role="group" aria-label="Candidate masks"></div>
+
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>encode <b id="rEmbed">–</b></span>
+        <span>segment <b id="rMs">–</b></span>
+        <span>best IoU <b id="rIou">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside</h3>
+      <p class="muted">
+        SAM 2 predicts <strong>three</strong> candidate masks per prompt — roughly "the part / the thing /
+        the whole region" — and rates each with a <strong>predicted IoU</strong>, its own guess of mask
+        quality. It also emits an <strong>object-presence score</strong> (a logit for "is there really an
+        object here"). The Hiera backbone hands the decoder a <strong>multi-scale feature pyramid</strong>
+        rather than a single grid — that's the SAM-2 upgrade over SAM 1. Below are the raw numbers for the
+        current prompt.
+      </p>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Add a prompt to see the raw mask numbers.</div>
+      <div id="insideWrap" hidden>
+        <p>Predicted IoU of the shown mask: <span class="iou-badge" id="iouBadge">–</span></p>
+        <table class="inside-table">
+          <tbody>
+            <tr><th>Prompt encoding</th><td id="iPrompt">–</td></tr>
+            <tr><th>Candidate IoU scores</th><td id="iScores">–</td></tr>
+            <tr><th>Object-presence logit</th><td id="iObj">–</td></tr>
+            <tr><th>Encoder pyramid levels</th><td id="iLevels">–</td></tr>
+            <tr><th>Shown mask</th><td id="iChosen">–</td></tr>
+            <tr><th>Mask area</th><td id="iArea">–</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        SAM 2 makes "select exactly the thing I mean" a fast, local, interactive operation — with better
+        masks than SAM 1 and a box prompt when a click is ambiguous. It's the building block under smart
+        selection, cut-out, measurement, and annotation tools, and its memory architecture extends the
+        same prompt to video.
+      </p>
+      <ul>
+        <li><strong>Precise cut-out</strong> — click or box a subject and lift it onto transparency for stickers, collages, or product shots.</li>
+        <li><strong>Smart selection</strong> — a "magic select" tool in a browser image editor, no server and no upload.</li>
+        <li><strong>Measurement &amp; analytics</strong> — turn a mask into a pixel area / coverage percentage for inspection or science.</li>
+        <li><strong>Annotation at scale</strong> — one prompt becomes a precise segmentation label, slashing dataset-building cost.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">One click, three candidate masks — feel promptable segmentation first-hand.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Box-to-cutout &amp; measure: lift the object onto transparency, read its pixel area.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Thin &amp; occluded objects — refine with foreground / background points.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">SAM 2 mask → crop → MobileViT classifies what you segmented.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>SAM 2 uses <code>Sam2Model</code> + <code>Sam2Processor</code> directly. Encode the image once, then decode per prompt:</p>
+      <pre><code>import { Sam2Model, Sam2Processor, RawImage, Tensor } from "@huggingface/transformers"; // v4+
+
+const model = await Sam2Model.from_pretrained("onnx-community/sam2.1-hiera-tiny-ONNX", {
+  dtype: { vision_encoder: "fp16", prompt_encoder_mask_decoder: "fp32" }, device: "wasm",
+});
+const processor = await Sam2Processor.from_pretrained("onnx-community/sam2.1-hiera-tiny-ONNX");
+
+// 1. Encode the image ONCE — the Hiera backbone returns a multi-scale pyramid (image_embeddings.0/1/2):
+const image = await RawImage.read(imageURL);
+const inputs = await processor(image);
+const embeddings = await model.get_image_embeddings(inputs);
+
+// 2. Per prompt, decode masks. SAM 2 pads to 1024×1024, so scale prompts into reshaped_input_sizes:
+const [rH, rW] = inputs.reshaped_input_sizes[0];
+const input_points = new Tensor("float32", [nx * rW, ny * rH], [1, 1, 1, 2]);
+const input_labels = new Tensor("int64", [1n], [1, 1, 1]); // 1 = foreground, 0 = background
+// (or a box:) const input_boxes = new Tensor("float32", [x1*rW,y1*rH,x2*rW,y2*rH], [1, 1, 4]);
+const out = await model({ ...embeddings, input_points, input_labels });
+
+const masks = await processor.post_process_masks(
+  out.pred_masks, inputs.original_sizes, inputs.reshaped_input_sizes,
+); // masks[0]: [1, 3, H, W] bool — three candidates; rank by out.iou_scores</code></pre>
+      <p class="muted">
+        This page runs all of that in a Web Worker and caches the embeddings, so the first prompt pays for
+        the vision encoder and every prompt after is just the lightweight mask decoder.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/onnx-community/sam2.1-hiera-tiny-ONNX" target="_blank" rel="noopener">Model card — onnx-community/sam2.1-hiera-tiny-ONNX</a></li>
+        <li><a href="https://ai.meta.com/sam2/" target="_blank" rel="noopener">Meta AI — Segment Anything 2 (SAM 2)</a></li>
+        <li><a href="https://arxiv.org/abs/2408.00714" target="_blank" rel="noopener">Paper — SAM 2: Segment Anything in Images and Videos (arXiv:2408.00714)</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { Sam2Engine, fileToDataURL, decodeImage, drawMaskOverlay, eventToNorm, SAM2_CSS } from "./sam2.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style"); style.textContent = SAM2_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new Sam2Engine();
+      let currentImg = null, embedMs = 0, embedded = false, embedLevels = 0;
+      let mode = "point";            // 'point' | 'box'
+      let nextLabel = 1;             // 1 fg / 0 bg
+      let points = [];               // accumulated point prompts
+      let box = null;                // [x1,y1,x2,y2] normalized
+      let cross = { x: 0.5, y: 0.5 };// keyboard crosshair
+      let result = null;             // last worker result (masks[], scores[]…)
+      let shown = 0;                 // which candidate is displayed
+      let dragStart = null;
+
+      function shownMask() {
+        return result ? { mask: result.masks[shown], width: result.width, height: result.height } : null;
+      }
+      function redraw(previewBox = box) {
+        if (!currentImg) return;
+        const m = shownMask();
+        drawMaskOverlay($("stage"), currentImg,
+          m?.mask ?? null, m?.width ?? currentImg.naturalWidth, m?.height ?? currentImg.naturalHeight,
+          [...points, ...(mode === "point" ? [{ x: cross.x, y: cross.y, label: nextLabel }] : [])],
+          previewBox);
+      }
+
+      async function useURL(url) {
+        currentImg = await decodeImage(url);
+        result = null; shown = 0; points = []; box = null; embedded = false; cross = { x: 0.5, y: 0.5 };
+        $("insideWrap").hidden = true; $("insideEmpty").hidden = false; $("readout").hidden = true;
+        $("candLabel").hidden = true; $("candRow").replaceChildren();
+        const c = $("stage"); c.width = currentImg.naturalWidth; c.height = currentImg.naturalHeight;
+        c.getContext("2d").drawImage(currentImg, 0, 0);
+        if (engine.ready) await embedCurrent();
+      }
+      async function embedCurrent() {
+        if (!currentImg || embedded) return;
+        $("status").textContent = "Encoding image…"; $("status").classList.remove("err");
+        const r = await engine.embed(currentImg.src);
+        embedMs = r.ms; embedded = true; embedLevels = r.embeddingLevels;
+        $("rEmbed").textContent = embedMs + " ms";
+        $("status").textContent = "Ready — click a point or drag a box to segment."; $("status").classList.add("ok");
+        redraw();
+      }
+
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        const blob = await (await fetch(el.dataset.src)).blob();
+        await useURL(await fileToDataURL(new File([blob], "s", { type: blob.type })));
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } });
+      }
+      pickSample($("samples").firstElementChild);
+
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) { for (const t of $("samples").children) t.classList.remove("active"); await useURL(await fileToDataURL(f)); $("dropText").textContent = f.name; }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/sam2.1-hiera-tiny-ONNX", runtime: "transformers.js", dtype: "fp16", sizeMB: 90, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: (device) => { $("rBackend").textContent = String(device).toUpperCase(); $("readout").hidden = false; embedCurrent(); },
+      });
+
+      // Prompt-mode + label toggles.
+      function setMode(m) {
+        mode = m;
+        $("modePoint").setAttribute("aria-pressed", String(m === "point"));
+        $("modeBox").setAttribute("aria-pressed", String(m === "box"));
+        $("labelWrap").style.opacity = $("labelFg").style.opacity = $("labelBg").style.opacity = m === "point" ? "1" : ".45";
+        $("pointGrid").style.display = m === "point" ? "grid" : "none";
+        $("kbdHint").style.display = m === "point" ? "block" : "none";
+        $("stage").style.cursor = m === "box" ? "crosshair" : "crosshair";
+        redraw();
+      }
+      $("modePoint").addEventListener("click", () => setMode("point"));
+      $("modeBox").addEventListener("click", () => setMode("box"));
+      $("labelFg").addEventListener("click", () => { nextLabel = 1; $("labelFg").setAttribute("aria-pressed", "true"); $("labelBg").setAttribute("aria-pressed", "false"); redraw(); });
+      $("labelBg").addEventListener("click", () => { nextLabel = 0; $("labelFg").setAttribute("aria-pressed", "false"); $("labelBg").setAttribute("aria-pressed", "true"); redraw(); });
+      $("resetPrompt").addEventListener("click", () => {
+        points = []; box = null; result = null; shown = 0;
+        $("candLabel").hidden = true; $("candRow").replaceChildren();
+        $("insideWrap").hidden = true; $("insideEmpty").hidden = false;
+        $("status").textContent = "Prompt cleared."; $("status").classList.remove("err");
+        redraw();
+      });
+
+      async function runSegment() {
+        if (!engine.ready) { $("status").textContent = "Load the model first."; return; }
+        if (!embedded) { await embedCurrent(); }
+        if (!points.length && !box) return;
+        $("status").textContent = "Segmenting…"; $("status").classList.remove("err");
+        try {
+          const r = await engine.segment(points, box);
+          result = r; shown = r.bestIndex;
+          renderCandidates(); redraw();
+          $("readout").hidden = false; $("rMs").textContent = r.ms + " ms"; $("rIou").textContent = r.scores[r.bestIndex].toFixed(3);
+          renderInside();
+          $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Segmentation failed: " + err.message; $("status").classList.add("err"); }
+      }
+
+      function renderCandidates() {
+        $("candLabel").hidden = false;
+        $("candRow").replaceChildren();
+        result.scores.forEach((s, i) => {
+          const b = document.createElement("button");
+          b.className = "cand-btn"; b.type = "button"; b.setAttribute("aria-pressed", String(i === shown));
+          b.innerHTML = `Mask ${i + 1}<small>IoU ${s.toFixed(3)}</small><span class="score-bar" style="inline-size:${Math.round(s * 100)}%"></span>`;
+          b.addEventListener("click", () => { shown = i; for (const x of $("candRow").children) x.setAttribute("aria-pressed", String(x === b)); redraw(); renderInside(); $("rIou").textContent = result.scores[i].toFixed(3); });
+          $("candRow").append(b);
+        });
+      }
+
+      function renderInside() {
+        $("insideEmpty").hidden = true; $("insideWrap").hidden = false;
+        $("iouBadge").textContent = result.scores[shown].toFixed(3);
+        const parts = [];
+        if (points.length) parts.push(points.map((p) => `(${p.x.toFixed(2)},${p.y.toFixed(2)})${p.label ? "+" : "−"}`).join(" "));
+        if (box) parts.push(`box[${box.map((v) => v.toFixed(2)).join(",")}]`);
+        $("iPrompt").textContent = parts.join("  ") || "–";
+        $("iScores").textContent = result.scores.map((s) => s.toFixed(3)).join(" · ");
+        $("iObj").textContent = result.objScore == null ? "n/a" : result.objScore.toFixed(3);
+        $("iLevels").textContent = `${embedLevels} (Hiera multi-scale pyramid)`;
+        $("iChosen").textContent = `#${shown + 1} of ${result.numMasks}`;
+        const area = result.areas[shown];
+        $("iArea").textContent = `${area.toLocaleString()} px (${(100 * area / (result.width * result.height)).toFixed(1)}% of image)`;
+      }
+
+      // ---- Pointer interaction: point-add (click) or box-drag ----
+      const stage = $("stage");
+      stage.addEventListener("pointerdown", (e) => {
+        if (!currentImg) return;
+        const n = eventToNorm(stage, e);
+        if (mode === "box") { dragStart = n; box = [n.x, n.y, n.x, n.y]; stage.setPointerCapture(e.pointerId); }
+      });
+      stage.addEventListener("pointermove", (e) => {
+        if (mode === "box" && dragStart) { const n = eventToNorm(stage, e); box = [dragStart.x, dragStart.y, n.x, n.y]; redraw(box); }
+        else if (mode === "point") { const n = eventToNorm(stage, e); cross = n; }
+      });
+      stage.addEventListener("pointerup", (e) => {
+        if (mode === "box" && dragStart) {
+          const n = eventToNorm(stage, e);
+          const x1 = Math.min(dragStart.x, n.x), y1 = Math.min(dragStart.y, n.y), x2 = Math.max(dragStart.x, n.x), y2 = Math.max(dragStart.y, n.y);
+          dragStart = null;
+          if (Math.abs(x2 - x1) < 0.01 || Math.abs(y2 - y1) < 0.01) { box = null; redraw(); return; }
+          box = [x1, y1, x2, y2]; points = []; runSegment();
+        }
+      });
+      stage.addEventListener("click", (e) => {
+        if (mode !== "point" || !currentImg) return;
+        const n = eventToNorm(stage, e);
+        points.push({ x: n.x, y: n.y, label: nextLabel }); box = null;
+        runSegment();
+      });
+      // Keyboard: arrows move crosshair, Enter/Space adds a point (point mode).
+      stage.addEventListener("keydown", (e) => {
+        if (mode !== "point") return;
+        const step = 0.02;
+        if (e.key === "ArrowLeft") { cross.x = Math.max(0, cross.x - step); redraw(); e.preventDefault(); }
+        else if (e.key === "ArrowRight") { cross.x = Math.min(1, cross.x + step); redraw(); e.preventDefault(); }
+        else if (e.key === "ArrowUp") { cross.y = Math.max(0, cross.y - step); redraw(); e.preventDefault(); }
+        else if (e.key === "ArrowDown") { cross.y = Math.min(1, cross.y + step); redraw(); e.preventDefault(); }
+        else if (e.key === "Enter" || e.key === " ") { points.push({ x: cross.x, y: cross.y, label: nextLabel }); box = null; runSegment(); e.preventDefault(); }
+      });
+      // Preset points replace the prompt with a single foreground point.
+      for (const b of $("pointGrid").children) b.addEventListener("click", () => { points = [{ x: +b.dataset.x, y: +b.dataset.y, label: 1 }]; box = null; cross = { x: +b.dataset.x, y: +b.dataset.y }; runSegment(); });
+
+      if ("serviceWorker" in navigator) navigator.serviceWorker.register("/web-ai-showcase/sw.js").catch(() => {});
+    </script>
+  </body>
+</html>

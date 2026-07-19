@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SAM 2.1 Wild — refine thin &amp; occluded objects · Web AI Showcase</title>
+    <meta name="description" content="The hard cases: segment thin, wispy, or partly-hidden objects with SAM 2.1 by stacking foreground and background points to refine the mask, live on-device." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎯</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">SAM 2.1</a></p>
+    <header>
+      <p class="eyebrow">use case · wild</p>
+      <h1>Wild: refine thin &amp; occluded objects</h1>
+      <p class="lede">
+        One click is rarely enough for a wispy plant stem, a chair leg behind a table, or an animal partly
+        hidden by something else. SAM 2 lets you <strong>stack prompts</strong>: add
+        <strong>foreground +</strong> points on the parts it missed and <strong>background −</strong> points
+        on the bits it wrongly grabbed, and watch the mask tighten with each point.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="sample-strip" id="samples" aria-label="Sample images">
+        <img class="sample-thumb active" src="../sample-river.jpg" data-src="../sample-river.jpg" alt="A riverside with a swan" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-room.jpg" data-src="../sample-room.jpg" alt="A cozy bedroom with a bookshelf" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-cats.jpg" data-src="../sample-cats.jpg" alt="Two cats on a couch" tabindex="0" role="button" />
+      </div>
+
+      <div class="toolbar" role="group" aria-label="Point type">
+        <span class="muted" style="font-size:.8rem">Next point:</span>
+        <button type="button" class="chip" id="labelFg" aria-pressed="true">Foreground +</button>
+        <button type="button" class="chip" id="labelBg" aria-pressed="false">Background −</button>
+        <button type="button" class="chip" id="undo">Undo point</button>
+        <button type="button" class="chip" id="reset">Reset</button>
+        <span class="muted" id="ptCount" style="font-size:.8rem"></span>
+      </div>
+      <div class="canvas-wrap">
+        <canvas id="stage" class="stage-canvas" aria-label="Image — click to add refinement points; white dots are foreground, red dots background"></canvas>
+      </div>
+      <p class="muted" style="font-size:.82rem;margin:.4rem 0">Tip: click the object to start, then add <strong>−</strong> points on anything the mask wrongly included, and <strong>+</strong> points on parts it missed.</p>
+      <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>points <b id="rPts">–</b></span><span>segment <b id="rMs">–</b></span><span>IoU <b id="rIou">–</b></span></div>
+    </section>
+
+    <p class="crumbs"><a href="../practical/">← Practical</a> · <a href="../">SAM 2.1</a> · Next: <a href="../multi-model/">Multi-model →</a></p>
+
+    <script type="module">
+      import { Sam2Engine, fileToDataURL, decodeImage, drawMaskOverlay, eventToNorm, SAM2_CSS } from "../sam2.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = SAM2_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new Sam2Engine();
+      let currentImg = null, embedded = false, result = null, points = [], nextLabel = 1;
+
+      function redraw() {
+        if (!currentImg) return;
+        const m = result ? { mask: result.masks[result.bestIndex], w: result.width, h: result.height } : null;
+        drawMaskOverlay($("stage"), currentImg, m?.mask ?? null, m?.w ?? currentImg.naturalWidth, m?.h ?? currentImg.naturalHeight, points, null);
+        $("ptCount").textContent = points.length ? `${points.length} point(s)` : "";
+      }
+      async function useURL(url) {
+        currentImg = await decodeImage(url); result = null; points = []; embedded = false;
+        $("readout").hidden = true;
+        const c = $("stage"); c.width = currentImg.naturalWidth; c.height = currentImg.naturalHeight; c.getContext("2d").drawImage(currentImg, 0, 0);
+        if (engine.ready) await embedCurrent();
+      }
+      async function embedCurrent() {
+        if (!currentImg || embedded) return;
+        $("status").textContent = "Encoding image…"; $("status").classList.remove("err");
+        await engine.embed(currentImg.src); embedded = true;
+        $("status").textContent = "Ready — click the object to start."; $("status").classList.add("ok"); redraw();
+      }
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        const blob = await (await fetch(el.dataset.src)).blob();
+        await useURL(await fileToDataURL(new File([blob], "s", { type: blob.type })));
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } });
+      }
+      pickSample($("samples").firstElementChild);
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/sam2.1-hiera-tiny-ONNX", runtime: "transformers.js", dtype: "fp16", sizeMB: 90, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: (device) => { $("rBackend").textContent = String(device).toUpperCase(); embedCurrent(); },
+      });
+
+      $("labelFg").addEventListener("click", () => { nextLabel = 1; $("labelFg").setAttribute("aria-pressed", "true"); $("labelBg").setAttribute("aria-pressed", "false"); });
+      $("labelBg").addEventListener("click", () => { nextLabel = 0; $("labelFg").setAttribute("aria-pressed", "false"); $("labelBg").setAttribute("aria-pressed", "true"); });
+      $("undo").addEventListener("click", () => { points.pop(); if (points.length) runSegment(); else { result = null; redraw(); } });
+      $("reset").addEventListener("click", () => { points = []; result = null; redraw(); $("status").textContent = "Cleared."; });
+
+      async function runSegment() {
+        if (!engine.ready) { $("status").textContent = "Load the model first."; return; }
+        if (!embedded) await embedCurrent();
+        if (!points.length) return;
+        $("status").textContent = "Refining…"; $("status").classList.remove("err");
+        try {
+          result = await engine.segment(points, null); redraw();
+          $("readout").hidden = false; $("rPts").textContent = points.length; $("rMs").textContent = result.ms + " ms"; $("rIou").textContent = result.scores[result.bestIndex].toFixed(3);
+          $("status").textContent = "Done — add more points to refine."; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+      }
+      const stage = $("stage");
+      stage.addEventListener("click", (e) => { if (!currentImg) return; const n = eventToNorm(stage, e); points.push({ x: n.x, y: n.y, label: nextLabel }); runSegment(); });
+    </script>
+  </body>
+</html>

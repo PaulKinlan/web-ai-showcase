@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SAM 2.1 Basics — one click, three masks · Web AI Showcase</title>
+    <meta name="description" content="The fundamental SAM 2.1 capability: click one point on an image and get three candidate pixel masks with predicted-IoU scores, entirely on-device." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎯</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">SAM 2.1</a></p>
+    <header>
+      <p class="eyebrow">use case · basics</p>
+      <h1>Basics: one click, three masks</h1>
+      <p class="lede">
+        The plainest promptable-segmentation task: click a single point, and SAM 2 returns
+        <strong>three</strong> candidate masks — "the part / the thing / the whole region" — each with its
+        own predicted-IoU. Click the point, then pick the candidate that matches what you meant.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="sample-strip" id="samples" aria-label="Sample images">
+        <img class="sample-thumb active" src="../sample-cats.jpg" data-src="../sample-cats.jpg" alt="Two cats on a couch" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-room.jpg" data-src="../sample-room.jpg" alt="A cozy bedroom" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-river.jpg" data-src="../sample-river.jpg" alt="A riverside with a swan" tabindex="0" role="button" />
+      </div>
+      <div class="canvas-wrap">
+        <canvas id="stage" class="stage-canvas" tabindex="0" role="button" aria-label="Image — click a point, or focus and use arrow keys then Enter, to segment"></canvas>
+      </div>
+      <p class="muted" style="font-size:.82rem;margin:.4rem 0">Click anywhere on the image (or focus it and use arrow keys + Enter).</p>
+      <p class="muted" style="font-size:.82rem;margin:.6rem 0 .2rem" id="candLabel" hidden>Candidate masks — pick one:</p>
+      <div class="cand-row" id="candRow" role="group" aria-label="Candidate masks"></div>
+      <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>segment <b id="rMs">–</b></span><span>best IoU <b id="rIou">–</b></span></div>
+    </section>
+
+    <p class="crumbs"><a href="../">← SAM 2.1</a> · Next: <a href="../practical/">Practical →</a></p>
+
+    <script type="module">
+      import { Sam2Engine, fileToDataURL, decodeImage, drawMaskOverlay, eventToNorm, SAM2_CSS } from "../sam2.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = SAM2_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new Sam2Engine();
+      let currentImg = null, embedded = false, result = null, shown = 0, point = { x: 0.5, y: 0.5 };
+
+      function redraw() {
+        if (!currentImg) return;
+        const m = result ? { mask: result.masks[shown], w: result.width, h: result.height } : null;
+        drawMaskOverlay($("stage"), currentImg, m?.mask ?? null, m?.w ?? currentImg.naturalWidth, m?.h ?? currentImg.naturalHeight, [{ x: point.x, y: point.y, label: 1 }]);
+      }
+      async function useURL(url) {
+        currentImg = await decodeImage(url); result = null; shown = 0; embedded = false; point = { x: 0.5, y: 0.5 };
+        $("candLabel").hidden = true; $("candRow").replaceChildren(); $("readout").hidden = true;
+        const c = $("stage"); c.width = currentImg.naturalWidth; c.height = currentImg.naturalHeight; c.getContext("2d").drawImage(currentImg, 0, 0);
+        if (engine.ready) await embedCurrent();
+      }
+      async function embedCurrent() {
+        if (!currentImg || embedded) return;
+        $("status").textContent = "Encoding image…"; $("status").classList.remove("err");
+        await engine.embed(currentImg.src); embedded = true;
+        $("status").textContent = "Ready — click the image."; $("status").classList.add("ok"); redraw();
+      }
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        const blob = await (await fetch(el.dataset.src)).blob();
+        await useURL(await fileToDataURL(new File([blob], "s", { type: blob.type })));
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } });
+      }
+      pickSample($("samples").firstElementChild);
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/sam2.1-hiera-tiny-ONNX", runtime: "transformers.js", dtype: "fp16", sizeMB: 90, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: (device) => { $("rBackend").textContent = String(device).toUpperCase(); embedCurrent(); },
+      });
+
+      async function segmentAt(nx, ny) {
+        if (!engine.ready) { $("status").textContent = "Load the model first."; return; }
+        if (!embedded) await embedCurrent();
+        point = { x: nx, y: ny }; redraw();
+        $("status").textContent = "Segmenting…"; $("status").classList.remove("err");
+        try {
+          result = await engine.segment([{ x: nx, y: ny, label: 1 }], null); shown = result.bestIndex;
+          $("candLabel").hidden = false; $("candRow").replaceChildren();
+          result.scores.forEach((s, i) => {
+            const b = document.createElement("button"); b.className = "cand-btn"; b.type = "button"; b.setAttribute("aria-pressed", String(i === shown));
+            b.innerHTML = `Mask ${i + 1}<small>IoU ${s.toFixed(3)}</small><span class="score-bar" style="inline-size:${Math.round(s * 100)}%"></span>`;
+            b.addEventListener("click", () => { shown = i; for (const x of $("candRow").children) x.setAttribute("aria-pressed", String(x === b)); redraw(); $("rIou").textContent = result.scores[i].toFixed(3); });
+            $("candRow").append(b);
+          });
+          redraw();
+          $("readout").hidden = false; $("rMs").textContent = result.ms + " ms"; $("rIou").textContent = result.scores[result.bestIndex].toFixed(3);
+          $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+      }
+      const stage = $("stage");
+      stage.addEventListener("click", (e) => { const n = eventToNorm(stage, e); segmentAt(n.x, n.y); });
+      stage.addEventListener("keydown", (e) => {
+        const step = 0.02;
+        if (e.key === "ArrowLeft") { point.x = Math.max(0, point.x - step); redraw(); e.preventDefault(); }
+        else if (e.key === "ArrowRight") { point.x = Math.min(1, point.x + step); redraw(); e.preventDefault(); }
+        else if (e.key === "ArrowUp") { point.y = Math.max(0, point.y - step); redraw(); e.preventDefault(); }
+        else if (e.key === "ArrowDown") { point.y = Math.min(1, point.y + step); redraw(); e.preventDefault(); }
+        else if (e.key === "Enter" || e.key === " ") { segmentAt(point.x, point.y); e.preventDefault(); }
+      });
+    </script>
+  </body>
+</html>

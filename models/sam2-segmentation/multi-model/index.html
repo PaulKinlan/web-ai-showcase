@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SAM 2.1 Multi-model — segment then classify · Web AI Showcase</title>
+    <meta name="description" content="Compose two models on-device: click to segment an object with SAM 2.1, crop it out, then let MobileViT classify what you segmented — segmentation feeding recognition." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎯</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">SAM 2.1</a></p>
+    <header>
+      <p class="eyebrow">use case · multi-model</p>
+      <h1>Multi-model: segment → crop → classify</h1>
+      <p class="lede">
+        Two models, one pipeline, all local. <strong>Click a point</strong> and SAM 2 segments the object;
+        the page crops it to a tight cut-out and hands it to <strong>MobileViT</strong>, which names it.
+        Segmentation feeds recognition — "what is the thing I just pointed at?" — with nothing leaving the browser.
+      </p>
+    </header>
+
+    <section class="panel">
+      <h3 style="margin-top:0">1 · SAM 2.1 — segment</h3>
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+      <div class="sample-strip" id="samples" aria-label="Sample images">
+        <img class="sample-thumb active" src="../sample-cats.jpg" data-src="../sample-cats.jpg" alt="Two cats on a couch" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-river.jpg" data-src="../sample-river.jpg" alt="A riverside with a swan" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-room.jpg" data-src="../sample-room.jpg" alt="A cozy bedroom" tabindex="0" role="button" />
+      </div>
+      <div class="canvas-wrap">
+        <canvas id="stage" class="stage-canvas" tabindex="0" role="button" aria-label="Image — click an object to segment then classify it"></canvas>
+      </div>
+      <p class="muted" style="font-size:.82rem;margin:.4rem 0">Click an object (a cat, the swan, a lamp) to segment and classify it.</p>
+    </section>
+
+    <section class="panel">
+      <h3 style="margin-top:0">2 · MobileViT — classify the cut-out</h3>
+      <div id="clf-loader"></div>
+      <div class="vlm-grid" style="display:flex;flex-wrap:wrap;gap:1rem;align-items:flex-start">
+        <div class="canvas-wrap checker" style="flex:0 0 auto" id="cropWrap" hidden>
+          <canvas id="crop" style="display:block;max-inline-size:200px;block-size:auto;border-radius:8px" aria-label="Cropped cut-out sent to the classifier"></canvas>
+        </div>
+        <div style="flex:1 1 240px">
+          <div id="labels" class="answer" style="min-block-size:3rem;padding:.7rem;border:1px solid var(--border);border-radius:8px;background:var(--bg-raised)"><span class="muted">Segment something to classify it.</span></div>
+          <div class="readout" id="readout" hidden><span>segment <b id="rSeg">–</b></span><span>classify <b id="rClf">–</b></span><span>IoU <b id="rIou">–</b></span></div>
+        </div>
+      </div>
+    </section>
+
+    <p class="crumbs"><a href="../wild/">← Wild</a> · <a href="../">SAM 2.1</a></p>
+
+    <style>
+      .bar-row { display:flex; align-items:center; gap:.5rem; margin:.25rem 0; font-family:var(--font-mono); font-size:.8rem; }
+      .bar-row .lbl { flex:0 0 40%; }
+      .bar-row .bar { flex:1; block-size:8px; border-radius:4px; background:var(--bg-secondary); overflow:hidden; }
+      .bar-row .bar > span { display:block; block-size:100%; background:var(--accent); }
+      .bar-row .pct { flex:0 0 3rem; text-align:right; color:var(--muted); }
+    </style>
+
+    <script type="module">
+      import { Sam2Engine, fileToDataURL, decodeImage, drawMaskOverlay, cutout, eventToNorm, escapeHTML, SAM2_CSS } from "../sam2.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = SAM2_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new Sam2Engine();
+
+      // Classifier worker (MobileViT, off-main-thread).
+      const clf = new Worker("./classify-worker.js", { type: "module" });
+      let clfReady = false; const clfWaiters = []; let clfActive = null; let clfId = 0;
+      clf.addEventListener("message", (e) => {
+        const m = e.data;
+        if (m.type === "progress") clfOnProgress?.(m.p);
+        else if (m.type === "ready") { clfReady = true; clfWaiters.forEach((w) => w.resolve("wasm")); clfWaiters.length = 0; }
+        else if (m.type === "result" && clfActive?.id === m.id) { clfActive.resolve(m); clfActive = null; }
+        else if (m.type === "error") { (clfActive ? clfActive.reject : (clfWaiters[0]?.reject || (()=>{})))(new Error(m.message)); clfActive = null; }
+      });
+      let clfOnProgress = null;
+      const loadClf = (onP) => { clfOnProgress = onP; if (clfReady) return Promise.resolve("wasm"); return new Promise((resolve, reject) => { clfWaiters.push({ resolve, reject }); clf.postMessage({ type: "load" }); }); };
+      const classify = (image, topk = 5) => { const id = ++clfId; return new Promise((resolve, reject) => { clfActive = { id, resolve, reject }; clf.postMessage({ type: "classify", id, image, topk }); }); };
+
+      let currentImg = null, embedded = false, samReady = false;
+
+      function redraw(mask, w, h, pt) {
+        drawMaskOverlay($("stage"), currentImg, mask, w ?? currentImg.naturalWidth, h ?? currentImg.naturalHeight, pt ? [pt] : [], null);
+      }
+      async function useURL(url) {
+        currentImg = await decodeImage(url); embedded = false;
+        $("cropWrap").hidden = true; $("readout").hidden = true; $("labels").innerHTML = '<span class="muted">Segment something to classify it.</span>';
+        const c = $("stage"); c.width = currentImg.naturalWidth; c.height = currentImg.naturalHeight; c.getContext("2d").drawImage(currentImg, 0, 0);
+        if (engine.ready) await embedCurrent();
+      }
+      async function embedCurrent() {
+        if (!currentImg || embedded) return;
+        $("status").textContent = "Encoding image…"; $("status").classList.remove("err");
+        await engine.embed(currentImg.src); embedded = true;
+        $("status").textContent = "Ready — click an object."; $("status").classList.add("ok");
+      }
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        const blob = await (await fetch(el.dataset.src)).blob();
+        await useURL(await fileToDataURL(new File([blob], "s", { type: blob.type })));
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } });
+      }
+      pickSample($("samples").firstElementChild);
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/sam2.1-hiera-tiny-ONNX", runtime: "transformers.js", dtype: "fp16", sizeMB: 90, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: () => { samReady = true; embedCurrent(); },
+      });
+      createModelLoader({
+        mount: $("clf-loader"),
+        model: { modelId: "Xenova/mobilevit-small", runtime: "transformers.js", dtype: "q8", sizeMB: 20, requiresWebGPU: false },
+        load: (onProgress) => loadClf(onProgress),
+        onReady: () => {},
+      });
+
+      // Bounding box of a 0/1 mask → tight crop of the cut-out (object on white), as a data URL.
+      function cropToObject(img, mask, w, h) {
+        let minX = w, minY = h, maxX = 0, maxY = 0, any = false;
+        for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (mask[y * w + x]) { any = true; if (x < minX) minX = x; if (x > maxX) maxX = x; if (y < minY) minY = y; if (y > maxY) maxY = y; }
+        if (!any) return null;
+        const pad = Math.round(Math.max(maxX - minX, maxY - minY) * 0.08);
+        minX = Math.max(0, minX - pad); minY = Math.max(0, minY - pad); maxX = Math.min(w - 1, maxX + pad); maxY = Math.min(h - 1, maxY + pad);
+        const cut = cutout(img, mask, w, h);
+        const cw = maxX - minX + 1, ch = maxY - minY + 1;
+        const c = document.createElement("canvas"); c.width = cw; c.height = ch;
+        const ctx = c.getContext("2d"); ctx.fillStyle = "#ffffff"; ctx.fillRect(0, 0, cw, ch);
+        ctx.drawImage(cut, minX, minY, cw, ch, 0, 0, cw, ch);
+        return c;
+      }
+
+      async function segmentAndClassify(nx, ny) {
+        if (!samReady) { $("status").textContent = "Load SAM 2 first."; return; }
+        if (!embedded) await embedCurrent();
+        redraw(null, null, null, { x: nx, y: ny, label: 1 });
+        $("status").textContent = "Segmenting…"; $("status").classList.remove("err");
+        try {
+          const r = await engine.segment([{ x: nx, y: ny, label: 1 }], null);
+          const best = r.bestIndex;
+          redraw(r.masks[best], r.width, r.height, { x: nx, y: ny, label: 1 });
+          $("rIou").textContent = r.scores[best].toFixed(3);
+          const crop = cropToObject(currentImg, r.masks[best], r.width, r.height);
+          if (!crop) { $("labels").innerHTML = '<span class="muted">Empty mask — try another point.</span>'; return; }
+          const cc = $("crop"); cc.width = crop.width; cc.height = crop.height; cc.getContext("2d").drawImage(crop, 0, 0); $("cropWrap").hidden = false;
+          if (!clfReady) { $("status").textContent = "Segmented — loading classifier…"; await loadClf(); }
+          $("status").textContent = "Classifying the cut-out…"; $("labels").innerHTML = '<span class="muted">Working…</span>';
+          const res = await classify(crop.toDataURL("image/png"), 5);
+          $("labels").innerHTML = res.labels.map((l) => `<div class="bar-row"><span class="lbl">${escapeHTML(l.label.split(",")[0])}</span><span class="bar"><span style="inline-size:${(l.score * 100).toFixed(1)}%"></span></span><span class="pct">${(l.score * 100).toFixed(1)}%</span></div>`).join("");
+          $("readout").hidden = false; $("rSeg").textContent = r.ms + " ms"; $("rClf").textContent = res.ms + " ms";
+          $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); $("labels").innerHTML = '<span class="muted">Failed.</span>'; }
+      }
+      const stage = $("stage");
+      stage.addEventListener("click", (e) => { const n = eventToNorm(stage, e); segmentAndClassify(n.x, n.y); });
+      stage.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); segmentAndClassify(0.5, 0.5); } });
+    </script>
+  </body>
+</html>
