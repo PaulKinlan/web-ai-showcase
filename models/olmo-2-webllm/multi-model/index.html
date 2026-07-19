@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OLMo-2 Multi-model — on-device RAG · Web AI Showcase</title>
+    <meta name="description" content="Two models, one tab: all-MiniLM-L6 embeds a pasted document and retrieves the relevant passages, then Ai2's fully-open OLMo-2 1B answers grounded strictly in those passages — a full RAG pipeline running locally with no server and no vector database." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🔬</text></svg>" />
+    <style>
+      .loader-pair { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr)); gap:1rem; }
+      .loader-label { font-size:.8rem; font-weight:600; margin:0 0 .3rem; }
+      .loader-label .muted { font-weight:400; }
+    </style>
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">OLMo-2 1B</a></p>
+    <header>
+      <p class="eyebrow">use case · multi-model · RAG</p>
+      <h1>Multi-model: retrieval-augmented answers</h1>
+      <p class="lede">
+        One model rarely ships alone. Here two run side by side: <strong>all-MiniLM-L6</strong>
+        (Transformers.js) turns a pasted document into vectors and retrieves the passages closest to your
+        question, then <strong>OLMo-2 1B</strong> (WebLLM) answers <em>using only those passages</em>.
+        That's RAG: grounded, auditable, and running entirely in this tab with no server and no vector
+        database.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div class="loader-pair">
+        <div>
+          <p class="loader-label">Retriever · all-MiniLM-L6 <span class="muted">(Transformers.js · WASM, no GPU needed)</span></p>
+          <div id="minilm-loader"></div>
+        </div>
+        <div>
+          <p class="loader-label">Generator · OLMo-2 1B <span class="muted">(WebLLM · WebGPU only)</span></p>
+          <div id="olmo-loader"></div>
+        </div>
+      </div>
+      <div id="fallback" class="fallback" hidden></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div style="margin-top:.6rem">
+        <label style="font-size:.82rem;color:var(--muted)" for="corpus">Your document / knowledge base (paste anything — it's chunked by paragraph)</label>
+        <textarea id="corpus" rows="8" style="width:100%"></textarea>
+      </div>
+      <div class="composer" style="margin-top:.5rem">
+        <textarea id="q" placeholder="Ask a question about the document above…" aria-label="Question" disabled></textarea>
+        <button id="ask" type="button" disabled>Ask</button>
+        <button id="stop" type="button" class="secondary" hidden>Stop</button>
+      </div>
+
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr));gap:1rem;margin-top:.8rem">
+        <div>
+          <h4 style="font-family:var(--font-body);font-size:.85rem;margin:.2rem 0">Retrieved passages (MiniLM)</h4>
+          <div id="retrieved" class="wire" style="min-block-size:6rem;padding:.5rem;border:1px solid var(--border);border-radius:8px;background:var(--bg-raised)"><span class="muted">The top matching chunks appear here, with cosine scores.</span></div>
+        </div>
+        <div>
+          <h4 style="font-family:var(--font-body);font-size:.85rem;margin:.2rem 0">Grounded answer (OLMo-2 1B)</h4>
+          <div id="answer" class="msg assistant" style="max-inline-size:100%"><div class="bubble"><span class="muted">The answer streams here, using only the retrieved passages.</span></div></div>
+          <div class="readout" id="readout" hidden><span>retrieval <b id="rRet">–</b></span><span>first token <b id="rTtft">–</b></span><span>decode <b id="rTps">–</b></span></div>
+        </div>
+      </div>
+    </section>
+
+    <section aria-labelledby="how-h">
+      <h2 id="how-h">Why two models beat one</h2>
+      <p class="muted">
+        A 1B model doesn't know your documents, and stuffing them all into the prompt gets expensive and
+        unreliable. Instead, MiniLM (a 25 MB embedding model) indexes the text once; each question is
+        embedded and matched by cosine similarity, and only the closest few chunks are handed to OLMo-2.
+        The LLM's job shrinks to "read these passages and answer" — cheaper, faster, and grounded in source
+        you control. Swap the corpus for a product manual, a policy doc, or your own notes. Because OLMo-2
+        is fully open, you could even continue-train it on that same corpus and skip retrieval for the parts
+        it has memorised.
+      </p>
+    </section>
+
+    <p class="crumbs"><a href="../wild/">← Wild</a> · <a href="../">OLMo-2 1B</a></p>
+
+    <script type="module">
+      import { OlmoChatEngine, probeWebGPU, escapeHTML, webgpuFallbackHTML, CHAT_CSS } from "../webllm-chat.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = CHAT_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+
+      const SAMPLE = `WebGPU is a browser API that gives web pages low-level access to the GPU for both rendering and general-purpose computation. It is the successor to WebGL and exposes modern GPU features like compute shaders.
+
+WebLLM is an in-browser LLM inference engine from the MLC project. It compiles model weights to WebGPU shaders so a language model can run entirely on the user's device, with no server round-trip and no data leaving the browser.
+
+OLMo-2 is a family of fully-open language models from Ai2 (the Allen Institute for AI), released in 2024 and 2025 in sizes including 1B, 7B, 13B and 32B. Unlike open-weights models, Ai2 also releases the training data (Dolma and Dolmino), the training code (OLMo-core), the intermediate checkpoints, and the training logs, so the whole recipe is reproducible. The 1B Instruct build has a 4096-token context in this WebLLM build.
+
+Retrieval-augmented generation (RAG) combines a retriever with a generator. An embedding model finds passages relevant to a question, and a language model writes an answer grounded in those passages, which reduces hallucination and lets the system cite sources.
+
+all-MiniLM-L6-v2 is a compact sentence-embedding model that maps text to 384-dimensional vectors. It is about 25 MB quantized and is widely used for semantic search, clustering, and the retrieval step of RAG pipelines.`;
+      $("corpus").value = SAMPLE;
+
+      const olmo = new OlmoChatEngine();
+      const embed = new Worker("./embed-worker.js", { type: "module" });
+      let busy = false, olmoReady = false, minilmReady = false;
+      let chunks = [], chunkVecs = null;
+      const embedWaiters = []; let embedId = 0;
+      embed.addEventListener("message", (e) => {
+        const m = e.data;
+        if (m.type === "embeds") { const w = embedWaiters.find((x) => x.id === m.id); if (w) { w.resolve(m.vectors); embedWaiters.splice(embedWaiters.indexOf(w), 1); } }
+        else if (m.type === "error") { const w = embedWaiters.find((x) => x.id === m.id); if (w) { w.reject(new Error(m.message)); } }
+      });
+      function runEmbed(texts) { const id = ++embedId; return new Promise((resolve, reject) => { embedWaiters.push({ id, resolve, reject }); embed.postMessage({ type: "embed", id, texts }); }); }
+      function cosine(a, b) { let s = 0; for (let i = 0; i < a.length; i++) s += a[i] * b[i]; return s; }
+
+      async function maybeEnable() {
+        if (!(olmoReady && minilmReady)) return;
+        $("status").classList.remove("err"); $("status").textContent = "Indexing the document…";
+        await reindex();
+        $("status").textContent = `Ready — ${chunks.length} chunks indexed.`; $("status").classList.add("ok");
+        $("q").disabled = false; $("ask").disabled = false; $("q").focus();
+      }
+
+      createModelLoader({
+        mount: $("minilm-loader"),
+        model: { modelId: "Xenova/all-MiniLM-L6-v2", runtime: "transformers.js", dtype: "q8", sizeMB: 25, requiresWebGPU: false },
+        load: (onProgress) => new Promise((resolve, reject) => {
+          const onErr = (e) => { embed.removeEventListener("message", onMsg); reject(new Error(e.message || "embed worker failed")); };
+          const onMsg = (e) => {
+            const m = e.data;
+            if (m.type === "progress" && m.p && typeof m.p.progress === "number") onProgress({ status: "progress", progress: m.p.progress });
+            else if (m.type === "ready") { embed.removeEventListener("message", onMsg); embed.removeEventListener("error", onErr); resolve(embed); }
+          };
+          embed.addEventListener("message", onMsg);
+          embed.addEventListener("error", onErr, { once: true });
+          embed.postMessage({ type: "load" });
+        }),
+        onReady: () => { minilmReady = true; maybeEnable(); },
+      });
+
+      createModelLoader({
+        mount: $("olmo-loader"),
+        model: { modelId: "OLMo-2-0425-1B-Instruct-q4f16_1-MLC", runtime: "webllm", dtype: "q4f16_1", sizeMB: 845, requiresWebGPU: true },
+        load: async (onProgress) => { await olmo.load((p) => { if (typeof p.progress === "number") onProgress({ status: "progress", progress: p.progress * 100 }); }); return olmo; },
+        onReady: () => { olmoReady = true; maybeEnable(); },
+        onError: async (err) => { if (String(err?.message ?? err).includes("needs-webgpu")) { const probe = await probeWebGPU(); $("fallback").hidden = false; $("fallback").innerHTML = webgpuFallbackHTML(probe); } },
+      });
+
+      async function reindex() {
+        chunks = $("corpus").value.split(/\n\s*\n/).map((s) => s.trim()).filter((s) => s.length > 12);
+        if (!chunks.length) { chunkVecs = null; return; }
+        chunkVecs = await runEmbed(chunks);
+      }
+      let corpusDirty = false;
+      $("corpus").addEventListener("input", () => { corpusDirty = true; });
+
+      $("ask").addEventListener("click", async () => {
+        if (busy) return;
+        const q = $("q").value.trim(); if (!q) { $("status").textContent = "Type a question first."; return; }
+        busy = true; $("ask").disabled = true; $("stop").hidden = false; $("status").classList.remove("err"); $("status").textContent = "Retrieving…";
+        $("answer").querySelector(".bubble").innerHTML = '<span class="caret"></span>';
+        try {
+          if (corpusDirty || !chunkVecs) { await reindex(); corpusDirty = false; }
+          const t0 = performance.now();
+          const [qv] = await runEmbed([q]);
+          const scored = chunks.map((c, i) => ({ c, score: cosine(qv, chunkVecs[i]) })).sort((a, b) => b.score - a.score);
+          const top = scored.slice(0, 3);
+          const retMs = Math.round(performance.now() - t0);
+          $("retrieved").innerHTML = top.map((t, i) => `<div style="margin-bottom:.5rem"><b style="color:var(--accent)">#${i + 1} · ${t.score.toFixed(3)}</b><br>${escapeHTML(t.c)}</div>`).join("");
+          $("readout").hidden = false; $("rRet").textContent = retMs + " ms";
+
+          const context = top.map((t, i) => `[${i + 1}] ${t.c}`).join("\n\n");
+          const system = "You answer strictly from the provided context. If the answer is not in the context, say you don't know. Be concise and cite the passage numbers you used like [1].";
+          const messages = [{ role: "system", content: system }, { role: "user", content: `Context:\n${context}\n\nQuestion: ${q}` }];
+          const bubble = $("answer").querySelector(".bubble"); let ans = "";
+          const res = await olmo.chat({ messages, temperature: 0.3, top_p: 0.9, max_tokens: 512 }, {
+            onFirstToken: (t) => { $("rTtft").textContent = t + " ms"; },
+            onToken: (d) => { ans += d; bubble.innerHTML = escapeHTML(ans) + '<span class="caret"></span>'; },
+          });
+          bubble.textContent = ans || "(no answer text)";
+          const decodeMs = Math.max(1, res.ms - res.ttft);
+          $("rTps").textContent = (res.chunks > 1 ? ((res.chunks - 1) / (decodeMs / 1000)).toFixed(1) : "0") + " tok/s";
+          $("status").textContent = "Done."; $("status").classList.remove("err"); $("status").classList.add("ok");
+        } catch (err) { $("answer").querySelector(".bubble").innerHTML = '<span class="muted">Failed.</span>'; $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { busy = false; $("stop").hidden = true; $("ask").disabled = false; $("q").focus(); }
+      });
+
+      $("stop").addEventListener("click", () => { olmo.stop(); $("status").textContent = "Stopping…"; });
+      $("q").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("ask").click(); } });
+    </script>
+  </body>
+</html>
