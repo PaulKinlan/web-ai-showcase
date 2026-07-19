@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ByT5-small — Multi-model: byte-fill → semantic match · Web AI Showcase</title>
+    <meta name="description" content="Two models, one private pipeline: ByT5 fills a masked span at the byte level (robust to any script), then MiniLM embeddings match the completed sentence to the closest intent by cosine similarity. Runs locally in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🔤</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">ByT5-small</a></p>
+
+    <header>
+      <p class="eyebrow">Multi-model · ByT5 + MiniLM · WASM</p>
+      <h1>Byte-fill, then match the meaning</h1>
+      <p class="lede">
+        Two small models in a row, entirely in the tab. <a href="../">ByT5</a> reads a masked sentence at the
+        <strong>byte level</strong> — so a name in any script or a stray emoji never trips it — and fills the
+        <code>[BLANK]</code>. Then <a href="/web-ai-showcase/models/minilm-embeddings/">MiniLM</a> embeds the
+        completed sentence and every candidate intent, and cosine similarity picks the closest. A byte
+        generator with no vocabulary feeding a sub-word embedder — two tokenization worlds, one pipeline.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Complete, then classify by meaning</h3>
+      <div id="loaderByt5"></div>
+      <div id="loaderEmbed"></div>
+
+      <p class="muted" style="font-size:.82rem;margin:.6rem 0 .2rem">Pick a masked message (or edit it — keep the <code>[BLANK]</code>):</p>
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem" id="samples"></div>
+
+      <label style="display:flex;flex-direction:column;gap:.3rem;font-size:.82rem;margin-top:.6rem">
+        Masked message
+        <textarea id="prompt" class="bl-textarea" rows="2" disabled>Hi, my package from 東京 never arrived and I want a [BLANK].</textarea>
+      </label>
+
+      <label style="display:flex;flex-direction:column;gap:.3rem;font-size:.82rem;margin-top:.4rem">
+        Candidate intents (one per line)
+        <textarea id="labels" class="bl-textarea" rows="5" disabled>request a refund for a lost order
+track where my shipment is
+change my delivery address
+cancel my subscription
+ask about product features</textarea>
+      </label>
+
+      <div style="margin:.5rem 0;display:flex;gap:.5rem;flex-wrap:wrap;align-items:center">
+        <button id="run" type="button" disabled>Fill &amp; match</button>
+        <span class="status" id="status" role="status" aria-live="polite"></span>
+      </div>
+
+      <div id="result" hidden>
+        <p class="muted" style="font-size:.82rem;margin:.6rem 0 .2rem">Step 1 · ByT5 filled the blank (byte-level):</p>
+        <div class="bl-out" id="filled" aria-live="polite"></div>
+        <p class="muted" style="font-size:.82rem;margin:.8rem 0 .2rem">Step 2 · MiniLM ranked the intents by cosine similarity to the completed message:</p>
+        <div id="ranked"></div>
+      </div>
+      <div class="readout" id="readout" hidden><span>ByT5 fill <b id="rGen">–</b></span><span>MiniLM embed <b id="rEmb">–</b></span><span>backend <b id="rBackend">–</b></span></div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why pair them</h2>
+      <p class="muted">Byte-level models are unbeatable at <em>ingesting</em> arbitrary text — any script, any
+        noise — but the base ByT5-small has little world knowledge and only rough generation. Embeddings are
+        the opposite: they don't generate, they <em>place</em> text in a meaning space. Chaining them plays to
+        both strengths — ByT5 robustly normalises and completes the raw input; MiniLM decides what it means.
+        Both run offline, no server, no API key.</p>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via 🤗 Transformers.js.
+      <a href="../">← Back to ByT5-small</a>
+    </footer>
+
+    <script type="module">
+      import { ByT5Engine, BYT5_CSS, escapeHTML } from "../byt5.js";
+      import { EmbedEngine, cosine, parseLines } from "/web-ai-showcase/models/minilm-embeddings/embed.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = BYT5_CSS + `
+        .rank-row { display:flex; align-items:center; gap:.6rem; padding:.35rem .5rem; border:1px solid var(--border);
+          border-radius:8px; background:var(--bg-secondary); margin:.3rem 0; }
+        .rank-row.top { border-color:var(--accent); background:color-mix(in srgb, var(--accent) 10%, transparent); }
+        .rank-label { flex:1 1 auto; min-inline-size:0; }
+        .rank-bar { flex:0 0 90px; block-size:8px; border-radius:4px; background:var(--border); overflow:hidden; }
+        .rank-bar > i { display:block; block-size:100%; background:var(--accent); }
+        .rank-score { flex:0 0 auto; font-family:var(--font-mono); font-size:.78rem; color:var(--muted); }
+      `;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const byt5 = new ByT5Engine();
+      const embed = new EmbedEngine();
+      let byt5Ready = false, embedReady = false;
+      function maybeEnable() { if (byt5Ready && embedReady) { for (const id of ["prompt", "labels", "run"]) $(id).disabled = false; } }
+
+      const SAMPLES = [
+        "Hi, my package from 東京 never arrived and I want a [BLANK].",
+        "Can you help me [BLANK] my monthly plan? I no longer need it.",
+        "Where is my [BLANK]? The tracking hasn't updated in days.",
+        "I moved — how do I [BLANK] the address on my next order?",
+      ];
+      $("samples").replaceChildren(...SAMPLES.map((s) => {
+        const b = document.createElement("button");
+        b.type = "button"; b.className = "chip-btn"; b.textContent = s.length > 40 ? s.slice(0, 38) + "…" : s;
+        b.addEventListener("click", () => { $("prompt").value = s; });
+        return b;
+      }));
+
+      createModelLoader({
+        mount: $("loaderByt5"),
+        model: { modelId: "onnx-community/byt5-small-ONNX", runtime: "transformers.js", dtype: "q8", sizeMB: 290, requiresWebGPU: false },
+        load: async (onProgress) => { await byt5.load(onProgress); return byt5; },
+        onReady: () => { byt5Ready = true; maybeEnable(); },
+      });
+      createModelLoader({
+        mount: $("loaderEmbed"),
+        model: { modelId: "Xenova/all-MiniLM-L6-v2", runtime: "transformers.js", dtype: "q8", sizeMB: 25, requiresWebGPU: false },
+        load: async (onProgress) => { await embed.load(onProgress); return embed; },
+        onReady: () => { embedReady = true; maybeEnable(); },
+      });
+
+      $("run").addEventListener("click", async () => {
+        const input = $("prompt").value;
+        const labels = parseLines($("labels").value);
+        if (!input.trim() || labels.length < 2) { $("status").textContent = "Add a masked message and at least two intents."; return; }
+        $("run").disabled = true; $("status").classList.remove("err"); $("status").textContent = "Step 1: ByT5 filling the blank…";
+        try {
+          const r = await byt5.run(input, { maxTokens: 40 });
+          const completed = r.hasBlank ? input.replace("[BLANK]", r.outputText || "") : (r.outputText || input);
+          const [before, ...rest] = input.split("[BLANK]");
+          const fillEl = document.createElement("span"); fillEl.className = "bl-fill"; fillEl.textContent = r.outputText || "∅";
+          $("filled").replaceChildren(document.createTextNode(before), fillEl, document.createTextNode(rest.join("[BLANK]")));
+
+          $("status").textContent = "Step 2: MiniLM matching intent…";
+          const [qr, lr] = await Promise.all([embed.embed([completed]), embed.embed(labels)]);
+          const ranked = lr.texts.map((text, i) => ({ text, score: cosine(qr.embeddings[0], lr.embeddings[i]) }))
+            .sort((a, b) => b.score - a.score);
+          const max = ranked[0]?.score || 1;
+          $("ranked").replaceChildren(...ranked.map((h, i) => {
+            const row = document.createElement("div"); row.className = "rank-row" + (i === 0 ? " top" : "");
+            const label = document.createElement("span"); label.className = "rank-label"; label.textContent = h.text;
+            const bar = document.createElement("span"); bar.className = "rank-bar";
+            const fill = document.createElement("i"); fill.style.inlineSize = Math.max(4, (h.score / max) * 100) + "%"; bar.append(fill);
+            const score = document.createElement("span"); score.className = "rank-score"; score.textContent = h.score.toFixed(3);
+            row.append(label, bar, score); return row;
+          }));
+          $("result").hidden = false; $("readout").hidden = false;
+          $("rGen").textContent = (r.ms / 1000).toFixed(2) + " s";
+          $("rEmb").textContent = (qr.ms + lr.ms) + " ms";
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("status").textContent = "Done — byte-fill then semantic match, fully on-device.";
+        } catch (err) { $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>

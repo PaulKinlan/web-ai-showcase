@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ByT5-small — a language model with no vocabulary, it reads raw bytes · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run ByT5-small locally on WASM: a token-free byte-level seq2seq model. It has NO tokenizer vocabulary — text becomes UTF-8 bytes, so every script, emoji, and typo is handled the same way and nothing is ever out-of-vocabulary. Watch text turn into bytes and back."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🔤</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">text2text-generation · text · WASM · ~290 MB</p>
+      <h1>ByT5-small — no tokenizer, just bytes</h1>
+      <p class="lede">
+        Almost every language model chops text into sub-word <em>tokens</em> from a fixed vocabulary — and
+        that vocabulary decides what the model can even see. <strong>ByT5 throws the vocabulary away.</strong>
+        It reads raw <strong>UTF-8 bytes</strong>: every character becomes one to four bytes, and each byte is a
+        token. That one change makes it work identically across every language, script, emoji, and mangled
+        input — <strong>nothing is ever "out-of-vocabulary."</strong> Type anything below and watch it become
+        bytes, then watch the model fill in a blank — all locally, nothing uploaded.
+      </p>
+      <p class="lede" style="font-size:.95rem">
+        This is the <strong>small</strong> (~300M) <em>base</em> checkpoint — pre-trained on byte-span
+        denoising, <strong>not</strong> instruction-tuned. So calibrate expectations: it is genuinely good at
+        showing the byte mechanism and does rough <strong>fill-in-the-blank</strong> completions, but it is not
+        a chat model and its guesses are often loose. The page shows you the real output, right or wrong —
+        never a canned answer.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="glance">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/onnx-community/byt5-small-ONNX" target="_blank" rel="noopener">onnx-community/byt5-small-ONNX</a> (ONNX of <a href="https://huggingface.co/google/byt5-small" target="_blank" rel="noopener">google/byt5-small</a>)</td></tr>
+          <tr><th>Task / pipeline</th><td><code>text2text-generation</code> (sequence-to-sequence)</td></tr>
+          <tr><th>Architecture</th><td>T5 encoder-decoder, run via <code>T5ForConditionalGeneration</code> — but fed <strong>bytes</strong>, not sub-word tokens</td></tr>
+          <tr><th>"Vocabulary"</th><td>384 ids total: <code>0</code> pad · <code>1</code> eos · <code>2</code> unk · <code>3–258</code> the 256 byte values · <code>258+</code> span sentinels. No learned vocab.</td></tr>
+          <tr><th>Quantization</th><td>q8 (8-bit) ONNX — encoder + merged decoder</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (runs anywhere; no WebGPU needed)</td></tr>
+          <tr><th>Download</th><td>~290 MB, cached after first load</td></tr>
+          <tr><th>License</th><td>Apache-2.0</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers, <code>TextEncoder</code> — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+      <p class="bl-note" style="margin-top:.5rem">
+        Note: ByT5 has no <code>tokenizer.json</code> and Transformers.js ships no <code>ByT5Tokenizer</code>, so
+        the usual <code>pipeline()</code> can't build a tokenizer. Instead this page runs the real ONNX model
+        directly and does the byte mapping itself — which is exactly the mechanism the demo is about.
+      </p>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it — fill in the blank</h3>
+      <p class="muted">Put <code>[BLANK]</code> anywhere in the text; ByT5 replaces it with a byte span it
+        generates. Whatever is in the box is turned to bytes and fed verbatim — that byte sequence is the
+        "prompt". (Base model — completions are rough and that's honest.)</p>
+
+      <div id="model-loader"></div>
+
+      <div class="preset-grid" id="presets"></div>
+
+      <label style="display:flex;flex-direction:column;gap:.3rem;font-size:.82rem;margin-top:.4rem">
+        Text (use <code>[BLANK]</code> for the span to fill)
+        <textarea id="prompt" class="bl-textarea" rows="3" disabled>Roses are red, violets are [BLANK].</textarea>
+      </label>
+
+      <div class="bl-controls">
+        <label>Max new bytes <span class="val" id="maxVal">40</span>
+          <input type="range" id="maxTok" min="8" max="128" step="8" value="40" />
+        </label>
+        <label>Beams <span class="val" id="beamVal">1 (greedy)</span>
+          <input type="range" id="beams" min="1" max="4" step="1" value="1" />
+        </label>
+        <button id="insertBlank" class="chip-btn" type="button" disabled>Insert [BLANK]</button>
+        <button id="run" type="button" disabled>Generate</button>
+      </div>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+
+      <div style="margin-top:.4rem">
+        <span style="font-size:.82rem;color:var(--muted)">Filled result</span>
+        <div class="bl-out" id="out" aria-live="polite"></div>
+      </div>
+
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>time <b id="rMs">–</b></span>
+        <span>input bytes <b id="rIn">–</b></span>
+        <span>speed <b id="rTps">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside — text is just bytes (no vocabulary)</h3>
+      <p class="muted">
+        This is the whole tokenizer, live. As you type, each character is UTF-8 encoded to one or more bytes,
+        and each byte becomes a token id (<code>byte + 3</code>). There is no vocabulary file, no merges, no
+        <code>[UNK]</code> — a Latin letter, a Kanji, an emoji, and a math symbol all reduce to bytes the same
+        way. Type in any language or paste an emoji and the chips below never fail to encode.
+      </p>
+      <label style="display:flex;flex-direction:column;gap:.3rem;font-size:.82rem">
+        Type anything — any script, emoji, symbols
+        <input type="text" id="byteInput" class="bl-textarea" value="Héllo 世界 🌍 ½x²≈π" />
+      </label>
+      <div class="bl-stat-row">
+        <div class="bl-stat"><div class="k">Characters</div><div class="v" id="sChars">–</div></div>
+        <div class="bl-stat"><div class="k">UTF-8 bytes / tokens</div><div class="v" id="sBytes">–</div></div>
+        <div class="bl-stat"><div class="k">Unknown tokens</div><div class="v" id="sUnk" style="color:var(--good)">0</div></div>
+      </div>
+      <p class="muted" style="font-size:.8rem;margin:.6rem 0 .2rem">char → UTF-8 bytes → token ids:</p>
+      <div class="bl-chips" id="byteChips"></div>
+      <p class="bl-note" style="margin-top:.5rem">Compare: a sub-word tokenizer would split "🌍" or "世界"
+        into multiple learned tokens (or emit <code>[UNK]</code> for anything it never saw). ByT5 needs no such
+        table — <strong>every possible input is representable.</strong></p>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        A model with no vocabulary is a different kind of tool. It can't be tripped up by a script it wasn't
+        trained to tokenize, a novel emoji, a typo, or deliberately corrupted text — everything is bytes, so
+        everything is in-domain. That robustness is why byte-level models are used where input is messy or
+        multilingual.
+      </p>
+      <ul>
+        <li><strong>Truly multilingual by construction</strong> — one model, every script and writing system, with no per-language vocabulary to ship or blow up your token budget.</li>
+        <li><strong>Noise & typo robustness</strong> — fine-tuned ByT5 models excel at spelling correction and normalization precisely because a corrupted byte is still just a byte, never an unknown token.</li>
+        <li><strong>Nothing is out-of-vocabulary</strong> — emoji, rare Unicode, code, mixed scripts, or a user smashing the keyboard all encode losslessly. No <code>[UNK]</code>, ever.</li>
+        <li><strong>Character-level tasks</strong> — transliteration, grapheme-to-phoneme, and edit-level work are natural when the model sees the actual characters, not sub-word chunks.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Transform text and fill blanks — feel the byte-in, byte-out loop and how the model reads characters.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">A byte-level tokenizer inspector: paste any user text and prove nothing is ever out-of-vocabulary.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Corrupt, mix scripts, and pile on emoji — watch encoding never break where a vocab model would.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">ByT5 fills a masked span → MiniLM embeddings match the completed sentence to the closest intent.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>Because ByT5 is token-free, we skip the tokenizer and feed byte ids straight to the real ONNX model:</p>
+      <pre><code>import { T5ForConditionalGeneration, Tensor } from "@huggingface/transformers";
+
+const model = await T5ForConditionalGeneration.from_pretrained(
+  "onnx-community/byt5-small-ONNX", { device: "wasm", dtype: "q8" },
+); // downloads + caches ~290 MB once
+
+// The ENTIRE tokenizer: UTF-8 encode, then add 3. No vocabulary, no [UNK].
+const ids = [...new TextEncoder().encode("Roses are red, violets are ")]
+  .map((b) => b + 3);
+ids.push(258); // &lt;extra_id_0&gt; — the span to fill
+ids.push(1);   // &lt;/s&gt;
+
+const input_ids = new Tensor("int64", BigInt64Array.from(ids.map(BigInt)), [1, ids.length]);
+const attention_mask = new Tensor("int64", BigInt64Array.from(ids.map(() =&gt; 1n)), [1, ids.length]);
+const out = await model.generate({ input_ids, attention_mask, max_new_tokens: 40 });
+
+// Decode: subtract 3, back to bytes, back to text.
+const bytes = [...out.data].map(Number).filter((id) =&gt; id &gt;= 3 &amp;&amp; id &lt;= 257).map((id) =&gt; id - 3);
+new TextDecoder().decode(new Uint8Array(bytes)); // → the filled text</code></pre>
+      <p class="muted">This page runs exactly that in a Web Worker so the UI never janks, and the byte mapping
+        is the single source of truth shared with the "see inside" view above.</p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/onnx-community/byt5-small-ONNX" target="_blank" rel="noopener">Model card — onnx-community/byt5-small-ONNX</a></li>
+        <li><a href="https://huggingface.co/google/byt5-small" target="_blank" rel="noopener">Original ByT5-small weights &amp; card (Google)</a></li>
+        <li><a href="https://arxiv.org/abs/2105.13626" target="_blank" rel="noopener">Paper — ByT5: Towards a Token-Free Future with Pre-trained Byte-to-Byte Models (Xue et al., 2021)</a></li>
+        <li><a href="https://arxiv.org/abs/1910.10683" target="_blank" rel="noopener">Paper — T5: the encoder-decoder text-to-text framework (Raffel et al., 2019)</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <style>
+      .glance { inline-size:100%; border-collapse:collapse; font-size:.85rem; }
+      .glance th, .glance td { text-align:left; padding:.3rem .5rem; border-bottom:1px solid var(--border); vertical-align:top; }
+      .glance th { color:var(--muted); font-weight:600; inline-size:11rem; }
+      .glance td { font-family:var(--font-mono); }
+    </style>
+
+    <script type="module">
+      import { ByT5Engine, BYT5_CSS, renderByteChips, textToBytes } from "./byt5.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = BYT5_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new ByT5Engine();
+
+      const PRESETS = [
+        { t: "Rhyme", d: "fill the rhyme", p: "Roses are red, violets are [BLANK]." },
+        { t: "World fact", d: "loose at this size", p: "The capital of France is [BLANK]." },
+        { t: "Idiom", d: "complete the phrase", p: "Thank you [BLANK] to your party last week." },
+        { t: "Opposite", d: "antonym", p: "The opposite of hot is [BLANK]." },
+        { t: "Any language", d: "byte-level, any script", p: "私は東京が [BLANK] です。" },
+        { t: "Emoji in, bytes out", d: "still just bytes", p: "The weather today is [BLANK] ☀️." },
+      ];
+      $("presets").replaceChildren(...PRESETS.map((pr) => {
+        const b = document.createElement("button");
+        b.type = "button"; b.className = "preset";
+        b.innerHTML = `<span class="t"></span><span class="d"></span>`;
+        b.querySelector(".t").textContent = pr.t;
+        b.querySelector(".d").textContent = pr.d;
+        b.addEventListener("click", () => { $("prompt").value = pr.p; });
+        return b;
+      }));
+
+      $("maxTok").addEventListener("input", () => { $("maxVal").textContent = $("maxTok").value; });
+      $("beams").addEventListener("input", () => {
+        const b = +$("beams").value;
+        $("beamVal").textContent = b === 1 ? "1 (greedy)" : b + " (beam search)";
+      });
+      $("insertBlank").addEventListener("click", () => {
+        const ta = $("prompt");
+        const s = ta.selectionStart ?? ta.value.length;
+        ta.value = ta.value.slice(0, s) + "[BLANK]" + ta.value.slice(ta.selectionEnd ?? s);
+        ta.focus();
+      });
+
+      // Live byte "see inside" — pure main-thread, no model needed. This is the star of the page.
+      function refreshBytes() {
+        const text = $("byteInput").value;
+        const chars = [...text];
+        const bytes = textToBytes(text);
+        $("sChars").textContent = chars.length;
+        $("sBytes").textContent = bytes.length;
+        $("sUnk").textContent = "0"; // by construction: bytes are never unknown
+        renderByteChips($("byteChips"), text);
+      }
+      $("byteInput").addEventListener("input", refreshBytes);
+      refreshBytes();
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/byt5-small-ONNX", runtime: "transformers.js", dtype: "q8", sizeMB: 290, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("prompt").disabled = false; $("run").disabled = false; $("insertBlank").disabled = false; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        const input = $("prompt").value;
+        if (!input.trim()) { $("status").hidden = false; $("status").textContent = "Type some text first."; return; }
+        $("run").disabled = true; $("status").hidden = false; $("status").classList.remove("err");
+        $("status").textContent = "Generating…"; $("out").textContent = "";
+        try {
+          const r = await engine.run(input, { maxTokens: +$("maxTok").value, beams: +$("beams").value });
+          if (r.hasBlank) {
+            const [before, ...rest] = input.split("[BLANK]");
+            const after = rest.join("[BLANK]");
+            const fill = document.createElement("span");
+            fill.className = "bl-fill";
+            fill.textContent = r.outputText || "∅";
+            $("out").replaceChildren(document.createTextNode(before), fill, document.createTextNode(after));
+          } else {
+            $("out").textContent = r.outputText || "(empty output)";
+          }
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = (r.ms / 1000).toFixed(2) + " s";
+          $("rIn").textContent = r.inputLen;
+          const outBytes = r.outputIds.filter((id) => id >= 3 && id <= 257).length;
+          $("rTps").textContent = r.ms > 0 ? (outBytes / (r.ms / 1000)).toFixed(1) + " byte/s" : "–";
+          $("status").hidden = true;
+        } catch (err) {
+          $("status").textContent = "Generation failed: " + err.message; $("status").classList.add("err");
+        } finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>
