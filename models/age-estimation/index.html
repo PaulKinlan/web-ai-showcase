@@ -1,0 +1,346 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Age estimation in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Estimate APPARENT age on-device: drop a face photo or use your camera and a Vision Transformer scores it across 9 age buckets, folds them into one expected-age number, and shows a calibration read-out. An imperfect, bias-carrying signal — never identity or verification. Nothing is uploaded or stored."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎂</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">image-classification · vision · demographic estimation · WASM · ~88 MB</p>
+      <h1>Age estimation — a soft signal, read on your device</h1>
+      <p class="lede">
+        A Vision Transformer, fine-tuned on faces, takes a single frame and scores it across
+        <strong>9 age buckets</strong> — <code>0-2</code>, <code>3-9</code>, <code>10-19</code>,
+        <code>20-29</code>, <code>30-39</code>, <code>40-49</code>, <code>50-59</code>,
+        <code>60-69</code>, <code>70+</code> — then folds the distribution into one expected-age number.
+        Drop a photo or use your camera; the read happens entirely in this tab.
+        <strong>No frame is ever uploaded or stored.</strong>
+      </p>
+      <p class="lede" style="font-size:.95rem">
+        Be honest about what this is: a guess at <strong>apparent</strong> age from pixels. It is
+        <strong>imperfect</strong>, it carries <strong>demographic bias</strong> (accuracy varies across
+        skin tone, lighting, expression, and makeup), and it is <strong>not</strong> identity, verification,
+        or a birth date. Treat it as a soft signal for low-stakes, consented UX — never a verdict about a
+        person. The page shows the real output, right or wrong — never a canned answer.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/jdp8/vit-age-classifier" target="_blank" rel="noopener">jdp8/vit-age-classifier</a> (ONNX of <a href="https://huggingface.co/nateraw/vit-age-classifier" target="_blank" rel="noopener">nateraw/vit-age-classifier</a>)</td></tr>
+          <tr><th>Task / pipeline</th><td><code>image-classification</code></td></tr>
+          <tr><th>Architecture</th><td>ViT-B/16 (86M params), 224×224 input — a fine-tune for facial age</td></tr>
+          <tr><th>Labels</th><td>9 age buckets: 0-2, 3-9, 10-19, 20-29, 30-39, 40-49, 50-59, 60-69, more than 70</td></tr>
+          <tr><th>Quantization</th><td>q8 (8-bit) ONNX</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (runs anywhere; no WebGPU needed)</td></tr>
+          <tr><th>Download</th><td>~88 MB, cached after first load</td></tr>
+          <tr><th>License</th><td>Base model: nateraw/vit-age-classifier (see model card)</td></tr>
+          <tr><th>Privacy</th><td>All inference is local; the camera frame / photo never leaves your device and is not stored.</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers, getUserMedia (camera), Canvas, FileReader — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Use your camera, pick a sample face, or drop your own photo, then read the estimate. The bars are the softmax across all 9 buckets, shown youngest → oldest.</p>
+
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="stage-grid">
+        <div class="stage-col">
+          <div class="field-row">
+            <button id="camBtn" type="button" class="secondary">📷 Use camera</button>
+            <button id="grabBtn" type="button" hidden>Capture &amp; estimate</button>
+          </div>
+          <div class="preview-wrap">
+            <video id="cam" class="cam-video" playsinline muted hidden aria-label="Live camera preview (mirrored)"></video>
+            <img class="preview-img" id="preview" src="sample-a.jpg" alt="Selected face to estimate" />
+          </div>
+          <p class="privacy-note">🔒 <span>Frames are read locally and never uploaded or stored.</span></p>
+
+          <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop a face photo">
+            <span id="dropText">Drop a face photo, or click to choose</span>
+            <input type="file" id="file" accept="image/*" hidden />
+          </div>
+          <div class="sample-strip" id="samples" aria-label="Sample faces (synthetic — StyleGAN2, not real people)">
+            <img class="sample-thumb active" src="sample-a.jpg" data-src="sample-a.jpg" alt="Synthetic face A" tabindex="0" role="button" />
+            <img class="sample-thumb" src="sample-b.jpg" data-src="sample-b.jpg" alt="Synthetic face B" tabindex="0" role="button" />
+            <img class="sample-thumb" src="sample-c.jpg" data-src="sample-c.jpg" alt="Synthetic face C, wearing sunglasses" tabindex="0" role="button" />
+            <img class="sample-thumb" src="sample-d.jpg" data-src="sample-d.jpg" alt="Synthetic face D, wearing glasses" tabindex="0" role="button" />
+          </div>
+          <p class="muted" style="font-size:.72rem">Sample faces are AI-generated (StyleGAN2) — not real people.</p>
+        </div>
+
+        <div class="stage-col">
+          <div style="margin:.2rem 0 .5rem"><button id="run" type="button" disabled>Estimate age</button></div>
+          <div class="big-verdict" id="verdict" hidden>
+            <span class="est" id="vEst">–</span>
+            <span class="sub" id="vSub"></span>
+          </div>
+          <div class="age-bars" id="bars" aria-live="polite" aria-label="Age-bucket scores"></div>
+          <div class="readout" id="readout" hidden>
+            <span>backend <b id="rBackend">–</b></span>
+            <span>latency <b id="rMs">–</b></span>
+            <span>buckets <b id="rN">–</b></span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside</h3>
+      <p class="muted">
+        The ViT's final layer emits one raw score — a <strong>logit</strong> — per bucket. A
+        <strong>softmax</strong> turns the 9 logits into probabilities that sum to 100%. The
+        <strong>expected age</strong> above is Σ&nbsp;(probability&nbsp;×&nbsp;bucket&nbsp;midpoint) — it
+        respects the whole distribution, not just the top bucket, which is why it can land between the
+        bucket edges. Two numbers describe the <em>shape</em> of that distribution: the
+        <strong>top-1 margin</strong> (how far the winning bucket leads the runner-up) and the normalised
+        <strong>entropy</strong> (0 = certain, 1 = torn between buckets). A clear, well-lit face is peaky
+        and low-entropy; an occluded, angled, or blended one is flat and high-entropy — exactly when you
+        should NOT trust a single number.
+      </p>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Estimate an age to see the raw numbers.</div>
+      <div id="insideWrap" hidden>
+        <table class="inside-table">
+          <thead><tr><th>Bucket</th><th>midpoint</th><th>logit</th><th>softmax</th></tr></thead>
+          <tbody id="insideRows"></tbody>
+        </table>
+        <div class="readout" style="margin-top:.8rem">
+          <span>expected age <b id="iExp">–</b></span>
+          <span>top-1 margin <b id="iMargin">–</b></span>
+          <span>entropy (0–1) <b id="iEntropy">–</b></span>
+          <span id="iVerdict"></span>
+        </div>
+        <p class="muted" style="font-size:.82rem;margin-top:.3rem">Calibration (uncertain ← → confident):</p>
+        <div class="conf-meter" aria-hidden="true"><div class="conf-needle" id="confNeedle" style="left:0"></div></div>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        "Estimate age from a face" used to mean uploading the photo to a cloud API — a privacy non-starter
+        for something this sensitive. Running the model locally flips that: the frame never leaves the
+        device, so age-aware UX becomes something you can actually ship without collecting a single image.
+      </p>
+      <ul>
+        <li><strong>Age-appropriate UX (as a signal)</strong> — nudge toward a simpler or safer default when the estimate skews young/old, then let the user confirm — never a hard gate on the number alone.</li>
+        <li><strong>Analytics without faces</strong> — approximate audience age distribution for a kiosk or display entirely on-device, storing only the bucket, never the image.</li>
+        <li><strong>Consented, private demos</strong> — "guess my age" games, avatar age-matching, or research tools where the raw frame stays local.</li>
+        <li><strong>Calibration-gated decisions</strong> — use the entropy/margin read-out to act only on confident reads and defer ambiguous ones to a human or an explicit prompt.</li>
+      </ul>
+      <p class="muted" style="font-size:.85rem">
+        A note on ethics + the law: apparent-age models are <em>imprecise</em> and <em>biased</em>, and
+        real age-verification (for restricted goods, adult content, or legal thresholds) has specific
+        regulatory requirements this cannot meet. Use it for consented, low-stakes UX — never surveillance,
+        discrimination, or as the sole basis for a legal age decision.
+      </p>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Estimate one face — camera, sample, or upload — and see the full 9-bucket distribution and expected age.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">An age-gate UX concept done right: the estimate is a <em>signal</em> that adapts a default, never a verdict — with a confirm step.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Age-over-frames: watch the expected age wobble live from your webcam and see how unstable a single read is.</p></a>
+        <a class="model-card" href="multimodel/"><h3>Multi-model</h3><p class="muted">Detect the face region first (MediaPipe), then estimate age on the crop — a two-model pipeline.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>The convenience path is two lines with Transformers.js:</p>
+      <pre><code>import { pipeline } from "@huggingface/transformers";
+
+const estimateAge = await pipeline(
+  "image-classification",
+  "jdp8/vit-age-classifier",
+); // downloads + caches ~88 MB once
+
+const out = await estimateAge(imageOrCanvasURL, { top_k: 9 });
+// → [{ label: "20-29", score: 0.41 }, { label: "30-39", score: 0.22 }, … ]</code></pre>
+      <p class="muted">
+        This page goes one level deeper for "See inside": instead of the pipeline it runs the model's own
+        <code>processor</code> then <code>model()</code> in a single forward pass, so it can read the raw
+        <code>logits</code> tensor and compute the softmax, the probability-weighted expected age, and the
+        entropy/margin itself. Webcam frames are captured to a <code>&lt;canvas&gt;</code> and classified as
+        a data URL — nothing is uploaded. Inference runs in a Web Worker so the camera preview never stutters.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/jdp8/vit-age-classifier" target="_blank" rel="noopener">Model card — jdp8/vit-age-classifier (ONNX / transformers.js)</a></li>
+        <li><a href="https://huggingface.co/nateraw/vit-age-classifier" target="_blank" rel="noopener">Base model — nateraw/vit-age-classifier</a></li>
+        <li><a href="https://arxiv.org/abs/2010.11929" target="_blank" rel="noopener">Paper — An Image is Worth 16×16 Words (ViT; Dosovitskiy et al., 2020)</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+      <p class="muted" style="font-size:.78rem">Sample faces are synthetic, generated with StyleGAN2 (Karras et al.) via thispersondoesnotexist.com — they depict no real person.</p>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { AgeEngine, Webcam, fileToDataURL, renderAgeBars, bucketGloss, escapeHTML, AGE_CSS } from "./age.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = AGE_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new AgeEngine();
+      const cam = new Webcam($("cam"));
+      let currentImageURL = null;
+      let ready = false;
+
+      function setStatus(msg, cls) {
+        $("status").textContent = msg || "";
+        $("status").classList.remove("err", "ok");
+        if (cls) $("status").classList.add(cls);
+      }
+
+      async function useURL(url, previewSrc) {
+        currentImageURL = url;
+        $("preview").src = previewSrc ?? url;
+        $("preview").hidden = false;
+        $("run").disabled = !ready;
+      }
+
+      async function pickSample(el) {
+        stopCam();
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        const src = el.dataset.src;
+        const blob = await (await fetch(src)).blob();
+        const url = await fileToDataURL(new File([blob], "sample", { type: blob.type }));
+        await useURL(url, src);
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => {
+          if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); }
+        });
+      }
+
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) {
+        stopCam();
+        for (const t of $("samples").children) t.classList.remove("active");
+        const url = await fileToDataURL(f);
+        await useURL(url);
+        $("dropText").textContent = f.name;
+      }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f && f.type.startsWith("image/")) loadFile(f); });
+
+      if (!Webcam.supported()) { $("camBtn").disabled = true; $("camBtn").textContent = "No camera API here"; }
+      function stopCam() {
+        if (cam.running()) {
+          cam.stop();
+          $("cam").hidden = true;
+          $("preview").hidden = false;
+          $("grabBtn").hidden = true;
+          $("camBtn").textContent = "📷 Use camera";
+        }
+      }
+      $("camBtn").addEventListener("click", async () => {
+        if (cam.running()) { stopCam(); return; }
+        try {
+          setStatus("Starting camera…");
+          await cam.start();
+          $("cam").hidden = false;
+          $("preview").hidden = true;
+          $("grabBtn").hidden = false;
+          $("camBtn").textContent = "■ Stop camera";
+          setStatus("Camera on — capture a frame to estimate it. Nothing is uploaded.", "ok");
+        } catch (e) {
+          setStatus("Camera unavailable: " + e.message, "err");
+        }
+      });
+      $("grabBtn").addEventListener("click", async () => {
+        const url = cam.grab();
+        if (!url) { setStatus("Camera not ready yet.", "err"); return; }
+        for (const t of $("samples").children) t.classList.remove("active");
+        currentImageURL = url;
+        await estimate();
+      });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "jdp8/vit-age-classifier", runtime: "transformers.js", dtype: "q8", sizeMB: 88, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: () => { ready = true; $("run").disabled = !currentImageURL; },
+      });
+
+      pickSample($("samples").firstElementChild);
+
+      $("run").addEventListener("click", estimate);
+      async function estimate() {
+        if (!currentImageURL) { setStatus("Choose a face first.", "err"); return; }
+        $("run").disabled = true;
+        setStatus("Estimating age…");
+        try {
+          const r = await engine.estimate(currentImageURL);
+          renderAgeBars($("bars"), r.all.map((t) => ({ label: t.label, prob: t.prob })));
+          $("verdict").hidden = false;
+          $("vEst").textContent = `≈ ${r.expectedAge.toFixed(0)} yrs`;
+          $("vSub").textContent = `most likely ${r.top.label} (${bucketGloss(r.top.label)}) · ${(r.top.prob * 100).toFixed(0)}%`;
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = r.ms + " ms";
+          $("rN").textContent = r.numClasses;
+          renderInside(r);
+          setStatus(`Estimated apparent age ≈ ${r.expectedAge.toFixed(0)}. A soft signal, not a verdict.`, "ok");
+        } catch (err) {
+          setStatus("Estimate failed: " + err.message, "err");
+        } finally {
+          $("run").disabled = false;
+        }
+      }
+
+      function renderInside(r) {
+        $("insideEmpty").hidden = true;
+        $("insideWrap").hidden = false;
+        $("insideRows").replaceChildren(...r.all.map((t) => {
+          const tr = document.createElement("tr");
+          tr.innerHTML = `<td>${escapeHTML(t.label)}</td>
+            <td>${t.midpoint ?? "–"}</td>
+            <td>${t.logit.toFixed(2)}</td>
+            <td>${(t.prob * 100).toFixed(2)}%</td>`;
+          return tr;
+        }));
+        $("iExp").textContent = r.expectedAge.toFixed(1) + " yrs";
+        $("iMargin").textContent = (r.margin * 100).toFixed(1) + " pts";
+        $("iEntropy").textContent = r.entropy.toFixed(3);
+        const confident = r.entropy < 0.55 || r.margin > 0.4;
+        $("iVerdict").innerHTML = confident
+          ? '<b style="color:var(--good)">confident read</b>'
+          : '<b style="color:var(--warn)">ambiguous — don\'t over-trust</b>';
+        $("confNeedle").style.left = `${Math.round((1 - r.entropy) * 100)}%`;
+      }
+    </script>
+  </body>
+</html>

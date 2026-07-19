@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Age estimation — Basics · Web AI Showcase</title>
+    <meta name="description" content="The fundamental move: give the model one face — camera, sample, or upload — and read the 9-bucket age distribution plus a single expected-age number. On-device, nothing uploaded." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎂</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Age estimation</a></p>
+
+    <header>
+      <p class="eyebrow">use case · basics</p>
+      <h1>Basics: estimate one face</h1>
+      <p class="lede">
+        Age estimation in its simplest form. Give the model a face and it returns a probability for each of
+        9 age buckets, plus a single expected-age number (a probability-weighted average). From your camera,
+        a sample, or your own photo. <strong>The image never leaves your device</strong> — and remember it's
+        an imperfect, biased guess at <em>apparent</em> age, not a fact.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="stage-grid">
+        <div class="stage-col">
+          <div class="field-row">
+            <button id="camBtn" type="button" class="secondary">📷 Use camera</button>
+            <button id="grabBtn" type="button" hidden>Capture &amp; estimate</button>
+          </div>
+          <div class="preview-wrap">
+            <video id="cam" class="cam-video" playsinline muted hidden aria-label="Live camera preview (mirrored)"></video>
+            <img class="preview-img" id="preview" src="../sample-a.jpg" alt="Selected face to estimate" />
+          </div>
+          <p class="privacy-note">🔒 <span>Frames are read locally and never uploaded or stored.</span></p>
+          <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop a face photo">
+            <span id="dropText">Drop a face photo, or click to choose</span>
+            <input type="file" id="file" accept="image/*" hidden />
+          </div>
+          <div class="sample-strip" id="samples" aria-label="Sample faces (synthetic)">
+            <img class="sample-thumb active" src="../sample-a.jpg" data-src="../sample-a.jpg" alt="Synthetic face A" tabindex="0" role="button" />
+            <img class="sample-thumb" src="../sample-b.jpg" data-src="../sample-b.jpg" alt="Synthetic face B" tabindex="0" role="button" />
+            <img class="sample-thumb" src="../sample-c.jpg" data-src="../sample-c.jpg" alt="Synthetic face C, sunglasses" tabindex="0" role="button" />
+            <img class="sample-thumb" src="../sample-d.jpg" data-src="../sample-d.jpg" alt="Synthetic face D, glasses" tabindex="0" role="button" />
+          </div>
+        </div>
+        <div class="stage-col">
+          <div style="margin:.2rem 0 .5rem"><button id="run" type="button" disabled>Estimate age</button></div>
+          <div class="big-verdict" id="verdict" hidden><span class="est" id="vEst">–</span><span class="sub" id="vSub"></span></div>
+          <div class="age-bars" id="bars" aria-live="polite" aria-label="Age-bucket scores"></div>
+          <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>latency <b id="rMs">–</b></span></div>
+        </div>
+      </div>
+    </section>
+
+    <p class="crumbs"><a href="../">← Back to Age estimation</a> · Next: <a href="../practical/">Practical →</a></p>
+
+    <script type="module">
+      import { AgeEngine, Webcam, fileToDataURL, renderAgeBars, bucketGloss, AGE_CSS } from "../age.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = AGE_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new AgeEngine();
+      const cam = new Webcam($("cam"));
+      let currentImageURL = null, ready = false;
+
+      function setStatus(m, cls) { $("status").textContent = m || ""; $("status").classList.remove("err","ok"); if (cls) $("status").classList.add(cls); }
+      async function useURL(url, previewSrc) { currentImageURL = url; $("preview").src = previewSrc ?? url; $("preview").hidden = false; $("run").disabled = !ready; }
+      async function pickSample(el) { stopCam(); for (const t of $("samples").children) t.classList.toggle("active", t === el); const blob = await (await fetch(el.dataset.src)).blob(); await useURL(await fileToDataURL(new File([blob], "s", { type: blob.type })), el.dataset.src); }
+      for (const thumb of $("samples").children) { thumb.addEventListener("click", () => pickSample(thumb)); thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } }); }
+
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover","dragenter"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave","drop"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) { stopCam(); for (const t of $("samples").children) t.classList.remove("active"); await useURL(await fileToDataURL(f)); $("dropText").textContent = f.name; }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", e => { const f = e.dataTransfer?.files?.[0]; if (f && f.type.startsWith("image/")) loadFile(f); });
+
+      if (!Webcam.supported()) { $("camBtn").disabled = true; $("camBtn").textContent = "No camera API here"; }
+      function stopCam() { if (cam.running()) { cam.stop(); $("cam").hidden = true; $("preview").hidden = false; $("grabBtn").hidden = true; $("camBtn").textContent = "📷 Use camera"; } }
+      $("camBtn").addEventListener("click", async () => {
+        if (cam.running()) { stopCam(); return; }
+        try { setStatus("Starting camera…"); await cam.start(); $("cam").hidden = false; $("preview").hidden = true; $("grabBtn").hidden = false; $("camBtn").textContent = "■ Stop camera"; setStatus("Camera on — capture a frame. Nothing is uploaded.", "ok"); }
+        catch (e) { setStatus("Camera unavailable: " + e.message, "err"); }
+      });
+      $("grabBtn").addEventListener("click", async () => { const url = cam.grab(); if (!url) { setStatus("Camera not ready.", "err"); return; } for (const t of $("samples").children) t.classList.remove("active"); currentImageURL = url; await estimate(); });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "jdp8/vit-age-classifier", runtime: "transformers.js", dtype: "q8", sizeMB: 88, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: () => { ready = true; $("run").disabled = !currentImageURL; },
+      });
+      pickSample($("samples").firstElementChild);
+
+      $("run").addEventListener("click", estimate);
+      async function estimate() {
+        if (!currentImageURL) { setStatus("Choose a face first.", "err"); return; }
+        $("run").disabled = true; setStatus("Estimating age…");
+        try {
+          const r = await engine.estimate(currentImageURL);
+          renderAgeBars($("bars"), r.all.map(t => ({ label: t.label, prob: t.prob })));
+          $("verdict").hidden = false; $("vEst").textContent = `≈ ${r.expectedAge.toFixed(0)} yrs`; $("vSub").textContent = `most likely ${r.top.label} (${bucketGloss(r.top.label)}) · ${(r.top.prob*100).toFixed(0)}%`;
+          $("readout").hidden = false; $("rBackend").textContent = r.device.toUpperCase(); $("rMs").textContent = r.ms + " ms";
+          setStatus(`Estimated apparent age ≈ ${r.expectedAge.toFixed(0)}. A soft signal, not a verdict.`, "ok");
+        } catch (e) { setStatus("Estimate failed: " + e.message, "err"); }
+        finally { $("run").disabled = false; }
+      }
+    </script>
+  </body>
+</html>
