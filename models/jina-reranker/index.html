@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Jina reranker (tiny) — a fast on-device cross-encoder in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="A tiny 4-layer cross-encoder (~33 MB) that reranks passages against a query in milliseconds on a CPU — the precision stage of search, small enough for on-device RAG. See the raw relevance logit, the before/after reordering, and real per-pair latency. No server."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>⚡</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">reranker (text-classification) · text · WASM · ~33 MB</p>
+      <h1>Jina reranker (tiny) — precision search, small enough to ship on-device</h1>
+      <p class="lede">
+        A <strong>cross-encoder</strong> reads a query and a passage <em>together</em> and outputs one
+        relevance score — far more accurate than comparing two separate embeddings. Most cross-encoders are
+        big. This one is <strong>tiny</strong>: 4 Transformer layers, ~33 MB quantized, built by Jina AI
+        specifically to be fast enough to rerank on a phone or in a tab. Give it a query and some candidates,
+        watch it re-sort them, and look at the real per-pair latency — the whole point is that precision no
+        longer means a slow, server-side model. Nothing leaves your device.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/jinaai/jina-reranker-v1-tiny-en" target="_blank" rel="noopener">jinaai/jina-reranker-v1-tiny-en</a></td></tr>
+          <tr><th>Task / pipeline</th><td><code>text-classification</code> used as a cross-encoder reranker (num_labels = 1)</td></tr>
+          <tr><th>Input</th><td>a <strong>(query, passage) pair</strong> encoded together → one relevance logit</td></tr>
+          <tr><th>Architecture</th><td>JinaBERT, <strong>4 layers</strong> (~33M params) — distilled/pruned for speed; English</td></tr>
+          <tr><th>Quantization</th><td>q8 (8-bit) ONNX</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (runs anywhere; no WebGPU needed)</td></tr>
+          <tr><th>Download</th><td>~33 MB, cached after first load — one of the smallest rerankers here</td></tr>
+          <tr><th>License</th><td>Apache-2.0</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Type a query and one candidate passage per line. The model scores each passage against
+        the query and re-sorts by relevance logit (higher = more relevant). Watch the latency readout — a
+        tiny model reranks a handful of passages in a blink.</p>
+
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <label for="query" style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
+        Query
+        <input id="query" type="text" disabled value="What is the fastest land animal?" style="font:inherit;padding:.4rem .5rem;border:1px solid var(--border);border-radius:6px;background:var(--bg-raised);color:var(--color)" />
+      </label>
+      <label for="passages" style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
+        Candidate passages (one per line)
+        <textarea id="passages" rows="7" disabled>Cheetahs are large cats native to sub-Saharan Africa and central Iran.
+The cheetah can reach 120 km/h in short bursts, making it the fastest land animal.
+Peregrine falcons dive at over 300 km/h — the fastest animal, but in the air.
+Sailfish are among the fastest fish in the ocean.
+The three-toed sloth is one of the slowest mammals on Earth.
+Usain Bolt's top speed is about 44 km/h, the fastest recorded for a human.</textarea>
+      </label>
+      <div style="margin:.5rem 0;display:flex;gap:.4rem;flex-wrap:wrap">
+        <button id="run" type="button" disabled>Rerank passages</button>
+      </div>
+
+      <div class="rr-list" id="results" aria-live="polite"></div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>total latency <b id="rMs">–</b></span>
+        <span>per pair <b id="rPer">–</b></span>
+        <span>pairs <b id="rN">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside — the logit, the reordering, and the speed story</h3>
+      <p class="muted">
+        The one number the model emits per pair is a <strong>relevance logit</strong> — unbounded, higher is
+        more relevant (we also show its sigmoid as a 0–100% probability). The <strong>before/after</strong>
+        view puts the candidates in their original order on the left and the cross-encoder's reordering on the
+        right — arrows mark what moved. Then a second contrast ranks the same passages by naive shared-word
+        overlap; where the columns disagree, the cross-encoder is using meaning, not keywords.
+      </p>
+      <div class="speed-tiles" id="speedTiles" hidden></div>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem;margin-top:.6rem">Rerank some passages above to compare.</div>
+      <h4 style="margin:1rem 0 .2rem;font-size:.85rem">Before vs after</h4>
+      <div class="ba-wrap" id="beforeAfter" hidden></div>
+      <h4 style="margin:1rem 0 .2rem;font-size:.85rem">Cross-encoder vs. lexical overlap</h4>
+      <div class="ct-wrap" id="contrast" hidden></div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        Rerankers are the precision stage of modern search. A fast retriever (a keyword index or embeddings)
+        casts a wide net and returns, say, the top 50 candidates; a cross-encoder then reads each candidate
+        against the query and reorders them with far higher accuracy. The catch has always been cost — a
+        cross-encoder runs the full model on every (query, passage) pair, so teams push it to a server. A
+        <strong>tiny</strong> reranker changes the economics: at ~33 MB and a few milliseconds per pair on a
+        CPU, the precise step can run <em>on the device</em>, inside a private RAG loop, with no inference bill
+        and no data leaving the browser.
+      </p>
+      <ul>
+        <li><strong>On-device RAG</strong> — rerank the retriever's shortlist locally before feeding the best chunk to a local LLM.</li>
+        <li><strong>Instant client-side search</strong> — reorder autocomplete or in-page results as the user types, no round-trip.</li>
+        <li><strong>Edge / offline</strong> — ship precise ranking to a PWA that works with no network at all.</li>
+        <li><strong>Cheap answer selection</strong> — pick the best reply from candidates without a hosted reranker.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Rank a handful of passages against a query by cross-encoder relevance.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Fast on-device RAG rerank — time a whole shortlist and watch the per-pair latency.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Hard negatives: distractors stuffed with the query's words that answer the wrong thing.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">MiniLM embeddings retrieve, the tiny Jina reranker reorders — the classic two-stage pipeline.</p></a>
+      </div>
+      <p class="muted" style="font-size:.85rem;margin-top:.6rem">Contrast with the larger
+        <a href="/web-ai-showcase/models/bge-reranker/">BGE-reranker</a> (multilingual, ~270 MB) and the
+        <a href="/web-ai-showcase/models/ms-marco-reranker/">MS MARCO MiniLM</a> reranker: same cross-encoder
+        idea, but this one trades reach for size and speed.</p>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>A cross-encoder scores query–passage pairs; we read the raw logit off the model directly:</p>
+      <pre><code>import { AutoTokenizer, AutoModelForSequenceClassification } from "@huggingface/transformers";
+
+const model_id = "jinaai/jina-reranker-v1-tiny-en";
+const tokenizer = await AutoTokenizer.from_pretrained(model_id);
+const model = await AutoModelForSequenceClassification.from_pretrained(model_id, { dtype: "q8" });
+
+// Encode the query with each passage AS A PAIR — [CLS] query [SEP] passage [SEP]:
+const inputs = tokenizer(
+  passages.map(() =&gt; query),
+  { text_pair: passages, padding: true, truncation: true },
+);
+const { logits } = await model(inputs); // one relevance logit per pair — higher = more relevant
+// sort passages by logits.data — that's your reranking, and at ~33 MB it's fast enough on a CPU
+// to run right inside the browser</code></pre>
+      <p class="muted">
+        This page loads the model through the shared loader as a <code>text-classification</code> pipeline,
+        then reuses <code>pipe.model</code> + <code>pipe.tokenizer</code> to read the raw logits (the pipeline
+        would squash them through a sigmoid). All inference runs in a Web Worker so ranking never janks the page.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/jinaai/jina-reranker-v1-tiny-en" target="_blank" rel="noopener">Model card — jinaai/jina-reranker-v1-tiny-en</a></li>
+        <li><a href="https://jina.ai/news/jina-reranker-v1-tiny-en-for-faster-search/" target="_blank" rel="noopener">Jina AI — the tiny reranker &amp; its speed design</a></li>
+        <li><a href="https://www.sbert.net/examples/applications/retrieve_rerank/README.html" target="_blank" rel="noopener">Retrieve &amp; Re-Rank — Sentence-Transformers guide</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { RerankEngine, parseLines, renderResults, renderBeforeAfter, renderContrast, RERANK_CSS } from "./rerank.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = RERANK_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new RerankEngine();
+      let loaded = false;
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: {
+          modelId: "jinaai/jina-reranker-v1-tiny-en",
+          runtime: "transformers.js",
+          dtype: "q8",
+          sizeMB: 33,
+          requiresWebGPU: false,
+        },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => {
+          $("query").disabled = false;
+          $("passages").disabled = false;
+          $("run").disabled = false;
+          loaded = true;
+          run();
+        },
+      });
+
+      $("run").addEventListener("click", run);
+      $("query").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); run(); } });
+
+      async function run() {
+        if (!loaded) return;
+        const query = $("query").value.trim();
+        const passages = parseLines($("passages").value);
+        if (!query || passages.length < 2) {
+          $("runStatus").hidden = false;
+          $("runStatus").textContent = "Give a query and at least two passages.";
+          $("runStatus").classList.add("err");
+          return;
+        }
+        $("runStatus").hidden = false;
+        $("runStatus").classList.remove("err");
+        $("runStatus").textContent = "Scoring query–passage pairs…";
+        $("run").disabled = true;
+        try {
+          const r = await engine.rerank(query, passages);
+          renderResults($("results"), r.ranked);
+          renderBeforeAfter($("beforeAfter"), r.results, r.ranked);
+          renderContrast($("contrast"), r.ranked);
+          $("insideEmpty").hidden = true;
+          $("beforeAfter").hidden = false;
+          $("contrast").hidden = false;
+          $("speedTiles").hidden = false;
+          $("speedTiles").innerHTML = `
+            <div class="speed-tile"><span class="n">${r.ms}<span style="font-size:.9rem"> ms</span></span><span class="l">total for ${r.pairs} pairs</span></div>
+            <div class="speed-tile"><span class="n">${r.perPair}<span style="font-size:.9rem"> ms</span></span><span class="l">per query–passage pair</span></div>
+            <div class="speed-tile"><span class="n">${r.totalTokens.toLocaleString()}</span><span class="l">tokens processed</span></div>
+            <div class="speed-tile"><span class="n">${r.device.toUpperCase()}</span><span class="l">backend</span></div>`;
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = r.ms + " ms";
+          $("rPer").textContent = r.perPair + " ms";
+          $("rN").textContent = r.pairs;
+          $("runStatus").textContent = "Done.";
+          $("runStatus").classList.add("ok");
+        } catch (err) {
+          $("runStatus").textContent = "Reranking failed: " + err.message;
+          $("runStatus").classList.add("err");
+        } finally {
+          $("run").disabled = false;
+        }
+      }
+    </script>
+  </body>
+</html>
