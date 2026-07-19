@@ -93,7 +93,10 @@ const FAMILIES = {
 function classify(id) {
   const s = id.toLowerCase();
   // Pick the MOST SPECIFIC match (longest matching pattern) so e.g. "distilbert"/"deberta"/"clip-vit"
-  // aren't swallowed by the generic "bert"/"vit-" patterns.
+  // aren't swallowed by the generic "bert"/"vit-" patterns. Caveat: a few families whose id carries a
+  // longer backbone/token substring (detr-RESNET, clip-VIT) get attributed to that backbone family,
+  // so the built/63 ratio slightly UNDERcounts distinct architectures present. It's a secondary,
+  // "kinds of model" signal only — the evidence-backed eligible catalogue is the primary denominator.
   let best = null, bestLen = 0;
   for (const [fam, pats] of Object.entries(FAMILIES)) {
     for (const p of pats) {
