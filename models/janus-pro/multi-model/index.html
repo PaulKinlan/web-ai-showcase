@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Janus-Pro Multi-model — caption an image, then rewrite it · Web AI Showcase</title>
+    <meta name="description" content="A two-model chain in one tab: Janus-Pro captions an image, then a small FLAN-T5 text model rewrites that caption into a polished marketing blurb — both running on your device." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎭</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Janus-Pro</a></p>
+    <header>
+      <p class="eyebrow">use case · multi-model</p>
+      <h1>Multi-model: Janus captions → FLAN-T5 rewrites</h1>
+      <p class="lede">
+        Chain two on-device models: <strong>Janus-Pro</strong> (WebGPU) looks at an image and writes a
+        plain caption, then <strong>FLAN-T5-small</strong> (a tiny text model that runs on WASM) rewrites
+        that caption into a polished product blurb. Vision and language, composed client-side.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="m1-h">
+      <h3 id="m1-h">Model 1 — Janus-Pro (image → caption)</h3>
+      <div id="janus-loader"></div>
+    </section>
+    <section class="panel" aria-labelledby="m2-h">
+      <h3 id="m2-h">Model 2 — FLAN-T5-small (caption → blurb)</h3>
+      <div id="t5-loader"></div>
+    </section>
+    <p class="status" id="status" role="status" aria-live="polite"></p>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run the chain</h3>
+      <div class="janus-grid">
+        <div class="janus-col">
+          <div class="sample-strip" id="samples">
+            <img class="sample-thumb active" src="../sample-cats.jpg" data-src="../sample-cats.jpg" alt="Two cats on a couch" tabindex="0" role="button" />
+            <img class="sample-thumb" src="../sample-street.jpg" data-src="../sample-street.jpg" alt="A busy street scene" tabindex="0" role="button" />
+          </div>
+          <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image">
+            <span id="dropText">…or drop your own product photo</span>
+            <input type="file" id="file" accept="image/*" hidden />
+          </div>
+          <img class="preview-img" id="preview" src="../sample-cats.jpg" alt="Selected image" />
+        </div>
+        <div class="janus-col">
+          <button id="run" type="button" disabled>Caption → rewrite</button>
+          <p class="eyebrow" style="margin-top:.8rem">1 · Janus caption</p>
+          <div class="answer" id="caption" aria-live="polite"><span class="muted">The literal caption appears here.</span></div>
+          <p class="eyebrow" style="margin-top:.8rem">2 · FLAN-T5 blurb</p>
+          <div class="answer" id="blurb" aria-live="polite"><span class="muted">The rewritten blurb appears here.</span></div>
+          <div class="readout" id="readout" hidden><span>caption <b id="cMs">–</b></span><span>rewrite <b id="rMs">–</b></span></div>
+        </div>
+      </div>
+    </section>
+
+    <p class="crumbs" style="margin-top:1.5rem"><a href="../">← Back to Janus-Pro</a></p>
+    <footer class="byline">Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.</footer>
+
+    <script type="module">
+      import { JanusEngine, fileToDataURL, escapeHTML, JANUS_CSS } from "../janus.js";
+      import { loadPipeline } from "/web-ai-showcase/lib/webai.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      document.head.append(Object.assign(document.createElement("style"), { textContent: JANUS_CSS }));
+      const $ = (id) => document.getElementById(id);
+      const engine = new JanusEngine();
+      let currentImageURL = null, janusReady = false, t5 = null;
+
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        const blob = await (await fetch(el.dataset.src)).blob();
+        currentImageURL = await fileToDataURL(new File([blob], "s", { type: blob.type }));
+        $("preview").src = el.dataset.src;
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } });
+      }
+      pickSample($("samples").firstElementChild);
+      const file = $("file"), drop = $("drop");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover","dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave","drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function setFile(f) { for (const t of $("samples").children) t.classList.remove("active"); currentImageURL = await fileToDataURL(f); $("preview").src = currentImageURL; $("dropText").textContent = f.name; }
+      file.addEventListener("change", () => file.files[0] && setFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) setFile(f); });
+
+      function maybeEnable() { $("run").disabled = !(janusReady && t5); }
+
+      // Model 1 — Janus (WebGPU, gated honestly)
+      createModelLoader({
+        mount: $("janus-loader"),
+        model: { modelId: "onnx-community/Janus-Pro-1B-ONNX", runtime: "transformers.js", dtype: "q4f16", sizeMB: 2400, requiresWebGPU: true },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: () => { janusReady = true; maybeEnable(); },
+      });
+      // Model 2 — FLAN-T5-small (runs on WASM; no GPU needed)
+      createModelLoader({
+        mount: $("t5-loader"),
+        model: { modelId: "Xenova/flan-t5-small", runtime: "transformers.js", dtype: "q8", sizeMB: 80, requiresWebGPU: false },
+        load: async (onProgress) => (await loadPipeline({ task: "text2text-generation", model: "Xenova/flan-t5-small", dtype: "q8", onProgress })).pipe,
+        onReady: (pipe) => { t5 = pipe; maybeEnable(); },
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!janusReady || !t5 || !currentImageURL) { if (!currentImageURL) $("status").textContent = "Pick an image first."; return; }
+        $("run").disabled = true; $("status").className = "status"; $("readout").hidden = true;
+        $("caption").innerHTML = '<span class="caret">&nbsp;</span>'; $("blurb").innerHTML = '<span class="muted">Waiting…</span>';
+        try {
+          // 1) Janus caption
+          $("status").textContent = "Step 1/2 — Janus captioning…";
+          let cap = "";
+          const c = await engine.understand(currentImageURL, "Describe this image in one clear sentence.", { maxTokens: 80, onToken: (tok) => { cap += tok; $("caption").innerHTML = escapeHTML(cap) + '<span class="caret">&nbsp;</span>'; } });
+          cap = cap.trim(); $("caption").textContent = cap || "(no caption)";
+
+          // 2) FLAN-T5 rewrite
+          $("status").textContent = "Step 2/2 — FLAN-T5 rewriting…";
+          const t0 = performance.now();
+          const prompt = `Rewrite this description as a short, catchy product blurb: ${cap}`;
+          const out = await t5(prompt, { max_new_tokens: 60 });
+          const blurb = (Array.isArray(out) ? out[0] : out)?.generated_text ?? "";
+          $("blurb").textContent = blurb || "(no blurb)";
+          $("readout").hidden = false; $("cMs").textContent = c.ms + " ms"; $("rMs").textContent = Math.round(performance.now() - t0) + " ms";
+          $("status").textContent = "Chain complete."; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); } finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>

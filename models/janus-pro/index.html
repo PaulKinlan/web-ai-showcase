@@ -1,0 +1,380 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Janus-Pro — one model that reads images AND draws them, in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run Janus-Pro-1B locally on WebGPU: a single unified multimodal model that both understands images (ask about a photo) and generates images from a text prompt — with decoupled vision encoders, all on your device, nothing uploaded."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎭</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">any-to-any · unified understanding + generation · WebGPU · ~2.4 GB</p>
+      <h1>Janus-Pro — read an image <em>and</em> draw one, from one model</h1>
+      <p class="lede">
+        Janus-Pro is a <strong>unified</strong> multimodal model: the same 1B network both
+        <em>understands</em> images — hand it a photo and ask anything — and <em>generates</em> them —
+        give it a prompt and it paints a picture, pixel by pixel. It pulls this off by
+        <strong>decoupling the vision path</strong>: one encoder for seeing, a separate image tokenizer
+        for drawing. Both run entirely on your GPU. Nothing is uploaded.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="glance">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/onnx-community/Janus-Pro-1B-ONNX" target="_blank" rel="noopener">onnx-community/Janus-Pro-1B-ONNX</a> (ONNX build of <a href="https://huggingface.co/deepseek-ai/Janus-Pro-1B" target="_blank" rel="noopener">deepseek-ai/Janus-Pro-1B</a>)</td></tr>
+          <tr><th>Task</th><td><code>any-to-any</code> — <code>image-text-to-text</code> (understanding) + <code>text-to-image</code> (generation)</td></tr>
+          <tr><th>Architecture</th><td>SigLIP vision encoder (understanding) + VQ image tokenizer &amp; decode head (generation) → shared autoregressive LLM</td></tr>
+          <tr><th>Params / dtype</th><td>~1B · WebGPU w/ <code>shader-f16</code>: LLM <code>q4f16</code>, heads <code>fp16</code>; no f16: LLM <code>q4</code>, embeds/heads <code>fp32</code></td></tr>
+          <tr><th>Backend</th><td>WebGPU (required) · <code>prepare_inputs_embeds</code> runs on WASM (upstream op bug)</td></tr>
+          <tr><th>Download</th><td>~2.4 GB (with shader-f16) / ~4 GB fallback — cached after first load</td></tr>
+          <tr><th>Image tokens</th><td>576 (a 24×24 grid) per generated image, decoded to a 384×384 raster</td></tr>
+          <tr><th>License</th><td>MIT</td></tr>
+          <tr><th>Web APIs</th><td>WebGPU, Web Workers, Canvas, FileReader</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="mode-switch" role="group" aria-label="Choose what Janus does">
+        <button id="modeUnderstand" type="button" aria-pressed="true">Understand an image → text</button>
+        <button id="modeGenerate" type="button" aria-pressed="false">Generate an image ← text</button>
+      </div>
+
+      <!-- Understanding mode -->
+      <div id="panelUnderstand">
+        <div class="janus-grid">
+          <div class="janus-col">
+            <div class="sample-strip" id="samples">
+              <img class="sample-thumb active" src="sample-cats.jpg" data-src="sample-cats.jpg" alt="Two cats on a couch" tabindex="0" role="button" />
+              <img class="sample-thumb" src="sample-street.jpg" data-src="sample-street.jpg" alt="A busy street scene" tabindex="0" role="button" />
+              <img class="sample-thumb" src="sample-invoice.png" data-src="sample-invoice.png" alt="An invoice with line items" tabindex="0" role="button" />
+              <img class="sample-thumb" src="sample-sign.png" data-src="sample-sign.png" alt="A photographed sign with text" tabindex="0" role="button" />
+            </div>
+            <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image">
+              <span id="dropText">…or drop / choose your own image</span>
+              <input type="file" id="file" accept="image/*" hidden />
+            </div>
+            <img class="preview-img" id="preview" src="sample-cats.jpg" alt="Selected image" />
+          </div>
+          <div class="janus-col">
+            <label class="field" for="uPrompt">Ask about the image
+              <input type="text" id="uPrompt" value="Describe this image in detail." />
+            </label>
+            <div class="chips" id="uQuick">
+              <button class="chip" type="button" data-p="Describe this image in detail.">Describe it</button>
+              <button class="chip" type="button" data-p="What objects are in this image?">List objects</button>
+              <button class="chip" type="button" data-p="Read any text you can see in this image.">Read the text</button>
+              <button class="chip" type="button" data-p="What is unusual or interesting here?">What's interesting?</button>
+            </div>
+            <div style="margin:.4rem 0">
+              <button id="ask" type="button" disabled>Ask</button>
+              <label style="font-size:.8rem;color:var(--muted);margin-inline-start:.5rem">
+                max tokens <input type="number" id="uMaxTok" value="200" min="20" max="512" style="inline-size:5rem" />
+              </label>
+            </div>
+            <div class="answer" id="answer" aria-live="polite"><span class="muted">The model's answer will stream here.</span></div>
+            <div class="readout" id="uReadout" hidden>
+              <span>backend <b id="uBackend">–</b></span>
+              <span>tokens <b id="uTok">–</b></span>
+              <span>time <b id="uMs">–</b></span>
+              <span>tok/s <b id="uTps">–</b></span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Generation mode -->
+      <div id="panelGenerate" hidden>
+        <div class="janus-grid">
+          <div class="janus-col">
+            <label class="field" for="gPrompt">Describe an image to create
+              <input type="text" id="gPrompt" value="A cozy reading nook by a rainy window, warm lamplight, watercolour" />
+            </label>
+            <div class="chips" id="gQuick">
+              <button class="chip" type="button" data-p="A minimalist app icon of a paper plane, flat design, soft gradient">App icon: paper plane</button>
+              <button class="chip" type="button" data-p="A red fox curled up asleep in autumn leaves, storybook illustration">A sleeping fox</button>
+              <button class="chip" type="button" data-p="A retro-futuristic city skyline at sunset, synthwave, neon">Synthwave city</button>
+              <button class="chip" type="button" data-p="A single ripe strawberry on a white plate, studio photo">A strawberry</button>
+            </div>
+            <div style="margin:.4rem 0">
+              <button id="draw" type="button" disabled>Generate image</button>
+              <button id="download" type="button" class="secondary" hidden>Download PNG</button>
+            </div>
+            <p class="muted" style="font-size:.78rem">Janus samples 576 image tokens autoregressively, then a VQ decoder turns them into a 384×384 picture. Each run differs (sampling is on).</p>
+          </div>
+          <div class="janus-col">
+            <div class="gen-stage">
+              <canvas class="gen-canvas" id="genCanvas" width="384" height="384" role="img" aria-label="Generated image output"></canvas>
+              <div>
+                <div class="token-grid" id="tokenGrid" aria-hidden="true"></div>
+                <p class="muted" style="font-size:.72rem;margin-top:.3rem">image-token grid (24×24)</p>
+              </div>
+            </div>
+            <progress id="genProg" hidden max="100" aria-label="Image generation progress"></progress>
+            <div class="readout" id="gReadout" hidden>
+              <span>tokens <b id="gTok">–</b></span>
+              <span>time <b id="gMs">–</b></span>
+              <span>tok/s <b id="gTps">–</b></span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside</h3>
+      <p class="muted">
+        The trick behind a unified model is <strong>two vision paths, one brain</strong>. For
+        <em>understanding</em>, your image goes through a SigLIP encoder into ~576 vision tokens that sit
+        in the prompt next to your words, and the shared LLM reads the whole sequence and writes an
+        answer. For <em>generation</em>, there's no input image — the LLM instead <em>emits</em> 576
+        discrete image tokens one at a time, and a separate VQ decoder turns that grid back into pixels.
+        Same weights, two front doors.
+      </p>
+      <h4 style="font-family:var(--font-body);font-size:.85rem;margin:.6rem 0 .2rem">Constructed prompt (understanding)</h4>
+      <pre class="tmpl" id="tmpl"><span class="muted">Ask about an image to see the templated prompt.</span></pre>
+      <h4 style="font-family:var(--font-body);font-size:.85rem;margin:.6rem 0 .2rem">Token stream (value · ms since start)</h4>
+      <div class="tok-stream" id="tokStream"><span class="muted" style="font-size:.8rem">Text tokens (understanding) appear here as they're generated. In generation mode, watch the 24×24 grid above fill in.</span></div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        Until now, "read this image" and "draw this image" were two different models, two downloads, two
+        APIs. Janus-Pro folds both into a single ~1B model you can ship to a browser tab — private,
+        offline-capable after first load, free per call. One asset unlocks a round-trip: see → describe →
+        imagine → draw.
+      </p>
+      <ul>
+        <li><strong>On-device creative tools</strong> — generate icons, illustrations, or mood images from a prompt with no image-API bill and no content leaving the device.</li>
+        <li><strong>Visual Q&amp;A + captioning</strong> — describe photos, read signs, answer questions about a screenshot, all client-side.</li>
+        <li><strong>Closed-loop agents</strong> — one model can both look at its own generated output and critique or re-describe it, without a second network.</li>
+        <li><strong>Offline multimodal</strong> — after the first load, understanding and generation both work with no connection.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Both core moves side by side: describe an image, and generate one from a prompt.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Visual Q&amp;A on a document, and generate an app icon / illustration from a text brief.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Round-trip: Janus generates an image, then describes its <em>own</em> output.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">Janus understands an image → a text model rewrites the caption into a polished blurb.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>
+        Both paths load the <em>same</em> processor and model. Understanding calls <code>generate</code>
+        with an image placeholder in the conversation; generation switches the chat template to
+        <code>text_to_image</code> and calls <code>generate_images</code>, which decodes the emitted image
+        tokens into a <code>RawImage</code>:
+      </p>
+      <pre><code>import { AutoProcessor, MultiModalityCausalLM } from "@huggingface/transformers";
+
+const model_id = "onnx-community/Janus-Pro-1B-ONNX";
+const processor = await AutoProcessor.from_pretrained(model_id);           // → VLChatProcessor
+const model = await MultiModalityCausalLM.from_pretrained(model_id, { device: "webgpu", dtype: {…} });
+
+// (a) Understanding: image + text → text
+const conv = [{ role: "&lt;|User|&gt;", content: "&lt;image_placeholder&gt;\nWhat is this?", images: [url] }];
+const inputs = await processor(conv);
+const out = await model.generate({ ...inputs, max_new_tokens: 200, do_sample: false });
+console.log(processor.batch_decode(out.slice(null, [inputs.input_ids.dims.at(-1), null]), { skip_special_tokens: true })[0]);
+
+// (b) Generation: text → image
+const gconv = [{ role: "&lt;|User|&gt;", content: "a red fox in autumn leaves" }];
+const ginputs = await processor(gconv, { chat_template: "text_to_image" });
+const n = processor.num_image_tokens;                                       // 576
+const images = await model.generate_images({ ...ginputs, min_new_tokens: n, max_new_tokens: n, do_sample: true });
+await images[0].save("out.png");</code></pre>
+      <p class="muted">This page runs exactly that, in a Web Worker, and gates on a real WebGPU adapter first — if none exists it shows a labelled needs-WebGPU state instead of a fake image.</p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/onnx-community/Janus-Pro-1B-ONNX" target="_blank" rel="noopener">Model card — onnx-community/Janus-Pro-1B-ONNX (Transformers.js ONNX build)</a></li>
+        <li><a href="https://huggingface.co/deepseek-ai/Janus-Pro-1B" target="_blank" rel="noopener">Model card — deepseek-ai/Janus-Pro-1B (original weights)</a></li>
+        <li><a href="https://github.com/deepseek-ai/Janus" target="_blank" rel="noopener">Janus / Janus-Pro paper &amp; code (DeepSeek)</a></li>
+        <li><a href="https://github.com/huggingface/transformers.js-examples/tree/main/janus-pro-webgpu" target="_blank" rel="noopener">Official transformers.js janus-pro-webgpu example</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a> on WebGPU.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <style>
+      .glance { inline-size:100%; border-collapse:collapse; font-size:.85rem; }
+      .glance th, .glance td { text-align:left; padding:.3rem .5rem; border-bottom:1px solid var(--border); vertical-align:top; }
+      .glance th { color:var(--muted); font-weight:600; inline-size:11rem; }
+      .glance td { font-family:var(--font-mono); }
+    </style>
+
+    <script type="module">
+      import { JanusEngine, fileToDataURL, escapeHTML, JANUS_CSS } from "./janus.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = JANUS_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new JanusEngine();
+      let currentImageURL = null;
+      let ready = false;
+      let lastBlobURL = null;
+
+      // ---- image-token grid (24x24) for the "see inside" of generation ----
+      const GRID = 24 * 24;
+      const cells = [];
+      for (let i = 0; i < GRID; i++) { const c = document.createElement("i"); $("tokenGrid").append(c); cells.push(c); }
+      function resetGrid() { for (const c of cells) c.classList.remove("on"); }
+
+      // ---- mode switch ----
+      function setMode(gen) {
+        $("modeGenerate").setAttribute("aria-pressed", String(gen));
+        $("modeUnderstand").setAttribute("aria-pressed", String(!gen));
+        $("panelGenerate").hidden = !gen;
+        $("panelUnderstand").hidden = gen;
+      }
+      $("modeUnderstand").addEventListener("click", () => setMode(false));
+      $("modeGenerate").addEventListener("click", () => setMode(true));
+
+      // ---- understanding: image picking ----
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        const blob = await (await fetch(el.dataset.src)).blob();
+        currentImageURL = await fileToDataURL(new File([blob], "s", { type: blob.type }));
+        $("preview").src = el.dataset.src;
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } });
+      }
+      pickSample($("samples").firstElementChild);
+
+      const file = $("file"), drop = $("drop");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) {
+        for (const t of $("samples").children) t.classList.remove("active");
+        currentImageURL = await fileToDataURL(f); $("preview").src = currentImageURL; $("dropText").textContent = f.name;
+      }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
+
+      for (const c of $("uQuick").children) c.addEventListener("click", () => { $("uPrompt").value = c.dataset.p; });
+      for (const c of $("gQuick").children) c.addEventListener("click", () => { $("gPrompt").value = c.dataset.p; });
+
+      // ---- shared auto-init loader (gates on a real WebGPU adapter; never fakes output) ----
+      createModelLoader({
+        mount: $("model-loader"),
+        model: {
+          modelId: "onnx-community/Janus-Pro-1B-ONNX",
+          runtime: "transformers.js",
+          dtype: "q4f16",
+          sizeMB: 2400,
+          requiresWebGPU: true,
+        },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: () => { ready = true; $("ask").disabled = false; $("draw").disabled = false; },
+      });
+
+      // ---- understanding: ask ----
+      $("ask").addEventListener("click", async () => {
+        if (!ready) return;
+        if (!currentImageURL) { $("status").textContent = "Pick an image first."; return; }
+        const prompt = $("uPrompt").value.trim() || "Describe this image.";
+        const maxTokens = Math.max(20, Math.min(512, +$("uMaxTok").value || 200));
+        $("ask").disabled = true; $("status").classList.remove("err"); $("status").textContent = "Thinking…";
+        $("answer").innerHTML = '<span class="caret">&nbsp;</span>';
+        $("tokStream").replaceChildren();
+        let text = "";
+        try {
+          const res = await engine.understand(currentImageURL, prompt, {
+            maxTokens,
+            onPrompt: (tmpl) => { $("tmpl").textContent = tmpl; },
+            onToken: (tok, t) => {
+              text += tok;
+              $("answer").innerHTML = escapeHTML(text) + '<span class="caret">&nbsp;</span>';
+              const s = document.createElement("span"); s.className = "tok";
+              s.innerHTML = escapeHTML(tok) + `<b>${Math.round(t)}</b>`;
+              $("tokStream").append(s);
+            },
+          });
+          $("answer").textContent = text || "(no text generated)";
+          $("uReadout").hidden = false;
+          $("uBackend").textContent = "WEBGPU"; $("uTok").textContent = res.tokens;
+          $("uMs").textContent = res.ms + " ms"; $("uTps").textContent = (res.tokens / (res.ms / 1000)).toFixed(1);
+          $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (err) {
+          $("answer").innerHTML = '<span class="muted">Understanding failed.</span>';
+          $("status").textContent = "Understanding failed: " + err.message; $("status").classList.add("err");
+        } finally {
+          $("ask").disabled = false;
+        }
+      });
+
+      // ---- generation: draw ----
+      $("draw").addEventListener("click", async () => {
+        if (!ready) return;
+        const prompt = $("gPrompt").value.trim();
+        if (!prompt) { $("status").textContent = "Type a prompt to generate from."; return; }
+        $("draw").disabled = true; $("download").hidden = true; $("status").classList.remove("err");
+        $("status").textContent = "Generating image…";
+        resetGrid(); $("gReadout").hidden = true;
+        $("genProg").hidden = false; $("genProg").value = 0;
+        $("genCanvas").classList.add("working");
+        const ctx = $("genCanvas").getContext("2d");
+        ctx.clearRect(0, 0, 384, 384);
+        try {
+          const res = await engine.generate(prompt, {
+            onGenStart: (total) => { $("genProg").max = total; },
+            onGenProgress: (step, total, t, tps) => {
+              $("genProg").value = step;
+              if (step <= cells.length) cells[step - 1].classList.add("on");
+              $("status").textContent = `Generating image… token ${step}/${total} · ${tps.toFixed(1)} tok/s`;
+            },
+          });
+          const url = URL.createObjectURL(res.blob);
+          if (lastBlobURL) URL.revokeObjectURL(lastBlobURL);
+          lastBlobURL = url;
+          const bmp = await createImageBitmap(res.blob);
+          ctx.drawImage(bmp, 0, 0, 384, 384);
+          $("genCanvas").setAttribute("aria-label", "Generated image for: " + prompt);
+          $("download").hidden = false;
+          $("gReadout").hidden = false;
+          $("gTok").textContent = res.tokens; $("gMs").textContent = res.ms + " ms";
+          $("gTps").textContent = (res.tokens / (res.ms / 1000)).toFixed(1);
+          $("status").textContent = "Image ready."; $("status").classList.add("ok");
+        } catch (err) {
+          $("status").textContent = "Generation failed: " + err.message; $("status").classList.add("err");
+        } finally {
+          $("genProg").hidden = true; $("genCanvas").classList.remove("working"); $("draw").disabled = false;
+        }
+      });
+
+      $("download").addEventListener("click", () => {
+        if (!lastBlobURL) return;
+        const a = document.createElement("a"); a.href = lastBlobURL; a.download = "janus-pro.png"; a.click();
+      });
+    </script>
+  </body>
+</html>

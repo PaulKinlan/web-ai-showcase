@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Janus-Pro Wild — the round-trip: draw, then describe its own image · Web AI Showcase</title>
+    <meta name="description" content="Only possible with a unified model: Janus-Pro generates an image from your prompt, then looks at its OWN output and describes it — a full imagine → see loop in one browser tab." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎭</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Janus-Pro</a></p>
+    <header>
+      <p class="eyebrow">use case · wild</p>
+      <h1>Wild: the round-trip — draw it, then describe it</h1>
+      <p class="lede">
+        Because one model both draws and reads, it can close the loop on itself: give it a prompt, it
+        generates an image, and then the <em>same</em> model looks at what it just made and tells you what
+        it sees. Compare your prompt to its own read-back — a little window into what the model actually
+        rendered.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+    </section>
+
+    <section class="panel" aria-labelledby="rt-h">
+      <h3 id="rt-h">Imagine → See</h3>
+      <label class="field" for="gPrompt" style="max-inline-size:520px">Your prompt
+        <input type="text" id="gPrompt" value="A tiny astronaut planting a flag on a green hill, storybook style" />
+      </label>
+      <div class="chips" id="gQuick" style="margin:.5rem 0">
+        <button class="chip" type="button" data-p="A tiny astronaut planting a flag on a green hill, storybook style">Astronaut</button>
+        <button class="chip" type="button" data-p="A steaming bowl of ramen on a wooden table, top-down photo">Ramen</button>
+        <button class="chip" type="button" data-p="A whimsical treehouse glowing at night, watercolour">Treehouse</button>
+      </div>
+      <button id="run" type="button" disabled>Draw it, then describe it</button>
+
+      <div class="janus-grid" style="margin-top:1rem">
+        <div class="janus-col">
+          <p class="eyebrow">1 · Generated image</p>
+          <canvas class="gen-canvas" id="genCanvas" width="384" height="384" role="img" aria-label="Generated image output"></canvas>
+          <progress id="genProg" hidden max="576" aria-label="Image generation progress"></progress>
+        </div>
+        <div class="janus-col">
+          <p class="eyebrow">2 · The model's read-back of its own image</p>
+          <div class="answer" id="answer" aria-live="polite"><span class="muted">Janus will describe the picture it just drew.</span></div>
+          <div class="readout" id="readout" hidden><span>gen <b id="gMs">–</b></span><span>describe <b id="uMs">–</b></span></div>
+        </div>
+      </div>
+    </section>
+
+    <p class="crumbs" style="margin-top:1.5rem">Next: <a href="../multi-model/">Multi-model →</a></p>
+    <footer class="byline">Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. <a href="../">Back to Janus-Pro →</a></footer>
+
+    <script type="module">
+      import { JanusEngine, escapeHTML, JANUS_CSS } from "../janus.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      document.head.append(Object.assign(document.createElement("style"), { textContent: JANUS_CSS }));
+      const $ = (id) => document.getElementById(id);
+      const engine = new JanusEngine();
+      let ready = false;
+      for (const c of $("gQuick").children) c.addEventListener("click", () => { $("gPrompt").value = c.dataset.p; });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/Janus-Pro-1B-ONNX", runtime: "transformers.js", dtype: "q4f16", sizeMB: 2400, requiresWebGPU: true },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: () => { ready = true; $("run").disabled = false; },
+      });
+
+      // Turn the generated Blob into a data URL so Janus can read it back as an input image.
+      function blobToDataURL(blob) { return new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = () => rej(r.error); r.readAsDataURL(blob); }); }
+
+      $("run").addEventListener("click", async () => {
+        if (!ready) return;
+        const prompt = $("gPrompt").value.trim(); if (!prompt) { $("status").textContent = "Type a prompt."; return; }
+        $("run").disabled = true; $("status").className = "status"; $("readout").hidden = true;
+        $("answer").innerHTML = '<span class="muted">Drawing…</span>';
+        $("genProg").hidden = false; $("genProg").value = 0; $("genCanvas").classList.add("working");
+        const ctx = $("genCanvas").getContext("2d"); ctx.clearRect(0,0,384,384);
+        try {
+          // 1) generate
+          $("status").textContent = "Step 1/2 — drawing the image…";
+          const gen = await engine.generate(prompt, { onGenStart: (t) => $("genProg").max = t, onGenProgress: (s,t,ms,tps) => { $("genProg").value = s; $("status").textContent = `Drawing… ${s}/${t} · ${tps.toFixed(1)} tok/s`; } });
+          const bmp = await createImageBitmap(gen.blob); ctx.drawImage(bmp, 0, 0, 384, 384);
+          $("genProg").hidden = true; $("genCanvas").classList.remove("working");
+          $("genCanvas").setAttribute("aria-label", "Generated image for: " + prompt);
+
+          // 2) feed the model its own output and ask it to describe it
+          $("status").textContent = "Step 2/2 — reading its own image…";
+          $("answer").innerHTML = '<span class="caret">&nbsp;</span>';
+          const dataURL = await blobToDataURL(gen.blob);
+          let text = "";
+          const u = await engine.understand(dataURL, "Describe this image in detail.", { maxTokens: 160, onToken: (tok) => { text += tok; $("answer").innerHTML = escapeHTML(text) + '<span class="caret">&nbsp;</span>'; } });
+          $("answer").textContent = text || "(no text)";
+          $("readout").hidden = false; $("gMs").textContent = gen.ms + " ms"; $("uMs").textContent = u.ms + " ms";
+          $("status").textContent = "Round-trip complete."; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); $("genCanvas").classList.remove("working"); $("genProg").hidden = true; } finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>
