@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SmolLM3 Wild — thinking on vs off, side by side · Web AI Showcase</title>
+    <meta name="description" content="Run the SAME hard prompt through SmolLM3-3B twice — once with thinking on, once off — side by side, to see exactly what the reasoning trace buys you in accuracy and latency. Locally, on your GPU." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🐤</text></svg>" />
+    <style>
+      .versus { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr)); gap:1rem; margin-top:.6rem; }
+      .versus .col { border:1px solid var(--border); border-radius:8px; padding:.7rem; background:var(--bg-raised); min-inline-size:0; }
+      .versus .col h3 { margin:0 0 .4rem; font-size:.95rem; }
+      .versus .out { white-space:pre-wrap; overflow-wrap:anywhere; line-height:1.55; min-block-size:4rem; }
+    </style>
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">SmolLM3-3B</a></p>
+    <header>
+      <p class="eyebrow">use case · wild</p>
+      <h1>Wild: thinking on vs off, side by side</h1>
+      <p class="lede">
+        SmolLM3 is one model with two modes. Here we run the <strong>same prompt both ways at once</strong>:
+        left with <code>/no_think</code> (fast, direct), right with <code>/think</code> (reasons in a
+        <code>&lt;think&gt;</code> trace first). Watch the accuracy and latency difference for yourself — the
+        clearest way to see what a reasoning budget actually buys. All on your GPU.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <div id="fallback" class="fallback" hidden></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="chips" id="puzzles" role="group" aria-label="Example puzzles" style="margin-top:.6rem">
+        <button class="chip" type="button">A bat and a ball cost $1.10. The bat costs $1 more than the ball. How much is the ball?</button>
+        <button class="chip" type="button">If 5 machines make 5 widgets in 5 minutes, how long for 100 machines to make 100 widgets?</button>
+        <button class="chip" type="button">I have two coins totalling 30p. One of them is not a 20p. What are the two coins?</button>
+      </div>
+      <div class="composer">
+        <textarea id="input" placeholder="Enter a hard prompt to run both ways…" aria-label="Your prompt" disabled></textarea>
+        <button id="send" type="button" disabled>Run both</button>
+        <button id="stop" type="button" class="secondary" hidden>Stop</button>
+      </div>
+
+      <div class="versus">
+        <div class="col">
+          <h3>/no_think — direct</h3>
+          <div class="out" id="outNo"><span class="muted">The direct answer appears here.</span></div>
+          <div class="readout" id="roNo" hidden><span>total <b id="msNo">–</b></span><span>tokens <b id="tkNo">–</b></span></div>
+        </div>
+        <div class="col">
+          <h3>/think — reasons first</h3>
+          <details class="think" id="thinkT" hidden><summary>Reasoning trace</summary><div class="think-body" id="thinkBody"></div></details>
+          <div class="out" id="outYes"><span class="muted">The reasoned answer appears here.</span></div>
+          <div class="readout" id="roYes" hidden><span>total <b id="msYes">–</b></span><span>reasoning <b id="rsYes">–</b></span><span>answer <b id="tkYes">–</b></span></div>
+        </div>
+      </div>
+    </section>
+
+    <section aria-labelledby="how-h">
+      <h2 id="how-h">What the trace buys</h2>
+      <p class="muted">
+        On these puzzles the direct answer often gives the intuitive-but-wrong response, while the reasoning
+        pass catches the trap — at the cost of extra tokens and latency. That trade-off is the whole point
+        of a hybrid model: you spend the reasoning budget only on the prompts that need it. The exact same
+        weights produce both columns; only the <code>enable_thinking</code> switch differs.
+      </p>
+    </section>
+
+    <p class="crumbs"><a href="../practical/">← Practical</a> · <a href="../">SmolLM3-3B</a> · Next: <a href="../multi-model/">Multi-model →</a></p>
+
+    <script type="module">
+      import { SmolLM3Engine, probeWebGPU, escapeHTML, webgpuFallbackHTML, CHAT_CSS } from "../engine.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = CHAT_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new SmolLM3Engine();
+      let loaded = false, generating = false;
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "HuggingFaceTB/SmolLM3-3B-ONNX", runtime: "transformers.js", dtype: "q4f16", sizeMB: 2100, requiresWebGPU: true },
+        load: async (onProgress) => { await engine.load((p) => { if (p && typeof p.progress === "number") onProgress({ status: "progress", progress: p.progress }); }); return engine; },
+        onReady: () => { loaded = true; $("input").disabled = false; $("send").disabled = false; $("input").focus(); },
+        onError: async (err) => { if (String(err?.message ?? err).includes("needs-webgpu")) { const probe = await probeWebGPU(); $("fallback").hidden = false; $("fallback").innerHTML = webgpuFallbackHTML(probe); } },
+      });
+      for (const c of $("puzzles").children) c.addEventListener("click", () => { $("input").value = c.textContent; });
+
+      async function runOne(prompt, thinking, opts) {
+        let ans = "", reason = "";
+        const res = await engine.chat(
+          [{ role: "system", content: "You are a careful assistant." }, { role: "user", content: prompt }],
+          {
+            thinking, temperature: 0.5, topP: 0.95, maxTokens: 640,
+            onReasoning: opts.onReasoning || (() => {}),
+            onToken: (d) => { ans += d; opts.onToken(ans); },
+          },
+        );
+        return { ans, res };
+      }
+
+      async function send() {
+        if (!loaded || generating) return;
+        const q = $("input").value.trim(); if (!q) return;
+        generating = true; $("send").disabled = true; $("input").disabled = true; $("stop").hidden = false;
+        $("status").classList.remove("err"); $("status").textContent = "Running /no_think…";
+        $("outNo").innerHTML = '<span class="caret"></span>'; $("outYes").innerHTML = '<span class="muted">waiting…</span>';
+        $("roNo").hidden = true; $("roYes").hidden = true; $("thinkT").hidden = true; $("thinkBody").textContent = "";
+        try {
+          // Direct first.
+          const noRun = await runOne(q, false, { onToken: (t) => { $("outNo").innerHTML = escapeHTML(t) + '<span class="caret"></span>'; } });
+          $("outNo").textContent = noRun.ans || "(no output)";
+          $("msNo").textContent = noRun.res.ms + " ms"; $("tkNo").textContent = noRun.res.chunks + " tok"; $("roNo").hidden = false;
+
+          // Then reasoning.
+          $("status").textContent = "Running /think…"; $("outYes").innerHTML = '<span class="caret"></span>';
+          $("thinkT").hidden = false; $("thinkT").open = true; let reason = "";
+          const yesRun = await runOne(q, true, {
+            onReasoning: (d) => { reason += d; $("thinkBody").textContent = reason; $("thinkBody").scrollTop = $("thinkBody").scrollHeight; },
+            onToken: (t) => { $("outYes").innerHTML = escapeHTML(t) + '<span class="caret"></span>'; },
+          });
+          $("outYes").textContent = yesRun.ans || "(no output)";
+          if (reason.trim()) $("thinkT").open = false; else $("thinkT").hidden = true;
+          $("msYes").textContent = yesRun.res.ms + " ms"; $("rsYes").textContent = yesRun.res.reasoningChunks + " tok"; $("tkYes").textContent = yesRun.res.chunks + " tok"; $("roYes").hidden = false;
+          $("status").textContent = "Done — compare the two answers."; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { generating = false; $("send").disabled = false; $("input").disabled = false; $("stop").hidden = true; }
+      }
+      $("send").addEventListener("click", send);
+      $("input").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } });
+      $("stop").addEventListener("click", () => engine.stop());
+    </script>
+  </body>
+</html>
