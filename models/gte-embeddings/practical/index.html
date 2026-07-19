@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>GTE-small — Practical: search, cluster, classify · Web AI Showcase</title>
+    <meta name="description" content="Three shippable embedding jobs over your own text, all in the browser with GTE: semantic search, k-means clustering, and classify-by-nearest-label with zero training." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🧲</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">GTE-small</a></p>
+
+    <header>
+      <p class="eyebrow">Practical · feature-extraction · WASM</p>
+      <h1>Three jobs you'd actually ship</h1>
+      <p class="lede">
+        Once text is a vector, whole product features become a few lines of arithmetic. Here are three,
+        running entirely on your device with GTE: <strong>semantic search</strong>, <strong>clustering</strong>,
+        and <strong>classification by nearest label</strong> — the last one needs no training data at all.
+      </p>
+    </header>
+
+    <div id="model-loader"></div>
+
+    <section class="panel" aria-labelledby="corpus-h">
+      <h3 id="corpus-h">Your text (one item per line)</h3>
+      <p class="muted">Everything below runs on these lines. Edit them, or keep the mixed support/topic sample.</p>
+      <textarea id="corpus" rows="10" disabled>My password reset email never arrived.
+I can't log into my account.
+Two-factor authentication is blocking me.
+How do I get a refund for my order?
+The item arrived damaged, I want my money back.
+Can I return this within 30 days?
+The mobile app crashes when I open settings.
+The app freezes on the loading screen.
+Your checkout page throws an error on payment.
+I love the new dashboard, it's beautiful.
+The onboarding flow was smooth and clear.
+Great product, works exactly as advertised.</textarea>
+    </section>
+
+    <section class="panel" aria-labelledby="search-h">
+      <h3 id="search-h">1 · Semantic search</h3>
+      <p class="muted">Rank every line by meaning against a query — no keyword overlap required.</p>
+      <div style="display:flex;gap:.4rem;flex-wrap:wrap;align-items:center;margin:.4rem 0">
+        <input id="q" type="text" value="I'm locked out and can't sign in" style="flex:1;min-inline-size:14rem" disabled />
+        <button id="searchBtn" type="button" disabled>Search</button>
+      </div>
+      <div class="sent-list" id="searchOut" aria-live="polite"></div>
+    </section>
+
+    <section class="panel" aria-labelledby="cluster-h">
+      <h3 id="cluster-h">2 · Clustering (k-means)</h3>
+      <p class="muted">Group the lines into <em>k</em> unlabeled clusters by embedding proximity. The support
+        tickets, refund requests, bug reports and praise should fall out on their own.</p>
+      <div style="display:flex;gap:.6rem;flex-wrap:wrap;align-items:center;margin:.4rem 0">
+        <label style="font-size:.82rem">Clusters (k) <span class="val" id="kVal" style="font-family:var(--font-mono)">4</span>
+          <input type="range" id="k" min="2" max="6" step="1" value="4" style="vertical-align:middle" />
+        </label>
+        <button id="clusterBtn" type="button" disabled>Cluster</button>
+      </div>
+      <div id="clusterOut" aria-live="polite"></div>
+    </section>
+
+    <section class="panel" aria-labelledby="classify-h">
+      <h3 id="classify-h">3 · Classify by nearest label (zero training)</h3>
+      <p class="muted">Embed a handful of label <em>names</em> once, then tag every line by whichever label
+        vector it sits closest to. Change the labels and everything re-tags instantly — no retraining.</p>
+      <div style="display:flex;gap:.4rem;flex-wrap:wrap;align-items:center;margin:.4rem 0">
+        <input id="labels" type="text" value="login problem, refund request, bug report, positive feedback" style="flex:1;min-inline-size:16rem" disabled />
+        <button id="classifyBtn" type="button" disabled>Classify</button>
+      </div>
+      <div class="sent-list" id="classifyOut" aria-live="polite"></div>
+    </section>
+
+    <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>last op <b id="rMs">–</b></span></div>
+
+    <p class="crumbs" style="margin-top:1.5rem"><a href="../wild/">Next: Wild — embedding arithmetic →</a></p>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via 🤗 Transformers.js.
+      <a href="../">← Back to GTE-small</a>
+    </footer>
+
+    <script type="module">
+      import { GteEngine, cosine, parseLines, renderRanked, GTE_CSS } from "../gte.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = GTE_CSS + `
+        .cluster { border:1px solid var(--border); border-inline-start:4px solid var(--accent); border-radius:8px;
+          background:var(--bg-raised); padding:.5rem .7rem; margin:.5rem 0; }
+        .cluster h4 { margin:.1rem 0 .3rem; font-family:var(--font-mono); font-size:.8rem; color:var(--muted); }
+        .cluster ul { margin:.2rem 0; padding-inline-start:1.1rem; } .cluster li { margin:.15rem 0; }
+      `;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new GteEngine();
+      let corpusCache = null; // { texts, embeddings }
+
+      $("k").addEventListener("input", () => { $("kVal").textContent = $("k").value; });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/gte-small", runtime: "transformers.js", dtype: "q8", sizeMB: 34, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => {
+          for (const id of ["corpus", "q", "searchBtn", "k", "clusterBtn", "labels", "classifyBtn"]) $(id).disabled = false;
+        },
+      });
+
+      async function embedCorpus() {
+        const texts = parseLines($("corpus").value);
+        // Cache keyed on the exact corpus text so repeated ops don't re-embed.
+        if (corpusCache && corpusCache.key === $("corpus").value) return corpusCache;
+        const r = await engine.embed(texts);
+        corpusCache = { key: $("corpus").value, texts: r.texts, embeddings: r.embeddings, device: r.device, ms: r.ms };
+        showReadout(r.device, r.ms);
+        return corpusCache;
+      }
+      function showReadout(device, ms) { $("readout").hidden = false; $("rBackend").textContent = device.toUpperCase(); $("rMs").textContent = ms + " ms"; }
+
+      $("searchBtn").addEventListener("click", async () => {
+        $("searchBtn").disabled = true;
+        try {
+          const c = await embedCorpus();
+          const qr = await engine.embed([$("q").value.trim() || "help"]);
+          const hits = c.texts.map((text, i) => ({ text, score: cosine(qr.embeddings[0], c.embeddings[i]) }))
+            .sort((a, b) => b.score - a.score);
+          renderRanked($("searchOut"), hits);
+        } catch (e) { $("searchOut").textContent = "Failed: " + e.message; }
+        finally { $("searchBtn").disabled = false; }
+      });
+
+      $("clusterBtn").addEventListener("click", async () => {
+        $("clusterBtn").disabled = true;
+        try {
+          const c = await embedCorpus();
+          const k = +$("k").value;
+          const { assign, centroids } = kmeans(c.embeddings, k);
+          // Order clusters by size for a stable display; name each by its most-central member.
+          const groups = Array.from({ length: k }, () => []);
+          assign.forEach((g, i) => groups[g].push(i));
+          const html = groups.map((idxs, g) => {
+            if (!idxs.length) return "";
+            const central = idxs.slice().sort((a, b) => cosine(c.embeddings[b], centroids[g]) - cosine(c.embeddings[a], centroids[g]))[0];
+            const items = idxs.map((i) => `<li>${escapeHtml(c.texts[i])}</li>`).join("");
+            return `<div class="cluster"><h4>Cluster ${g + 1} · ${idxs.length} item(s) · theme ≈ “${escapeHtml(c.texts[central])}”</h4><ul>${items}</ul></div>`;
+          }).join("");
+          $("clusterOut").innerHTML = html;
+        } catch (e) { $("clusterOut").textContent = "Failed: " + e.message; }
+        finally { $("clusterBtn").disabled = false; }
+      });
+
+      $("classifyBtn").addEventListener("click", async () => {
+        $("classifyBtn").disabled = true;
+        try {
+          const c = await embedCorpus();
+          const labels = $("labels").value.split(",").map((s) => s.trim()).filter(Boolean);
+          if (labels.length < 2) { $("classifyOut").textContent = "Give at least two comma-separated labels."; return; }
+          const lr = await engine.embed(labels);
+          const tagged = c.texts.map((text, i) => {
+            let best = 0, bestScore = -Infinity;
+            labels.forEach((_, li) => { const s = cosine(c.embeddings[i], lr.embeddings[li]); if (s > bestScore) { bestScore = s; best = li; } });
+            return { text, score: bestScore, label: labels[best] };
+          });
+          renderRanked($("classifyOut"), tagged.map((t) => ({ text: t.text, score: t.score })),
+            { tags: tagged.map((t) => t.label) });
+        } catch (e) { $("classifyOut").textContent = "Failed: " + e.message; }
+        finally { $("classifyBtn").disabled = false; }
+      });
+
+      function escapeHtml(s) { return String(s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c])); }
+
+      // --- Tiny k-means over unit vectors (cosine ~ Euclidean on the sphere). Deterministic seed via k-means++. ---
+      function kmeans(vecs, k, iters = 25) {
+        const n = vecs.length; const d = vecs[0].length;
+        k = Math.min(k, n);
+        // k-means++ init with a fixed pseudo-random stream so results are stable across clicks.
+        let seed = 42; const rnd = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+        const centroids = [vecs[Math.floor(rnd() * n)].slice()];
+        while (centroids.length < k) {
+          const d2 = vecs.map((v) => Math.min(...centroids.map((csd) => 1 - cosine(v, csd))));
+          const sum = d2.reduce((a, b) => a + b, 0) || 1;
+          let r = rnd() * sum, pick = 0;
+          for (let i = 0; i < n; i++) { r -= d2[i]; if (r <= 0) { pick = i; break; } }
+          centroids.push(vecs[pick].slice());
+        }
+        let assign = new Array(n).fill(0);
+        for (let it = 0; it < iters; it++) {
+          let moved = false;
+          for (let i = 0; i < n; i++) {
+            let best = 0, bs = -Infinity;
+            for (let g = 0; g < k; g++) { const s = cosine(vecs[i], centroids[g]); if (s > bs) { bs = s; best = g; } }
+            if (assign[i] !== best) { assign[i] = best; moved = true; }
+          }
+          for (let g = 0; g < k; g++) {
+            const members = []; for (let i = 0; i < n; i++) if (assign[i] === g) members.push(i);
+            if (!members.length) continue;
+            const c = new Array(d).fill(0);
+            for (const i of members) for (let j = 0; j < d; j++) c[j] += vecs[i][j];
+            let norm = Math.sqrt(c.reduce((a, x) => a + x * x, 0)) || 1;
+            for (let j = 0; j < d; j++) c[j] /= norm;
+            centroids[g] = c;
+          }
+          if (!moved && it > 0) break;
+        }
+        return { assign, centroids };
+      }
+    </script>
+  </body>
+</html>
