@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>FLAN-T5-small — one model, many tasks by instruction · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="An instruction-tuned encoder-decoder model that translates, summarizes, answers, classifies, and reasons — all from one natural-language instruction, running locally in your browser. See the exact string fed to the model, its tokens, and real per-token decode timing."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🪄</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">text2text-generation · text · WASM · ~100 MB</p>
+      <h1>FLAN-T5-small — one model, many tasks, just ask</h1>
+      <p class="lede">
+        FLAN-T5 is an <strong>encoder-decoder</strong> model instruction-tuned on roughly 1,800 tasks. There
+        is no chat template and no system prompt — the whole input is a single natural-language instruction:
+        <em>"summarize: …"</em>, <em>"Is this review positive or negative? …"</em>,
+        <em>"answer the question based on the context: …"</em>. The encoder reads it, the decoder writes the
+        answer one token at a time. Try any instruction and watch it stream. Nothing leaves your device.
+      </p>
+      <p class="lede" style="font-size:.95rem">
+        This is the <strong>small</strong> (80M) checkpoint, so calibrate expectations: it is genuinely
+        strong at <strong>classification, sentiment, yes/no and reading-comprehension</strong> (answering from
+        text you give it) and decent at <strong>summarizing</strong> — but only roughly translates and is
+        unreliable on closed-book facts. That trade-off is the honest reality of a model this size, and the
+        page shows you the real output, right or wrong — never a canned answer.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/Xenova/flan-t5-small" target="_blank" rel="noopener">Xenova/flan-t5-small</a> (ONNX of <a href="https://huggingface.co/google/flan-t5-small" target="_blank" rel="noopener">google/flan-t5-small</a>)</td></tr>
+          <tr><th>Task / pipeline</th><td><code>text2text-generation</code> (sequence-to-sequence)</td></tr>
+          <tr><th>Architecture</th><td>T5 encoder-decoder (~80M params) — encoder reads the instruction, decoder generates the answer</td></tr>
+          <tr><th>Training</th><td>Instruction fine-tuning (FLAN) over ~1,800 tasks — why one model handles translate/summarize/QA/classify</td></tr>
+          <tr><th>Quantization</th><td>q8 (8-bit) ONNX — encoder + merged decoder</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (runs anywhere; no WebGPU needed)</td></tr>
+          <tr><th>Download</th><td>~100 MB, cached after first load</td></tr>
+          <tr><th>License</th><td>Apache-2.0</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Pick a task preset to fill the instruction, or write your own. Whatever is in the box is
+        fed verbatim to the model — that exact string is the "prompt". Greedy decoding streams the answer and
+        records real per-token timing.</p>
+
+      <div id="model-loader"></div>
+
+      <div class="preset-grid" id="presets"></div>
+
+      <label style="display:flex;flex-direction:column;gap:.3rem;font-size:.82rem;margin-top:.4rem">
+        Instruction (the full input string fed to the model)
+        <textarea id="prompt" rows="4" disabled>Is the following review positive or negative? Review: The battery dies in an hour and support never replied.</textarea>
+      </label>
+
+      <div class="controls-grid">
+        <label>Max new tokens <span class="val" id="maxVal">64</span>
+          <input type="range" id="maxTok" min="8" max="200" step="8" value="64" />
+        </label>
+        <label>Beams <span class="val" id="beamVal">1 (greedy, streams)</span>
+          <input type="range" id="beams" min="1" max="5" step="1" value="1" />
+        </label>
+        <label style="justify-content:end">
+          <span style="display:flex;align-items:center;gap:.4rem"><input type="checkbox" id="sample" /> sample (creative)</span>
+        </label>
+        <button id="run" type="button" disabled>Generate</button>
+      </div>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+
+      <div style="margin-top:.4rem">
+        <span style="font-size:.82rem;color:var(--muted)">Answer</span>
+        <div class="flan-out" id="out" aria-live="polite"></div>
+      </div>
+
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>time <b id="rMs">–</b></span>
+        <span>speed <b id="rTps">–</b></span>
+        <span>tokens in→out <b id="rTok">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside — the exact input, its tokens, and decode timing</h3>
+      <p class="muted">
+        There is no hidden prompt engineering here. This is the <em>literal</em> string the encoder received,
+        split into the sub-word tokens it actually saw (T5 uses SentencePiece — a leading <code>·</code> marks
+        a word boundary). Then the decoder's real per-token timeline: one bar per generated token.
+      </p>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Generate something to inspect the input the model was fed.</div>
+      <div id="insideWrap" hidden>
+        <p class="muted" style="font-size:.8rem;margin:.4rem 0 .2rem">Exact input string fed to the encoder:</p>
+        <div class="fed-input" id="fedInput"></div>
+        <div class="stat-row">
+          <div class="stat"><div class="k">Input tokens</div><div class="v" id="inTok">–</div></div>
+          <div class="stat"><div class="k">Output tokens</div><div class="v" id="outTok">–</div></div>
+          <div class="stat"><div class="k">Decode mode</div><div class="v" id="mode" style="font-size:1rem">–</div></div>
+        </div>
+        <p class="muted" style="font-size:.8rem;margin:.6rem 0 .2rem">Input tokens (SentencePiece):</p>
+        <div class="tok-wrap" id="tokens"></div>
+        <p class="muted" style="font-size:.82rem;margin:.8rem 0 .3rem">Per-token decode timeline (ms per token):</p>
+        <canvas id="timeline" class="timeline" aria-label="Bar chart of milliseconds taken to generate each output token"></canvas>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        One 100 MB model that translates, summarizes, answers, and classifies — driven entirely by plain
+        instructions — is a whole toolbox in a tab. No task-specific model to ship for each feature, no chat
+        template to wrangle, no server bill, and the text never leaves the device.
+      </p>
+      <ul>
+        <li><strong>Universal text tool</strong> — one input box that does many jobs; swap the instruction, not the model.</li>
+        <li><strong>Offline utilities</strong> — quick translate / rephrase / classify in a PWA with no network.</li>
+        <li><strong>Structured extraction</strong> — instruct it to pull a field or label and read the answer directly.</li>
+        <li><strong>Pipeline glue</strong> — turn transcripts or retrieved snippets into answers on-device.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">The same input, five different instructions — feel how the verb changes the task.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">A "universal text tool": one box, a menu of jobs — translate, TL;DR, rephrase, classify.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">"Reason step by step" — coax chain-of-thought out of a tiny model and see it help (or not).</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">On-device RAG: MiniLM retrieves the right snippet, FLAN-T5 answers from it.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>The whole task lives in the input string — no template, no roles:</p>
+      <pre><code>import { pipeline } from "@huggingface/transformers";
+
+const flan = await pipeline(
+  "text2text-generation",
+  "Xenova/flan-t5-small",
+); // downloads + caches ~100 MB once
+
+// the instruction IS the prompt — change the verb to change the task:
+await flan("Is the following review positive or negative? Review: The battery dies in an hour.");
+// → [{ generated_text: "negative" }]   ← classification is where the small model shines
+
+await flan("Answer the question based on the context.\n" +
+  "Context: The museum is closed on Mondays.\nQuestion: When is the museum closed?");
+// → [{ generated_text: "Mondays" }]    ← reading-comprehension, not closed-book recall</code></pre>
+      <p class="muted">
+        For the live token stream and the decode timeline, this page passes a <code>TextStreamer</code> so it
+        can timestamp each generated token — all inside a Web Worker so the UI never janks.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/Xenova/flan-t5-small" target="_blank" rel="noopener">Model card — Xenova/flan-t5-small (ONNX)</a></li>
+        <li><a href="https://huggingface.co/google/flan-t5-small" target="_blank" rel="noopener">Original FLAN-T5-small weights &amp; card (Google)</a></li>
+        <li><a href="https://arxiv.org/abs/2210.11416" target="_blank" rel="noopener">Paper — Scaling Instruction-Finetuned Language Models (Chung et al., 2022)</a></li>
+        <li><a href="https://arxiv.org/abs/1910.10683" target="_blank" rel="noopener">Paper — T5: the encoder-decoder text-to-text framework (Raffel et al., 2019)</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { FlanEngine, renderTokens, drawTimeline, renderStats, FLAN_CSS } from "./t2t.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = FLAN_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new FlanEngine();
+      let last = null;
+
+      const PRESETS = [
+        { t: "Sentiment", d: "reliable ✓", p: "Is the following review positive or negative? Review: The battery dies in an hour and support never replied." },
+        { t: "Summarize", d: "reliable ✓", p: "summarize: The city council approved a new plan to add protected bike lanes on twelve major streets over the next two years, funded by a mix of state grants and local revenue, after months of public debate about safety and traffic." },
+        { t: "Yes/No", d: "reliable ✓", p: "Answer the following yes/no question. Can you breathe underwater without any equipment?" },
+        { t: "Read & answer", d: "reliable ✓ (answers from context)", p: "Answer the question based on the context.\nContext: The museum is open from Tuesday to Sunday, 10am to 6pm, and is closed on Mondays.\nQuestion: Which day is the museum closed?" },
+        { t: "Topic label", d: "classify into a label", p: "What topic is this text about: sports, politics, or technology? Text: The new smartphone features a faster chip and a brighter display." },
+        { t: "Translate", d: "approximate at this size", p: "translate English to German: The book is on the table." },
+        { t: "Reason", d: "experimental — small model", p: "Answer the following question by reasoning step by step. A shop had 12 apples, sold 5, then received 8 more. How many apples now?" },
+      ];
+      $("presets").replaceChildren(...PRESETS.map((pr) => {
+        const b = document.createElement("button");
+        b.type = "button"; b.className = "preset";
+        b.innerHTML = `<span class="t">${pr.t}</span><br><span class="d">${pr.d}</span>`;
+        b.addEventListener("click", () => { $("prompt").value = pr.p; });
+        return b;
+      }));
+
+      $("maxTok").addEventListener("input", () => { $("maxVal").textContent = $("maxTok").value; });
+      $("beams").addEventListener("input", () => {
+        const b = +$("beams").value;
+        $("beamVal").textContent = b === 1 ? "1 (greedy, streams)" : b + " (beam search)";
+        $("sample").disabled = b !== 1;
+      });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/flan-t5-small", runtime: "transformers.js", dtype: "q8", sizeMB: 100, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("prompt").disabled = false; $("run").disabled = false; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        const input = $("prompt").value.trim();
+        if (!input) { $("status").hidden = false; $("status").textContent = "Write an instruction first."; return; }
+        $("run").disabled = true; $("status").hidden = false; $("status").classList.remove("err");
+        $("status").textContent = "Generating…"; $("out").textContent = "";
+        try {
+          const opts = { maxNewTokens: +$("maxTok").value, numBeams: +$("beams").value, doSample: $("sample").checked, temperature: 0.9, topK: 50 };
+          const r = await engine.run(input, opts, (partial) => { $("out").textContent = partial; });
+          last = r;
+          $("out").textContent = r.output || "(empty output)";
+          renderStats({ backend: $("rBackend"), ms: $("rMs"), toksec: $("rTps"), inTok: $("inTok"), outTok: $("outTok") }, r);
+          $("rTok").textContent = `${r.inTokens} → ${r.outTokens}`;
+          $("readout").hidden = false;
+          // See inside
+          $("insideEmpty").hidden = true; $("insideWrap").hidden = false;
+          $("fedInput").textContent = r.input;
+          $("mode").textContent = r.beams > 1 ? `beam ×${r.beams}` : (r.sampled ? "sampling" : "greedy");
+          renderTokens($("tokens"), r.inTokenStrings);
+          drawTimeline($("timeline"), r.intervals);
+          $("status").textContent = `Done on ${r.device.toUpperCase()}.`; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Generation failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+
+      addEventListener("resize", () => { if (last) drawTimeline($("timeline"), last.intervals); });
+    </script>
+  </body>
+</html>

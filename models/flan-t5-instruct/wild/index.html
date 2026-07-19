@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>FLAN-T5-small — Wild: reason step by step · Web AI Showcase</title>
+    <meta name="description" content="Chain-of-thought in a 80M-parameter model: ask the same question directly vs 'reason step by step' and watch whether thinking out loud changes the answer — honestly, in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🪄</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">FLAN-T5-small</a></p>
+
+    <header>
+      <p class="eyebrow">Wild · text2text-generation · WASM</p>
+      <h1>Think out loud: direct vs step-by-step</h1>
+      <p class="lede">
+        Large models get more accurate when told to "reason step by step" — chain-of-thought. Does a tiny
+        80M-param model? Ask the same question two ways at once: once for a <strong>direct answer</strong>,
+        once asking it to <strong>reason step by step</strong>, and compare. Sometimes the reasoning pulls it
+        to the right answer; sometimes it wanders. Both are honest, real generations.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Ask both ways</h3>
+      <div id="model-loader"></div>
+
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.6rem 0" id="samples"></div>
+
+      <label style="display:flex;flex-direction:column;gap:.3rem;font-size:.82rem">
+        Question
+        <textarea id="q" rows="3" disabled>Roger has 5 tennis balls. He buys 2 more cans of tennis balls. Each can has 3 tennis balls. How many tennis balls does he have now?</textarea>
+      </label>
+      <div style="margin:.6rem 0;display:flex;gap:.4rem;flex-wrap:wrap;align-items:center">
+        <label style="font-size:.82rem">reasoning budget <input type="range" id="max" min="20" max="160" step="10" value="100" style="vertical-align:middle" /> <span id="maxVal" style="font-family:var(--font-mono)">100</span> tokens</label>
+        <button id="run" type="button" disabled>Ask both ways</button>
+        <span class="status" id="status" role="status" aria-live="polite"></span>
+      </div>
+
+      <div class="flan-io">
+        <div>
+          <span style="font-size:.82rem;color:var(--muted)">Direct answer</span>
+          <div class="flan-out" id="direct" aria-live="polite"></div>
+          <p class="fed-input" id="fedDirect" style="margin-top:.4rem;font-size:.74rem"></p>
+        </div>
+        <div>
+          <span style="font-size:.82rem;color:var(--muted)">Reason step by step</span>
+          <div class="flan-out" id="cot" aria-live="polite"></div>
+          <p class="fed-input" id="fedCot" style="margin-top:.4rem;font-size:.74rem"></p>
+        </div>
+      </div>
+      <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>direct <b id="rD">–</b></span><span>step-by-step <b id="rC">–</b></span></div>
+    </section>
+
+    <p class="crumbs" style="margin-top:1.5rem"><a href="../multi-model/">Next: Multi-model — on-device RAG →</a></p>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via 🤗 Transformers.js.
+      <a href="../">← Back to FLAN-T5-small</a>
+    </footer>
+
+    <script type="module">
+      import { FlanEngine, FLAN_CSS } from "../t2t.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = FLAN_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new FlanEngine();
+
+      const SAMPLES = [
+        "Roger has 5 tennis balls. He buys 2 more cans of tennis balls. Each can has 3 tennis balls. How many tennis balls does he have now?",
+        "A shop had 12 apples, sold 5, then received 8 more. How many apples now?",
+        "If it takes 5 machines 5 minutes to make 5 widgets, how long for 100 machines to make 100 widgets?",
+        "Sarah is twice as old as Tom. Tom is 6. How old will Sarah be in 4 years?",
+      ];
+      $("samples").replaceChildren(...SAMPLES.map((s, i) => {
+        const b = document.createElement("button"); b.type = "button"; b.className = "chip"; b.textContent = "Q" + (i + 1);
+        b.title = s; b.addEventListener("click", () => { $("q").value = s; });
+        return b;
+      }));
+
+      $("max").addEventListener("input", () => { $("maxVal").textContent = $("max").value; });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/flan-t5-small", runtime: "transformers.js", dtype: "q8", sizeMB: 100, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("q").disabled = false; $("run").disabled = false; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        const q = $("q").value.trim();
+        if (!q) { $("status").textContent = "Enter a question."; return; }
+        const directPrompt = `Answer the following question. ${q}`;
+        const cotPrompt = `Answer the following question by reasoning step by step. ${q}`;
+        $("run").disabled = true; $("status").classList.remove("err"); $("status").textContent = "Thinking both ways…";
+        $("direct").textContent = ""; $("cot").textContent = "";
+        $("fedDirect").textContent = directPrompt; $("fedCot").textContent = cotPrompt;
+        try {
+          const max = +$("max").value;
+          const rd = await engine.run(directPrompt, { maxNewTokens: Math.min(40, max) }, (p) => { $("direct").textContent = p; });
+          $("direct").textContent = rd.output || "(empty)";
+          const rc = await engine.run(cotPrompt, { maxNewTokens: max }, (p) => { $("cot").textContent = p; });
+          $("cot").textContent = rc.output || "(empty)";
+          $("readout").hidden = false; $("rBackend").textContent = rd.device.toUpperCase();
+          $("rD").textContent = (rd.ms / 1000).toFixed(2) + " s"; $("rC").textContent = (rc.ms / 1000).toFixed(2) + " s";
+          $("status").textContent = "Compare the two — did reasoning help?";
+        } catch (err) { $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>
