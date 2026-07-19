@@ -38,18 +38,19 @@
       </div>
 
       <label for="prompt" style="font-size:.82rem;color:var(--muted);display:block;margin-top:.6rem">Phrase to localize</label>
-      <input id="prompt" class="prompt-input" type="text" value="the animal on the left" disabled />
+      <input id="prompt" class="prompt-input" type="text" value="a cat" disabled />
       <div class="chip-row">
-        <button class="seg-chip" type="button" data-set="the animal on the left">the animal on the left</button>
         <button class="seg-chip" type="button" data-set="a cat">a cat</button>
+        <button class="seg-chip" type="button" data-set="the animal on the left">the animal on the left</button>
         <button class="seg-chip" type="button" data-set="the furniture">the furniture</button>
         <button class="seg-chip" type="button" data-set="the thing in the middle">the thing in the middle</button>
       </div>
+      <p class="muted" style="font-size:.78rem;margin:.2rem 0 0">Concrete nouns localize crisply; relational phrases ("on the left") score lower — if nothing clears the threshold, lower it.</p>
       <div class="slider-row">
         <button id="runBtn" type="button" disabled>Localize → identify</button>
         <label for="thresh" style="margin-inline-start:1rem">Threshold</label>
-        <input id="thresh" type="range" min="0.05" max="0.95" step="0.01" value="0.4" />
-        <output id="threshOut">0.40</output>
+        <input id="thresh" type="range" min="0.05" max="0.95" step="0.01" value="0.35" />
+        <output id="threshOut">0.35</output>
       </div>
 
       <div class="canvas-grid">
@@ -94,27 +95,40 @@
       const seg = new ClipsegEngine();
       const vit = new ViTEngine();
       let segReady = false, vitReady = false, img = null, imgURL = null, lastSeg = null;
+      let booted = false, running = false, rerun = false;
 
-      async function setImage(src) { imgURL = src; img = await loadImage(src); if (segReady && vitReady) run(); }
+      // setImage only loads pixels — it never auto-runs. Callers decide when to run(), so we never
+      // fire a segmentation before the image (or both models) are actually ready.
+      async function setImage(src) { imgURL = src; img = await loadImage(src); }
+      async function pickImage(src, viaSample) {
+        if (!viaSample) document.querySelectorAll(".sample-thumb").forEach((x) => x.classList.remove("active"));
+        await setImage(src);
+        if (segReady && vitReady) run();
+      }
       for (const t of document.querySelectorAll(".sample-thumb")) {
-        const pick = async () => { document.querySelectorAll(".sample-thumb").forEach((x) => x.classList.remove("active")); t.classList.add("active"); await setImage(await urlToDataURL(t.dataset.src)); };
+        const pick = async () => { document.querySelectorAll(".sample-thumb").forEach((x) => x.classList.remove("active")); t.classList.add("active"); await pickImage(await urlToDataURL(t.dataset.src), true); };
         t.addEventListener("click", pick);
         t.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(); } });
       }
       $("drop").addEventListener("click", () => $("file").click());
       $("drop").addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); $("file").click(); } });
-      $("file").addEventListener("change", async (e) => { const f = e.target.files?.[0]; if (f) { document.querySelectorAll(".sample-thumb").forEach((x) => x.classList.remove("active")); await setImage(await fileToDataURL(f)); } });
+      $("file").addEventListener("change", async (e) => { const f = e.target.files?.[0]; if (f) await pickImage(await fileToDataURL(f)); });
       for (const ev of ["dragover", "dragenter"]) $("drop").addEventListener(ev, (e) => { e.preventDefault(); $("drop").classList.add("drag"); });
       for (const ev of ["dragleave", "drop"]) $("drop").addEventListener(ev, (e) => { e.preventDefault(); $("drop").classList.remove("drag"); });
-      $("drop").addEventListener("drop", async (e) => { const f = e.dataTransfer?.files?.[0]; if (f) { await setImage(await fileToDataURL(f)); } });
-      for (const c of document.querySelectorAll(".seg-chip")) c.addEventListener("click", () => { $("prompt").value = c.dataset.set; maybeRun(); });
+      $("drop").addEventListener("drop", async (e) => { const f = e.dataTransfer?.files?.[0]; if (f) await pickImage(await fileToDataURL(f)); });
+      for (const c of document.querySelectorAll(".seg-chip")) c.addEventListener("click", () => { $("prompt").value = c.dataset.set; if (segReady && vitReady) run(); });
       $("prompt").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); run(); } });
       $("runBtn").addEventListener("click", run);
       $("thresh").addEventListener("input", () => { $("threshOut").textContent = (+$("thresh").value).toFixed(2); });
 
-      function maybeReady() { if (segReady && vitReady) { $("prompt").disabled = false; $("runBtn").disabled = false; if (img) run(); else init(); } }
-      async function init() { await setImage(await urlToDataURL("../sample-pets.jpg")); }
-      function maybeRun() { if (segReady && vitReady) run(); }
+      // Fire the auto-run exactly once, after BOTH models are ready and the default image has loaded.
+      async function maybeReady() {
+        if (!segReady || !vitReady || booted) return;
+        booted = true;
+        $("prompt").disabled = false; $("runBtn").disabled = false;
+        if (!img) await setImage(await urlToDataURL("../sample-pets.jpg"));
+        run();
+      }
 
       createModelLoader({
         mount: $("loader-clipseg"),
@@ -131,8 +145,10 @@
 
       async function run() {
         if (!segReady || !vitReady || !img) return;
+        if (running) { rerun = true; return; } // serialize: coalesce overlapping triggers
+        running = true;
         const prompts = parsePrompts($("prompt").value, 1);
-        if (!prompts.length) return;
+        if (!prompts.length) { running = false; return; }
         $("runStatus").hidden = false; $("runStatus").classList.remove("err"); $("runStatus").textContent = "1/2 · CLIPSeg localizing…";
         try {
           lastSeg = await seg.segment(imgURL, prompts);
@@ -150,7 +166,12 @@
           $("readout").hidden = false;
           $("rCls").textContent = res.ms + " ms";
           $("rTop").textContent = res.labels[0].split(",")[0];
-        } catch (err) { $("runStatus").hidden = false; $("runStatus").classList.add("err"); $("runStatus").textContent = "Failed: " + err.message; }
+        } catch (err) {
+          $("runStatus").hidden = false; $("runStatus").classList.add("err"); $("runStatus").textContent = "Failed: " + err.message;
+        } finally {
+          running = false;
+          if (rerun) { rerun = false; run(); } // run once more with the latest inputs
+        }
       }
 
       function paintMaskWithBox(m, thr, bb) {
