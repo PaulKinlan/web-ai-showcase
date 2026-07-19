@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>STS Practical — dedup with a real threshold · Web AI Showcase</title>
+    <meta name="description" content="Paste a list of sentences and a cutoff; the cross-encoder scores every pair and flags the near-duplicates above your threshold. Deduplication that runs entirely in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>📏</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">STS-B similarity</a></p>
+
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Practical: deduplicate with a real threshold</h1>
+      <p class="lede">
+        A graded score lets you set a <em>cutoff</em>. Paste a list of sentences — support questions, survey
+        answers, bug titles — pick a similarity threshold, and the model scores every pair and flags the ones
+        that are near-duplicates. This is the honest version of "are these the same?": not a guess, a number
+        you can tune.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.4rem">
+        Sentences (one per line)
+        <textarea id="lines" dir="auto" rows="8" disabled>How do I reset my password?
+What's the way to change my password?
+Can I get a refund?
+How long does shipping take?
+When will my order arrive?
+I forgot my password, how do I recover it?
+Do you offer money-back returns?</textarea>
+      </label>
+      <label style="display:flex;align-items:center;gap:.6rem;font-size:.82rem;margin-top:.6rem">
+        Duplicate threshold: <b id="thVal" style="font-family:var(--font-mono)">3.5</b> / 5
+        <input id="th" type="range" min="1" max="5" step="0.1" value="3.5" disabled style="flex:1;min-inline-size:120px" />
+      </label>
+      <div style="margin:.5rem 0"><button id="run" type="button" disabled>Find duplicates</button></div>
+
+      <div id="resultWrap" hidden>
+        <p class="muted" style="font-size:.82rem">All pairs, most similar first — highlighted rows are at or above your threshold.</p>
+        <div class="pair-list" id="pairs" aria-live="polite"></div>
+        <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>latency <b id="rMs">–</b></span><span>pairs <b id="rN">–</b></span><span>duplicates <b id="rDup">–</b></span></div>
+      </div>
+    </section>
+
+    <p class="muted" style="font-size:.85rem">
+      Note how "How do I reset my password?", "What's the way to change my password?" and "I forgot my
+      password, how do I recover it?" all cluster high, while "How long does shipping take?" and "When will my
+      order arrive?" form a separate near-duplicate pair — different words, same intent. That's the
+      cross-encoder reading meaning, not matching keywords.
+    </p>
+
+    <p class="crumbs"><a href="../basics/">← Basics</a> · <a href="../">STS-B similarity</a> · Next: <a href="../wild/">Wild →</a></p>
+
+    <script type="module">
+      import { STSEngine, renderPairTable, parseLines, STS_CSS } from "../sts.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = STS_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new STSEngine();
+      let loaded = false;
+
+      $("th").addEventListener("input", () => { $("thVal").textContent = (+$("th").value).toFixed(1); if (loaded && !$("resultWrap").hidden) run(); });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "cross-encoder/stsb-TinyBERT-L4", runtime: "transformers.js", dtype: "fp32", sizeMB: 58, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("lines").disabled = false; $("th").disabled = false; $("run").disabled = false; loaded = true; run(); },
+      });
+
+      $("run").addEventListener("click", run);
+      async function run() {
+        if (!loaded) return;
+        const lines = parseLines($("lines").value);
+        if (lines.length < 2) { $("runStatus").hidden = false; $("runStatus").textContent = "Enter at least two sentences."; $("runStatus").classList.add("err"); return; }
+        const pairs = [];
+        for (let i = 0; i < lines.length; i++) for (let j = i + 1; j < lines.length; j++) pairs.push([lines[i], lines[j]]);
+        $("run").disabled = true;
+        $("runStatus").hidden = false; $("runStatus").classList.remove("err"); $("runStatus").textContent = `Scoring ${pairs.length} pairs…`;
+        try {
+          const th = +$("th").value;
+          const out = await engine.scoreBatch(pairs);
+          renderPairTable($("pairs"), out.results, { threshold: th });
+          const dup = out.results.filter((r) => r.score5 >= th).length;
+          $("resultWrap").hidden = false;
+          $("readout").hidden = false; $("rBackend").textContent = out.device.toUpperCase(); $("rMs").textContent = out.ms + " ms"; $("rN").textContent = pairs.length; $("rDup").textContent = dup;
+          $("runStatus").textContent = "Done."; $("runStatus").classList.add("ok");
+        } catch (err) { $("runStatus").textContent = "Failed: " + err.message; $("runStatus").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      }
+    </script>
+  </body>
+</html>
