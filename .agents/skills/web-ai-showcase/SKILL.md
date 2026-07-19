@@ -53,7 +53,8 @@ of every model you can genuinely run in a browser — not a token set. Read `CLA
   **got-ocr2** (no `got_ocr2` class; no `image-text-to-text` pipeline in 3.7.5; safetensors-only),
   **git** (no `git` class; no `Xenova/git-*` ONNX), **vilt** (no `vilt` class / no
   `visual-question-answering` pipeline / no ONNX), **kosmos-2** (no `kosmos` class in
-  transformers.js; no browser ONNX), **internvl** (no `internvl` class →
+  transformers.js; no browser ONNX), **mask2former** (no `Mask2Former...` class in transformers.js
+  3.7.5/4.2 — only the image processor; no browser ONNX), **internvl** (no `internvl` class →
   `Unsupported model type: internvl`), **keyphrase-extraction** (no token-classification keyphrase
   ONNX — only seq2seq generators), **electra** (ONNX is encoder-only; no RTD discriminator head),
   **blip** / **bark** (gated / no usable ONNX). Never mislabel a substitute as the blocked family.

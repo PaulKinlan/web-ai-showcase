@@ -38,12 +38,13 @@ short version for tools that look for `AGENTS.md`.
   class/processor), **got-ocr2** (no `got_ocr2` class; `image-text-to-text` pipeline absent in
   3.7.5; stepfun-ai repos safetensors-only), **git** (no `git` class; no `Xenova/git-*` ONNX repo),
   **vilt** (no `vilt` class / no `visual-question-answering` pipeline / no ONNX), **kosmos-2** (no
-  `kosmos` class in transformers.js; no browser ONNX), **internvl** (no `internvl` class →
-  `Unsupported model type: internvl`), **keyphrase-extraction** (no token-classification keyphrase
-  model has a browser ONNX — only seq2seq generators; don't mislabel a generator/NER as keyphrase
-  spans), **electra** (ONNX exports are encoder-only; the replaced-token-detection discriminator
-  head is absent), **blip** / **bark** (repos gated / no usable ONNX). Never mislabel a substitute
-  as the blocked family.
+  `kosmos` class in transformers.js; no browser ONNX), **mask2former** (no `Mask2Former...` class in
+  transformers.js 3.7.5/4.2 — only the image processor; no browser ONNX), **internvl** (no
+  `internvl` class → `Unsupported model type: internvl`), **keyphrase-extraction** (no
+  token-classification keyphrase model has a browser ONNX — only seq2seq generators; don't mislabel
+  a generator/NER as keyphrase spans), **electra** (ONNX exports are encoder-only; the
+  replaced-token-detection discriminator head is absent), **blip** / **bark** (repos gated / no
+  usable ONNX). Never mislabel a substitute as the blocked family.
 - **Version-pin escape hatch (isolated).** If a model's class exists only in a transformers.js newer
   than the shared 3.7.5 pin (e.g. SAM2's `Sam2Model` needs 4.2.0), pin the newer version LOCALLY in
   that one model's `worker.js` only — never bump shared `lib/webai.js`. `lib/model-cache.js` is

@@ -138,13 +138,14 @@ span/entity-prompt pipeline), **got-ocr2** (no `got_ocr2` class in 3.7.5/4.2; th
 ONNX), **git** (no `git` model class; no `Xenova/git-*` ONNX repo exists), **vilt** (no `vilt`
 class, `visual-question-answering` is not a supported pipeline task, `ViltFeatureExtractor`
 unimplemented, no ONNX export anywhere), **kosmos-2** (no `kosmos` class in any transformers.js
-version; no browser ONNX — repos gated / safetensors-only), **internvl** (no `internvl` class →
-`Unsupported model type: internvl`; only third-party ONNX, upstream safetensors-only),
-**keyphrase-extraction** (no token-classification keyphrase model ships a browser-loadable ONNX — a
-151-repo scan found only seq2seq generators, which can't produce per-token B/I/O spans; don't
-mislabel a generator or plain NER as keyphrase span extraction), **electra** (ONNX exports
-encoder-only; RTD discriminator head absent), **blip** / **bark** (gated / no usable ONNX). Never
-mislabel a substitute as the blocked family.
+version; no browser ONNX — repos gated / safetensors-only), **mask2former** (no `Mask2Former...`
+class in transformers.js 3.7.5/4.2 — only the image processor; no browser ONNX), **internvl** (no
+`internvl` class → `Unsupported model type: internvl`; only third-party ONNX, upstream
+safetensors-only), **keyphrase-extraction** (no token-classification keyphrase model ships a
+browser-loadable ONNX — a 151-repo scan found only seq2seq generators, which can't produce per-token
+B/I/O spans; don't mislabel a generator or plain NER as keyphrase span extraction), **electra**
+(ONNX exports encoder-only; RTD discriminator head absent), **blip** / **bark** (gated / no usable
+ONNX). Never mislabel a substitute as the blocked family.
 
 **Version-pin escape hatch (isolated).** A model whose class exists only in a transformers.js newer
 than the shared 3.7.5 pin (e.g. SAM2 — `Sam2Model` lands in 4.2.0, absent from 3.7.5) may pin the
