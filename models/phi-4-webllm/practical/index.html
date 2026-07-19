@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Phi-4-mini Practical — on-device tool routing · Web AI Showcase</title>
+    <meta name="description" content="Phi-4-mini's function-calling training, in the browser: hand it a set of tools and a request, and it picks the right tool and emits a strict JSON call for it — validated live, entirely on your GPU via WebLLM." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🔷</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Phi-4-mini</a></p>
+    <header>
+      <p class="eyebrow">use case · practical · function calling</p>
+      <h1>Practical: on-device tool routing</h1>
+      <p class="lede">
+        The move that turns a chat model into an <strong>agent</strong>: given a set of tools and a user
+        request, decide <em>which</em> tool to call and produce a valid call for it. Phi-4-mini is
+        specifically trained for function calling, so it's good at this — and here it runs entirely on your
+        GPU, emitting <strong>strict JSON</strong> (WebLLM's JSON mode) that your app could dispatch to a
+        real API. Nothing leaves the device.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <div id="fallback" class="fallback" hidden></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:1rem;margin-top:.6rem">
+        <div style="display:flex;flex-direction:column;gap:.4rem">
+          <p style="font-size:.82rem;color:var(--muted);margin:0">Available tools (the model must choose one, or <code>none</code>):</p>
+          <pre class="wire" id="tools" style="max-block-size:14rem"></pre>
+          <label style="font-size:.82rem;color:var(--muted)">Example requests</label>
+          <div class="chips" id="samples" role="group" aria-label="Example requests">
+            <button class="chip" type="button">What's the weather in Tokyo tomorrow?</button>
+            <button class="chip" type="button">What is 18% of 249.90?</button>
+            <button class="chip" type="button">Find recent papers on WebGPU performance.</button>
+            <button class="chip" type="button">Say something encouraging.</button>
+          </div>
+          <label for="req" style="font-size:.82rem;color:var(--muted)">User request</label>
+          <textarea id="req" rows="3" style="width:100%">What's the weather in Tokyo tomorrow?</textarea>
+          <button id="run" type="button" disabled>Route to a tool</button>
+          <button id="stop" type="button" class="secondary" hidden>Stop</button>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:.4rem">
+          <label style="font-size:.82rem;color:var(--muted)">Tool call (validated — parses or shows the error)</label>
+          <pre class="wire" id="out" style="min-block-size:12rem"><span class="muted">The chosen tool + arguments stream here as JSON, then are parsed and pretty-printed.</span></pre>
+          <p class="status" id="valid" role="status" aria-live="polite" style="font-size:.8rem"></p>
+          <div class="readout" id="readout" hidden><span>first token <b id="rTtft">–</b></span><span>decode <b id="rTps">–</b></span><span>total <b id="rMs">–</b></span></div>
+        </div>
+      </div>
+    </section>
+
+    <section aria-labelledby="how-h">
+      <h2 id="how-h">How tool routing works</h2>
+      <p class="muted">
+        The tools are described in the system prompt, and the model is asked to return a single JSON object
+        <code>{ "tool": "…", "arguments": { … } }</code>. Passing
+        <code>response_format: { type: "json_object" }</code> constrains WebLLM's sampler so the output is
+        always valid JSON — no stray prose around it. The page then <code>JSON.parse</code>s the result and
+        checks the chosen tool exists and its arguments match the declared parameters. In a real app you'd
+        take that object and actually call the function; here we just show it, so you can see the model's
+        routing decision on-device.
+      </p>
+    </section>
+
+    <p class="crumbs"><a href="../basics/">← Basics</a> · <a href="../">Phi-4-mini</a> · Next: <a href="../wild/">Wild →</a></p>
+
+    <script type="module">
+      import { WebLLMChatEngine, probeWebGPU, escapeHTML, webgpuFallbackHTML, CHAT_CSS } from "../webllm-chat.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = CHAT_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new WebLLMChatEngine();
+      let loaded = false, generating = false;
+
+      const TOOLS = [
+        { name: "get_weather", description: "Get the weather forecast for a place.", parameters: { location: "string", when: "string (e.g. today, tomorrow, a date)" } },
+        { name: "calculate", description: "Evaluate an arithmetic expression.", parameters: { expression: "string" } },
+        { name: "search_web", description: "Search the web for information.", parameters: { query: "string" } },
+        { name: "none", description: "No tool is needed — answer directly.", parameters: { reply: "string" } },
+      ];
+      $("tools").textContent = JSON.stringify(TOOLS, null, 2);
+      const TOOL_NAMES = new Set(TOOLS.map((t) => t.name));
+
+      for (const c of $("samples").children) c.addEventListener("click", () => { $("req").value = c.textContent; });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Phi-4-mini-instruct-q4f16_1-MLC", runtime: "webllm", dtype: "q4f16_1", sizeMB: 2200, requiresWebGPU: true },
+        load: async (onProgress) => { await engine.load((p) => { if (typeof p.progress === "number") onProgress({ status: "progress", progress: p.progress * 100 }); }); return engine; },
+        onReady: () => { loaded = true; $("run").disabled = false; },
+        onError: async (err) => { if (String(err?.message ?? err).includes("needs-webgpu")) { const probe = await probeWebGPU(); $("fallback").hidden = false; $("fallback").innerHTML = webgpuFallbackHTML(probe); } },
+      });
+
+      async function run() {
+        if (!loaded || generating) return;
+        const req = $("req").value.trim();
+        if (!req) { $("status").textContent = "Type a request first."; return; }
+        generating = true; $("run").disabled = true; $("stop").hidden = false; $("valid").textContent = "";
+        $("status").classList.remove("err"); $("status").textContent = "Routing…";
+        $("out").innerHTML = '<span class="caret"></span>'; let acc = "";
+        const system = `You are a tool-routing assistant. You are given a list of tools as JSON. Choose exactly ONE tool that best serves the user's request and return a single JSON object of the form {"tool": "<tool name>", "arguments": { ... }} with arguments matching that tool's parameters. If no tool fits, use the "none" tool with a short reply. Output only the JSON object.\n\nTools:\n${JSON.stringify(TOOLS)}`;
+        try {
+          const res = await engine.chat(
+            { messages: [{ role: "system", content: system }, { role: "user", content: req }], temperature: 0.1, top_p: 0.9, max_tokens: 256, response_format: { type: "json_object" } },
+            { onToken: (d) => { acc += d; $("out").innerHTML = escapeHTML(acc) + '<span class="caret"></span>'; } },
+          );
+          const raw = acc || "";
+          try {
+            const parsed = JSON.parse(raw);
+            $("out").textContent = JSON.stringify(parsed, null, 2);
+            if (!parsed.tool || !TOOL_NAMES.has(parsed.tool)) {
+              $("valid").textContent = "⚠ Parsed, but the chosen tool isn't one of the declared tools: " + JSON.stringify(parsed.tool); $("valid").classList.remove("ok"); $("valid").classList.add("err");
+            } else {
+              $("valid").textContent = `✓ Valid call → ${parsed.tool}(${Object.keys(parsed.arguments || {}).join(", ")})`; $("valid").classList.remove("err"); $("valid").classList.add("ok");
+            }
+          } catch (e) {
+            $("out").textContent = raw || "(no output)";
+            $("valid").textContent = "⚠ Model output did not parse as JSON: " + e.message; $("valid").classList.remove("ok"); $("valid").classList.add("err");
+          }
+          const decodeMs = Math.max(1, res.ms - res.ttft);
+          $("readout").hidden = false; $("rTtft").textContent = res.ttft + " ms"; $("rTps").textContent = (res.chunks > 1 ? ((res.chunks - 1) / (decodeMs / 1000)).toFixed(1) : "0") + " tok/s"; $("rMs").textContent = res.ms + " ms";
+          $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (err) { $("out").textContent = acc || "(failed)"; $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { generating = false; $("run").disabled = false; $("stop").hidden = true; }
+      }
+      $("run").addEventListener("click", run);
+      $("stop").addEventListener("click", () => engine.stop());
+    </script>
+  </body>
+</html>
