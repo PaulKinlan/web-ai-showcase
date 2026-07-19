@@ -118,7 +118,10 @@ async function main() {
   const builtTaxo = taxo.filter((f) => builtByFam.has(f));
   const pending = taxo.filter((f) => !builtByFam.has(f));
 
-  console.log("=== ARCHITECTURE-FAMILY COVERAGE (the bounded, honest denominator) ===");
+  console.log("=== ARCHITECTURE-FAMILY COVERAGE (SECONDARY metric — 'kinds of model') ===");
+  console.log(
+    "(PRIMARY denominator is the evidence-backed eligible catalogue: inventory/summary.json)",
+  );
   console.log(`taxonomy families: ${taxo.length}`);
   console.log(`built (>=1 demo):  ${builtTaxo.length} / ${taxo.length}`);
   console.log(
