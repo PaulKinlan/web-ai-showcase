@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>DialoGPT Basics — one message, one streamed reply · Web AI Showcase</title>
+    <meta name="description" content="The fundamental DialoGPT capability: send one message, get one streamed reply, and see the exact EOS-joined context the model was given. All on-device on plain WASM." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>💬</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">DialoGPT</a></p>
+
+    <header>
+      <p class="eyebrow">use case · basics</p>
+      <h1>Basics: one message, one reply</h1>
+      <p class="lede">
+        The simplest thing DialoGPT does: you say one thing, it says one thing back — streamed token by
+        token. Below the reply you can see the exact <strong>EOS-joined context</strong> the model was
+        handed: your message, then the end-of-text token, which is all it needs to know a turn has ended.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+
+      <div class="chat-input-row">
+        <label>Your message
+          <input id="msg" type="text" autocomplete="off" value="Does money buy happiness?" disabled />
+        </label>
+        <div class="chat-actions"><button id="send" type="button" disabled>Send</button></div>
+      </div>
+      <div class="sample-row" id="samples">
+        <button class="chip" type="button" data-t="Does money buy happiness?">happiness</button>
+        <button class="chip" type="button" data-t="What should I have for dinner?">dinner</button>
+        <button class="chip" type="button" data-t="Is time travel possible?">time travel</button>
+      </div>
+
+      <div class="chat-log" id="log" aria-live="polite" aria-label="Conversation" style="margin-top:.6rem"></div>
+
+      <p class="eyebrow" style="margin-top:.9rem">the exact context the model saw</p>
+      <div class="ctx-view" id="ctx"><span class="muted">Send a message to see the context.</span></div>
+
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>reply tokens <b id="rTok">–</b></span>
+        <span>time <b id="rMs">–</b></span>
+        <span>tok/s <b id="rTps">–</b></span>
+      </div>
+    </section>
+
+    <p class="muted" style="font-size:.85rem">
+      This is greedy decoding — the single most likely next token every step — so the reply is deterministic
+      and usually short. Try the <a href="../">main page</a> to switch on sampling, or
+      <a href="../wild/">Wild</a> to give it a personality.
+    </p>
+
+    <p class="crumbs"><a href="../">DialoGPT</a> · Next: <a href="../practical/">Practical →</a></p>
+
+    <script type="module">
+      import { DialoGPTEngine, DIALOGPT_CSS, renderContext } from "../dialogpt.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = DIALOGPT_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new DialoGPTEngine();
+      let ready = false, busy = false;
+
+      for (const c of $("samples").children) c.addEventListener("click", () => { $("msg").value = c.dataset.t; });
+
+      function addMessage(role, text) {
+        const div = document.createElement("div"); div.className = "msg " + role;
+        div.innerHTML = `<span class="who">${role === "user" ? "You" : "DialoGPT"}</span>`;
+        const body = document.createElement("span"); body.textContent = text; div.append(body);
+        $("log").append(div); $("log").scrollTop = $("log").scrollHeight; return body;
+      }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/DialoGPT-small-ONNX", runtime: "transformers.js", dtype: "q8", sizeMB: 130, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { ready = true; $("msg").disabled = false; $("send").disabled = false; $("msg").focus(); },
+      });
+
+      async function send() {
+        if (!ready || busy) return;
+        const text = $("msg").value.trim();
+        if (!text) return;
+        busy = true; $("send").disabled = true;
+        $("log").replaceChildren();
+        addMessage("user", text);
+        const turns = [text];
+        renderContext($("ctx"), turns, engine.eosStr);
+        $("status").hidden = false; $("status").classList.remove("err","ok"); $("status").textContent = "Replying…";
+        const botBody = addMessage("bot", "…"); botBody.parentElement.classList.add("thinking");
+        try {
+          const r = await engine.chat(turns, { maxNew: 48, greedy: true }, (msg) => {
+            botBody.parentElement.classList.remove("thinking"); botBody.textContent = msg.reply;
+            $("log").scrollTop = $("log").scrollHeight;
+          });
+          botBody.parentElement.classList.remove("thinking"); botBody.textContent = r.reply || "…";
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rTok").textContent = r.replyTokens;
+          $("rMs").textContent = (r.ms/1000).toFixed(2)+" s";
+          $("rTps").textContent = r.ms > 0 ? (r.replyTokens/(r.ms/1000)).toFixed(1) : "–";
+          $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (err) {
+          botBody.parentElement.classList.remove("thinking"); botBody.textContent = "(failed)";
+          $("status").textContent = "Failed: " + err.message; $("status").classList.add("err");
+        } finally { busy = false; $("send").disabled = false; }
+      }
+      $("send").addEventListener("click", send);
+      $("msg").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); send(); } });
+    </script>
+  </body>
+</html>

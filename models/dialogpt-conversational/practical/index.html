@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>DialoGPT Practical — quick-reply suggestions · Web AI Showcase</title>
+    <meta name="description" content="Generate several candidate replies to a message with DialoGPT sampling, then pick the one you like — an offline, private smart-reply generator running on plain WASM." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>💬</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">DialoGPT</a></p>
+
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Practical: quick-reply suggestions</h1>
+      <p class="lede">
+        The "smart reply" chips in your messaging app, but fully on-device. Paste a message you received and
+        DialoGPT samples <strong>three candidate replies</strong> — because sampling is random, each run
+        gives different options. Pick one, tweak it, done. No message ever leaves the tab.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+
+      <div class="chat-input-row">
+        <label>Message you received
+          <input id="msg" type="text" autocomplete="off" value="Do you want to grab coffee this weekend?" disabled />
+        </label>
+        <div class="chat-actions"><button id="run" type="button" disabled>Suggest replies</button></div>
+      </div>
+      <div class="sample-row" id="samples">
+        <button class="chip" type="button" data-t="Do you want to grab coffee this weekend?">coffee?</button>
+        <button class="chip" type="button" data-t="How was your day?">how was your day</button>
+        <button class="chip" type="button" data-t="Can you help me move on Saturday?">help me move</button>
+      </div>
+      <div class="controls">
+        <label>reply length <input id="maxNew" type="range" min="8" max="40" value="24" disabled><output id="maxNewV">24</output></label>
+        <label>variety (temp) <input id="temp" type="range" min="0.5" max="1.3" step="0.1" value="0.9" disabled><output id="tempV">0.9</output></label>
+      </div>
+
+      <div id="suggestions" style="display:flex;flex-direction:column;gap:.5rem;margin-top:.4rem"></div>
+      <label style="display:flex;flex-direction:column;gap:.3rem;font-size:.82rem;margin-top:.7rem">
+        Your chosen reply (editable)
+        <textarea id="chosen" style="min-block-size:60px;font:inherit;padding:.55rem .7rem;border-radius:8px;border:1px solid var(--border);background:var(--bg-raised);color:var(--color)" placeholder="Pick a suggestion above, then edit it here."></textarea>
+      </label>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span><span>candidates <b id="rN">–</b></span><span>total time <b id="rMs">–</b></span>
+      </div>
+    </section>
+
+    <p class="muted" style="font-size:.85rem">
+      Each suggestion is a real DialoGPT sample from the same message, so quality varies — that's the point of
+      showing three. In a real product you'd filter and rank them; here they're raw so you can see the model's
+      range.
+    </p>
+
+    <p class="crumbs"><a href="../basics/">← Basics</a> · <a href="../">DialoGPT</a> · Next: <a href="../wild/">Wild →</a></p>
+
+    <script type="module">
+      import { DialoGPTEngine, DIALOGPT_CSS, escapeHTML } from "../dialogpt.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = DIALOGPT_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new DialoGPTEngine();
+      let ready = false, busy = false;
+
+      for (const c of $("samples").children) c.addEventListener("click", () => { $("msg").value = c.dataset.t; });
+      $("maxNew").addEventListener("input", () => $("maxNewV").textContent = $("maxNew").value);
+      $("temp").addEventListener("input", () => $("tempV").textContent = $("temp").value);
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/DialoGPT-small-ONNX", runtime: "transformers.js", dtype: "q8", sizeMB: 130, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { ready = true; for (const id of ["msg","run","maxNew","temp"]) $(id).disabled = false; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!ready || busy) return;
+        const text = $("msg").value.trim();
+        if (!text) return;
+        busy = true; $("run").disabled = true;
+        $("suggestions").replaceChildren();
+        $("status").hidden = false; $("status").classList.remove("err","ok"); $("status").textContent = "Sampling replies…";
+        const opts = { maxNew: +$("maxNew").value, greedy: false, temperature: +$("temp").value, topK: 50 };
+        const t0 = performance.now();
+        try {
+          const cards = [];
+          for (let i = 0; i < 3; i++) {
+            const card = document.createElement("button");
+            card.type = "button"; card.className = "msg bot"; card.style.cssText = "text-align:start;max-inline-size:100%;cursor:pointer";
+            card.innerHTML = `<span class="who">suggestion ${i+1}</span><span class="body">…</span>`;
+            $("suggestions").append(card); cards.push(card);
+            $("status").textContent = `Sampling reply ${i+1} of 3…`;
+            const r = await engine.chat([text], opts);
+            const reply = r.reply || "(empty)";
+            card.querySelector(".body").textContent = reply;
+            card.addEventListener("click", () => {
+              $("chosen").value = reply;
+              for (const c of cards) c.style.borderColor = "";
+              card.style.borderColor = "var(--accent)";
+              $("chosen").focus();
+            });
+          }
+          $("readout").hidden = false;
+          $("rBackend").textContent = engine.device.toUpperCase(); $("rN").textContent = "3";
+          $("rMs").textContent = ((performance.now()-t0)/1000).toFixed(2)+" s";
+          $("status").textContent = "Pick a reply."; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { busy = false; $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>
