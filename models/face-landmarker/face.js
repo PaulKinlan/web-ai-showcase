@@ -5,6 +5,7 @@
 // lib/model-loader.js via lib/mediapipe.js createVisionTask.
 
 import { TASKS_VISION_VERSION } from "/web-ai-showcase/lib/mediapipe.js";
+import { SupersededError, WorkerClient } from "/web-ai-showcase/lib/worker-protocol.js";
 
 export const MODEL_URL =
   "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task";
@@ -81,6 +82,80 @@ function normalize(res) {
     blendshapes: res.faceBlendshapes || [],
     matrixes: res.facialTransformationMatrixes || [],
   };
+}
+
+/**
+ * Off-main-thread FaceLandmarker. Same surface as FaceTask (detectImage/detectVideo/delegate) so the
+ * pages barely change, but every detect() runs in models/face-landmarker/worker.js. The main thread
+ * only grabs a frame (createImageBitmap), TRANSFERS it to the worker, and draws the returned 478-point
+ * landmark array + blendshape scores — the inference (~73ms on CPU) no longer blocks the main thread.
+ *
+ * Backpressure: maxInFlight 1. Video frames go on the "live" channel so a newer frame supersedes an
+ * in-flight stale one; the live loop is driven by requestVideoFrameCallback which naturally keeps one
+ * request in flight (it re-arms only after the previous detect resolves), so frames aren't queued.
+ */
+export class FaceWorkerClient {
+  constructor(client, delegate) {
+    this.client = client;
+    this._delegate = delegate;
+    this._ts = 0;
+  }
+
+  /** Boot the worker, download+create the model with the page's exact options, and return a handle. */
+  static async create({ modelUrl = MODEL_URL, options = {}, onProgress, onState } = {}) {
+    onProgress?.({ status: "initiate", file: modelUrl });
+    const client = new WorkerClient({
+      url: new URL("./worker.js", import.meta.url), // dedicated worker, resolved relative to face.js
+      name: "face-landmarker",
+      maxInFlight: 1,
+      maxQueue: 1,
+      onState,
+      // CLASSIC worker: MediaPipe's WASM loader calls importScripts, which a module worker rejects.
+      // The worker still uses dynamic import() for the protocol + tasks-vision ES modules. See worker.js.
+      module: false,
+    });
+    await client.ready;
+    const { result } = await client.request("configure", { modelUrl, options });
+    onProgress?.({ status: "ready" });
+    return new FaceWorkerClient(client, result?.delegate || "CPU");
+  }
+
+  get delegate() {
+    return this._delegate;
+  }
+
+  async detectImage(source) {
+    const bitmap = await createImageBitmap(source);
+    const { result } = await this.client.request(
+      "detect",
+      { bitmap, mode: "IMAGE", tsMs: 0 },
+      { transfer: [bitmap] },
+    );
+    return result;
+  }
+
+  async detectVideo(source, tsMs) {
+    const bitmap = await createImageBitmap(source);
+    // MediaPipe's detectForVideo needs strictly-increasing timestamps.
+    const ts = tsMs > this._ts ? tsMs : this._ts + 1;
+    this._ts = ts;
+    try {
+      const { result } = await this.client.request(
+        "detect",
+        { bitmap, mode: "VIDEO", tsMs: ts },
+        { transfer: [bitmap], channel: "live" },
+      );
+      return result;
+    } catch (err) {
+      // A superseded/aborted frame (teardown or a newer frame won) is not an error — skip it.
+      if (err instanceof SupersededError || err?.name === "AbortError") return null;
+      throw err;
+    }
+  }
+
+  terminate() {
+    return this.client.terminate();
+  }
 }
 
 /** Turn a blendshapes result entry into a plain {name: score} map (drops the leading "_neutral"). */

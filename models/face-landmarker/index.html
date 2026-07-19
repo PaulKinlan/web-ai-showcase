@@ -174,8 +174,7 @@ const result = face.detect(imageElement);
     </footer>
 
     <script type="module">
-      import { FaceTask, MODEL_URL, KEY_LANDMARKS, faceConnections, drawFaces, renderBlendPanel, headPose, escapeHTML, LANDMARK_CSS } from "./face.js";
-      import { createVisionTask } from "/web-ai-showcase/lib/mediapipe.js";
+      import { FaceWorkerClient, MODEL_URL, KEY_LANDMARKS, faceConnections, drawFaces, renderBlendPanel, headPose, escapeHTML, LANDMARK_CSS } from "./face.js";
       import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
 
       const style = document.createElement("style"); style.textContent = LANDMARK_CSS; document.head.append(style);
@@ -201,8 +200,8 @@ const result = face.detect(imageElement);
       createModelLoader({
         mount: $("model-loader"),
         model: { modelId: MODEL_URL, runtime: "mediapipe", sizeMB: 4, requiresWebGPU: false },
-        load: (onProgress) => createVisionTask({ taskClass: "FaceLandmarker", modelUrl: MODEL_URL, options: { numFaces: 1, outputFaceBlendshapes: true, outputFacialTransformationMatrixes: true, runningMode: "IMAGE" }, onProgress }),
-        onReady: (task) => { face = new FaceTask(task); $("run").disabled = !currentImg; $("camBtn").disabled = false; setStatus("Model ready.", "ok"); },
+        load: (onProgress) => FaceWorkerClient.create({ modelUrl: MODEL_URL, options: { numFaces: 1, outputFaceBlendshapes: true, outputFacialTransformationMatrixes: true, runningMode: "IMAGE" }, onProgress }),
+        onReady: (task) => { face = task; $("run").disabled = !currentImg; $("camBtn").disabled = false; setStatus("Model ready.", "ok"); },
       });
       pickSample($("samples").firstElementChild);
 
@@ -245,16 +244,20 @@ const result = face.detect(imageElement);
           const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
           const v = $("video"); v.srcObject = stream; await v.play();
           camOn = true; $("camBtn").textContent = "Stop webcam"; $("camState").innerHTML = '<span class="rec-dot"></span>Live';
+          // requestVideoFrameCallback re-arms only after each detect resolves → one worker request in
+          // flight, always on the freshest painted frame (falls back to rAF where rVFC is unavailable).
+          const schedule = () => { if (v.requestVideoFrameCallback) v.requestVideoFrameCallback(loop); else rafId = requestAnimationFrame(loop); };
           const loop = async () => {
             if (!camOn) return;
-            try { const t0 = performance.now(); const r = await face.detectVideo(v, performance.now()); renderResult(r, Math.round(performance.now() - t0), v, true); }
+            try { const t0 = performance.now(); const r = await face.detectVideo(v, performance.now()); if (r && camOn) renderResult(r, Math.round(performance.now() - t0), v, true); }
             catch (e) { setStatus("Webcam detect error: " + e.message, "err"); }
-            rafId = requestAnimationFrame(loop);
+            if (camOn) schedule();
           };
-          loop();
+          schedule();
         } catch (e) { $("camState").textContent = "Camera blocked: " + e.message; }
       }
       $("camBtn").addEventListener("click", () => { camOn ? stopCam() : startCam(); });
+      globalThis.addEventListener("pagehide", () => { stopCam(); face?.terminate?.(); }, { once: true });
     </script>
   </body>
 </html>

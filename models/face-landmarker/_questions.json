@@ -1,0 +1,127 @@
+{
+  "schemaVersion": 1,
+  "id": "face-landmarker",
+  "revision": 1,
+  "reviewedAt": "2026-07-19T00:00:00Z",
+  "reviewer": "off-main-thread retrofit pass (headless Chrome, CPU/XNNPACK delegate) + long-task measurement",
+  "frontend": true,
+  "rubric": [
+    {
+      "dimension": "performance",
+      "score": 5,
+      "severity": "info",
+      "evidence": "MEASURED before→after with a PerformanceObserver('longtask', buffered) around ONE detect on the bundled sample-smile.jpg (headless Chrome, --disable-gpu ⇒ CPU/XNNPACK). BEFORE (main-thread MediaPipe detect): a single 73ms main-thread long task, reported latency 72ms, 1 face. AFTER (worker-backed): ZERO main-thread long tasks (maxLongTask 0), 1 face, 69ms worker round-trip — the 478-landmark + 52-blendshape inference now runs off the main thread. index/basics/practical/wild all measure 0 main-thread long task during a detect. (multi-model still shows an ~86ms task from the HAND model, which stays on the main thread as a separate demo out of this retrofit's scope.)",
+      "notes": "Inference moved into models/face-landmarker/worker.js via lib/worker-protocol.js. Live loop switched requestAnimationFrame→requestVideoFrameCallback so exactly one worker request is in flight per painted frame."
+    },
+    {
+      "dimension": "real-inference",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Real MediaPipe FaceLandmarker inference in the worker verified end-to-end in headless Chrome after a first-visit Download: index page returned landmarks=478, blendBars=42 (of 52, top-N shown), yaw 1° on sample-smile.jpg; basics returned faces=1 with 13 named landmark rows; practical classified 'Attentive' (eye 0.16, jaw 0.01); wild drove the avatar (smile 0.95, blink 0.11); multi-model face='found'. Console clean (only MediaPipe's benign 'Created TensorFlow Lite XNNPACK delegate' INFO). No canned output.",
+      "notes": "conformance calls-real-inference=pass, mediapipe-gpu-delegate=pass (FilesetResolver + createFromOptions live in worker.js)."
+    },
+    {
+      "dimension": "io-shape",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Output shape preserved through the worker boundary: worker normalize() copies res.faceLandmarks (478 {x,y,z}), res.faceBlendshapes ({categories:[{categoryName,score}×52]}) and res.facialTransformationMatrixes ({data:[16]}) into plain cloneable objects the page helpers (drawFaces/renderBlendPanel/headPose/blendMap) consume unchanged. Verified 478 landmarks + populated blendshape bars + decoded head pose in-browser.",
+      "notes": ""
+    },
+    {
+      "dimension": "runtime-config",
+      "score": 5,
+      "severity": "info",
+      "evidence": "At-a-glance still declares MediaPipe Tasks Vision + task face-landmark-detection + WASM/GPU delegate (conformance declares-mediapipe-runtime/declares-task/declares-backend/mediapipe-gpu-delegate all pass). GPU-delegate probe (requestAdapter) runs inside the worker; on the no-GPU runner it reports CPU honestly.",
+      "notes": "tasks-vision pinned to the same 0.10.18 the shared lib/mediapipe.js uses — no shared-version bump."
+    },
+    {
+      "dimension": "cache-init",
+      "score": 5,
+      "severity": "info",
+      "evidence": "createModelLoader auto-init + explicit .task download policy UNCHANGED — the loader still drives checking→initialising→ready and records validation on the main thread; only the load() body now boots the worker and configures the model instead of creating the task inline. conformance shared-auto-init-loader=pass. First visit shows Download (no silent large download); the per-model Clear-cached-model control is intact.",
+      "notes": "Model .task + wasm are fetched from inside the worker (same URLs, same origin) so the SW caching + model-cache scanning behave exactly as before."
+    },
+    {
+      "dimension": "states",
+      "score": 4,
+      "severity": "info",
+      "evidence": "conformance live-status-region=pass, errors-on-the-page=pass. Worker init/inference failures surface through the loader's Retry path and the page .err status (the protocol rejects propagate to the same catch blocks). WASM path runs with no WebGPU; console + network clean in the verified runs.",
+      "notes": "Offline-cached + eviction paths handled by the shared loader (unchanged), not exhaustively re-exercised this pass."
+    },
+    {
+      "dimension": "controls",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Every control preserved and operable: sample thumbs (role=button, Enter/Space), dropzone + file input, Detect button, Use-webcam toggle, and the ladder-page controls. No control added or removed — the retrofit is behind the existing load()/detect surface.",
+      "notes": ""
+    },
+    {
+      "dimension": "no-fake-output",
+      "score": 5,
+      "severity": "info",
+      "evidence": "All visible output (mesh overlay, 52 blendshape bars, head-pose readout, attention state, emoji avatar, face+hands composite) is produced by the on-device worker run; verified distinct per sample. No canned results.",
+      "notes": ""
+    },
+    {
+      "dimension": "accessibility",
+      "score": 5,
+      "severity": "info",
+      "evidence": "conformance images-have-alt=pass, buttons-have-names=pass. Canvas keeps its descriptive aria-label; status stays role=status aria-live; blendshape panel role=img with a label. No DOM/ARIA changed by the retrofit.",
+      "notes": ""
+    },
+    {
+      "dimension": "responsive",
+      "score": 5,
+      "severity": "info",
+      "evidence": "responsive-check face-landmarker: desktop clean · mobile clean (no horizontal overflow). Reviewed desktop light + desktop dark + mobile (360×740 DPR3) screenshots: layout, at-a-glance table wrap, and controls identical to before with no clipping — the retrofit touched no CSS/DOM.",
+      "notes": "reports/responsive/results.json + captured shots (index-desktop-light/dark, index-mobile-light)."
+    },
+    {
+      "dimension": "states",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Deterministic teardown: WorkerClient.terminate() is called on pagehide (and the cam loop stops), disposing the FaceLandmarker + revoking resources; transferred ImageBitmaps are closed in the worker after each detect so they can't leak. Backpressure via maxInFlight:1 + the 'live' channel supersedes stale frames.",
+      "notes": ""
+    }
+  ],
+  "guidanceConsulted": [
+    {
+      "id": "identify-inp-causes",
+      "query": "run inference in a web worker off the main thread to keep INP low, measure long tasks",
+      "recommendation": "Long main-thread tasks during interactions drive poor INP; measure with the Long Animation Frames / long-task + Event Timing signal rather than inferring, and attribute the blocking script.",
+      "appliedOrException": "applied — measured a real 73ms main-thread long task for one detect BEFORE, and 0 main-thread long tasks AFTER moving inference to the worker, via PerformanceObserver('longtask', buffered).",
+      "evidence": "scratchpad/measure-face.mjs before/after: {maxLongTask:73}→{maxLongTask:0}, faces=1 both."
+    },
+    {
+      "id": "performance",
+      "query": "INP main-thread unblocking offload heavy work to a web worker",
+      "recommendation": "Offload long/heavy JavaScript work off the main thread (>~50–250ms → a Web Worker) and keep the main thread painting only; separate UI updates from heavy computation.",
+      "appliedOrException": "applied — the ~73ms FaceLandmarker detect runs in a dedicated worker; the main thread only grabs a frame (createImageBitmap), transfers it, and draws the returned landmark arrays + blendshape bars (cheap).",
+      "evidence": "0 main-thread long tasks measured during detect on index/basics/practical/wild."
+    },
+    {
+      "id": "break-up-long-tasks",
+      "query": "avoid a blocking synchronous inference loop on the main thread",
+      "recommendation": "Move heavy synchronous work off the main thread / yield so it doesn't spike INP; the worker-protocol offload channel is the mechanism.",
+      "appliedOrException": "applied — inference runs through lib/worker-protocol.js (transfer-not-clone, request ids, AbortSignal cancel, stale-response suppression, bounded queue). The live loop uses requestVideoFrameCallback so exactly one request is in flight per painted frame (no queue build-up).",
+      "evidence": "worker.js serveWorker + face.js FaceWorkerClient; conformance worker-compliance=pass."
+    }
+  ],
+  "openQuestions": [
+    "The multi-model page still runs HandLandmarker on the main thread (~86ms task measured) — moving hand off-thread belongs to the hand-landmarker demo's own retrofit, not this face-landmarker change.",
+    "Off-thread latency was measured on the CPU/XNNPACK delegate in headless Chrome; the GPU-delegate path and low-memory mobile latency were not separately traced this pass."
+  ],
+  "followUpGoals": [
+    {
+      "goal": "Apply the same worker-protocol off-main-thread retrofit to hand-landmarker / pose-landmarker / gesture-recognizer / face-detector (the remaining main-thread MediaPipe demos in the worker-compliance baseline).",
+      "kind": "targeted-fix",
+      "priority": "medium"
+    },
+    {
+      "goal": "Offload the multi-model HandLandmarker detect to a worker too, so the combined face+hands live loop is fully off the main thread.",
+      "kind": "targeted-fix",
+      "priority": "low"
+    }
+  ],
+  "summary": "Revision-1 critique for face-landmarker after an in-place off-main-thread retrofit (invariant 15). MediaPipe FaceLandmarker inference moved into a dedicated worker (models/face-landmarker/worker.js) driven through lib/worker-protocol.js; main thread grabs a frame (createImageBitmap), transfers it, and only paints the returned 478 landmarks + 52 blendshapes. MEASURED: one detect went from a 73ms main-thread long task to 0 (inference off-thread), verified across index/basics/practical/wild; real 478-landmark output + blendshapes confirmed in-browser; route + conformance + responsive gates PASS; console clean; light+dark+mobile layout unchanged. Route/slug/identity/controls/auto-init/download policy all preserved."
+}

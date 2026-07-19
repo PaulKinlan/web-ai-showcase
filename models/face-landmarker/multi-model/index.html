@@ -50,7 +50,7 @@
     <p class="crumbs"><a href="../wild/">← Wild</a> · <a href="../">Back to FaceLandmarker</a></p>
 
     <script type="module">
-      import { FaceTask, MODEL_URL as FACE_URL, faceConnections, drawFaces } from "../face.js";
+      import { FaceWorkerClient, MODEL_URL as FACE_URL, faceConnections, drawFaces } from "../face.js";
       import { HandTask, MODEL_URL as HAND_URL, HAND_CONNECTIONS, LANDMARK_CSS } from "../../hand-landmarker/hand.js";
       import { createVisionTask } from "/web-ai-showcase/lib/mediapipe.js";
       import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
@@ -67,8 +67,8 @@
       for (const thumb of $("samples").children) { thumb.addEventListener("click", () => pickSample(thumb)); thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } }); }
 
       createModelLoader({ mount: $("face-loader"), model: { modelId: FACE_URL, runtime: "mediapipe", sizeMB: 4, requiresWebGPU: false },
-        load: (op) => createVisionTask({ taskClass: "FaceLandmarker", modelUrl: FACE_URL, options: { numFaces: 1, runningMode: "IMAGE" }, onProgress: op }),
-        onReady: (t) => { face = new FaceTask(t); maybeEnable(); } });
+        load: (op) => FaceWorkerClient.create({ modelUrl: FACE_URL, options: { numFaces: 1, runningMode: "IMAGE" }, onProgress: op }),
+        onReady: (t) => { face = t; maybeEnable(); } });
       createModelLoader({ mount: $("hand-loader"), model: { modelId: HAND_URL, runtime: "mediapipe", sizeMB: 8, requiresWebGPU: false },
         load: (op) => createVisionTask({ taskClass: "HandLandmarker", modelUrl: HAND_URL, options: { numHands: 2, runningMode: "IMAGE" }, onProgress: op }),
         onReady: (t) => { hand = new HandTask(t); maybeEnable(); } });
@@ -101,11 +101,15 @@
           const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
           const v = $("video"); v.srcObject = stream; await v.play();
           camOn = true; $("camBtn").textContent = "Stop webcam"; $("camState").innerHTML = '<span class="rec-dot"></span>Live';
-          const loop = async () => { if (!camOn) return; try { const t0 = performance.now(); const [f, hnd] = await Promise.all([face.detectVideo(v, performance.now()), hand.detectVideo(v, performance.now())]); composite(v, f, hnd, true); $("rDelegate").textContent = face.delegate; $("rFace").textContent = f.landmarks.length ? "found" : "none"; $("rHands").textContent = hnd.landmarks.length; $("rMs").textContent = Math.round(performance.now() - t0) + " ms"; $("readout").hidden = false; } catch (e) { setStatus("Webcam error: " + e.message, "err"); } rafId = requestAnimationFrame(loop); };
-          loop();
+          // Face inference runs off-thread (worker); hand runs on the main thread (separate model, its
+          // own demo). rVFC re-arms after both resolve, keeping one face-worker request in flight.
+          const schedule = () => { if (v.requestVideoFrameCallback) v.requestVideoFrameCallback(loop); else rafId = requestAnimationFrame(loop); };
+          const loop = async () => { if (!camOn) return; try { const t0 = performance.now(); const [f, hnd] = await Promise.all([face.detectVideo(v, performance.now()), hand.detectVideo(v, performance.now())]); if (f && camOn) { composite(v, f, hnd, true); $("rDelegate").textContent = face.delegate; $("rFace").textContent = f.landmarks.length ? "found" : "none"; $("rHands").textContent = hnd.landmarks.length; $("rMs").textContent = Math.round(performance.now() - t0) + " ms"; $("readout").hidden = false; } } catch (e) { setStatus("Webcam error: " + e.message, "err"); } if (camOn) schedule(); };
+          schedule();
         } catch (e) { $("camState").textContent = "Camera blocked: " + e.message; }
       }
       $("camBtn").addEventListener("click", () => { camOn ? stopCam() : startCam(); });
+      globalThis.addEventListener("pagehide", () => { stopCam(); face?.terminate?.(); }, { once: true });
     </script>
   </body>
 </html>
