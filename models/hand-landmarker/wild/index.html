@@ -44,12 +44,11 @@
     <p class="crumbs"><a href="../practical/">← Practical</a> · <a href="../">HandLandmarker</a> · Next: <a href="../multi-model/">Multi-model →</a></p>
 
     <script type="module">
-      import { HandTask, MODEL_URL, drawHands, dist2, LANDMARK_CSS } from "../hand.js";
-      import { createVisionTask } from "/web-ai-showcase/lib/mediapipe.js";
+      import { loadHandWorker, MODEL_URL, drawHands, dist2, LANDMARK_CSS } from "../hand.js";
       import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
       const style = document.createElement("style"); style.textContent = LANDMARK_CSS; document.head.append(style);
       const $ = (id) => document.getElementById(id);
-      let hand = null, camOn = false, rafId = null;
+      let hand = null, camOn = false, rafId = null, inFlight = false;
       let strokes = [];           // array of {hue, pts:[{x,y}]} in normalized coords
       let current = null, penDown = false;
       const PINCH_ON = 0.06, PINCH_OFF = 0.09;
@@ -59,8 +58,8 @@
       createModelLoader({
         mount: $("model-loader"),
         model: { modelId: MODEL_URL, runtime: "mediapipe", sizeMB: 8, requiresWebGPU: false },
-        load: (onProgress) => createVisionTask({ taskClass: "HandLandmarker", modelUrl: MODEL_URL, options: { numHands: 1, runningMode: "VIDEO" }, onProgress }),
-        onReady: (task) => { hand = new HandTask(task); hand.mode = "VIDEO"; $("camBtn").disabled = false; setStatus("Model ready — start the webcam and pinch to draw.", "ok"); },
+        load: (onProgress) => loadHandWorker({ numHands: 1, runningMode: "VIDEO", onProgress }),
+        onReady: (task) => { hand = task; $("camBtn").disabled = false; setStatus("Model ready — start the webcam and pinch to draw.", "ok"); },
       });
 
       $("clearBtn").addEventListener("click", () => { strokes = []; current = null; });
@@ -81,37 +80,49 @@
         }
       }
 
-      function stopCam() { if (!camOn) return; camOn = false; cancelAnimationFrame(rafId); const v = $("video"); v.srcObject?.getTracks().forEach(t => t.stop()); v.srcObject = null; v.hidden = true; $("camBtn").textContent = "Start webcam"; $("camState").textContent = ""; }
+      function cancelFrame(v) { if (rafId == null) return; if (v?.cancelVideoFrameCallback) v.cancelVideoFrameCallback(rafId); else cancelAnimationFrame(rafId); rafId = null; }
+      function stopCam() { if (!camOn) return; camOn = false; inFlight = false; const v = $("video"); cancelFrame(v); v.srcObject?.getTracks().forEach(t => t.stop()); v.srcObject = null; v.hidden = true; $("camBtn").textContent = "Start webcam"; $("camState").textContent = ""; }
       async function startCam() {
         try {
           const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
           const v = $("video"); v.srcObject = stream; await v.play();
           camOn = true; $("camBtn").textContent = "Stop webcam"; $("camState").innerHTML = '<span class="rec-dot"></span>Live';
-          const loop = async () => {
-            if (!camOn) return;
-            try {
-              const r = await hand.detectVideo(v, performance.now());
-              drawHands($("stage"), v, r, { mirror: true });   // draws mirrored video + landmarks
-              $("rDelegate").textContent = hand.delegate; $("readout").hidden = false;
-              if (r.landmarks.length) {
-                const lm = r.landmarks[0];
-                const tip = lm[8], thumb = lm[4];
-                const px = 1 - (tip.x + thumb.x) / 2, py = (tip.y + thumb.y) / 2; // mirror x
-                const d = dist2(tip, thumb);
-                $("rPinch").textContent = d.toFixed(3);
-                if (!penDown && d < PINCH_ON) { penDown = true; current = { hue: +$("hue").value, pts: [] }; }
-                if (penDown && d > PINCH_OFF) { penDown = false; if (current && current.pts.length > 1) strokes.push(current); current = null; }
-                if (penDown && current) current.pts.push({ x: px, y: py });
-                $("rPen").textContent = penDown ? "down" : "up";
-              } else { if (penDown) { penDown = false; if (current && current.pts.length > 1) strokes.push(current); current = null; } $("rPen").textContent = "up"; $("rPinch").textContent = "–"; }
-              redraw(v);
-            } catch (e) { setStatus("Webcam error: " + e.message, "err"); }
-            rafId = requestAnimationFrame(loop);
-          };
-          loop();
+          scheduleFrame(v);
         } catch (e) { $("camState").textContent = "Camera blocked: " + e.message; setStatus("This demo needs a webcam. " + e.message, "err"); }
       }
+      // One frame in flight; detection runs in the worker so pinch-to-draw stays smooth.
+      function scheduleFrame(v) {
+        const onFrame = async () => {
+          if (!camOn) return;
+          if (!inFlight && hand) {
+            inFlight = true;
+            try {
+              const r = await hand.detectVideo(v, performance.now());
+              if (camOn) {
+                drawHands($("stage"), v, r, { mirror: true });   // draws mirrored video + landmarks
+                $("rDelegate").textContent = hand.delegate; $("readout").hidden = false;
+                if (r.landmarks.length) {
+                  const lm = r.landmarks[0];
+                  const tip = lm[8], thumb = lm[4];
+                  const px = 1 - (tip.x + thumb.x) / 2, py = (tip.y + thumb.y) / 2; // mirror x
+                  const d = dist2(tip, thumb);
+                  $("rPinch").textContent = d.toFixed(3);
+                  if (!penDown && d < PINCH_ON) { penDown = true; current = { hue: +$("hue").value, pts: [] }; }
+                  if (penDown && d > PINCH_OFF) { penDown = false; if (current && current.pts.length > 1) strokes.push(current); current = null; }
+                  if (penDown && current) current.pts.push({ x: px, y: py });
+                  $("rPen").textContent = penDown ? "down" : "up";
+                } else { if (penDown) { penDown = false; if (current && current.pts.length > 1) strokes.push(current); current = null; } $("rPen").textContent = "up"; $("rPinch").textContent = "–"; }
+                redraw(v);
+              }
+            } catch (e) { if (e.name !== "AbortError" && e.name !== "SupersededError") setStatus("Webcam error: " + e.message, "err"); }
+            finally { inFlight = false; }
+          }
+          if (camOn) scheduleFrame(v);
+        };
+        rafId = v.requestVideoFrameCallback ? v.requestVideoFrameCallback(onFrame) : requestAnimationFrame(onFrame);
+      }
       $("camBtn").addEventListener("click", () => { camOn ? stopCam() : startCam(); });
+      globalThis.addEventListener("pagehide", () => { stopCam(); hand?.terminate?.(); });
     </script>
   </body>
 </html>

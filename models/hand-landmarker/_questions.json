@@ -1,0 +1,124 @@
+{
+  "schemaVersion": 1,
+  "id": "hand-landmarker",
+  "revision": 1,
+  "reviewedAt": "2026-07-19T00:00:00Z",
+  "reviewer": "off-main-thread retrofit (measured, invariant 15)",
+  "frontend": true,
+  "rubric": [
+    {
+      "dimension": "performance",
+      "score": 5,
+      "severity": "info",
+      "evidence": "OFF-MAIN-THREAD RETROFIT — measured before→after (headless Chrome, WASM/CPU delegate, bundled sample-hands.jpg). BEFORE (synchronous MediaPipe detect on the main thread): one detect = a 104ms main-thread long task; per-detect main-thread stall peak 107/46/46/46ms; live webcam loop steady-state main-thread stall peak 60ms. AFTER (detect moved into the dedicated worker via lib/worker-protocol.js; main thread only createImageBitmap→transfer→draw): still-detect main-thread long tasks = NONE (0), per-detect main-thread stall peak 3/5/2/3ms; live-loop steady-state stall peak 7ms — inference fully off-thread, no main-thread task >8ms attributable to inference. Model latency itself unchanged (~44ms steady, it just no longer blocks the UI). Conformance worker-compliance assertion = pass.",
+      "notes": "Target 'no main-thread >8ms from inference' met. Measurement harness: scratchpad/measure-hand.mjs (PerformanceObserver longtask + a MessageChannel main-thread stall probe for sub-50ms blocking)."
+    },
+    {
+      "dimension": "real-inference",
+      "score": 5,
+      "severity": "info",
+      "evidence": "conformance (wasm, headless no-GPU): loads-clean=pass, calls-real-inference=pass. Real worker run on sample-hands.jpg returned 2 hands · 21 landmark rows · first row 'Wrist 0.809 0.925 0.000' · delegate CPU · 0 console errors. screenshots: reports/responsive/screens/hand-landmarker/desktop.png, mobile.png",
+      "notes": "Landmark shape identical to the pre-retrofit main-thread path (landmarks[hand][21]{x,y,z}, worldLandmarks, handedness)."
+    },
+    {
+      "dimension": "io-shape",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Worker returns the normalized MediaPipe shape; page renders 21 named landmark rows + handedness chips + skeleton overlay. Verified 2 hands / 21 rows on the bundled sample (scratchpad/verify-correct.mjs).",
+      "notes": ""
+    },
+    {
+      "dimension": "runtime-config",
+      "score": 5,
+      "severity": "info",
+      "evidence": "conformance (wasm, headless no-GPU): declares-mediapipe-runtime=pass, declares-task=pass, declares-backend=pass, mediapipe-gpu-delegate=pass (FilesetResolver now runs inside worker.js). At-a-glance updated to list Web Workers + transferable ImageBitmap among the Web APIs.",
+      "notes": ""
+    },
+    {
+      "dimension": "cache-init",
+      "score": 4,
+      "severity": "info",
+      "evidence": "conformance: shared-auto-init-loader=pass, auto-init-on-cached=manual. The retrofit keeps createModelLoader auto-init + explicit .task download UNCHANGED — the worker fetches + caches the .task exactly as before; loader reaches 'ready' with no Load button on a cached/current model. Fresh-profile smoke test: index + all 4 ladder pages → loader state 'download-required', 0 console errors.",
+      "notes": "auto-init-on-cached is manual-evidenced; needs an agent to confirm the no-button returning-user path on a warm cache."
+    },
+    {
+      "dimension": "states",
+      "score": 4,
+      "severity": "info",
+      "evidence": "conformance: live-status-region=pass, errors-on-the-page=pass, honest-progress-retry-offline=manual, runs-without-webgpu-fallback=manual. Worker init/load failure surfaces on the page via the loader error state + Retry (verified: a MODULE-worker attempt failed with 'Module scripts don't support importScripts()' and showed the on-page error before the classic-worker fix). Webcam detect errors are shown on the page; AbortError/SupersededError from stale-frame supersession are swallowed silently.",
+      "notes": "auto-checkable parts pass; offline/progress/webgpu-fallback need an agent verdict."
+    },
+    {
+      "dimension": "controls",
+      "score": 4,
+      "severity": "info",
+      "evidence": "conformance: controls-operable=manual. Controls unchanged by the retrofit (samples, dropzone, Detect, Use webcam, clear-cache); keyboard handlers intact. screenshots: reports/responsive/screens/hand-landmarker/.",
+      "notes": "manual-evidenced — agent to drive every control on both classes."
+    },
+    {
+      "dimension": "no-fake-output",
+      "score": 5,
+      "severity": "info",
+      "evidence": "conformance: no-fake-output=manual. Output is produced by the real on-device worker run (2 hands / 21 real landmark coords verified); no canned result path exists.",
+      "notes": ""
+    },
+    {
+      "dimension": "accessibility",
+      "score": 5,
+      "severity": "info",
+      "evidence": "conformance: images-have-alt=pass, buttons-have-names=pass.",
+      "notes": ""
+    },
+    {
+      "dimension": "responsive",
+      "score": 4,
+      "severity": "info",
+      "evidence": "responsive matrix: desktop clean, mobile clean (no horizontal overflow). Agent read of reports/responsive/screens/hand-landmarker/desktop.png + mobile.png: layout, at-a-glance table wrapping, and legible text confirmed on both classes; parity-both-classes still manual pending a full control drive.",
+      "notes": "automated signal ⇒ needs-review; agent matrix pass required to flip support to ok."
+    }
+  ],
+  "guidanceConsulted": [
+    {
+      "id": "break-up-long-tasks",
+      "recommendation": "Yield / keep any main-thread work under the 50ms long-task boundary; offload heavy work off the main thread.",
+      "appliedOrException": "applied — the synchronous MediaPipe detect (measured 104ms long task) was moved off the main thread into a dedicated worker; the main thread now only does createImageBitmap + transfer + a cheap overlay draw (measured stall peak ≤5ms still, 7ms live). worker-protocol.js's yieldToMain also implements the guide's scheduler.yield()+setTimeout fallback for worker-side slicing.",
+      "evidence": "before 104ms long task / 46-107ms stall → after 0 long tasks / 2-5ms stall (scratchpad/measure-hand.mjs)"
+    },
+    {
+      "id": "identify-inp-causes",
+      "recommendation": "Measure main-thread blocking (Long Tasks / Long Animation Frames / Event Timing) rather than assuming; attribute the blocking script.",
+      "appliedOrException": "applied — measured with a PerformanceObserver('longtask') plus a MessageChannel main-thread stall probe (catches sub-50ms blocking the long-task API misses), before and after, in both the still-detect and live-webcam paths.",
+      "evidence": "measurement recorded in the performance rubric row + scratchpad/measure-hand.mjs"
+    },
+    {
+      "id": "performance",
+      "recommendation": "Offload work >~250ms cumulative / heavy synchronous compute to a Web Worker; separate UI updates from heavy computation.",
+      "appliedOrException": "applied — inference + result normalization run in the worker; the page thread is reduced to frame capture (createImageBitmap) and drawing. Backpressure: one frame in flight (rVFC + inFlight guard), newer live frame supersedes the stale queued one (worker-protocol 'live' channel).",
+      "evidence": "lib/worker-protocol.js WorkerClient (maxInFlight:1, maxQueue:1, channel 'live'); measured off-thread"
+    },
+    {
+      "query": "run MediaPipe tasks-vision inside a Web Worker (module vs classic; importScripts; dynamic import; transferable ImageBitmap; requestVideoFrameCallback)",
+      "recommendation": "MDN: dedicated workers via new Worker(url,{type}); transfer ArrayBuffers/ImageBitmap rather than clone; requestVideoFrameCallback for per-frame video work; AbortController for cancellation.",
+      "appliedOrException": "applied with a justified exception — MediaPipe's tasks-vision wasm loader calls self.importScripts(), which MODULE workers forbid ('Module scripts don't support importScripts()', reproduced at createFromOptions). A CLASSIC worker keeps importScripts available AND still supports dynamic import() (Chrome 91+), so the worker dynamically imports both the ESM protocol and the MediaPipe ESM. All worker-protocol guarantees preserved; only the worker `type` differs, forced by MediaPipe. Frames are transferred as ImageBitmap; the live loop uses requestVideoFrameCallback with a rAF fallback.",
+      "evidence": "MODULE-worker attempt error captured (scratchpad/debug-load.mjs) → classic worker fix verified loader state 'ready', 0 errors; documented in worker.js + hand.js loadHandWorker"
+    }
+  ],
+  "openQuestions": [
+    "On a warm cache, does the returning-user path auto-init with no Load button (auto-init-on-cached manual)?",
+    "Does the live webcam loop stay visually smooth with a real hand on a mid-range mobile device (off-thread inference confirmed; real-device INP still to be agent-verified)?",
+    "Should the pose model in the multi-model page get the same off-thread retrofit so that page has no main-thread inference at all (currently pose still runs on the main thread)?"
+  ],
+  "followUpGoals": [
+    {
+      "goal": "Apply the same worker-protocol off-main-thread retrofit to pose-landmarker (and the remaining MediaPipe demos: face-landmarker, gesture-recognizer, face-detector), so the multi-model page and the whole MediaPipe family run inference off the main thread.",
+      "kind": "targeted-fix",
+      "priority": "medium"
+    },
+    {
+      "goal": "Agent matrix pass for hand-landmarker: drive every control + the live webcam on mobile+desktop, confirm real output + tap targets + focus, then flip support to ok and enrich this critique.",
+      "kind": "targeted-fix",
+      "priority": "medium"
+    }
+  ],
+  "summary": "Revision-1 critique for hand-landmarker, authored during the measured off-main-thread retrofit (invariant 15). MediaPipe HandLandmarker inference was moved from the main thread into a dedicated worker served through lib/worker-protocol.js (transferred ImageBitmap frames, one in flight, stale-frame supersession, AbortSignal cancel, deterministic dispose). Measured before→after on the bundled sample: a 104ms main-thread long task (46-107ms stall) became zero long tasks (2-5ms stall); the live loop's main-thread stall peak dropped 60ms→7ms — inference is fully off-thread with no >8ms main-thread task from it. Route/slug/identity/controls/examples/behaviour preserved (in-place fix). Because MediaPipe's wasm loader calls importScripts(), the worker is CLASSIC (the documented exception to module workers) using dynamic import() for both the protocol and the MediaPipe ESM. Not a final review — manual-evidenced dimensions await an agent matrix verdict."
+}

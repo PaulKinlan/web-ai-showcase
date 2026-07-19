@@ -1,65 +1,132 @@
-// Front-end helpers for the MediaPipe HandLandmarker pages. MediaPipe's vision tasks run on the main
-// thread (they own their own WASM + optional GPU delegate), so these helpers wrap one task instance,
-// switch it between IMAGE and VIDEO running modes on demand, and draw the 21 landmarks + hand skeleton
-// onto a canvas. The model itself loads through lib/model-loader.js via lib/mediapipe.js createVisionTask.
+// Front-end helpers for the MediaPipe HandLandmarker pages. Inference runs OFF the main thread in a
+// dedicated worker (./worker.js — classic, since MediaPipe's wasm loader needs importScripts) so the
+// control UI + overlay draw stay responsive — MediaPipe's
+// detect is synchronous, and running it on the main thread blocked the UI for the full inference
+// duration (measured ~104ms for one detect on the bundled sample). `loadHandWorker` spins up the worker
+// (via lib/worker-protocol.js) and returns a `WorkerHandTask` whose detectImage/detectVideo mirror the
+// old synchronous wrapper but grab a frame with `createImageBitmap`, TRANSFER it to the worker, and get
+// back the 21 landmarks per hand. The main thread only draws (cheap). These helpers also draw the
+// skeleton and compute finger/gesture logic. The model still loads through lib/model-loader.js's shared
+// createModelLoader auto-init (unchanged): the worker fetches + caches the `.task` exactly as before.
+
+import { WorkerClient } from "/web-ai-showcase/lib/worker-protocol.js";
 
 export const MODEL_URL =
   "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task";
 
 // The 21 hand landmarks and how they connect (MediaPipe's standard hand skeleton).
 export const HAND_CONNECTIONS = [
-  [0, 1], [1, 2], [2, 3], [3, 4], // thumb
-  [0, 5], [5, 6], [6, 7], [7, 8], // index
-  [5, 9], [9, 10], [10, 11], [11, 12], // middle
-  [9, 13], [13, 14], [14, 15], [15, 16], // ring
-  [13, 17], [17, 18], [18, 19], [19, 20], // pinky
+  [0, 1],
+  [1, 2],
+  [2, 3],
+  [3, 4], // thumb
+  [0, 5],
+  [5, 6],
+  [6, 7],
+  [7, 8], // index
+  [5, 9],
+  [9, 10],
+  [10, 11],
+  [11, 12], // middle
+  [9, 13],
+  [13, 14],
+  [14, 15],
+  [15, 16], // ring
+  [13, 17],
+  [17, 18],
+  [18, 19],
+  [19, 20], // pinky
   [0, 17], // palm base
 ];
 
 export const HAND_LANDMARK_NAMES = [
   "Wrist",
-  "Thumb CMC", "Thumb MCP", "Thumb IP", "Thumb tip",
-  "Index MCP", "Index PIP", "Index DIP", "Index tip",
-  "Middle MCP", "Middle PIP", "Middle DIP", "Middle tip",
-  "Ring MCP", "Ring PIP", "Ring DIP", "Ring tip",
-  "Pinky MCP", "Pinky PIP", "Pinky DIP", "Pinky tip",
+  "Thumb CMC",
+  "Thumb MCP",
+  "Thumb IP",
+  "Thumb tip",
+  "Index MCP",
+  "Index PIP",
+  "Index DIP",
+  "Index tip",
+  "Middle MCP",
+  "Middle PIP",
+  "Middle DIP",
+  "Middle tip",
+  "Ring MCP",
+  "Ring PIP",
+  "Ring DIP",
+  "Ring tip",
+  "Pinky MCP",
+  "Pinky PIP",
+  "Pinky DIP",
+  "Pinky tip",
 ];
 
 // One colour per detected hand, dark enough for white text / readable strokes in light and dark.
 const HAND_COLORS = ["#1565c0", "#b3261e", "#1a7a3a", "#6a1b9a"];
 
-/** Wraps a HandLandmarker task so a page can detect on a still image OR a video frame safely. */
-export class HandTask {
-  constructor(task) {
-    this.task = task;
-    this.mode = task?.runningMode || "IMAGE"; // createVisionTask defaults to IMAGE
-  }
-  async _ensure(mode) {
-    if (this.mode !== mode) {
-      await this.task.setOptions({ runningMode: mode });
-      this.mode = mode;
-    }
-  }
-  async detectImage(imgEl) {
-    await this._ensure("IMAGE");
-    return normalize(this.task.detect(imgEl));
-  }
-  async detectVideo(videoEl, tsMs) {
-    await this._ensure("VIDEO");
-    return normalize(this.task.detectForVideo(videoEl, tsMs));
-  }
-  get delegate() {
-    return this.task?.__delegate || "CPU";
-  }
+/**
+ * Spin up the dedicated HandLandmarker module worker and load the model in it. Returns a
+ * {@link WorkerHandTask}. Use as the `load` callback of the shared createModelLoader so download /
+ * cache / auto-init behaviour is unchanged — this only relocates WHERE inference runs.
+ * @param {{numHands?:number, runningMode?:"IMAGE"|"VIDEO", onProgress?:(p:any)=>void}} [opts]
+ */
+export async function loadHandWorker({ numHands = 2, runningMode = "IMAGE", onProgress } = {}) {
+  const client = new WorkerClient({
+    url: new URL("./worker.js", import.meta.url),
+    name: "hand-landmarker",
+    // CLASSIC worker (module:false): MediaPipe's tasks-vision wasm loader calls importScripts(), which
+    // module workers forbid. The worker uses dynamic import() (allowed in classic workers) for the
+    // shared protocol + MediaPipe ESM, so every worker-protocol guarantee is preserved. See worker.js.
+    module: false,
+    maxInFlight: 1, // one frame in flight at a time (backpressure)
+    maxQueue: 1, // at most one frame waiting; a newer live frame supersedes it (latest-wins)
+  });
+  await client.ready;
+  const { result } = await client.request(
+    "load",
+    { modelUrl: MODEL_URL, numHands, runningMode },
+    { onProgress },
+  );
+  return new WorkerHandTask(client, result.delegate);
 }
 
-/** Normalize the result shape across tasks-vision versions (handedness vs handednesses). */
-function normalize(res) {
-  return {
-    landmarks: res.landmarks || [],
-    worldLandmarks: res.worldLandmarks || [],
-    handedness: res.handedness || res.handednesses || [],
-  };
+/**
+ * Main-thread facade over the inference worker. detectImage/detectVideo mirror the old synchronous
+ * wrapper's signatures, but grab the frame with `createImageBitmap`, TRANSFER it to the worker (ownership
+ * moved — no structured-clone copy), and return the worker's already-normalized landmark result. Video
+ * frames run on the "live" channel so a newer frame supersedes a stale queued one; stills run one-shot.
+ */
+export class WorkerHandTask {
+  constructor(client, delegate) {
+    this.client = client;
+    this._delegate = delegate;
+  }
+  get delegate() {
+    return this._delegate;
+  }
+  async _detect(source, mode, ts, channel) {
+    const bitmap = await createImageBitmap(source);
+    const { result } = await this.client.request(
+      "detect",
+      { bitmap, mode, ts },
+      { transfer: [bitmap], channel },
+    );
+    return result;
+  }
+  /** Detect on a still image/canvas (IMAGE mode). One-shot — no channel supersession. */
+  detectImage(source) {
+    return this._detect(source, "IMAGE", 0);
+  }
+  /** Detect on a video frame (VIDEO mode). Latest-wins on the "live" channel; ts must be monotonic. */
+  detectVideo(source, tsMs) {
+    return this._detect(source, "VIDEO", tsMs, "live");
+  }
+  /** Deterministic teardown: dispose the model in the worker + terminate it. Idempotent. */
+  terminate(reason) {
+    return this.client.terminate(reason);
+  }
 }
 
 export function handColor(i) {

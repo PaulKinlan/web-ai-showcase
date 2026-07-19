@@ -54,12 +54,11 @@
     <p class="crumbs"><a href="../basics/">← Basics</a> · <a href="../">HandLandmarker</a> · Next: <a href="../wild/">Wild →</a></p>
 
     <script type="module">
-      import { HandTask, MODEL_URL, drawHands, fingersUp, gestureName, LANDMARK_CSS } from "../hand.js";
-      import { createVisionTask } from "/web-ai-showcase/lib/mediapipe.js";
+      import { loadHandWorker, MODEL_URL, drawHands, fingersUp, gestureName, LANDMARK_CSS } from "../hand.js";
       import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
       const style = document.createElement("style"); style.textContent = LANDMARK_CSS; document.head.append(style);
       const $ = (id) => document.getElementById(id);
-      let hand = null, currentImg = null, camOn = false, rafId = null;
+      let hand = null, currentImg = null, camOn = false, rafId = null, inFlight = false;
       function setStatus(m, c) { $("status").textContent = m; $("status").classList.remove("err","ok"); if (c) $("status").classList.add(c); }
       function decode(url) { return new Promise((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = () => rej(new Error("decode failed")); im.src = url; }); }
       async function useURL(url) { currentImg = await decode(url); const c = $("stage"); c.width = currentImg.naturalWidth; c.height = currentImg.naturalHeight; c.getContext("2d").drawImage(currentImg, 0, 0); $("readout").hidden = true; $("run").disabled = !hand; }
@@ -69,8 +68,8 @@
       createModelLoader({
         mount: $("model-loader"),
         model: { modelId: MODEL_URL, runtime: "mediapipe", sizeMB: 8, requiresWebGPU: false },
-        load: (onProgress) => createVisionTask({ taskClass: "HandLandmarker", modelUrl: MODEL_URL, options: { numHands: 1, runningMode: "IMAGE" }, onProgress }),
-        onReady: (task) => { hand = new HandTask(task); $("run").disabled = !currentImg; $("camBtn").disabled = false; setStatus("Model ready.", "ok"); },
+        load: (onProgress) => loadHandWorker({ numHands: 1, runningMode: "IMAGE", onProgress }),
+        onReady: (task) => { hand = task; $("run").disabled = !currentImg; $("camBtn").disabled = false; setStatus("Model ready.", "ok"); },
       });
       pickSample($("samples").firstElementChild);
 
@@ -92,17 +91,33 @@
         finally { $("run").disabled = false; }
       });
 
-      function stopCam() { if (!camOn) return; camOn = false; cancelAnimationFrame(rafId); const v = $("video"); v.srcObject?.getTracks().forEach(t => t.stop()); v.srcObject = null; v.hidden = true; $("camBtn").textContent = "Use webcam"; $("camState").textContent = ""; }
+      function cancelFrame(v) { if (rafId == null) return; if (v?.cancelVideoFrameCallback) v.cancelVideoFrameCallback(rafId); else cancelAnimationFrame(rafId); rafId = null; }
+      function stopCam() { if (!camOn) return; camOn = false; inFlight = false; const v = $("video"); cancelFrame(v); v.srcObject?.getTracks().forEach(t => t.stop()); v.srcObject = null; v.hidden = true; $("camBtn").textContent = "Use webcam"; $("camState").textContent = ""; }
       async function startCam() {
         try {
           const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
           const v = $("video"); v.srcObject = stream; await v.play();
           camOn = true; $("camBtn").textContent = "Stop webcam"; $("camState").innerHTML = '<span class="rec-dot"></span>Live';
-          const loop = async () => { if (!camOn) return; try { const t0 = performance.now(); const r = await hand.detectVideo(v, performance.now()); show(r, Math.round(performance.now()-t0), v, true); } catch (e) { setStatus("Webcam error: " + e.message, "err"); } rafId = requestAnimationFrame(loop); };
-          loop();
+          scheduleFrame(v);
         } catch (e) { $("camState").textContent = "Camera blocked: " + e.message; }
       }
+      // One frame in flight; inference runs in the worker so the loop + gesture UI never block.
+      function scheduleFrame(v) {
+        const onFrame = async () => {
+          if (!camOn) return;
+          if (!inFlight && hand) {
+            inFlight = true;
+            const t0 = performance.now();
+            try { const r = await hand.detectVideo(v, t0); if (camOn) show(r, Math.round(performance.now()-t0), v, true); }
+            catch (e) { if (e.name !== "AbortError" && e.name !== "SupersededError") setStatus("Webcam error: " + e.message, "err"); }
+            finally { inFlight = false; }
+          }
+          if (camOn) scheduleFrame(v);
+        };
+        rafId = v.requestVideoFrameCallback ? v.requestVideoFrameCallback(onFrame) : requestAnimationFrame(onFrame);
+      }
       $("camBtn").addEventListener("click", () => { camOn ? stopCam() : startCam(); });
+      globalThis.addEventListener("pagehide", () => { stopCam(); hand?.terminate?.(); });
     </script>
   </body>
 </html>
