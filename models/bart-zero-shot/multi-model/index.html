@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>BART zero-shot Multi-model — route, then run the chosen model · Web AI Showcase</title>
+    <meta name="description" content="A two-stage zero-shot cascade: BART-large-MNLI routes text to a coarse bucket, then the winner selects a fine-grained label set that a second, smaller model (DeBERTa-v3) classifies. Two models composed, all in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎯</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">BART zero-shot</a></p>
+
+    <header>
+      <p class="eyebrow">use case · multi-model</p>
+      <h1>Multi-model: route, then run the chosen model</h1>
+      <p class="lede">
+        Zero-shot makes a great <strong>router</strong>. Here BART-large-MNLI picks a coarse bucket for the
+        text (stage 1). The winning bucket selects a <em>different</em>, fine-grained label set — and a
+        second, much smaller model, <strong>DeBERTa-v3-xsmall</strong>, does that fine classification
+        (stage 2). It's a real two-model cascade: the expensive model decides <em>what kind</em> of thing
+        this is, and a cheap model handles the details of just that kind. Both run locally, nothing uploaded.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+      <p class="status" id="cmpStatus" role="status" aria-live="polite" hidden></p>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
+        Text
+        <textarea id="text" rows="3" disabled>The checkout page threw a 500 error twice and then charged my card anyway.</textarea>
+      </label>
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.5rem 0">
+        <button class="chip" type="button" data-text="The checkout page threw a 500 error twice and then charged my card anyway.">bug + billing</button>
+        <button class="chip" type="button" data-text="Loved the concert last night, but parking near the venue was a nightmare.">review</button>
+        <button class="chip" type="button" data-text="Can you add a way to export my data as CSV? It would save me hours.">feature ask</button>
+      </div>
+      <div style="margin:.3rem 0"><button id="run" type="button" disabled>Route &amp; classify</button></div>
+
+      <div id="stages" class="stage-wrap" aria-live="polite"></div>
+      <div class="readout" id="readout" hidden><span>stage 1 <b id="rS1">–</b></span><span>stage 2 <b id="rS2">–</b></span><span>total <b id="rMs">–</b></span></div>
+    </section>
+
+    <p class="muted" style="font-size:.85rem">
+      The first pass (BART) is the heavy one — it picks the domain. Each domain has its own sub-labels, and
+      the second pass (DeBERTa, ~18× smaller) resolves them quickly. Loading DeBERTa adds a one-time ~70 MB
+      download on your first "Route &amp; classify".
+    </p>
+
+    <p class="crumbs"><a href="../wild/">← Wild</a> · <a href="../">Back to BART zero-shot</a></p>
+
+    <script type="module">
+      import { BartZeroShotEngine, parseLabels, renderScores, escapeHTML, BARTZS_CSS } from "../bartzs.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style");
+      style.textContent = BARTZS_CSS + `
+        .stage-wrap { display: flex; flex-direction: column; gap: .8rem; margin-top: .6rem; }
+        .stage { border: 1px solid var(--border); border-radius: 10px; background: var(--bg-raised); padding: .6rem .8rem; }
+        .stage h4 { margin: 0 0 .2rem; font-size: .78rem; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); font-family: var(--font-mono); }
+        .stage .who { font-family: var(--font-mono); font-size: .72rem; color: var(--muted); margin-bottom: .3rem; }
+        .stage .pick { font-weight: 600; }
+        .stage-arrow { text-align: center; color: var(--muted); font-family: var(--font-mono); font-size: .8rem; }
+      `;
+      document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new BartZeroShotEngine();
+      let loaded = false;
+
+      // Stage-1 coarse buckets → each maps to a fine-grained stage-2 label set.
+      const COARSE = ["a technical problem", "a money or account issue", "an opinion or review", "a request for a new feature"];
+      const FINE = {
+        "a technical problem": ["crash or error", "slow performance", "login trouble", "data loss"],
+        "a money or account issue": ["double charge", "refund request", "cancellation", "invoice question"],
+        "an opinion or review": ["positive praise", "negative complaint", "mixed feedback", "comparison to a competitor"],
+        "a request for a new feature": ["export or integration", "customization", "accessibility", "mobile support"],
+      };
+
+      for (const c of document.querySelectorAll(".chip")) c.addEventListener("click", () => { $("text").value = c.dataset.text; if (loaded) run(); });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/bart-large-mnli", runtime: "transformers.js", dtype: "q4f16", sizeMB: 309, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("text").disabled = false; $("run").disabled = false; loaded = true; run(); },
+      });
+
+      $("run").addEventListener("click", run);
+      async function run() {
+        if (!loaded) return;
+        const text = $("text").value.trim();
+        if (!text) return;
+        $("run").disabled = true;
+        $("runStatus").hidden = false; $("runStatus").classList.remove("err"); $("runStatus").textContent = "Stage 1 — BART routing…";
+        const t0 = performance.now();
+        try {
+          const s1 = await engine.classify(text, COARSE, false);
+          const bucket = s1.scored[0].label;
+          const s1ms = s1.ms;
+          renderStage1(text, s1);
+
+          const fineLabels = FINE[bucket] || COARSE;
+          if (!engine.cmpReady) $("runStatus").textContent = "Stage 2 — loading DeBERTa (~70 MB)…";
+          else $("runStatus").textContent = "Stage 2 — DeBERTa classifying…";
+          const s2 = await engine.classifyWith("deberta", text, fineLabels, false);
+          renderStage2(bucket, fineLabels, s2);
+
+          $("readout").hidden = false;
+          $("rS1").textContent = s1ms + " ms";
+          $("rS2").textContent = s2.ms + " ms";
+          $("rMs").textContent = Math.round(performance.now() - t0) + " ms";
+          $("runStatus").textContent = "Done — routed by BART, resolved by DeBERTa."; $("runStatus").classList.add("ok");
+        } catch (err) { $("runStatus").textContent = "Failed: " + err.message; $("runStatus").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      }
+
+      function renderStage1(text, s1) {
+        const el = document.createElement("div");
+        el.className = "stage";
+        el.innerHTML = `<h4>Stage 1 · route</h4><div class="who">BART-large-MNLI · 406M · ${s1.device.toUpperCase()}</div>` +
+          `<p style="margin:.2rem 0 .4rem">Best bucket: <span class="pick">${escapeHTML(s1.scored[0].label)}</span> <span style="color:var(--muted);font-family:var(--font-mono);font-size:.75rem">(${(s1.scored[0].score * 100).toFixed(0)}%)</span></p>` +
+          `<div class="zs-list" id="s1scores"></div>`;
+        const arrow = document.createElement("div");
+        arrow.className = "stage-arrow";
+        arrow.textContent = "↓ selects the fine-grained label set ↓";
+        $("stages").replaceChildren(el, arrow);
+        renderScores(el.querySelector("#s1scores"), s1.scored, false);
+      }
+
+      function renderStage2(bucket, fineLabels, s2) {
+        const el = document.createElement("div");
+        el.className = "stage";
+        el.innerHTML = `<h4>Stage 2 · resolve “${escapeHTML(bucket)}”</h4><div class="who">DeBERTa-v3-xsmall · 22M · ${s2.device.toUpperCase()}</div>` +
+          `<p style="margin:.2rem 0 .4rem">Best sub-label: <span class="pick">${escapeHTML(s2.scored[0].label)}</span> <span style="color:var(--muted);font-family:var(--font-mono);font-size:.75rem">(${(s2.scored[0].score * 100).toFixed(0)}%)</span></p>` +
+          `<div class="zs-list" id="s2scores"></div>`;
+        $("stages").append(el);
+        renderScores(el.querySelector("#s2scores"), s2.scored, false);
+      }
+    </script>
+  </body>
+</html>
