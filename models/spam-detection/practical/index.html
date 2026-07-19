@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Spam Practical — auto-triage an inbox · Web AI Showcase</title>
+    <meta name="description" content="Paste a whole inbox — one message per line — and watch it auto-sort into Inbox and Junk columns with confidence, entirely in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🚫</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Spam detector</a></p>
+
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Practical: triage a whole inbox</h1>
+      <p class="lede">
+        The everyday job of a spam filter: sort a pile of messages into the ones you want and the ones you
+        don't. Paste one message per line, hit triage, and watch the board fill in — each message scored
+        on-device and dropped into <strong>Inbox</strong> or <strong>Junk</strong> with its confidence.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <label style="display:flex;flex-direction:column;gap:.3rem;font-size:.82rem;margin-top:.6rem">
+        Inbox — one message per line
+        <textarea id="src" rows="9" disabled style="font-family:var(--font-mono);font-size:.85rem"></textarea>
+      </label>
+      <div style="display:flex;flex-wrap:wrap;gap:.5rem;align-items:center;margin:.6rem 0">
+        <button id="run" type="button" disabled>Triage inbox</button>
+        <button id="sample" type="button" class="secondary">Load sample inbox</button>
+        <span class="readout" id="readout" hidden style="margin:0"><span>backend <b id="rBackend">–</b></span><span>time <b id="rMs">–</b></span></span>
+      </div>
+
+      <div class="triage-board" id="board" hidden>
+        <div class="triage-col inbox">
+          <h4>Inbox <span class="count" id="inboxCount">0</span></h4>
+          <div class="triage-list" id="inboxList" aria-live="polite"></div>
+        </div>
+        <div class="triage-col junk">
+          <h4>Junk <span class="count" id="junkCount">0</span></h4>
+          <div class="triage-list" id="junkList" aria-live="polite"></div>
+        </div>
+      </div>
+    </section>
+
+    <p class="muted" style="font-size:.85rem">
+      Each row lands the moment the worker finishes scoring it, so a big paste fills the board
+      progressively rather than freezing the page. Nothing is uploaded — the whole inbox is classified in
+      a Web Worker on your device.
+    </p>
+
+    <p class="crumbs"><a href="../basics/">← Basics</a> · <a href="../">Back to Spam detector</a> · Next: <a href="../wild/">Wild →</a></p>
+
+    <script type="module">
+      import { SpamEngine, makeTriageRow, SPAM_CSS } from "../spam.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = SPAM_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new SpamEngine();
+      let loaded = false;
+
+      const SAMPLE = [
+        "Hey, are we still on for coffee tomorrow at 10?",
+        "CONGRATULATIONS!!! You've won a $500 Amazon gift card. Claim now: http://bit.ly/free-500",
+        "Reminder: your dentist appointment is on Thursday at 3pm.",
+        "URGENT: Your PayPal account is limited. Verify immediately at paypa1-secure.com to avoid suspension.",
+        "Can you review the pull request when you get a chance? No rush.",
+        "Hot singles in your area are waiting to chat with YOU tonight!!! Click here.",
+        "The quarterly report is attached. Let me know if the numbers look off.",
+        "You have been pre-approved for a $50,000 loan with NO credit check. Reply YES to claim.",
+        "Mom said dinner is at 7, don't be late :)",
+        "Get Viagra and Cialis at 90% off — discreet shipping, no prescription needed!",
+      ].join("\n");
+
+      $("sample").addEventListener("click", () => { $("src").value = SAMPLE; });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/tanaos-spam-detection-v1-ONNX", runtime: "transformers.js", dtype: "q8", sizeMB: 136, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("src").disabled = false; $("run").disabled = false; loaded = true; if (!$("src").value) $("src").value = SAMPLE; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!loaded) return;
+        const lines = $("src").value.split("\n").map((s) => s.trim()).filter(Boolean);
+        if (!lines.length) { $("runStatus").hidden = false; $("runStatus").textContent = "Paste at least one message."; return; }
+        $("run").disabled = true;
+        $("board").hidden = false;
+        $("inboxList").replaceChildren(); $("junkList").replaceChildren();
+        let inbox = 0, junk = 0;
+        $("inboxCount").textContent = "0"; $("junkCount").textContent = "0";
+        $("runStatus").hidden = false; $("runStatus").classList.remove("err", "ok");
+        $("runStatus").textContent = `Triaging ${lines.length} message(s)…`;
+        try {
+          const r = await engine.classifyBatch(lines, (item) => {
+            const row = makeTriageRow(item);
+            if (item.label === "SPAM") { $("junkList").append(row); $("junkCount").textContent = String(++junk); }
+            else { $("inboxList").append(row); $("inboxCount").textContent = String(++inbox); }
+          });
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = (r.ms / 1000).toFixed(2) + " s";
+          $("runStatus").textContent = `Done — ${inbox} kept, ${junk} junked on ${r.device.toUpperCase()}.`;
+          $("runStatus").classList.add("ok");
+        } catch (err) {
+          $("runStatus").textContent = "Triage failed: " + err.message; $("runStatus").classList.add("err");
+        } finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>

@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Spam Wild — fool the filter · Web AI Showcase</title>
+    <meta name="description" content="Adversarial spam: obfuscate a message with homoglyphs, leet-speak and spacing and watch how far you can push the spam score down — the classic spammer's cat-and-mouse, live in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🚫</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Spam detector</a></p>
+
+    <header>
+      <p class="eyebrow">use case · wild</p>
+      <h1>Wild: can you fool the filter?</h1>
+      <p class="lede">
+        Spammers don't write "free prize" — they write "fr&#8202;33&#8202;prize" with look-alike letters and
+        odd spacing to slip past filters. Toggle the obfuscation tricks below and watch, live, how much each
+        one drags the SPAM score down. It's the oldest cat-and-mouse game in email, running on your device.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
+        Original spam message
+        <textarea id="text" rows="3" disabled>Click here now to claim your free prize money before this offer expires!</textarea>
+      </label>
+
+      <fieldset class="obf-toggles" style="border:1px solid var(--border);border-radius:10px;padding:.6rem .8rem;margin-top:.6rem">
+        <legend style="font-size:.8rem;padding:0 .3rem">Obfuscation tricks</legend>
+        <label><input type="checkbox" id="ho" checked /> Homoglyphs (о→Cyrillic)</label>
+        <label><input type="checkbox" id="le" /> Leet-speak (e→3, o→0)</label>
+        <label><input type="checkbox" id="sp" /> Letter spacing</label>
+        <label><input type="checkbox" id="zw" /> Zero-width breaks</label>
+        <label><input type="checkbox" id="pu" /> Punctuate wo.rds</label>
+      </fieldset>
+
+      <p class="muted" style="font-size:.8rem;margin:.4rem 0 .2rem">Obfuscated version (what the model actually sees):</p>
+      <div class="obf-out" id="obfOut" aria-live="polite"></div>
+
+      <div class="triage-board" id="cmp" hidden style="grid-template-columns:repeat(auto-fit,minmax(220px,1fr))">
+        <div class="triage-col">
+          <h4>Original</h4>
+          <div class="verdict-row"><span class="verdict-label" id="oLabel">–</span><span class="verdict-conf">spam <b id="oConf">–</b></span></div>
+          <div class="meter-dual"><div class="meter-ham" id="oHam" style="inline-size:50%"></div><div class="meter-spam" id="oSpam" style="inline-size:50%"></div></div>
+        </div>
+        <div class="triage-col">
+          <h4>Obfuscated</h4>
+          <div class="verdict-row"><span class="verdict-label" id="xLabel">–</span><span class="verdict-conf">spam <b id="xConf">–</b></span></div>
+          <div class="meter-dual"><div class="meter-ham" id="xHam" style="inline-size:50%"></div><div class="meter-spam" id="xSpam" style="inline-size:50%"></div></div>
+        </div>
+      </div>
+      <div class="readout" id="readout" hidden><span>spam-score drop <b id="drop">–</b></span><span>backend <b id="rBackend">–</b></span></div>
+    </section>
+
+    <p class="muted" style="font-size:.85rem">
+      Notice the trade-off: the tricks that most confuse the model (homoglyphs, zero-width breaks) are also
+      the ones a human eye still reads fine — which is exactly why real filters normalise text (strip
+      look-alikes, collapse spacing) before classifying. This demo shows the raw, un-normalised model, so
+      you can see where it's fragile.
+    </p>
+
+    <p class="crumbs"><a href="../practical/">← Practical</a> · <a href="../">Back to Spam detector</a> · Next: <a href="../multi-model/">Multi-model →</a></p>
+
+    <script type="module">
+      import { SpamEngine, debounce, SPAM_CSS } from "../spam.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = SPAM_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new SpamEngine();
+      let loaded = false;
+
+      const HOMO = { a: "а", c: "с", e: "е", o: "о", p: "р", x: "х", y: "у" }; // Cyrillic look-alikes
+      const LEET = { e: "3", o: "0", a: "@", i: "1", s: "5" };
+
+      function obfuscate(text) {
+        let out = text;
+        if ($("ho").checked) out = out.replace(/[aceopxy]/g, (c) => HOMO[c] || c);
+        if ($("le").checked) out = out.replace(/[eoais]/gi, (c) => LEET[c.toLowerCase()] || c);
+        if ($("pu").checked) out = out.replace(/\B(?=[a-z])/gi, (m, i) => (Math.random() < 0.18 ? "." : "")); // stray dots
+        if ($("sp").checked) out = out.replace(/(\w)(?=\w)/g, "$1 "); // thin space between letters
+        if ($("zw").checked) out = out.replace(/(\w)(?=\w)/g, "$1​"); // zero-width space between letters
+        return out;
+      }
+
+      function setMeter(spamEl, hamEl, spam) { spamEl.style.inlineSize = (spam * 100).toFixed(1) + "%"; hamEl.style.inlineSize = ((1 - spam) * 100).toFixed(1) + "%"; }
+      function setVerdict(labelEl, confEl, spam) {
+        const label = spam >= 0.5 ? "SPAM" : "HAM";
+        labelEl.textContent = label; labelEl.className = "verdict-label " + (label === "SPAM" ? "spam" : "ham");
+        confEl.textContent = (spam * 100).toFixed(1) + "%";
+      }
+
+      for (const id of ["ho", "le", "sp", "zw", "pu"]) $(id).addEventListener("change", run);
+      const sched = debounce(run, 350);
+      $("text").addEventListener("input", sched);
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/tanaos-spam-detection-v1-ONNX", runtime: "transformers.js", dtype: "q8", sizeMB: 136, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("text").disabled = false; loaded = true; run(); },
+      });
+
+      async function run() {
+        if (!loaded) return;
+        const text = $("text").value.trim();
+        if (!text) { $("obfOut").textContent = ""; $("cmp").hidden = true; return; }
+        const obf = obfuscate(text);
+        $("obfOut").textContent = obf;
+        try {
+          const [o, x] = await Promise.all([engine.classify(text), engine.classify(obf)]);
+          $("cmp").hidden = false; $("readout").hidden = false;
+          setVerdict($("oLabel"), $("oConf"), o.spam); setMeter($("oSpam"), $("oHam"), o.spam);
+          setVerdict($("xLabel"), $("xConf"), x.spam); setMeter($("xSpam"), $("xHam"), x.spam);
+          const d = (o.spam - x.spam) * 100;
+          $("drop").textContent = (d >= 0 ? "−" : "+") + Math.abs(d).toFixed(1) + " pts";
+          $("rBackend").textContent = x.device.toUpperCase();
+        } catch (err) { $("runStatus").hidden = false; $("runStatus").textContent = "Scoring failed: " + err.message; $("runStatus").classList.add("err"); }
+      }
+    </script>
+  </body>
+</html>

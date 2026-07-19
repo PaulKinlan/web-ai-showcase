@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Spam detector — spam vs ham in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Paste a message or email and get a spam / not-spam verdict with confidence, locally in your browser — plus a triage inbox and the exact words that trip the spam signal. No server, nothing uploaded."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🚫</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">text-classification · text · WASM · ~136 MB</p>
+      <h1>Spam detector — is this message spam or ham?</h1>
+      <p class="lede">
+        A DistilBERT classifier fine-tuned to separate junk from real messages. Paste any message or email
+        and it scores it as <strong>SPAM</strong> or <strong>HAM</strong> (not spam) with a confidence — then
+        look inside to see which exact words tripped the spam signal. Everything runs on your device.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/onnx-community/tanaos-spam-detection-v1-ONNX" target="_blank" rel="noopener">onnx-community/tanaos-spam-detection-v1-ONNX</a></td></tr>
+          <tr><th>Task / pipeline</th><td><code>text-classification</code></td></tr>
+          <tr><th>Labels</th><td><code>spam</code> / <code>not_spam</code> (binary; softmax over 2 logits)</td></tr>
+          <tr><th>Architecture</th><td>DistilBERT fine-tuned for spam / content-moderation (tanaos)</td></tr>
+          <tr><th>Quantization</th><td>q8 (8-bit) ONNX</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (runs anywhere; no WebGPU needed)</td></tr>
+          <tr><th>Download</th><td>~136 MB, cached after first load</td></tr>
+          <tr><th>License</th><td>MIT</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Paste a message. The verdict re-scores automatically (debounced) a moment after you
+        stop typing. The dual meter shows the full probability split between the two classes.</p>
+
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
+        Message or email text
+        <textarea id="text" rows="3" disabled>WINNER! You have been selected to receive a FREE $1000 gift card. Click http://bit.ly/claim-now to claim your prize before it expires!</textarea>
+      </label>
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.5rem 0">
+        <button class="chip" type="button" data-set="WINNER! You have been selected to receive a FREE $1000 gift card. Click http://bit.ly/claim-now to claim your prize before it expires!">prize scam</button>
+        <button class="chip" type="button" data-set="URGENT: your account has been suspended. Verify your identity now at secure-login-verify.com or you will lose access permanently.">phishing</button>
+        <button class="chip" type="button" data-set="Hey, are we still on for lunch tomorrow at noon? Let me know if that works for you.">friend</button>
+        <button class="chip" type="button" data-set="Hi team, I've attached the slides from today's review. Let me know if anything needs changing before Friday.">work email</button>
+      </div>
+
+      <div class="verdict-row" id="verdictRow" hidden>
+        <span class="verdict-label" id="vLabel">–</span>
+        <span class="verdict-conf">confidence <b id="vConf">–</b></span>
+      </div>
+      <div class="meter-dual" id="meter" hidden>
+        <div class="meter-ham" id="fillHam" style="inline-size:50%"></div>
+        <div class="meter-spam" id="fillSpam" style="inline-size:50%"></div>
+      </div>
+      <div class="meter-labels" id="meterLabels" hidden><span>not spam</span><span>spam</span></div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside — the spam-signal words</h3>
+      <p class="muted">
+        This is <strong>occlusion attribution</strong>: we re-run the model with each word removed and see
+        how much the SPAM score shifts (measured in <em>log-odds</em>, because the model is so confident
+        that raw percentages barely move). Remove a word that was pushing "spam" and the score drops — so
+        that word gets a <span style="color:var(--bad)">red</span> weight. Remove a word that was keeping it
+        looking legitimate and the score rises — <span style="color:var(--good)">green</span>. No gradients,
+        no hand-waving: just the model's own predictions, N+1 of them.
+      </p>
+      <button id="explain" type="button" class="secondary" disabled>Explain the current message</button>
+      <p class="status" id="attrStatus" role="status" aria-live="polite" hidden></p>
+      <div class="class-bars" id="bars" aria-live="polite"></div>
+      <div class="attr-wrap" id="attr" aria-live="polite"></div>
+      <div class="attr-legend" id="attrLegend" hidden>
+        <span><span class="swatch" style="background:var(--bad)"></span>pushes SPAM</span>
+        <span><span class="swatch" style="background:var(--good)"></span>pushes not-spam</span>
+        <span>brighter = larger effect</span>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        Spam filtering is the oldest applied text classifier there is — and running it in the browser means
+        you can triage messages the instant they arrive, without a round-trip and without their contents
+        ever leaving the device. That unlocks fast, private, always-available filtering.
+      </p>
+      <ul>
+        <li><strong>Client-side inbox triage</strong> — sort junk from real mail before it renders, with no server pass.</li>
+        <li><strong>Form &amp; comment guarding</strong> — flag spammy submissions client-side, cutting server load and PII exposure.</li>
+        <li><strong>Chat &amp; DM filters</strong> — catch scam and promo messages in a messaging app, offline.</li>
+        <li><strong>Private email tooling</strong> — score sensitive mail locally with no data-handling agreement.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Type a message, get SPAM/HAM + confidence, updating live as you type.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Paste a whole inbox and watch it auto-triage into Inbox and Junk columns.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Adversarial spam: obfuscate a message and watch how far you can fool the filter.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">Spam-gate an inbox, then summarize only the real messages with DistilBART.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>Classification is one call; <code>top_k</code> returns both class scores:</p>
+      <pre><code>import { pipeline } from "@huggingface/transformers";
+
+const classify = await pipeline(
+  "text-classification",
+  "onnx-community/tanaos-spam-detection-v1-ONNX",
+); // downloads + caches ~136 MB once
+
+const out = await classify("Claim your FREE prize now!", { top_k: 2 });
+// → [{ label: "spam", score: 0.9994 }, { label: "not_spam", score: 0.0006 }]</code></pre>
+      <p class="muted">
+        "See inside" re-uses that same call: it classifies the full message plus one copy per word with that
+        word deleted (batched in a single pass), then subtracts the SPAM log-odds to attribute the shift to
+        each word. All of it runs in a Web Worker so typing never janks.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/onnx-community/tanaos-spam-detection-v1-ONNX" target="_blank" rel="noopener">Model card — tanaos spam detection v1 (onnx-community ONNX)</a></li>
+        <li><a href="https://huggingface.co/tanaos/tanaos-spam-detection-v1" target="_blank" rel="noopener">Original weights — tanaos/tanaos-spam-detection-v1</a></li>
+        <li><a href="https://arxiv.org/abs/1910.01108" target="_blank" rel="noopener">Paper — DistilBERT (Sanh et al., 2019, arXiv:1910.01108)</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { SpamEngine, renderVerdict, renderClassBars, renderAttribution, debounce, SPAM_CSS }
+        from "./spam.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = SPAM_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new SpamEngine();
+      let loaded = false;
+
+      for (const c of document.querySelectorAll(".chip")) {
+        c.addEventListener("click", () => { $("text").value = c.dataset.set; scheduleScore(); clearAttr(); });
+      }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: {
+          modelId: "onnx-community/tanaos-spam-detection-v1-ONNX",
+          runtime: "transformers.js",
+          dtype: "q8",
+          sizeMB: 136,
+          requiresWebGPU: false,
+        },
+        load: async (onProgress) => {
+          await engine.load(onProgress);
+          return engine;
+        },
+        onReady: () => {
+          $("text").disabled = false;
+          $("explain").disabled = false;
+          loaded = true;
+          score();
+        },
+      });
+
+      const scheduleScore = debounce(score, 350);
+      $("text").addEventListener("input", () => { scheduleScore(); clearAttr(); });
+
+      async function score() {
+        if (!loaded) return;
+        const text = $("text").value.trim();
+        if (!text) { $("verdictRow").hidden = true; $("meter").hidden = true; $("meterLabels").hidden = true; return; }
+        try {
+          const r = await engine.classify(text);
+          $("verdictRow").hidden = false; $("meter").hidden = false; $("meterLabels").hidden = false;
+          renderVerdict({
+            label: $("vLabel"), conf: $("vConf"), fillSpam: $("fillSpam"), fillHam: $("fillHam"),
+          }, r);
+          renderClassBars($("bars"), r);
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = r.ms + " ms";
+        } catch (err) {
+          $("runStatus").hidden = false;
+          $("runStatus").textContent = "Scoring failed: " + err.message; $("runStatus").classList.add("err");
+        }
+      }
+
+      function clearAttr() { $("attr").replaceChildren(); $("attrLegend").hidden = true; }
+
+      $("explain").addEventListener("click", async () => {
+        if (!loaded) return;
+        const text = $("text").value.trim();
+        if (!text) return;
+        $("explain").disabled = true;
+        $("attrStatus").hidden = false; $("attrStatus").classList.remove("err");
+        $("attrStatus").textContent = "Scoring each word out…";
+        try {
+          const r = await engine.attribute(text);
+          renderClassBars($("bars"), { spam: r.spam, ham: 1 - r.spam });
+          renderAttribution($("attr"), r.words, r.attributions);
+          $("attrLegend").hidden = false;
+          $("attrStatus").textContent = `${r.words.length} words scored on ${r.device.toUpperCase()} in ${r.ms} ms.`;
+          $("attrStatus").classList.add("ok");
+        } catch (err) {
+          $("attrStatus").textContent = "Attribution failed: " + err.message; $("attrStatus").classList.add("err");
+        } finally { $("explain").disabled = false; }
+      });
+    </script>
+  </body>
+</html>
