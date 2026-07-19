@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>GPT-2 Multi-model — write, then read the mood · Web AI Showcase</title>
+    <meta name="description" content="Chain two on-device models: GPT-2 continues your prompt, then a DistilBERT sentiment model reads the mood of what it wrote — a generate-then-judge loop entirely in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🔮</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">GPT-2</a></p>
+
+    <header>
+      <p class="eyebrow">use case · multi-model</p>
+      <h1>Multi-model: write, then read the mood</h1>
+      <p class="lede">
+        A generate-then-judge loop with two models on your device. GPT-2 continues your prompt; then a
+        <a href="../../sentiment-classifier/">DistilBERT sentiment model</a> reads the result and scores its
+        mood. Generate a few times and watch how sampling swings the tone — some completions come out cheerful,
+        others bleak.
+      </p>
+    </header>
+
+    <section class="panel">
+      <h3 style="margin-top:0">1 · Writer (GPT-2)</h3>
+      <div id="gpt-loader"></div>
+      <h3>2 · Mood reader (DistilBERT-SST2)</h3>
+      <div id="sent-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+
+      <label class="field" style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">Prompt
+        <input id="prompt" class="prompt" disabled value="When I opened the letter, I felt" />
+      </label>
+      <div class="sample-row" id="samples">
+        <button class="chip" type="button" data-t="When I opened the letter, I felt">letter</button>
+        <button class="chip" type="button" data-t="The review of the new restaurant said">review</button>
+        <button class="chip" type="button" data-t="Looking back on the whole trip, I would say it was">trip</button>
+      </div>
+      <div class="controls">
+        <label>tokens <input id="maxNew" type="range" min="15" max="60" value="35" disabled><output id="maxNewV">35</output></label>
+        <label>temp <input id="temp" type="range" min="0.3" max="1.4" step="0.1" value="0.9" disabled><output id="tempV">0.9</output></label>
+        <button id="run" type="button" disabled>Write &amp; judge</button>
+      </div>
+
+      <div class="gen-out" id="out" aria-live="polite" hidden></div>
+      <div id="moodWrap" hidden style="margin-top:.7rem">
+        <p class="eyebrow">mood of the generated text</p>
+        <div class="tok-bar" style="block-size:1.1rem;border-radius:999px;background:var(--bg-secondary);border:1px solid var(--border);overflow:hidden">
+          <span id="moodFill" style="display:block;block-size:100%;inline-size:50%"></span>
+        </div>
+        <div class="readout" id="readout">
+          <span>verdict <b id="rLabel">–</b></span>
+          <span>positive <b id="rPos">–</b></span>
+          <span>write <b id="rGenMs">–</b></span>
+          <span>judge <b id="rSentMs">–</b></span>
+        </div>
+      </div>
+    </section>
+
+    <p class="muted" style="font-size:.85rem">
+      This is a tiny version of a real pattern: generate content, then run a second model to gate or route it
+      by tone, safety, or topic — all locally, no round-trips. Because GPT-2 samples, re-running the same
+      prompt can flip the verdict.
+    </p>
+
+    <p class="crumbs"><a href="../wild/">← Wild</a> · <a href="../">Back to GPT-2</a></p>
+
+    <script type="module">
+      import { GPT2Engine, GPT2_CSS, showToken } from "../gpt2.js";
+      import { SentimentEngine } from "../../sentiment-classifier/sentiment.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = GPT2_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const gpt = new GPT2Engine();
+      const sent = new SentimentEngine();
+      let gptReady = false, sentReady = false;
+      for (const c of $("samples").children) c.addEventListener("click", () => { $("prompt").value = c.dataset.t; });
+      $("maxNew").addEventListener("input", () => $("maxNewV").textContent = $("maxNew").value);
+      $("temp").addEventListener("input", () => $("tempV").textContent = $("temp").value);
+      function maybeEnable() { if (gptReady && sentReady) for (const id of ["run","prompt","maxNew","temp"]) $(id).disabled = false; }
+
+      createModelLoader({
+        mount: $("gpt-loader"),
+        model: { modelId: "Xenova/gpt2", runtime: "transformers.js", dtype: "int8", sizeMB: 280, requiresWebGPU: false },
+        load: async (onProgress) => { await gpt.load(onProgress); return gpt; },
+        onReady: () => { gptReady = true; maybeEnable(); },
+      });
+      createModelLoader({
+        mount: $("sent-loader"),
+        model: { modelId: "Xenova/distilbert-base-uncased-finetuned-sst-2-english", runtime: "transformers.js", dtype: "q8", sizeMB: 67, requiresWebGPU: false },
+        load: async (onProgress) => { await sent.load(onProgress); return sent; },
+        onReady: () => { sentReady = true; maybeEnable(); },
+      });
+
+      $("run").addEventListener("click", async () => {
+        const prompt = $("prompt").value;
+        if (!prompt.trim()) return;
+        $("run").disabled = true; $("status").hidden = false; $("status").classList.remove("err","ok"); $("status").textContent = "GPT-2 is writing…";
+        $("out").hidden = false; $("out").innerHTML = `<span class="prompt-span">${showToken(prompt)}</span>`;
+        $("moodWrap").hidden = true;
+        let genMs = 0;
+        try {
+          const r = await gpt.generate(prompt, { maxNew: +$("maxNew").value, greedy: false, temperature: +$("temp").value, topK: 40 }, (msg) => {
+            const s = document.createElement("span"); s.className = "new-span"; s.textContent = msg.piece; $("out").append(s);
+          });
+          genMs = r.ms;
+          $("status").textContent = "Reading the mood…";
+          const judged = (r.generated || "").trim() || r.text;
+          const m = await sent.classify(judged);
+          $("moodWrap").hidden = false;
+          const pos = m.pos;
+          $("moodFill").style.inlineSize = (pos * 100).toFixed(0) + "%";
+          $("moodFill").style.background = pos >= 0.5 ? "var(--good)" : "var(--bad)";
+          $("rLabel").textContent = m.label;
+          $("rPos").textContent = (pos * 100).toFixed(1) + "%";
+          $("rGenMs").textContent = (genMs/1000).toFixed(2)+" s";
+          $("rSentMs").textContent = m.ms + " ms";
+          $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Pipeline failed: "+err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>

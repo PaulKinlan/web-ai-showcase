@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>GPT-2 — watch a decoder-only model complete text in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run the original GPT-2 locally in your browser: give it a prompt and watch it complete text one token at a time — and see the actual next-token probability distribution it samples from at every step. WASM, nothing uploaded."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🔮</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">text-generation · text · WASM · ~280 MB</p>
+      <h1>GPT-2 — the decoder-only model that started it all</h1>
+      <p class="lede">
+        GPT-2 is the original <strong>decoder-only</strong> transformer: at every step it predicts the next
+        token from everything before it, samples one, feeds it back, and repeats. It isn't chat-tuned — it's
+        a raw <em>text completer</em>, which makes it the clearest possible window into how autoregressive
+        generation actually works. Give it a prompt and watch it write, token by token — and watch the real
+        probability distribution it picks from at each step.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table" style="inline-size:100%;border-collapse:collapse">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/Xenova/gpt2" target="_blank" rel="noopener">Xenova/gpt2</a> (ONNX of openai-community/gpt2)</td></tr>
+          <tr><th>Task / pipeline</th><td><code>text-generation</code> — loaded via <code>AutoModelForCausalLM</code> for a custom decode loop with per-step logits</td></tr>
+          <tr><th>Architecture</th><td>Decoder-only transformer, 124M params, 12 layers, byte-level BPE, 1024-token context</td></tr>
+          <tr><th>Output</th><td>A probability over the whole 50,257-token vocabulary at each step</td></tr>
+          <tr><th>Quantization</th><td>int8 (8-bit) ONNX</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (runs anywhere; no WebGPU needed)</td></tr>
+          <tr><th>Download</th><td>~280 MB, cached after first load</td></tr>
+          <tr><th>License</th><td>MIT</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">
+        Type a prompt and press Generate. GPT-2 continues it one token at a time (streamed live from a Web
+        Worker). Switch between <strong>greedy</strong> (always the single most likely token) and
+        <strong>sampling</strong> (temperature + top-k) to feel the difference between safe and surprising.
+      </p>
+
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+
+      <label class="field" style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">Prompt
+        <textarea id="prompt" class="prompt" disabled>In a shocking finding, scientists discovered a herd of unicorns living in a remote valley.</textarea>
+      </label>
+      <div class="sample-row" id="samples">
+        <button class="chip" type="button" data-t="In a shocking finding, scientists discovered a herd of unicorns living in a remote valley.">unicorns</button>
+        <button class="chip" type="button" data-t="The recipe for the perfect cup of coffee is">recipe</button>
+        <button class="chip" type="button" data-t="Dear diary, today I finally">diary</button>
+        <button class="chip" type="button" data-t="The three laws of robotics are">robotics</button>
+      </div>
+
+      <div class="controls">
+        <span class="seg" role="group" aria-label="Sampling mode">
+          <button id="mGreedy" type="button" aria-pressed="true">Greedy</button>
+          <button id="mSample" type="button" aria-pressed="false">Sample</button>
+        </span>
+        <label>tokens <input id="maxNew" type="range" min="10" max="80" value="40" disabled><output id="maxNewV">40</output></label>
+        <label id="tempWrap" hidden>temp <input id="temp" type="range" min="0.3" max="1.5" step="0.1" value="0.9" disabled><output id="tempV">0.9</output></label>
+        <label id="topkWrap" hidden>top-k <input id="topk" type="range" min="1" max="50" value="40" disabled><output id="topkV">40</output></label>
+        <button id="run" type="button" disabled>Generate</button>
+        <button id="stop" type="button" class="secondary" hidden>Stop</button>
+      </div>
+
+      <div class="gen-out" id="out" aria-live="polite"></div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>mode <b id="rMode">–</b></span>
+        <span>new tokens <b id="rTok">–</b></span>
+        <span>total time <b id="rMs">–</b></span>
+        <span>tok/s <b id="rTps">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside — the next-token distribution</h3>
+      <p class="muted">
+        GPT-2 never outputs a word directly — it outputs a <strong>probability for every one of its 50,257
+        tokens</strong>, then one is chosen. As it generates, the panel below shows the top candidates it was
+        choosing between at the latest step (the <span style="color:var(--good)">green</span> one is the token
+        it actually emitted). Underneath, the <em>confidence trace</em> colours each generated token by how
+        probable the model thought it was — pale means it was a confident, obvious choice; dark means it took
+        a gamble.
+      </p>
+      <p class="eyebrow" id="stepLabel" hidden>latest step — candidates</p>
+      <div class="tok-list" id="dist"></div>
+      <p class="eyebrow" style="margin-top:.9rem" id="traceLabel" hidden>confidence trace (darker = lower probability at the time)</p>
+      <div class="trace chain" id="trace"></div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        Every modern LLM — chat models included — is doing exactly this under the hood: predict a
+        distribution, sample, repeat. GPT-2 is small and un-tuned enough to make that loop legible, and it
+        runs on plain WASM with no GPU. It's the honest teaching model, and still a capable little writer.
+      </p>
+      <ul>
+        <li><strong>Understand sampling</strong> — see first-hand what temperature and top-k do to text, with the real distribution in view.</li>
+        <li><strong>Offline autocomplete / ideation</strong> — draft continuations, prompts, and variations with nothing leaving the tab.</li>
+        <li><strong>A teaching tool</strong> — show students how "AI writing" is next-token prediction, not magic.</li>
+        <li><strong>A generation stage in a pipeline</strong> — feed its output into a classifier or summariser (see multi-model).</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Prompt in, streamed completion out, with live token count and tok/s.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Autocomplete: see the ranked next-token suggestions for whatever you've typed.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Branching text — you pick the next token from GPT-2's top candidates and steer the story.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">GPT-2 writes, then a sentiment model reads the mood of what it wrote.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>The friendly one-liner is the <code>text-generation</code> pipeline:</p>
+      <pre><code>import { pipeline } from "@huggingface/transformers";
+
+const gen = await pipeline("text-generation", "Xenova/gpt2", { dtype: "int8" });
+const out = await gen("The meaning of life is", { max_new_tokens: 40, temperature: 0.9, do_sample: true, top_k: 40 });
+// out[0].generated_text → the prompt plus GPT-2's continuation</code></pre>
+      <p class="muted">
+        For the "see inside" surface we run our own loop with <code>AutoModelForCausalLM</code>: each step is a
+        forward pass whose <code>logits</code> row (<code>[1, seq, 50257]</code>) we softmax ourselves, so we
+        can show the exact probability of every candidate and of the token actually chosen. It all runs in a
+        Web Worker so streaming never blocks the page.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/Xenova/gpt2" target="_blank" rel="noopener">Model card — Xenova/gpt2 (ONNX)</a></li>
+        <li><a href="https://huggingface.co/openai-community/gpt2" target="_blank" rel="noopener">Original model card — openai-community/gpt2</a></li>
+        <li><a href="https://cdn.openai.com/better-language-models/language_models_are_unsupervised_multitask_learners.pdf" target="_blank" rel="noopener">Paper — Language Models are Unsupervised Multitask Learners (Radford et al., 2019)</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { GPT2Engine, GPT2_CSS, renderDist, showToken } from "./gpt2.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = GPT2_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new GPT2Engine();
+      let mode = "greedy";
+
+      for (const c of $("samples").children) c.addEventListener("click", () => { $("prompt").value = c.dataset.t; });
+      const bind = (r, o) => { $(r).addEventListener("input", () => $(o).textContent = $(r).value); };
+      bind("maxNew", "maxNewV"); bind("temp", "tempV"); bind("topk", "topkV");
+      function setMode(m) {
+        mode = m;
+        $("mGreedy").setAttribute("aria-pressed", m === "greedy");
+        $("mSample").setAttribute("aria-pressed", m === "sample");
+        $("tempWrap").hidden = m !== "sample";
+        $("topkWrap").hidden = m !== "sample";
+      }
+      $("mGreedy").addEventListener("click", () => setMode("greedy"));
+      $("mSample").addEventListener("click", () => setMode("sample"));
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/gpt2", runtime: "transformers.js", dtype: "int8", sizeMB: 280, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { for (const id of ["run","prompt","maxNew","temp","topk"]) $(id).disabled = false; },
+      });
+
+      function probColor(p) {
+        // pale (confident) → dark (gamble). Map prob 0..1 to alpha.
+        const a = Math.min(0.9, Math.max(0.06, 1 - p));
+        return `color-mix(in srgb, var(--accent) ${Math.round(a * 100)}%, transparent)`;
+      }
+
+      $("run").addEventListener("click", async () => {
+        const prompt = $("prompt").value;
+        if (!prompt.trim()) return;
+        $("run").disabled = true;
+        $("status").hidden = false; $("status").classList.remove("err","ok"); $("status").textContent = "Generating…";
+        $("out").innerHTML = `<span class="prompt-span">${showToken(prompt)}</span>`;
+        $("trace").replaceChildren(); $("dist").replaceChildren();
+        $("stepLabel").hidden = false; $("traceLabel").hidden = false;
+        const opts = { maxNew: +$("maxNew").value, greedy: mode === "greedy", temperature: +$("temp").value, topK: +$("topk").value };
+        try {
+          const r = await engine.generate(prompt, opts, (msg) => {
+            const span = document.createElement("span"); span.className = "new-span"; span.textContent = msg.piece;
+            $("out").append(span);
+            renderDist($("dist"), msg.topk);
+            const t = document.createElement("span"); t.className = "t"; t.innerHTML = showToken(msg.chosen.token);
+            t.style.background = probColor(msg.chosen.prob);
+            t.title = `p = ${(msg.chosen.prob * 100).toFixed(1)}%`;
+            $("trace").append(t);
+          });
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMode").textContent = mode;
+          const newTok = r.text.length ? (r.generated ? r.generated.length : 0) : 0;
+          const nNew = opts.maxNew; // upper bound; exact from trace
+          $("rTok").textContent = $("trace").children.length;
+          $("rMs").textContent = (r.ms/1000).toFixed(2)+" s";
+          $("rTps").textContent = ($("trace").children.length / (r.ms/1000)).toFixed(1);
+          $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Generation failed: "+err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>
