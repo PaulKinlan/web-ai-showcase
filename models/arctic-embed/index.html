@@ -1,0 +1,476 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Snowflake Arctic-Embed-S — retrieval-tuned embeddings with a query prefix · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Snowflake's retrieval-optimized embedder in your browser: turn text into 384-number vectors, build a cosine matrix, and run prefixed-query search. See the exact 'Represent this sentence for searching relevant passages:' instruction and how it changes the geometry — with vs without the prefix, side by side. Real embeddings, no server."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>❄️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">feature-extraction · text · WASM · ~34 MB</p>
+      <h1>Arctic-Embed-S — a retriever that reads the question differently</h1>
+      <p class="lede">
+        Snowflake's Arctic-Embed family was tuned for one job: <strong>retrieval</strong> — finding the
+        passage that answers a query. Its trick is an <strong>asymmetric</strong> recipe. A document is
+        embedded plainly, but a query is first wrapped in a short instruction,
+        <em>"Represent this sentence for searching relevant passages: …"</em>, and the sentence vector is
+        read from the <strong>[CLS]</strong> token, not a mean of all tokens. Type a few lines to build a
+        live similarity matrix, search with the real query prefix, and watch — in A/B — how the prefix
+        reshapes a query's vector. Nothing leaves your device.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/Snowflake/snowflake-arctic-embed-s" target="_blank" rel="noopener">Snowflake/snowflake-arctic-embed-s</a> (official ONNX)</td></tr>
+          <tr><th>Task / pipeline</th><td><code>feature-extraction</code></td></tr>
+          <tr><th>Architecture</th><td>BERT-style encoder (~33M params) → 384-dimensional sentence embedding</td></tr>
+          <tr><th>Pooling</th><td><strong>[CLS] token</strong> pooling, then <strong>L2-normalize</strong> (contrast GTE/MiniLM mean pooling)</td></tr>
+          <tr><th>Query prefix</th><td><code>Represent this sentence for searching relevant passages: </code> on queries only — documents stay raw</td></tr>
+          <tr><th>Strength</th><td>Retrieval-tuned with hard-negative mining → strong <a href="https://huggingface.co/spaces/mteb/leaderboard" target="_blank" rel="noopener">MTEB</a> retrieval / nDCG for its size</td></tr>
+          <tr><th>Quantization</th><td>q8 (8-bit) ONNX (<code>model_quantized.onnx</code>)</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (runs anywhere; no WebGPU needed)</td></tr>
+          <tr><th>Download</th><td>~34 MB, cached after first load</td></tr>
+          <tr><th>License</th><td>Apache-2.0</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Put one sentence per line, then embed. The matrix shows the cosine similarity between
+        every pair (1.00 = identical direction). The scatter is a 2D PCA projection of the 384-d vectors —
+        a flattened map where near = similar. Then type a query below; it is embedded <em>with</em> Arctic's
+        retrieval prefix and ranks the lines by meaning.</p>
+
+      <div id="model-loader"></div>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
+        Passages / sentences (one per line)
+        <textarea id="sentences" rows="7">To reset your password, open Settings and choose "Forgot password".
+Two-factor authentication can be enabled under Security settings.
+Refunds are issued within 30 days of the delivery date.
+The invoice is generated automatically after a successful payment.
+The Great Barrier Reef is the largest coral reef system on Earth.
+Photosynthesis lets plants turn sunlight into chemical energy.</textarea>
+      </label>
+      <div style="margin:.5rem 0;display:flex;gap:.4rem;flex-wrap:wrap">
+        <button id="run" type="button" disabled>Embed &amp; compare</button>
+        <button id="reset" type="button" class="secondary">Reset examples</button>
+      </div>
+      <p class="status" id="rowStatus" role="status" aria-live="polite" hidden></p>
+
+      <div class="grid-2">
+        <div>
+          <h3 style="margin-top:.4rem">Cosine similarity matrix</h3>
+          <div class="matrix-scroll" id="matrix" aria-live="polite"></div>
+        </div>
+        <div>
+          <h3 style="margin-top:.4rem">2D map (PCA)</h3>
+          <div id="projection" aria-live="polite"></div>
+          <p class="muted" id="explained" style="font-size:.78rem;font-family:var(--font-mono)"></p>
+        </div>
+      </div>
+
+      <div style="margin-top:1rem">
+        <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;max-inline-size:34rem">
+          Prefixed-query search — rank the passages above by meaning
+          <span style="display:flex;gap:.4rem;flex-wrap:wrap">
+            <input id="query" type="text" value="How do I recover access to my locked account?" style="flex:1;min-inline-size:12rem" disabled />
+            <button id="search" type="button" disabled>Search</button>
+          </span>
+        </label>
+        <p class="prefix-note" id="prefixShown" style="margin:.35rem 0 0"></p>
+        <div class="sent-list" id="ranked" aria-live="polite"></div>
+      </div>
+
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+        <span>sentences <b id="rN">–</b></span>
+        <span>dims <b id="rDim">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside — the vector, and what the query prefix does</h3>
+      <p class="muted">
+        The encoder emits one 384-number vector per token; Arctic reads the <strong>[CLS]</strong> token's
+        vector as the whole-sentence representation and <strong>L2-normalizes</strong> it, so every sentence
+        becomes a unit-length arrow and cosine similarity is a plain dot product. Pick a passage to see its
+        real vector and its pre-normalization magnitude.
+      </p>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Embed some passages above to inspect a vector.</div>
+      <div id="insideWrap" hidden>
+        <label style="font-size:.82rem;display:flex;gap:.4rem;align-items:center;flex-wrap:wrap">
+          Inspect passage
+          <select id="pick"></select>
+        </label>
+        <div class="readout">
+          <span>dimensions <b>384</b></span>
+          <span>pooling <b>[CLS]</b></span>
+          <span>pre-norm ‖v‖ <b id="iNorm">–</b></span>
+          <span>post-norm ‖v‖ <b>1.000</b></span>
+        </div>
+        <p class="muted" style="font-size:.78rem;margin:.3rem 0">First 96 of 384 dimensions (blue = positive, orange = negative, brighter = larger magnitude):</p>
+        <div class="vec-strip" id="vecStrip"></div>
+        <p class="muted" style="font-size:.78rem;font-family:var(--font-mono);margin-top:.5rem;word-break:break-all" id="vecHead"></p>
+      </div>
+
+      <hr style="border:0;border-top:1px solid var(--border);margin:1.2rem 0" />
+      <h4 style="margin:.2rem 0">A/B — what the query prefix does to the vector</h4>
+      <p class="muted">
+        We take a query and the passage that answers it, and embed the query <strong>two ways</strong>: with
+        the retrieval prefix (as Arctic intends) and without it. The document is embedded raw both times.
+        Note what happens: on a single pair the absolute cosine often <em>drops</em> with the prefix — the
+        instruction words dilute the sentence — yet the prefix is exactly what Arctic was trained to expect.
+        Its real payoff is <strong>ranking quality across a whole corpus</strong> (the MTEB nDCG the model is
+        tuned for), not the score on one pair. This A/B shows you the measured shift, honestly; it is not a
+        claim that the prefix raises every number.
+      </p>
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;align-items:center;margin:.4rem 0">
+        <button id="abRun" type="button" class="secondary" disabled>Run the with/without-prefix test</button>
+        <span class="status" id="abStatus" role="status" aria-live="polite"></span>
+      </div>
+      <div id="abWrap" hidden></div>
+
+      <hr style="border:0;border-top:1px solid var(--border);margin:1.2rem 0" />
+      <h4 style="margin:.2rem 0">Arctic vs GTE vs MiniLM on the same pairs</h4>
+      <p class="muted">
+        Three embedders, three recipes: <strong>Arctic-Embed-S</strong> (CLS pool, query prefix),
+        <strong>GTE</strong> (mean pool, no prefix) and <strong>MiniLM</strong> (mean pool, no prefix). For
+        a fair fight each query below is embedded the way each model wants it (Arctic gets its prefix; the
+        others don't), then scored against the same passages. Loads GTE (~34 MB) and MiniLM (~25 MB) on
+        demand and shows the real cosines.
+      </p>
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;align-items:center;margin:.4rem 0">
+        <button id="cmpRun" type="button" class="secondary" disabled>Compare the three models</button>
+        <span class="status" id="cmpStatus" role="status" aria-live="polite"></span>
+      </div>
+      <div id="cmpWrap" hidden style="overflow-x:auto"></div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        Retrieval is the first stage of almost every serious search and RAG system: you have thousands of
+        passages and one question, and you need the few that actually answer it. Arctic-Embed is tuned
+        precisely for that, and the asymmetric query prefix is a cheap, deliberate lever — you spend a few
+        tokens to tell the model "this is a search query", and ranking quality goes up. Small enough to run
+        in a tab, private because the text never leaves the device.
+      </p>
+      <ul>
+        <li><strong>First-stage retrieval</strong> — shortlist the passages a question is about, client-side, before any LLM sees them.</li>
+        <li><strong>Private RAG</strong> — fetch the right on-device snippet to ground a local model, no server round-trip.</li>
+        <li><strong>Dedup &amp; near-duplicate detection</strong> — collapse "same thing, different words" across a corpus.</li>
+        <li><strong>Nearest-label tagging</strong> — embed labels once, tag new text by closest label with zero training.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Does the query prefix change the score? One query, one passage, the number with and without it.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Prefixed retrieval over your own corpus, plus near-duplicate detection at a threshold.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Cluster a mixed pile of text into unlabeled groups by embedding proximity (k-means).</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">Arctic retrieves a shortlist, then a cross-encoder reranker re-scores the top hits.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>Feature-extraction with CLS pooling, plus the query prefix — that asymmetry is the whole point:</p>
+      <pre><code>import { pipeline } from "@huggingface/transformers";
+
+const extract = await pipeline(
+  "feature-extraction",
+  "Snowflake/snowflake-arctic-embed-s",
+); // downloads + caches ~34 MB once
+
+const PREFIX = "Represent this sentence for searching relevant passages: ";
+
+// A DOCUMENT is embedded raw; a QUERY is wrapped in the retrieval instruction:
+const out = await extract(
+  [PREFIX + "how do I sign in?", "the login page rejects my password"],
+  { pooling: "cls", normalize: true },
+);
+const [q, d] = out.tolist();
+
+// unit-length vectors → cosine similarity is just the dot product:
+const sim = q.reduce((s, x, i) =&gt; s + x * d[i], 0); // higher with the prefix than without</code></pre>
+      <p class="muted">
+        This page asks the worker for the <em>un</em>-normalized CLS vectors so "See inside" can show the
+        real pre-normalization magnitude, then normalizes them in JS. Inference runs in a Web Worker, so the
+        matrix, projection and comparison never jank the page.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/Snowflake/snowflake-arctic-embed-s" target="_blank" rel="noopener">Model card — Snowflake/snowflake-arctic-embed-s (official ONNX)</a></li>
+        <li><a href="https://huggingface.co/Snowflake/snowflake-arctic-embed-m" target="_blank" rel="noopener">Larger sibling — snowflake-arctic-embed-m (768-d)</a></li>
+        <li><a href="https://arxiv.org/abs/2405.05374" target="_blank" rel="noopener">Paper — Arctic-Embed: Scalable, Efficient, and Accurate Text Embedding Models (Merrick et al., 2024)</a></li>
+        <li><a href="https://huggingface.co/spaces/mteb/leaderboard" target="_blank" rel="noopener">MTEB leaderboard — how embedders are benchmarked</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import {
+        ArcticEngine, EmbedClient, WORKERS, MODEL_LABELS, QUERY_PREFIX, cosine, simMatrix, pca2d,
+        parseLines, renderMatrix, renderProjection, renderRanked, ARCTIC_CSS,
+      } from "./arctic.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = ARCTIC_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new ArcticEngine();
+      const DEFAULT = $("sentences").value;
+      let last = null; // { texts, embeddings, norms, dim }
+
+      $("reset").addEventListener("click", () => { $("sentences").value = DEFAULT; });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Snowflake/snowflake-arctic-embed-s", runtime: "transformers.js", dtype: "q8", sizeMB: 34, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => {
+          $("run").disabled = false;
+          $("query").disabled = false;
+          $("search").disabled = false;
+          $("abRun").disabled = false;
+          $("cmpRun").disabled = false;
+        },
+      });
+
+      $("run").addEventListener("click", run);
+      async function run() {
+        const texts = parseLines($("sentences").value);
+        if (texts.length < 2) {
+          $("rowStatus").hidden = false;
+          $("rowStatus").textContent = "Give at least two distinct sentences.";
+          $("rowStatus").classList.add("err");
+          return;
+        }
+        $("rowStatus").hidden = false;
+        $("rowStatus").classList.remove("err");
+        $("rowStatus").textContent = "Embedding…";
+        $("run").disabled = true;
+        try {
+          const r = await engine.embed(texts); // documents: no prefix
+          last = r;
+          renderMatrix($("matrix"), simMatrix(r.embeddings), r.texts);
+          const { points, explained } = pca2d(r.embeddings);
+          renderProjection($("projection"), points, r.texts);
+          $("explained").textContent = `PC1+PC2 explain ${(explained * 100).toFixed(0)}% of the variance`;
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = r.ms + " ms";
+          $("rN").textContent = r.texts.length;
+          $("rDim").textContent = r.dim;
+          fillInside(r);
+          $("rowStatus").textContent = "Done.";
+          $("rowStatus").classList.add("ok");
+        } catch (err) {
+          $("rowStatus").textContent = "Embedding failed: " + err.message;
+          $("rowStatus").classList.add("err");
+        } finally {
+          $("run").disabled = false;
+        }
+      }
+
+      $("search").addEventListener("click", search);
+      $("query").addEventListener("keydown", (e) => { if (e.key === "Enter") search(); });
+      async function search() {
+        const q = $("query").value.trim();
+        const texts = parseLines($("sentences").value);
+        if (!q || texts.length < 1) return;
+        $("search").disabled = true;
+        $("prefixShown").textContent = "Query sent to the model: " + QUERY_PREFIX + q;
+        try {
+          const [qr, dr] = await Promise.all([
+            engine.embed([q], { query: true }), // query: WITH Arctic's retrieval prefix
+            engine.embed(texts), // documents: raw
+          ]);
+          const qv = qr.embeddings[0];
+          const hits = dr.texts
+            .map((text, i) => ({ text, score: cosine(qv, dr.embeddings[i]) }))
+            .sort((a, b) => b.score - a.score);
+          renderRanked($("ranked"), hits);
+        } catch (err) {
+          $("ranked").textContent = "Search failed: " + err.message;
+        } finally {
+          $("search").disabled = false;
+        }
+      }
+
+      function fillInside(r) {
+        $("insideEmpty").hidden = true;
+        $("insideWrap").hidden = false;
+        $("pick").replaceChildren(...r.texts.map((t, i) => {
+          const o = document.createElement("option");
+          o.value = String(i);
+          o.textContent = `S${i + 1} — ${t.length > 40 ? t.slice(0, 39) + "…" : t}`;
+          return o;
+        }));
+        showVector(0);
+      }
+      $("pick").addEventListener("change", (e) => showVector(+e.target.value));
+      function showVector(i) {
+        if (!last) return;
+        const v = last.embeddings[i];
+        $("iNorm").textContent = last.norms[i].toFixed(3);
+        const maxAbs = Math.max(...v.map(Math.abs)) || 1;
+        $("vecStrip").replaceChildren(...v.slice(0, 96).map((val) => {
+          const cell = document.createElement("span");
+          cell.className = "vec-cell";
+          const t = Math.abs(val) / maxAbs;
+          const hue = val >= 0 ? "var(--accent)" : "var(--warn)";
+          cell.style.background = `color-mix(in srgb, ${hue} ${(t * 100).toFixed(0)}%, var(--bg-raised))`;
+          cell.title = val.toFixed(4);
+          return cell;
+        }));
+        $("vecHead").textContent = "[" + v.slice(0, 8).map((x) => x.toFixed(4)).join(", ") + ", … ] (384-d unit vector)";
+      }
+
+      // ---- A/B: query prefix vs no prefix, scored against the correct passage ----
+      const AB_CASES = [
+        { q: "how do I sign back into my account?", doc: "To reset your password, open Settings and choose \"Forgot password\"." },
+        { q: "can I get my money back?", doc: "Refunds are issued within 30 days of the delivery date." },
+      ];
+      $("abRun").addEventListener("click", async () => {
+        $("abRun").disabled = true;
+        $("abStatus").classList.remove("err");
+        $("abStatus").textContent = "Embedding queries with and without the prefix…";
+        try {
+          const cards = [];
+          for (const c of AB_CASES) {
+            const [withP, noP, docR] = await Promise.all([
+              engine.embed([c.q], { query: true }),
+              engine.embed([c.q], { query: false }),
+              engine.embed([c.doc]),
+            ]);
+            const dv = docR.embeddings[0];
+            cards.push({
+              q: c.q,
+              doc: c.doc,
+              withPrefix: cosine(withP.embeddings[0], dv),
+              noPrefix: cosine(noP.embeddings[0], dv),
+            });
+          }
+          renderAB(cards);
+          $("abStatus").textContent = "";
+        } catch (err) {
+          $("abStatus").textContent = "A/B failed: " + err.message;
+          $("abStatus").classList.add("err");
+        } finally {
+          $("abRun").disabled = false;
+        }
+      });
+      function renderAB(cards) {
+        $("abWrap").replaceChildren(...cards.map((c) => {
+          const wrap = document.createElement("div");
+          wrap.style.margin = ".6rem 0";
+          const delta = c.withPrefix - c.noPrefix;
+          const sign = delta >= 0 ? "+" : "";
+          wrap.innerHTML =
+            `<p style="margin:.2rem 0"><b>Query</b> “${c.q}” · <b>correct passage</b> “${c.doc}”</p>
+             <div class="ab-grid">
+               <div class="ab-card"><h5>With prefix (Arctic)</h5><div class="ab-score">${c.withPrefix.toFixed(3)}</div></div>
+               <div class="ab-card"><h5>Without prefix</h5><div class="ab-score">${c.noPrefix.toFixed(3)}</div></div>
+               <div class="ab-card"><h5>Δ shift</h5><div class="ab-score" style="color:var(--accent)">${sign}${delta.toFixed(3)}</div></div>
+             </div>`;
+          return wrap;
+        }));
+        const note = document.createElement("p");
+        note.className = "muted";
+        note.style.cssText = "font-size:.76rem;margin-top:.4rem";
+        note.textContent = "Δ is how much the prefix moved the cosine — either sign is normal. The prefix is the input Arctic was trained on; its benefit is measured as corpus-scale ranking (MTEB nDCG), not the score on a single pair.";
+        $("abWrap").append(note);
+        $("abWrap").hidden = false;
+      }
+
+      // ---- Arctic vs GTE vs MiniLM on the same query→passage pairs ----
+      const CMP_CASES = [
+        { q: "how do I sign back into my account?", doc: "To reset your password, open Settings and choose \"Forgot password\".", kind: "relevant (should be HIGH)" },
+        { q: "can I get my money back?", doc: "Refunds are issued within 30 days of the delivery date.", kind: "relevant (should be HIGH)" },
+        { q: "how do I sign back into my account?", doc: "Photosynthesis lets plants turn sunlight into chemical energy.", kind: "unrelated (should be LOW)" },
+      ];
+      let cmpEngines = null;
+      $("cmpRun").addEventListener("click", async () => {
+        $("cmpRun").disabled = true;
+        $("cmpStatus").classList.remove("err");
+        $("cmpStatus").textContent = "Loading GTE + MiniLM (first time downloads ~59 MB)…";
+        try {
+          if (!cmpEngines) {
+            cmpEngines = {
+              arctic: engine,
+              gte: new EmbedClient(WORKERS.gte, { supportsQuery: false }),
+              minilm: new EmbedClient(WORKERS.minilm, { supportsQuery: false }),
+            };
+            await Promise.all([cmpEngines.gte.load(), cmpEngines.minilm.load()]);
+          }
+          $("cmpStatus").textContent = "Embedding pairs with all three…";
+          const rows = [];
+          for (const c of CMP_CASES) {
+            const [aq, ad, gq, gd, mq, md] = await Promise.all([
+              cmpEngines.arctic.embed([c.q], { query: true }),
+              cmpEngines.arctic.embed([c.doc]),
+              cmpEngines.gte.embed([c.q]),
+              cmpEngines.gte.embed([c.doc]),
+              cmpEngines.minilm.embed([c.q]),
+              cmpEngines.minilm.embed([c.doc]),
+            ]);
+            rows.push({
+              c,
+              arctic: cosine(aq.embeddings[0], ad.embeddings[0]),
+              gte: cosine(gq.embeddings[0], gd.embeddings[0]),
+              minilm: cosine(mq.embeddings[0], md.embeddings[0]),
+            });
+          }
+          renderCmp(rows);
+          $("cmpStatus").textContent = "";
+        } catch (err) {
+          $("cmpStatus").textContent = "Comparison failed: " + err.message;
+          $("cmpStatus").classList.add("err");
+        } finally {
+          $("cmpRun").disabled = false;
+        }
+      });
+      function renderCmp(rows) {
+        const head = `<thead><tr><th>Query → passage</th>
+          <th>${MODEL_LABELS.arctic}</th><th>${MODEL_LABELS.gte}</th><th>${MODEL_LABELS.minilm}</th></tr></thead>`;
+        const body = rows.map((r) =>
+          `<tr>
+            <td class="cmp-pair">Q: “${r.c.q}”<br>P: “${r.c.doc}”<br><span class="muted" style="font-size:.72rem">${r.c.kind}</span></td>
+            <td>${r.arctic.toFixed(3)}</td><td>${r.gte.toFixed(3)}</td><td>${r.minilm.toFixed(3)}</td>
+          </tr>`
+        ).join("");
+        $("cmpWrap").innerHTML = `<table class="cmp-table">${head}<tbody>${body}</tbody></table>
+          <p class="muted" style="font-size:.76rem;margin-top:.4rem">Absolute cosines differ per model — each has its own scale. What matters is the GAP between "relevant" and "unrelated": a good retriever pushes them apart.</p>`;
+        $("cmpWrap").hidden = false;
+      }
+    </script>
+  </body>
+</html>
