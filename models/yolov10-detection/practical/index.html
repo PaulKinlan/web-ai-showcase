@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>YOLOv10 Practical — count objects in a photo · Web AI Showcase</title>
+    <meta name="description" content="Turn YOLOv10 into an on-device inventory counter: detect a photo, tally everything by class, and focus on one category — people, cars, bottles — with nothing uploaded. In your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>⚡</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">YOLOv10</a></p>
+
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Practical: count things in a photo</h1>
+      <p class="lede">
+        Detection is most useful when it becomes a <em>number</em>. Point YOLOv10 at a photo and it tallies
+        everything it sees by class — how many people, cars, chairs, bottles — a private, offline inventory
+        counter. Pick a class to isolate just those boxes.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image">
+        <span id="dropText">Drop an image, or click to choose</span>
+        <input type="file" id="file" accept="image/*" hidden />
+      </div>
+      <div class="sample-strip" id="samples">
+        <img class="sample-thumb active" src="../sample-cats.jpg" data-src="../sample-cats.jpg" alt="Two cats on a couch" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-room.jpg" data-src="../sample-room.jpg" alt="A cozy bedroom" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-river.jpg" data-src="../sample-river.jpg" alt="A riverside at golden hour" tabindex="0" role="button" />
+      </div>
+
+      <div style="display:flex;flex-wrap:wrap;gap:.6rem;align-items:center;margin:.6rem 0">
+        <button id="run" type="button" disabled>Count objects</button>
+        <label style="font-size:.82rem;display:flex;align-items:center;gap:.4rem">
+          Focus on
+          <select id="focus" disabled style="font:inherit;padding:.3rem .4rem;border-radius:6px;border:1px solid var(--border);background:var(--bg-raised);color:var(--color)">
+            <option value="">all classes</option>
+          </select>
+        </label>
+        <label class="slider-row" style="margin:0">
+          <span style="font-size:.82rem">min score</span>
+          <input type="range" id="thresh" min="0.05" max="0.95" step="0.05" value="0.35" />
+          <output id="threshOut" for="thresh">0.35</output>
+        </label>
+      </div>
+
+      <p id="tally" class="filled-sentence" hidden style="font-family:var(--font-display)"></p>
+      <div class="count-chips" id="countChips" aria-live="polite"></div>
+
+      <div class="canvas-wrap">
+        <canvas id="stage" class="stage-canvas" aria-label="Detection result: image with labelled boxes"></canvas>
+      </div>
+      <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>latency <b id="rMs">–</b></span><span>total shown <b id="rN">–</b></span></div>
+
+      <p class="muted" style="font-size:.85rem">
+        The NMS-free head matters here: each object counts exactly once, so the tally isn't inflated by
+        duplicate boxes or deflated by an over-eager suppression pass.
+      </p>
+    </section>
+
+    <p class="crumbs"><a href="../basics/">← Basics</a> · Next: <a href="../wild/">Wild →</a></p>
+
+    <script type="module">
+      import { YoloEngine, drawDetections, countByLabel, colorForLabel, escapeHTML, YOLO_CSS } from "../yolo.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = YOLO_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new YoloEngine();
+      let currentImg = null, allDetections = [], lastMs = 0;
+
+      function decode(url) { return new Promise((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = () => rej(new Error("decode failed")); im.src = url; }); }
+      async function useURL(url) {
+        currentImg = await decode(url); allDetections = [];
+        $("countChips").replaceChildren(); $("readout").hidden = true; $("tally").hidden = true;
+        $("focus").innerHTML = '<option value="">all classes</option>'; $("focus").disabled = true;
+        const c = $("stage"); c.width = currentImg.naturalWidth; c.height = currentImg.naturalHeight; c.getContext("2d").drawImage(currentImg, 0, 0);
+      }
+      async function pickSample(el) { for (const t of $("samples").children) t.classList.toggle("active", t === el); await useURL(el.dataset.src); }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } });
+      }
+      pickSample($("samples").firstElementChild);
+
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) { for (const t of $("samples").children) t.classList.remove("active"); await useURL(URL.createObjectURL(f)); $("dropText").textContent = f.name; }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/yolov10n", runtime: "onnxruntime-web", dtype: "fp32", sizeMB: 9, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: () => { $("run").disabled = false; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!currentImg) { $("status").textContent = "Pick an image first."; return; }
+        $("run").disabled = true; $("status").classList.remove("err"); $("status").textContent = "Counting…";
+        try {
+          const bmp = await createImageBitmap(currentImg);
+          const r = await engine.detect(bmp); allDetections = r.detections; lastMs = r.ms; $("rBackend").textContent = r.device.toUpperCase();
+          // populate focus dropdown with classes present above a modest score
+          const present = [...new Set(allDetections.filter((d) => d.score >= 0.25).map((d) => d.label))].sort();
+          $("focus").innerHTML = '<option value="">all classes</option>' + present.map((l) => `<option value="${escapeHTML(l)}">${escapeHTML(l)}</option>`).join("");
+          $("focus").disabled = false;
+          render(); $("status").textContent = "Done."; $("status").classList.add("ok");
+        }
+        catch (err) { $("status").textContent = "Counting failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+
+      const thresh = $("thresh");
+      thresh.addEventListener("input", () => { $("threshOut").textContent = (+thresh.value).toFixed(2); if (allDetections.length) render(); });
+      $("focus").addEventListener("change", () => { if (allDetections.length) render(); });
+
+      function render() {
+        const t = +thresh.value, focus = $("focus").value;
+        let shown = allDetections.filter((d) => d.score >= t);
+        if (focus) shown = shown.filter((d) => d.label === focus);
+        drawDetections($("stage"), currentImg, shown);
+        const counts = countByLabel(shown);
+        $("tally").hidden = false;
+        $("tally").textContent = focus
+          ? `${shown.length} × ${focus}`
+          : `${shown.length} object${shown.length === 1 ? "" : "s"} · ${counts.length} class${counts.length === 1 ? "" : "es"}`;
+        $("countChips").replaceChildren(...counts.map(({ label, count }) => { const el = document.createElement("span"); el.className = "count-chip"; el.innerHTML = `<span class="swatch" style="background:${colorForLabel(label)}"></span>${escapeHTML(label)} <b>×${count}</b>`; return el; }));
+        $("readout").hidden = false; $("rMs").textContent = lastMs + " ms"; $("rN").textContent = shown.length;
+      }
+    </script>
+  </body>
+</html>
