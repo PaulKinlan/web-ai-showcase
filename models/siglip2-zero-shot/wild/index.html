@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SigLIP 2 Wild — a cross-lingual concept meter &amp; an aesthetic meter · Web AI Showcase</title>
+    <meta name="description" content="SigLIP 2's shared multilingual space lets one image line up with the same concept written in many languages — and its absolute sigmoid lets you score images on an abstract 'vibe' and rank them. Both run on-device." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🪄</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">SigLIP 2</a></p>
+
+    <header>
+      <p class="eyebrow">use case · wild</p>
+      <h1>Wild: a cross-lingual concept meter, and an aesthetic meter</h1>
+      <p class="lede">
+        Two things you could never do with an English-only softmax classifier. First, a
+        <strong>cross-lingual concept meter</strong>: write one concept in several languages and watch them
+        all line up on the same image — proof that SigLIP 2 puts "cat", "chat", "gato" and "猫" in one shared
+        space. Second, an <strong>aesthetic meter</strong>: SigLIP's sigmoid is an <em>absolute</em> 0–1 read,
+        so you can score many images on the same abstract quality and rank them. Both on-device.
+      </p>
+    </header>
+
+    <section class="panel">
+      <h3>1 · Cross-lingual concept meter</h3>
+      <p class="muted">Pick an image, then write the same concept in as many languages as you like. Each
+        translation is scored independently — if they cluster near the top, the concept survived translation
+        inside the model's shared space.</p>
+      <div id="model-loader"></div>
+      <div class="field-row" style="align-items:stretch">
+        <div style="flex:1 1 220px;min-inline-size:0">
+          <div class="sample-strip" id="samples">
+            <img class="sample-thumb active" src="../sample-cats.jpg" data-src="../sample-cats.jpg" alt="Two cats on a couch" tabindex="0" role="button" />
+            <img class="sample-thumb" src="../sample-room.jpg" data-src="../sample-room.jpg" alt="A cozy bedroom" tabindex="0" role="button" />
+            <img class="sample-thumb" src="../sample-river.jpg" data-src="../sample-river.jpg" alt="A riverside at golden hour" tabindex="0" role="button" />
+          </div>
+          <div class="preview-wrap"><img class="preview-img" id="preview" src="../sample-cats.jpg" alt="Selected image" /></div>
+        </div>
+        <div style="flex:1 1 240px;min-inline-size:0">
+          <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">
+            One concept, in several languages (comma-separated)
+            <textarea id="langLabels" rows="3">cat, chat, gato, Katze, 猫, gato, 고양이</textarea>
+          </label>
+          <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.35rem 0">
+            <button class="chip" type="button" data-set="cat, chat, gato, Katze, 猫, 고양이">cat · 6 languages</button>
+            <button class="chip" type="button" data-set="river, rivière, río, Fluss, 川, 강">river · 6 languages</button>
+            <button class="chip" type="button" data-set="bedroom, chambre, dormitorio, Schlafzimmer, 寝室, 침실">bedroom · 6 languages</button>
+          </div>
+          <button id="runLang" type="button" disabled>Score all languages</button>
+          <p class="status" id="langStatus" role="status" aria-live="polite"></p>
+          <div class="bars" id="langBars" aria-live="polite"></div>
+        </div>
+      </div>
+      <p class="muted" style="font-size:.85rem">On the cats image, every translation of "cat" should sit well
+        above every other concept — the model never saw a translation table, it just learned a shared
+        multilingual space. (Homographs like the French "chat", which also means "online chat", can dip — a
+        fun edge to probe.)</p>
+    </section>
+
+    <section class="panel">
+      <h3>2 · Aesthetic / vibe meter</h3>
+      <p class="muted">Pick a vibe word — in any language — and each sample image gets an independent score
+        for that one quality, so you can compare them on a shared scale. Impossible with softmax.</p>
+      <div class="field-row">
+        <label style="flex:1 1 240px;display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">
+          Vibe / quality to score for
+          <input type="text" id="vibe" value="cozy and nostalgic" />
+        </label>
+        <div style="display:flex;flex-wrap:wrap;gap:.4rem;align-items:end">
+          <button class="chip" type="button" data-v="cozy and nostalgic">cozy</button>
+          <button class="chip" type="button" data-v="minimalist and clean">minimalist</button>
+          <button class="chip" type="button" data-v="dramatic and moody">dramatic</button>
+          <button class="chip" type="button" data-v="paisible et serein">🇫🇷 serene</button>
+        </div>
+      </div>
+      <button id="runVibe" type="button" disabled>Score all images</button>
+      <p class="status" id="vibeStatus" role="status" aria-live="polite"></p>
+      <div id="vibeGrid" class="vibe-grid" aria-live="polite"></div>
+    </section>
+
+    <p class="crumbs"><a href="../practical/">← Practical</a> · <a href="../">SigLIP 2</a> · Next: <a href="../multi-model/">Multi-model →</a></p>
+
+    <script type="module">
+      import { Siglip2Engine, fileToDataURL, parseLabels, renderSigmoidBars, SIGLIP2_CSS } from "../siglip2.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style");
+      style.textContent = SIGLIP2_CSS + `
+        .vibe-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:.8rem;margin-top:.6rem}
+        .vibe-card{border:1px solid var(--border);border-radius:8px;overflow:hidden;background:var(--bg-raised)}
+        .vibe-card img{inline-size:100%;block-size:120px;object-fit:cover;display:block}
+        .vibe-card .vb{padding:.4rem .6rem}
+        .vibe-card .vs{font-family:var(--font-mono);font-size:1.1rem;font-weight:600}
+        .vibe-card.win{outline:2px solid var(--accent);outline-offset:-2px}`;
+      document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new Siglip2Engine();
+      let ready = false, currentImageURL = null;
+      const SAMPLES = ["../sample-cats.jpg", "../sample-room.jpg", "../sample-river.jpg"];
+      const ALTS = ["Two cats on a couch", "A cozy bedroom", "A riverside at golden hour"];
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/siglip2-base-patch16-224-ONNX", runtime: "transformers.js", dtype: "q8", sizeMB: 420, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { ready = true; $("runLang").disabled = false; $("runVibe").disabled = false; },
+      });
+
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        const blob = await (await fetch(el.dataset.src)).blob();
+        currentImageURL = await fileToDataURL(new File([blob], "s", { type: blob.type }));
+        $("preview").src = el.dataset.src;
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } });
+      }
+      pickSample($("samples").firstElementChild);
+      for (const c of document.querySelectorAll("[data-set]")) c.addEventListener("click", () => { $("langLabels").value = c.dataset.set; });
+      for (const c of document.querySelectorAll("[data-v]")) c.addEventListener("click", () => { $("vibe").value = c.dataset.v; });
+
+      // ---- Cross-lingual concept meter ----
+      $("runLang").addEventListener("click", async () => {
+        if (!ready || !currentImageURL) { $("langStatus").textContent = "Pick an image first."; return; }
+        const labels = parseLabels($("langLabels").value);
+        if (labels.length < 1) { $("langStatus").textContent = "Add at least one label."; $("langStatus").classList.add("err"); return; }
+        $("runLang").disabled = true; $("langStatus").classList.remove("err"); $("langStatus").textContent = "Scoring…";
+        try {
+          const r = await engine.classify(currentImageURL, labels, ""); // verbatim: cross-lingual words
+          renderSigmoidBars($("langBars"), r.labels.map((label, i) => ({ label, prob: r.sigmoid[i], cosine: r.cosines ? r.cosines[i] : null })), { threshold: 0.003, showCosine: true });
+          $("langStatus").textContent = `Done · ${r.ms} ms · ${r.device.toUpperCase()}`; $("langStatus").classList.add("ok");
+        } catch (err) { $("langStatus").textContent = "Failed: " + err.message; $("langStatus").classList.add("err"); }
+        finally { $("runLang").disabled = false; }
+      });
+
+      // ---- Aesthetic meter ----
+      $("runVibe").addEventListener("click", async () => {
+        const vibe = $("vibe").value.trim();
+        if (!vibe) { $("vibeStatus").textContent = "Type a vibe word."; return; }
+        $("runVibe").disabled = true; $("vibeStatus").textContent = "Scoring images…";
+        try {
+          const urls = await Promise.all(SAMPLES.map(async (s) => {
+            const blob = await (await fetch(s)).blob();
+            return fileToDataURL(new File([blob], "s", { type: blob.type }));
+          }));
+          const scores = [];
+          for (const u of urls) { const r = await engine.classify(u, [vibe], ""); scores.push(r.sigmoid[0]); }
+          const max = Math.max(...scores);
+          $("vibeGrid").replaceChildren(...SAMPLES.map((s, i) => {
+            const card = document.createElement("div"); card.className = "vibe-card" + (scores[i] === max ? " win" : "");
+            card.innerHTML = `<img src="${s}" alt="${ALTS[i]}" /><div class="vb"><div class="vs">${(scores[i] * 100).toFixed(2)}%</div><div class="muted" style="font-size:.75rem">${ALTS[i]}</div></div>`;
+            return card;
+          }));
+          $("vibeStatus").textContent = `Done — highest "${vibe}" score is highlighted.`; $("vibeStatus").classList.add("ok");
+        } catch (err) { $("vibeStatus").textContent = "Failed: " + err.message; $("vibeStatus").classList.add("err"); }
+        finally { $("runVibe").disabled = false; }
+      });
+    </script>
+  </body>
+</html>

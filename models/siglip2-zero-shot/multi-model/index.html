@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SigLIP 2 Multi-model — SigLIP 2 vs English-only CLIP · Web AI Showcase</title>
+    <meta name="description" content="Run SigLIP 2 and CLIP together on the same image and labels, in the browser. Two differences show at once: SigLIP's independent sigmoids vs CLIP's competing softmax, and SigLIP 2's multilingual labels vs CLIP's English-only training." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>⚖️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">SigLIP 2</a></p>
+
+    <header>
+      <p class="eyebrow">use case · multi-model</p>
+      <h1>Multi-model: SigLIP 2 vs English-only CLIP</h1>
+      <p class="lede">
+        Both models map images and text into a shared space. This page loads <strong>both</strong> in your
+        browser and scores the same image and labels through each — SigLIP 2's <strong>independent
+        sigmoids</strong> on the left, CLIP's <strong>competing softmax</strong> on the right. Two differences
+        show at once: the sigmoid-vs-softmax read-out, and what happens when you feed them
+        <strong>non-English labels</strong> — SigLIP 2 was trained multilingually; OpenAI's original CLIP
+        was not.
+      </p>
+    </header>
+
+    <section class="panel">
+      <h3>Load both models</h3>
+      <p class="muted">SigLIP 2 (~420 MB) and CLIP (~90 MB) each cache after the first download and then auto-init.</p>
+      <div class="grid-2">
+        <div><p class="muted" style="font-size:.8rem;margin:.2rem 0">SigLIP 2</p><div id="loader-siglip"></div></div>
+        <div><p class="muted" style="font-size:.8rem;margin:.2rem 0">CLIP (English)</p><div id="loader-clip"></div></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h3>Score the same image through both</h3>
+      <div class="field-row" style="align-items:stretch">
+        <div style="flex:1 1 260px;min-inline-size:0">
+          <div class="sample-strip" id="samples">
+            <img class="sample-thumb active" src="../sample-cats.jpg" data-src="../sample-cats.jpg" alt="Two cats on a couch" tabindex="0" role="button" />
+            <img class="sample-thumb" src="../sample-room.jpg" data-src="../sample-room.jpg" alt="A cozy bedroom" tabindex="0" role="button" />
+            <img class="sample-thumb" src="../sample-river.jpg" data-src="../sample-river.jpg" alt="A riverside at golden hour" tabindex="0" role="button" />
+          </div>
+          <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image" style="margin-bottom:.5rem">
+            <span id="dropText">…or drop / choose your own</span>
+            <input type="file" id="file" accept="image/*" hidden />
+          </div>
+          <div class="preview-wrap"><img class="preview-img" id="preview" src="../sample-cats.jpg" alt="Selected image" /></div>
+        </div>
+        <div style="flex:1 1 260px;min-inline-size:0">
+          <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">
+            Candidate labels (comma-separated)
+            <textarea id="labels" rows="3">deux chats, un chien, un oiseau</textarea>
+          </label>
+          <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.4rem 0">
+            <button class="chip" type="button" data-set="deux chats, un chien, un oiseau">🇫🇷 French labels</button>
+            <button class="chip" type="button" data-set="two cats, a dog, a bird">English labels</button>
+            <button class="chip" type="button" data-set="a spaceship, a violin, a volcano">none fit</button>
+          </div>
+          <button id="run" type="button" disabled>Score through both</button>
+          <p class="status" id="runStatus" role="status" aria-live="polite"></p>
+        </div>
+      </div>
+
+      <div class="grid-2" id="results" hidden style="margin-top:.6rem">
+        <div>
+          <h3 style="margin-top:.3rem">SigLIP 2 — independent sigmoid</h3>
+          <div class="bars" id="siglipBars" aria-live="polite"></div>
+          <p class="muted" id="siglipTotal" style="font-size:.78rem;font-family:var(--font-mono)"></p>
+        </div>
+        <div>
+          <h3 style="margin-top:.3rem">CLIP — competing softmax</h3>
+          <div class="bars" id="clipBars" aria-live="polite"></div>
+          <p class="muted" id="clipTotal" style="font-size:.78rem;font-family:var(--font-mono)"></p>
+        </div>
+      </div>
+      <p class="muted" style="font-size:.85rem;margin-top:.6rem">Try the <strong>French labels</strong> preset on
+        the cats image: SigLIP 2 still ranks "deux chats" (two cats) at the top, while English-only CLIP is far
+        less reliable on non-English text. Try <strong>none fit</strong>: SigLIP 2's bars stay low across the
+        board (it can decline); CLIP's softmax must still hand ~100% to whichever label is least wrong.</p>
+    </section>
+
+    <p class="crumbs"><a href="../wild/">← Wild</a> · <a href="../">Back to SigLIP 2</a></p>
+
+    <script type="module">
+      import { Siglip2Engine, fileToDataURL, parseLabels, renderSigmoidBars, SIGLIP2_CSS } from "../siglip2.js";
+      import { ClipEngine } from "/web-ai-showcase/models/clip-zero-shot-image/clip.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = SIGLIP2_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const siglip = new Siglip2Engine();
+      const clip = new ClipEngine();
+      let siglipReady = false, clipReady = false, currentImageURL = null;
+      const maybeEnable = () => { if (siglipReady && clipReady) { $("run").disabled = false; $("runStatus").textContent = "Both models ready."; $("runStatus").classList.add("ok"); } };
+
+      createModelLoader({
+        mount: $("loader-siglip"),
+        model: { modelId: "onnx-community/siglip2-base-patch16-224-ONNX", runtime: "transformers.js", dtype: "q8", sizeMB: 420, requiresWebGPU: false },
+        load: async (onProgress) => { await siglip.load(onProgress); return siglip; },
+        onReady: () => { siglipReady = true; maybeEnable(); },
+      });
+      createModelLoader({
+        mount: $("loader-clip"),
+        model: { modelId: "Xenova/clip-vit-base-patch16", runtime: "transformers.js", dtype: "q8", sizeMB: 90, requiresWebGPU: false },
+        load: async (onProgress) => { await clip.load(onProgress); return clip; },
+        onReady: () => { clipReady = true; maybeEnable(); },
+      });
+
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        const blob = await (await fetch(el.dataset.src)).blob();
+        currentImageURL = await fileToDataURL(new File([blob], "s", { type: blob.type }));
+        $("preview").src = el.dataset.src;
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } });
+      }
+      pickSample($("samples").firstElementChild);
+      const file = $("file"), drop = $("drop");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) { for (const t of $("samples").children) t.classList.remove("active"); currentImageURL = await fileToDataURL(f); $("preview").src = currentImageURL; $("dropText").textContent = f.name; }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
+      for (const c of document.querySelectorAll(".chip")) c.addEventListener("click", () => { $("labels").value = c.dataset.set; });
+
+      $("run").addEventListener("click", async () => {
+        const labels = parseLabels($("labels").value);
+        if (!currentImageURL) { $("runStatus").textContent = "Pick an image first."; return; }
+        if (labels.length < 2) { $("runStatus").textContent = "Give at least two labels."; $("runStatus").classList.add("err"); return; }
+        $("run").disabled = true; $("runStatus").classList.remove("err"); $("runStatus").textContent = "Scoring through SigLIP 2 and CLIP…";
+        try {
+          const [sg, cl] = await Promise.all([siglip.classify(currentImageURL, labels, ""), clip.classify(currentImageURL, labels)]);
+          $("results").hidden = false;
+          renderSigmoidBars($("siglipBars"), labels.map((label, i) => ({ label, prob: sg.sigmoid[i] })), { threshold: 0.003 });
+          const sgTotal = sg.sigmoid.reduce((a, b) => a + b, 0) * 100;
+          $("siglipTotal").textContent = `bar length is relative · sum of true probabilities ${sgTotal.toFixed(2)}% · ${sg.ms} ms`;
+          const top = Math.max(...cl.probs);
+          renderSigmoidBars($("clipBars"), labels.map((label, i) => ({ label, prob: cl.probs[i] })), { threshold: top });
+          $("clipTotal").textContent = `sum of bars 100% · softmax always sums to 100% · ${cl.ms} ms`;
+          $("runStatus").textContent = "Done."; $("runStatus").classList.add("ok");
+        } catch (err) { $("runStatus").textContent = "Failed: " + err.message; $("runStatus").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>

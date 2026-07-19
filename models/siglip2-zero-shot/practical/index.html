@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SigLIP 2 Practical — multilingual multi-label tagging &amp; moderation · Web AI Showcase</title>
+    <meta name="description" content="Ship SigLIP 2: independent-sigmoid scores make it a natural multi-label tagger and a threshold-based moderator — now with labels in any language. Entirely client-side." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🏷️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">SigLIP 2</a></p>
+
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Practical: multilingual tagging &amp; moderation</h1>
+      <p class="lede">
+        The shippable version. Because each label is an independent yes/no, SigLIP 2 is a natural
+        <strong>multi-label</strong> tagger: pick a threshold and every label above it becomes a tag. The
+        same mechanism moderates — an image can trip several policy flags at once, or none. And because
+        SigLIP 2 is multilingual, your tag vocabulary and policy labels can be written in the market's own
+        language. No dataset, no fine-tuning, no server.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div class="seg" role="group" aria-label="Mode">
+        <button id="modeTag" type="button" aria-pressed="true">Auto-tag (multi-label)</button>
+        <button id="modeMod" type="button" aria-pressed="false">Moderate (policy flags)</button>
+      </div>
+
+      <div id="model-loader" style="margin-top:.6rem"></div>
+
+      <div class="field-row" style="align-items:stretch">
+        <div style="flex:1 1 260px;min-inline-size:0">
+          <div class="sample-strip" id="samples">
+            <img class="sample-thumb active" src="../sample-room.jpg" data-src="../sample-room.jpg" alt="A cozy bedroom" tabindex="0" role="button" />
+            <img class="sample-thumb" src="../sample-cats.jpg" data-src="../sample-cats.jpg" alt="Two cats on a couch" tabindex="0" role="button" />
+            <img class="sample-thumb" src="../sample-river.jpg" data-src="../sample-river.jpg" alt="A riverside at golden hour" tabindex="0" role="button" />
+          </div>
+          <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image" style="margin-bottom:.5rem">
+            <span id="dropText">…or drop / choose your own</span>
+            <input type="file" id="file" accept="image/*" hidden />
+          </div>
+          <div class="preview-wrap"><img class="preview-img" id="preview" src="../sample-room.jpg" alt="Selected image" /></div>
+        </div>
+        <div style="flex:1 1 280px;min-inline-size:0">
+          <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">
+            <span id="labelHead">Tag vocabulary (comma-separated)</span>
+            <textarea id="labels" rows="4">two cats, a bedroom, a sunny room, a swan, a river, a bird, a bookshelf, food, a city street</textarea>
+          </label>
+          <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.35rem 0">
+            <button class="chip" type="button" data-set="deux chats, une chambre, une rivière, un oiseau, une rue, de la nourriture">🇫🇷 français</button>
+            <button class="chip" type="button" data-set="猫, 寝室, 川, 鳥, 本棚, 食べ物, 通り">🇯🇵 日本語</button>
+          </div>
+          <p class="muted" style="font-size:.76rem;margin:.15rem 0">SigLIP 2 base (q8) scores run
+            <em>low</em> — a strong match is often under 1% — so the threshold defaults low. Trust the ranking
+            and slide the threshold to trade precision for recall.</p>
+          <div class="threshold-row">
+            <label for="thresh" id="threshLabel">Tag threshold</label>
+            <input type="range" id="thresh" min="1" max="200" value="30" step="1" />
+            <output id="threshOut" for="thresh">0.30%</output>
+          </div>
+          <button id="run" type="button" disabled>Run</button>
+          <p class="status" id="runStatus" role="status" aria-live="polite"></p>
+
+          <div id="tagOut" hidden>
+            <p class="muted" style="font-size:.82rem;margin:.4rem 0 .2rem">Applied tags (score ≥ threshold):</p>
+            <div class="tag-chips" id="appliedTags"></div>
+          </div>
+          <div id="modOut" hidden>
+            <p class="verdict" id="verdict"></p>
+            <p class="muted" style="font-size:.82rem" id="verdictDetail"></p>
+          </div>
+
+          <div class="bars" id="bars" aria-live="polite" style="margin-top:.6rem"></div>
+          <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>latency <b id="rMs">–</b></span></div>
+        </div>
+      </div>
+      <p class="muted" style="font-size:.85rem" id="explain">
+        In tag mode, every label whose independent sigmoid clears the threshold is applied — so an image can
+        carry several tags at once, in whatever language you wrote them. A softmax tagger could only ever pick one.
+      </p>
+    </section>
+
+    <p class="crumbs"><a href="../basics/">← Basics</a> · <a href="../">SigLIP 2</a> · Next: <a href="../wild/">Wild →</a></p>
+
+    <script type="module">
+      import { Siglip2Engine, fileToDataURL, parseLabels, renderSigmoidBars, escapeHTML, SIGLIP2_CSS } from "../siglip2.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style");
+      style.textContent = SIGLIP2_CSS + `.tag-chips{display:flex;flex-wrap:wrap;gap:.4rem;margin:.3rem 0}
+        .tag-applied{border-color:var(--good);color:var(--good);font-weight:600}`;
+      document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new Siglip2Engine();
+      let currentImageURL = null, lastResult = null, mode = "tag";
+      const TAG_LABELS = "two cats, a bedroom, a sunny room, a swan, a river, a bird, a bookshelf, food, a city street";
+      const MOD_LABELS = "safe for work, violence or weapon, explicit content, hate symbol, gore or injury";
+      const threshold = () => (+$("thresh").value) / 10000;
+      const threshLabel = () => ((+$("thresh").value) / 100).toFixed(2) + "%";
+      $("thresh").addEventListener("input", () => { $("threshOut").value = threshLabel(); if (lastResult) render(lastResult); });
+
+      function setMode(m) {
+        mode = m;
+        $("modeTag").setAttribute("aria-pressed", String(m === "tag"));
+        $("modeMod").setAttribute("aria-pressed", String(m === "mod"));
+        $("labelHead").textContent = m === "tag" ? "Tag vocabulary (comma-separated)" : "Policy labels (comma-separated)";
+        $("threshLabel").textContent = m === "tag" ? "Tag threshold" : "Flag threshold";
+        $("labels").value = m === "tag" ? TAG_LABELS : MOD_LABELS;
+        $("tagOut").hidden = m !== "tag"; $("modOut").hidden = m !== "mod";
+        $("explain").innerHTML = m === "tag"
+          ? "In tag mode, every label whose independent sigmoid clears the threshold is applied — so an image can carry several tags at once, in whatever language you wrote them. A softmax tagger could only ever pick one."
+          : "In moderation mode, each policy is scored on its own. An image can trip several flags at once, or none — SigLIP's per-label sigmoid means \"nothing here\" is a real, honest answer, unlike a softmax that must pick a class.";
+        if (lastResult) render(lastResult);
+      }
+      $("modeTag").addEventListener("click", () => setMode("tag"));
+      $("modeMod").addEventListener("click", () => setMode("mod"));
+
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        const blob = await (await fetch(el.dataset.src)).blob();
+        currentImageURL = await fileToDataURL(new File([blob], "s", { type: blob.type }));
+        $("preview").src = el.dataset.src;
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } });
+      }
+      pickSample($("samples").firstElementChild);
+      const file = $("file"), drop = $("drop");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) { for (const t of $("samples").children) t.classList.remove("active"); currentImageURL = await fileToDataURL(f); $("preview").src = currentImageURL; $("dropText").textContent = f.name; }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
+      for (const c of document.querySelectorAll(".chip")) c.addEventListener("click", () => { $("labels").value = c.dataset.set; });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/siglip2-base-patch16-224-ONNX", runtime: "transformers.js", dtype: "q8", sizeMB: 420, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("run").disabled = false; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        const labels = parseLabels($("labels").value);
+        if (!currentImageURL) { $("runStatus").textContent = "Pick an image first."; return; }
+        if (labels.length < 1) { $("runStatus").textContent = "Add at least one label."; $("runStatus").classList.add("err"); return; }
+        $("run").disabled = true; $("runStatus").classList.remove("err"); $("runStatus").textContent = "Scoring…";
+        try { lastResult = await engine.classify(currentImageURL, labels, ""); render(lastResult); $("runStatus").textContent = "Done."; $("runStatus").classList.add("ok"); }
+        catch (err) { $("runStatus").textContent = "Failed: " + err.message; $("runStatus").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+
+      function render(r) {
+        const th = threshold();
+        renderSigmoidBars($("bars"), r.labels.map((label, i) => ({ label, prob: r.sigmoid[i] })), { threshold: th });
+        $("readout").hidden = false; $("rBackend").textContent = r.device.toUpperCase(); $("rMs").textContent = r.ms + " ms";
+        if (mode === "tag") {
+          $("tagOut").hidden = false; $("modOut").hidden = true;
+          const applied = r.labels.map((l, i) => ({ l, p: r.sigmoid[i] })).filter((x) => x.p >= th).sort((a, b) => b.p - a.p);
+          $("appliedTags").replaceChildren(...(applied.length ? applied.map((x) => {
+            const s = document.createElement("span"); s.className = "chip tag-applied"; s.textContent = `${x.l} · ${(x.p * 100).toFixed(2)}%`; return s;
+          }) : [Object.assign(document.createElement("span"), { className: "muted", textContent: "No label cleared the threshold — SigLIP says none apply." })]));
+        } else {
+          $("modOut").hidden = false; $("tagOut").hidden = true;
+          const flags = r.labels.map((l, i) => ({ l, p: r.sigmoid[i], i })).filter((x) => x.i > 0 && x.p >= th).sort((a, b) => b.p - a.p);
+          const v = $("verdict");
+          if (flags.length) { v.textContent = "⚑ Flagged"; v.className = "verdict flag"; $("verdictDetail").textContent = "Tripped: " + flags.map((f) => `${f.l} (${(f.p * 100).toFixed(2)}%)`).join(", "); }
+          else { v.textContent = "✓ Passed"; v.className = "verdict ok"; $("verdictDetail").textContent = "No policy label cleared the threshold."; }
+        }
+      }
+      setMode("tag");
+    </script>
+  </body>
+</html>
