@@ -55,15 +55,17 @@ of every model you can genuinely run in a browser — not a token set. Read `CLA
   `visual-question-answering` pipeline / no ONNX), **kosmos-2** (no `kosmos` class in
   transformers.js; no browser ONNX), **mask2former** (no `Mask2Former...` class in transformers.js
   3.7.5/4.2 — only the image processor; no browser ONNX), **internvl** (no `internvl` class →
-  `Unsupported model type: internvl`), **question-generation** (no QG model has a v3-loadable ONNX:
-  the family is safetensors-only, the one merged-decoder export is a degenerate quantized build that
-  emits repeated-token garbage, and the genuine <hl> QG model uses the pre-v3 separate-decoder
-  layout 3.7.5 can't load), **scibert / domain-MLM** (SciBERT scivocab ONNX is feature-extraction
-  only — no MLM head; BioBERT's head is broken near-uniform; use a working domain MLM like
-  Bio_ClinicalBERT instead, don't relabel), **keyphrase-extraction** (no token-classification
-  keyphrase ONNX — only seq2seq generators), **electra** (ONNX is encoder-only; no RTD discriminator
-  head), **blip** / **bark** (gated / no usable ONNX). Never mislabel a substitute as the blocked
-  family.
+  `Unsupported model type: internvl`), **tapas** (no `tapas` class + no `table-question-answering`
+  pipeline in transformers.js 3.7.5/4.2; no browser ONNX; needs its own TapasTokenizer
+  table-encoding + cell-selection/aggregation head), **question-generation** (no QG model has a
+  v3-loadable ONNX: the family is safetensors-only, the one merged-decoder export is a degenerate
+  quantized build that emits repeated-token garbage, and the genuine <hl> QG model uses the pre-v3
+  separate-decoder layout 3.7.5 can't load), **scibert / domain-MLM** (SciBERT scivocab ONNX is
+  feature-extraction only — no MLM head; BioBERT's head is broken near-uniform; use a working domain
+  MLM like Bio_ClinicalBERT instead, don't relabel), **keyphrase-extraction** (no
+  token-classification keyphrase ONNX — only seq2seq generators), **electra** (ONNX is encoder-only;
+  no RTD discriminator head), **blip** / **bark** (gated / no usable ONNX). Never mislabel a
+  substitute as the blocked family.
 - **Version-pin escape hatch:** a model needing a transformers.js class newer than the shared 3.7.5
   (e.g. SAM2 needs 4.2.0) may pin the newer version LOCALLY in its own `worker.js` only — never bump
   shared `lib/webai.js`. model-cache is version-agnostic so auto-init still works. Precedent:
