@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SigLIP Basics — independent probabilities, and sigmoid vs softmax · Web AI Showcase</title>
+    <meta name="description" content="The fundamental SigLIP move: every label gets its own probability. Score an image, and watch the same logits become independent sigmoids (SigLIP) vs a competing softmax (CLIP)." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎚️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">SigLIP</a></p>
+
+    <header>
+      <p class="eyebrow">use case · basics</p>
+      <h1>Basics: every label gets its <em>own</em> probability</h1>
+      <p class="lede">
+        Give SigLIP a picture and a list of words. Unlike CLIP, it doesn't force the words to compete —
+        each one gets an independent 0–1 score. So an image can match several labels at once, or none.
+        The two demos below make that concrete: first the scores themselves, then the exact same logits
+        run through SigLIP's sigmoid versus CLIP's softmax, side by side.
+      </p>
+    </header>
+
+    <section class="panel">
+      <h3>1 · Score an image against your labels</h3>
+      <div id="model-loader"></div>
+
+      <div class="field-row" style="align-items:stretch">
+        <div style="flex:1 1 260px">
+          <div class="sample-strip" id="samples">
+            <img class="sample-thumb active" src="../sample-cats.jpg" data-src="../sample-cats.jpg" alt="Two cats on a couch" tabindex="0" role="button" />
+            <img class="sample-thumb" src="../sample-room.jpg" data-src="../sample-room.jpg" alt="A cozy bedroom" tabindex="0" role="button" />
+            <img class="sample-thumb" src="../sample-river.jpg" data-src="../sample-river.jpg" alt="A riverside at golden hour" tabindex="0" role="button" />
+          </div>
+          <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image" style="margin-bottom:.5rem">
+            <span id="dropText">…or drop / choose your own</span>
+            <input type="file" id="file" accept="image/*" hidden />
+          </div>
+          <div class="preview-wrap"><img class="preview-img" id="preview" src="../sample-cats.jpg" alt="Selected image" /></div>
+        </div>
+        <div style="flex:1 1 260px">
+          <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">
+            Your labels (comma-separated) — bare nouns work best
+            <textarea id="labels" rows="3">two cats, a dog, a bird, a car</textarea>
+          </label>
+          <p class="muted" style="font-size:.76rem;margin:.15rem 0">SigLIP wraps each label in
+            <code>This is a photo of {label}</code>, so type class names, not sentences.</p>
+          <p class="muted" style="font-size:.8rem;margin:.3rem 0">Try a preset:</p>
+          <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin-bottom:.5rem">
+            <button class="chip" type="button" data-set="two cats, a dog, a bird, a car">animals vs cars</button>
+            <button class="chip" type="button" data-set="a spaceship, a violin, a snowy mountain, a plate of sushi">all irrelevant</button>
+            <button class="chip" type="button" data-set="cats, an animal, a pet, something furry">overlapping</button>
+          </div>
+          <div class="threshold-row">
+            <label for="thresh">Match threshold</label>
+            <input type="range" id="thresh" min="0" max="100" value="15" step="1" />
+            <output id="threshOut" for="thresh">0.15</output>
+          </div>
+          <button id="run" type="button" disabled>Score</button>
+          <p class="status" id="runStatus" role="status" aria-live="polite"></p>
+          <div class="bars" id="bars" aria-live="polite"></div>
+          <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>latency <b id="rMs">–</b></span><span>matches <b id="rMatch">–</b></span></div>
+        </div>
+      </div>
+      <p class="muted" style="font-size:.85rem">
+        Try the <strong>all irrelevant</strong> preset: every bar stays near zero, because none of the labels
+        fit — SigLIP is allowed to say "none of these." A softmax classifier would still be forced to crown a
+        "winner" among nonsense. Try <strong>overlapping</strong>: several related labels can all score highly at once.
+      </p>
+    </section>
+
+    <section class="panel">
+      <h3>2 · The same logits: sigmoid (SigLIP) vs softmax (CLIP)</h3>
+      <p class="muted">This is the one idea that separates SigLIP from CLIP. Both compute a logit per label.
+        SigLIP squashes each logit with an <strong>independent sigmoid</strong>; CLIP runs a <strong>softmax</strong>
+        across the whole set. Run demo 1 above, then read across: the sigmoid column need not total 100%, the
+        softmax column always does.</p>
+      <div id="cmpEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Score an image above to fill this in.</div>
+      <table class="inside-table" id="cmpTable" hidden>
+        <thead><tr><th>Label</th><th>logit</th><th>sigmoid (SigLIP)</th><th>softmax (CLIP-style)</th></tr></thead>
+        <tbody id="cmpRows"></tbody>
+        <tfoot><tr><th>total</th><th></th><th id="cmpSigTotal"></th><th>100.00%</th></tr></tfoot>
+      </table>
+    </section>
+
+    <p class="crumbs"><a href="../">← Back to SigLIP</a> · Next: <a href="../practical/">Practical →</a></p>
+
+    <script type="module">
+      import { SiglipEngine, fileToDataURL, parseLabels, renderSigmoidBars, escapeHTML, SIGLIP_CSS } from "../siglip.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = SIGLIP_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new SiglipEngine();
+      let currentImageURL = null, lastResult = null;
+      const threshold = () => (+$("thresh").value) / 100;
+      $("thresh").addEventListener("input", () => { $("threshOut").value = threshold().toFixed(2); if (lastResult) render(lastResult); });
+
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        const blob = await (await fetch(el.dataset.src)).blob();
+        currentImageURL = await fileToDataURL(new File([blob], "s", { type: blob.type }));
+        $("preview").src = el.dataset.src;
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } });
+      }
+      pickSample($("samples").firstElementChild);
+      const file = $("file"), drop = $("drop");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) { for (const t of $("samples").children) t.classList.remove("active"); currentImageURL = await fileToDataURL(f); $("preview").src = currentImageURL; $("dropText").textContent = f.name; }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
+      for (const c of document.querySelectorAll(".chip")) c.addEventListener("click", () => { $("labels").value = c.dataset.set; });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/siglip-base-patch16-224", runtime: "transformers.js", dtype: "q8", sizeMB: 200, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("run").disabled = false; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        const labels = parseLabels($("labels").value);
+        if (!currentImageURL) { $("runStatus").textContent = "Pick an image first."; return; }
+        if (labels.length < 1) { $("runStatus").textContent = "Give at least one label."; $("runStatus").classList.add("err"); return; }
+        $("run").disabled = true; $("runStatus").classList.remove("err"); $("runStatus").textContent = "Scoring…";
+        try { lastResult = await engine.classify(currentImageURL, labels); render(lastResult); $("runStatus").textContent = "Done."; $("runStatus").classList.add("ok"); }
+        catch (err) { $("runStatus").textContent = "Failed: " + err.message; $("runStatus").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+
+      function render(r) {
+        const th = threshold();
+        renderSigmoidBars($("bars"), r.labels.map((label, i) => ({ label, prob: r.sigmoid[i], cosine: r.cosines ? r.cosines[i] : null })), { threshold: th, showCosine: true });
+        $("readout").hidden = false; $("rBackend").textContent = r.device.toUpperCase(); $("rMs").textContent = r.ms + " ms";
+        $("rMatch").textContent = `${r.sigmoid.filter((p) => p >= th).length} / ${r.labels.length}`;
+        // Comparison table
+        $("cmpEmpty").hidden = true; $("cmpTable").hidden = false;
+        const order = r.labels.map((_, i) => i).sort((a, b) => r.sigmoid[b] - r.sigmoid[a]);
+        $("cmpRows").replaceChildren(...order.map((i) => {
+          const tr = document.createElement("tr");
+          tr.innerHTML = `<td>${escapeHTML(r.labels[i])}</td><td>${r.logits[i].toFixed(2)}</td><td>${(r.sigmoid[i] * 100).toFixed(2)}%</td><td>${(r.softmax[i] * 100).toFixed(2)}%</td>`;
+          return tr;
+        }));
+        const sigTotal = r.sigmoid.reduce((a, b) => a + b, 0) * 100;
+        $("cmpSigTotal").textContent = sigTotal.toFixed(2) + "%";
+      }
+    </script>
+  </body>
+</html>
