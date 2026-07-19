@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MODNet Multi-model — matte → classify the subject · Web AI Showcase</title>
+    <meta name="description" content="Chain two local models: MODNet mattes the subject out of its background, then a ViT image classifier labels only what's left — cleaner recognition because the background can't distract it. All on-device." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>💇</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">MODNet</a></p>
+
+    <header>
+      <p class="eyebrow">use case · multi-model</p>
+      <h1>Multi-model: matte → classify the subject</h1>
+      <p class="lede">
+        MODNet answers "which pixels are the subject?" <a href="../../vit-image-classification/">ViT</a>
+        answers "what is it?" Chain them: matte the subject onto a clean backdrop, then classify only the
+        cut-out. With the background removed, the classifier can't be swayed by the couch or the sky —
+        recognition on the subject alone. Two models, one image, entirely on your device.
+      </p>
+    </header>
+
+    <section class="panel">
+      <h3>1 · Matte the subject (MODNet)</h3>
+      <div id="modnet-loader"></div>
+      <div class="sample-strip" id="samples" aria-label="Sample images">
+        <img class="sample-thumb active" src="../sample-cat.jpg" data-src="../sample-cat.jpg" alt="Two cats with fur" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-portrait.jpg" data-src="../sample-portrait.jpg" alt="A smiling woman with long flowing hair" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-bangs.jpg" data-src="../sample-bangs.jpg" alt="A woman with dark wispy bangs" tabindex="0" role="button" />
+      </div>
+      <div style="margin:.6rem 0"><button id="run" type="button" disabled>Matte &amp; classify</button></div>
+      <p class="status" id="status1" role="status" aria-live="polite"></p>
+    </section>
+
+    <section class="panel">
+      <h3>2 · Classify the cut-out (ViT)</h3>
+      <div id="vit-loader"></div>
+      <div class="canvas-grid">
+        <div class="canvas-card">
+          <h4>Cut-out fed to the classifier</h4>
+          <canvas class="viz-canvas" id="cutout" width="360" height="360" aria-label="Isolated subject on a neutral backdrop"></canvas>
+        </div>
+        <div class="canvas-card">
+          <h4>Top labels (subject only)</h4>
+          <div id="bars"></div>
+        </div>
+      </div>
+      <p class="status" id="status2" role="status" aria-live="polite"></p>
+      <div class="readout" id="readout" hidden><span>matte <b id="rMatteMs">–</b></span><span>classify <b id="rClsMs">–</b></span><span>top-1 <b id="rTop">–</b></span></div>
+    </section>
+
+    <p class="crumbs"><a href="../wild/">← Wild</a> · <a href="../">Back to MODNet</a></p>
+
+    <style>
+      .bar-row { margin: .35rem 0; }
+      .bar-head { display: flex; justify-content: space-between; font-size: .82rem; gap: .5rem; }
+      .bar-label { font-weight: 600; }
+      .bar-val { font-family: var(--font-mono); color: var(--muted); }
+      .bar-track { block-size: 8px; background: var(--bg-secondary); border-radius: 999px; overflow: hidden; margin-top: .15rem; }
+      .bar-fill { block-size: 100%; background: var(--accent); border-radius: 999px; }
+      .bar-top .bar-fill { background: var(--accent); }
+      .bar-top .bar-label { color: var(--accent); }
+    </style>
+
+    <script type="module">
+      import { MattingEngine, urlToDataURL, loadImage, composeCutout, MATTING_CSS } from "../matting.js";
+      import { ViTEngine, renderBars, cleanLabel } from "../../vit-image-classification/vit.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = MATTING_CSS;
+      document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const modnet = new MattingEngine();
+      const vit = new ViTEngine();
+      let currentURL = null, currentSrc = null, vitReady = false;
+
+      async function useSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        currentSrc = el.dataset.src; currentURL = await urlToDataURL(el.dataset.src);
+        $("readout").hidden = true; $("bars").replaceChildren();
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => useSample(thumb));
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); useSample(thumb); } });
+      }
+      useSample($("samples").firstElementChild);
+
+      createModelLoader({
+        mount: $("modnet-loader"),
+        model: { modelId: "Xenova/modnet", runtime: "transformers.js", dtype: "fp32", sizeMB: 26, requiresWebGPU: false },
+        load: async (onProgress) => { const device = await modnet.load((p) => onProgress(p)); return { device }; },
+        onReady: () => { $("run").disabled = false; },
+      });
+      createModelLoader({
+        mount: $("vit-loader"),
+        model: { modelId: "Xenova/vit-base-patch16-224", runtime: "transformers.js", dtype: "q8", sizeMB: 88, requiresWebGPU: false },
+        load: async (onProgress) => { const device = await vit.load((p) => onProgress(p)); return { device }; },
+        onReady: () => { vitReady = true; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!currentURL) { $("status1").textContent = "Pick an image first."; return; }
+        $("run").disabled = true; $("status1").classList.remove("err", "ok"); $("status1").textContent = "Matting the subject…";
+        try {
+          const r = await modnet.matte(currentURL);
+          const img = await loadImage(currentSrc);
+          // Composite onto neutral grey so the classifier sees the subject, not the checkerboard.
+          composeCutout($("cutout"), img, r.width, r.height, r.alpha, { backdrop: "#8a8a8a" });
+          $("status1").textContent = `Matted (${r.ms} ms). Classifying the cut-out…`; $("status1").classList.add("ok");
+          if (!vitReady) { $("status2").textContent = "ViT is still loading — try again in a moment."; $("run").disabled = false; return; }
+          $("status2").classList.remove("err", "ok"); $("status2").textContent = "Classifying…";
+          const cutURL = $("cutout").toDataURL("image/png");
+          const c = await vit.classify(cutURL, 5);
+          const items = c.top; // [{ label, prob, logit, index }]
+          renderBars($("bars"), items);
+          $("rMatteMs").textContent = r.ms + " ms"; $("rClsMs").textContent = c.ms + " ms";
+          $("rTop").textContent = cleanLabel(items.sort((a, b) => b.prob - a.prob)[0].label);
+          $("readout").hidden = false;
+          $("status2").textContent = "Classified the isolated subject — no background to distract it."; $("status2").classList.add("ok");
+        } catch (err) { $("status2").textContent = "Chain failed: " + err.message; $("status2").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+
+      if (new URLSearchParams(location.search).has("auto")) {
+        (async () => {
+          for (const b of $("modnet-loader").querySelectorAll(".loader-actions button")) b.click();
+          for (const b of $("vit-loader").querySelectorAll(".loader-actions button")) b.click();
+          const t0 = Date.now(); while ((!modnet.ready || !vitReady) && Date.now() - t0 < 120000) await new Promise((r) => setTimeout(r, 200));
+          if (modnet.ready) $("run").click();
+        })();
+      }
+    </script>
+  </body>
+</html>

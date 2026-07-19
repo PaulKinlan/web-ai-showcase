@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MODNet — trimap-free portrait matting with crisp hair edges, in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run MODNet locally: drop in a portrait and it predicts a soft alpha matte that keeps individual strands of hair — a matting network, not a hard cut-out. Compare it against RMBG, see the matte and its soft edges, export a transparent PNG. No upload, no server."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>💇</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">image-segmentation · matting · vision · WebGPU (fp32) / WASM (q8) · ~7 MB</p>
+      <h1>MODNet — matting that keeps the hair</h1>
+      <p class="lede">
+        Removing a background is easy until you reach the hair. MODNet is a <em>matting</em> network:
+        instead of a hard in/out decision it predicts a <strong>soft alpha value</strong> for every
+        pixel, so flyaway strands, fur and soft edges survive the cut. Give it a portrait and it returns
+        a matte you can drop onto transparency, a colour, or a new scene — entirely on your device.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/Xenova/modnet" target="_blank" rel="noopener">Xenova/modnet</a></td></tr>
+          <tr><th>Task / pipeline</th><td><code>image-segmentation</code> — a single soft foreground alpha matte</td></tr>
+          <tr><th>Architecture</th><td>MODNet — trimap-free portrait matting (one network, three branches: semantics, detail, fusion)</td></tr>
+          <tr><th>Input</th><td>Dynamic resolution (any aspect ratio) — no fixed 1024² crop</td></tr>
+          <tr><th>Precision</th><td>fp32 on WebGPU; q8 (8-bit) on the WASM fallback</td></tr>
+          <tr><th>Backend</th><td>WebGPU (fp32) when available; falls back to WebAssembly (q8) everywhere else</td></tr>
+          <tr><th>Download</th><td>~7 MB (q8) / ~26 MB (fp32) — tiny; cached after first load</td></tr>
+          <tr><th>License</th><td>Apache-2.0 (MODNet / ZHKKKe); the ONNX export is by Xenova</td></tr>
+          <tr><th>Web APIs</th><td>Web Workers, Canvas 2D, FileReader — all Baseline; WebGPU is used opportunistically and the page falls back honestly without it</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Pick or drop a photo (portraits work best — it's trained on people), then pull the matte. Drag the slider to wipe between the original and the cut-out on a transparency checkerboard.</p>
+
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+
+      <div class="controls-row">
+        <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image" style="flex:1 1 240px">
+          <span id="dropText">Drop a photo, or click to choose</span>
+          <input type="file" id="file" accept="image/*" hidden />
+        </div>
+      </div>
+      <div class="sample-strip" id="samples" aria-label="Sample images">
+        <img class="sample-thumb active" src="sample-portrait.jpg" data-src="sample-portrait.jpg" alt="A smiling woman with long flowing hair" tabindex="0" role="button" />
+        <img class="sample-thumb" src="sample-bangs.jpg" data-src="sample-bangs.jpg" alt="A woman with dark hair and wispy bangs against a green background" tabindex="0" role="button" />
+        <img class="sample-thumb" src="sample-cat.jpg" data-src="sample-cat.jpg" alt="Two cats with fur on a pink blanket" tabindex="0" role="button" />
+      </div>
+
+      <button id="run" type="button" disabled>Pull the matte</button>
+
+      <div class="canvas-grid">
+        <div class="canvas-card">
+          <h4>Before / after — drag to compare</h4>
+          <div class="compare" id="compare">
+            <div class="before"><img class="layer" id="beforeImg" src="sample-portrait.jpg" alt="Original photo" /></div>
+            <div class="after" id="afterLayer" hidden><canvas class="layer" id="cutout" width="480" height="360" aria-label="Cut-out subject on a transparency checkerboard"></canvas></div>
+          </div>
+          <div class="slider-row">
+            <label for="wipe">Wipe</label>
+            <input type="range" id="wipe" min="0" max="100" step="1" value="55" aria-label="Wipe between original and cut-out" />
+            <output id="wipeOut" for="wipe">55%</output>
+          </div>
+        </div>
+        <div class="canvas-card">
+          <h4>Cut-out (on transparency)</h4>
+          <canvas class="viz-canvas" id="cutoutFull" width="480" height="360" aria-label="Full cut-out subject on a transparent checkerboard"></canvas>
+        </div>
+      </div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+        <span>subject kept <b id="rCoverage">–</b></span>
+        <span>soft-edge px <b id="rSoft">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside</h3>
+      <p class="muted">
+        MODNet never sees "a person" — it outputs an <strong>alpha matte</strong>: a number from 0
+        (background) to 255 (subject) for every pixel. What makes a matting model different from a plain
+        background remover is the <em>middle</em> of that range: the grey, half-transparent band along
+        hair and fur where it hedges. Those in-between values are exactly what a hard segmentation throws
+        away — and what makes a composite look real. The histogram below should show mass at both ends
+        <em>and</em> a spread in between; the soft-edge view isolates that band.
+      </p>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Pull a matte to see it.</div>
+      <div id="insideWrap" hidden>
+        <div class="canvas-grid">
+          <div class="canvas-card">
+            <h4>Alpha matte (0–255)</h4>
+            <canvas class="viz-canvas" id="matte" width="480" height="360" aria-label="Grayscale alpha matte"></canvas>
+          </div>
+          <div class="canvas-card">
+            <h4>Soft-edge detail (hair / fur)</h4>
+            <canvas class="viz-canvas" id="edge" width="480" height="360" aria-label="Highlighted soft-edge pixels"></canvas>
+          </div>
+        </div>
+        <table class="inside-table">
+          <tbody>
+            <tr><th>matte resolution</th><td id="iDims">–</td></tr>
+            <tr><th>foreground coverage</th><td id="iCov">–</td></tr>
+            <tr><th>soft-edge (partial-alpha) pixels</th><td id="iEdge">–</td></tr>
+          </tbody>
+        </table>
+        <h4 style="font-family:var(--font-body);font-size:.8rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:.9rem 0 0">Alpha distribution (background → subject)</h4>
+        <div class="histo" id="histo" role="img" aria-label="Histogram of alpha values, background on the left to subject on the right"></div>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        There are two jobs hiding inside "remove the background". <a href="/web-ai-showcase/models/rmbg-background-removal/">RMBG-1.4</a>
+        answers <em>where is the subject</em> with a confident, general-purpose mask. MODNet answers the
+        harder question — <em>exactly how opaque is each pixel</em> — which is what you need whenever the
+        edge is soft:
+      </p>
+      <ul>
+        <li><strong>Believable portraits</strong> — profile pictures and headshots where cut hair looks fake and matted hair looks real.</li>
+        <li><strong>Virtual backgrounds</strong> — the matte is the first frame of a green-screen-free video call, on-device and private.</li>
+        <li><strong>Compositing &amp; try-on</strong> — soft alpha blends the subject into a new scene instead of pasting a hard sticker.</li>
+        <li><strong>Pick the right tool</strong> — run both on the same photo and choose per image: hard mask for logos/products, matte for people and fur.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Matte vs. mask — see MODNet's soft edges next to RMBG's hard cut on the same photo.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Headshot studio — drop your portrait onto a brand colour or backdrop, hair intact.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Edge stress test — flyaway hair, fur and glass, with a matte-quality score.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">Matte → caption: cut the subject out, then a VLM describes just what's left.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>MODNet uses a custom architecture, so the model card's path loads the model and processor directly and reads the matte tensor:</p>
+      <pre><code>import { AutoModel, AutoProcessor, RawImage } from "@huggingface/transformers";
+
+const model = await AutoModel.from_pretrained("Xenova/modnet", {
+  device: "webgpu", dtype: "fp32", config: { model_type: "custom" },
+});
+const processor = await AutoProcessor.from_pretrained("Xenova/modnet");
+
+const image = await RawImage.read(imageURL);
+const { pixel_values } = await processor(image);
+const { output } = await model({ input: pixel_values });   // the ONNX input is named "input"
+
+// output is a [1,1,H,W] soft alpha map in 0–1. Scale to 0–255 and resize to the original photo:
+const matte = (await RawImage.fromTensor(output[0].mul(255).to("uint8")))
+  .resize(image.width, image.height);
+// then copy `matte` into the image's alpha channel → the cut-out</code></pre>
+      <p class="muted">
+        This page runs that in a Web Worker and stamps the matte into the photo's alpha on a canvas, so
+        the interface stays responsive and the composite (transparency, colour, or a new scene) is all
+        client-side. The input tensor's name (<code>input</code>) is read off the live ONNX session — no
+        invented signature.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/Xenova/modnet" target="_blank" rel="noopener">Model card — Xenova/modnet (ONNX for Transformers.js)</a></li>
+        <li><a href="https://github.com/ZHKKKe/MODNet" target="_blank" rel="noopener">MODNet — original implementation (ZHKKKe)</a></li>
+        <li><a href="https://arxiv.org/abs/2011.11961" target="_blank" rel="noopener">Paper — MODNet: Trimap-Free Portrait Matting in Real Time (arXiv:2011.11961)</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import {
+        MattingEngine, fileToDataURL, urlToDataURL, loadImage, composeCutout,
+        renderMatte, renderEdge, wireCompare, MATTING_CSS,
+      } from "./matting.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = MATTING_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new MattingEngine();
+      let currentImageURL = null, currentSrc = null;
+
+      const wipe = $("wipe");
+      const applyWipe = wireCompare(wipe, $("afterLayer"), 55);
+      wipe.addEventListener("input", () => { $("wipeOut").textContent = wipe.value + "%"; });
+
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        currentSrc = el.dataset.src;
+        currentImageURL = await urlToDataURL(el.dataset.src);
+        $("beforeImg").src = el.dataset.src;
+        $("afterLayer").hidden = true;
+        $("insideWrap").hidden = true;
+        $("insideEmpty").hidden = false;
+        $("readout").hidden = true;
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } });
+      }
+      pickSample($("samples").firstElementChild);
+
+      const file = $("file"), drop = $("drop");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) {
+        for (const t of $("samples").children) t.classList.remove("active");
+        currentImageURL = await fileToDataURL(f);
+        currentSrc = currentImageURL;
+        $("beforeImg").src = currentImageURL;
+        $("afterLayer").hidden = true;
+        $("dropText").textContent = f.name;
+      }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/modnet", runtime: "transformers.js", dtype: "fp32", sizeMB: 26, requiresWebGPU: false },
+        load: async (onProgress) => { const device = await engine.load((p) => onProgress(p)); return { device }; },
+        onReady: () => { $("run").disabled = false; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!currentImageURL) { $("status").hidden = false; $("status").textContent = "Pick a photo first."; return; }
+        $("run").disabled = true; $("status").hidden = false; $("status").classList.remove("err", "ok"); $("status").textContent = "Pulling the matte…";
+        try {
+          const r = await engine.matte(currentImageURL);
+          const img = await loadImage(currentSrc);
+          composeCutout($("cutout"), img, r.width, r.height, r.alpha, { backdrop: "checker" });
+          composeCutout($("cutoutFull"), img, r.width, r.height, r.alpha, { backdrop: "checker" });
+          renderMatte($("matte"), r.width, r.height, r.alpha);
+          renderEdge($("edge"), r.width, r.height, r.alpha);
+          $("afterLayer").hidden = false;
+          applyWipe(+wipe.value);
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase() + (r.dtype ? " · " + r.dtype : "");
+          $("rMs").textContent = r.ms + " ms";
+          $("rCoverage").textContent = (r.coverage * 100).toFixed(1) + "%";
+          $("rSoft").textContent = r.softEdge.toLocaleString();
+          $("insideEmpty").hidden = true; $("insideWrap").hidden = false;
+          $("iDims").textContent = `${r.width} × ${r.height}`;
+          $("iCov").textContent = (r.coverage * 100).toFixed(1) + "% of pixels";
+          $("iEdge").textContent = r.softEdge.toLocaleString() + " px";
+          const max = Math.max(...r.hist, 1);
+          $("histo").replaceChildren(...r.hist.map((c) => { const s = document.createElement("span"); s.style.blockSize = (c / max * 100).toFixed(1) + "%"; s.title = c.toLocaleString() + " px"; return s; }));
+          $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Matting failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+
+      if (new URLSearchParams(location.search).has("auto")) {
+        (async () => {
+          await pickSample($("samples").firstElementChild);
+          const btn = $("model-loader").querySelector(".loader-actions button");
+          if (btn) btn.click(); // first visit → Download; cached → loader auto-inits, no button
+          const t0 = Date.now();
+          while (!engine.ready && Date.now() - t0 < 90000) await new Promise((r) => setTimeout(r, 200));
+          if (engine.ready) $("run").click();
+        })();
+      }
+    </script>
+  </body>
+</html>

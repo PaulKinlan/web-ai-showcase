@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MODNet Practical — headshot studio · Web AI Showcase</title>
+    <meta name="description" content="Drop a portrait onto a brand colour, a soft gradient, or your own background image — MODNet's soft matte blends the hair instead of pasting a hard sticker. Export a transparent or composited PNG, all on-device." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>💇</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">MODNet</a></p>
+
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Practical: headshot studio</h1>
+      <p class="lede">
+        A profile-picture pipeline you could ship: matte the subject, then drop them onto a brand colour,
+        a soft studio gradient, or a background image you upload. Because the matte is soft, the hairline
+        blends into the new backdrop instead of showing a cut edge. Nothing leaves the browser; export the
+        result as a PNG.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+
+      <div class="sample-strip" id="samples" aria-label="Sample images">
+        <img class="sample-thumb active" src="../sample-portrait.jpg" data-src="../sample-portrait.jpg" alt="A smiling woman with long flowing hair" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-bangs.jpg" data-src="../sample-bangs.jpg" alt="A woman with dark wispy bangs" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-cat.jpg" data-src="../sample-cat.jpg" alt="Two cats with fur" tabindex="0" role="button" />
+      </div>
+      <div class="controls-row">
+        <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop a portrait" style="flex:1 1 240px">
+          <span id="dropText">Drop a portrait, or click to choose</span>
+          <input type="file" id="file" accept="image/*" hidden />
+        </div>
+      </div>
+
+      <button id="run" type="button" disabled>Matte the subject</button>
+
+      <fieldset style="border:1px solid var(--border);border-radius:8px;margin:.8rem 0;padding:.7rem">
+        <legend style="font-size:.82rem;color:var(--muted);padding:0 .4rem">Backdrop</legend>
+        <div class="swatches" id="swatches" role="group" aria-label="Backdrop colour"></div>
+        <div style="margin-top:.5rem">
+          <label class="dropzone" id="bgDrop" tabindex="0" role="button" aria-label="Upload a background image" style="display:inline-block;padding:.5rem .8rem;font-size:.85rem">
+            <span id="bgText">Or upload a background image</span>
+            <input type="file" id="bgFile" accept="image/*" hidden />
+          </label>
+          <button id="clearBg" type="button" class="secondary" hidden>Clear background image</button>
+        </div>
+      </fieldset>
+
+      <div class="canvas-grid">
+        <div class="canvas-card">
+          <h4>Composite</h4>
+          <canvas class="viz-canvas" id="stage" width="480" height="360" aria-label="Portrait composited onto the chosen backdrop"></canvas>
+        </div>
+      </div>
+      <div class="controls-row">
+        <button id="dlComposite" type="button" class="secondary" disabled>Download composite PNG</button>
+        <button id="dlCutout" type="button" class="secondary" disabled>Download transparent cut-out PNG</button>
+      </div>
+      <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>latency <b id="rMs">–</b></span><span>subject kept <b id="rCov">–</b></span></div>
+    </section>
+
+    <p class="crumbs"><a href="../basics/">← Basics</a> · Next: <a href="../wild/">Wild →</a></p>
+
+    <script type="module">
+      import { MattingEngine, fileToDataURL, urlToDataURL, loadImage, composeCutout, cutoutToPNG, MATTING_CSS } from "../matting.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = MATTING_CSS;
+      document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new MattingEngine();
+      let currentURL = null, currentSrc = null, last = null, backdrop = "#4f46e5", bgImg = null;
+
+      const COLORS = [
+        ["#ffffff", "White"], ["#4f46e5", "Indigo"], ["#0f766e", "Teal"], ["#b91c1c", "Crimson"],
+        ["#1e293b", "Slate"], ["#f59e0b", "Amber"], ["#be185d", "Magenta"], ["linear", "Gradient"],
+      ];
+      function makeGradient(w, h) {
+        const c = document.createElement("canvas"); c.width = w; c.height = h;
+        const ctx = c.getContext("2d");
+        const g = ctx.createLinearGradient(0, 0, w, h);
+        g.addColorStop(0, "#6366f1"); g.addColorStop(1, "#0ea5e9");
+        ctx.fillStyle = g; ctx.fillRect(0, 0, w, h);
+        return c;
+      }
+      $("swatches").replaceChildren(...COLORS.map(([col, name], i) => {
+        const b = document.createElement("button");
+        b.type = "button"; b.className = "swatch"; b.title = name;
+        b.setAttribute("aria-label", name); b.setAttribute("aria-pressed", i === 1 ? "true" : "false");
+        b.style.background = col === "linear" ? "linear-gradient(135deg,#6366f1,#0ea5e9)" : col;
+        b.addEventListener("click", () => {
+          for (const s of $("swatches").children) s.setAttribute("aria-pressed", "false");
+          b.setAttribute("aria-pressed", "true");
+          backdrop = col; bgImg = null; $("clearBg").hidden = true; $("bgText").textContent = "Or upload a background image";
+          render();
+        });
+        return b;
+      }));
+
+      async function useSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        currentSrc = el.dataset.src; currentURL = await urlToDataURL(el.dataset.src);
+        last = null; $("readout").hidden = true; $("dlComposite").disabled = $("dlCutout").disabled = true;
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => useSample(thumb));
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); useSample(thumb); } });
+      }
+      useSample($("samples").firstElementChild);
+
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) { for (const t of $("samples").children) t.classList.remove("active"); currentURL = await fileToDataURL(f); currentSrc = currentURL; last = null; $("dropText").textContent = f.name; $("dlComposite").disabled = $("dlCutout").disabled = true; }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
+
+      const bgDrop = $("bgDrop"), bgFile = $("bgFile");
+      bgDrop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); bgFile.click(); } });
+      bgFile.addEventListener("change", async () => {
+        if (!bgFile.files[0]) return;
+        bgImg = await loadImage(await fileToDataURL(bgFile.files[0]));
+        for (const s of $("swatches").children) s.setAttribute("aria-pressed", "false");
+        $("bgText").textContent = bgFile.files[0].name; $("clearBg").hidden = false; render();
+      });
+      $("clearBg").addEventListener("click", () => { bgImg = null; $("clearBg").hidden = true; $("bgText").textContent = "Or upload a background image"; backdrop = "#4f46e5"; $("swatches").children[1].setAttribute("aria-pressed", "true"); render(); });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/modnet", runtime: "transformers.js", dtype: "fp32", sizeMB: 26, requiresWebGPU: false },
+        load: async (onProgress) => { const device = await engine.load((p) => onProgress(p)); return { device }; },
+        onReady: () => { $("run").disabled = false; },
+      });
+
+      async function render() {
+        if (!last) return;
+        const img = await loadImage(currentSrc);
+        let bd = backdrop;
+        if (bgImg) bd = bgImg;
+        else if (backdrop === "linear") bd = makeGradient(last.width, last.height);
+        composeCutout($("stage"), img, last.width, last.height, last.alpha, { backdrop: bd });
+        $("dlComposite").disabled = false; $("dlCutout").disabled = false;
+      }
+      $("run").addEventListener("click", async () => {
+        if (!currentURL) return;
+        $("run").disabled = true; $("status").hidden = false; $("status").classList.remove("err", "ok"); $("status").textContent = "Matting the subject…";
+        try {
+          last = await engine.matte(currentURL);
+          $("rBackend").textContent = last.device.toUpperCase() + " · " + last.dtype;
+          $("rMs").textContent = last.ms + " ms"; $("rCov").textContent = (last.coverage * 100).toFixed(1) + "%";
+          $("readout").hidden = false;
+          await render();
+          $("status").textContent = "Matted — pick a backdrop or upload one."; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Matting failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+
+      function downloadCanvas(canvas, name) { const a = document.createElement("a"); a.download = name; a.href = canvas.toDataURL("image/png"); a.click(); }
+      $("dlComposite").addEventListener("click", () => $("stage").width && downloadCanvas($("stage"), "headshot-composite.png"));
+      $("dlCutout").addEventListener("click", async () => { if (!last) return; const img = await loadImage(currentSrc); const c = cutoutToPNG(img, last.width, last.height, last.alpha); downloadCanvas(c, "headshot-cutout.png"); });
+
+      if (new URLSearchParams(location.search).has("auto")) {
+        (async () => {
+          const btn = $("model-loader").querySelector(".loader-actions button"); if (btn) btn.click();
+          const t0 = Date.now(); while (!engine.ready && Date.now() - t0 < 90000) await new Promise((r) => setTimeout(r, 200));
+          if (engine.ready) $("run").click();
+        })();
+      }
+    </script>
+  </body>
+</html>
