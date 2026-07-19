@@ -139,10 +139,13 @@ Report **TWO denominators**, both honestly:
    / catalogued (+ pending)**. IMPORTANT: this denominator is a **refining LOWER BOUND, not a fixed
    number** — the deduped eligible-family count grows with scan depth (635 @ `--pages 8` → 754 @ 10
    → 1288 @ 20 → 2355 @ 40 …) because the transformers.js/ONNX long tail is effectively unbounded.
-   Always state the scan depth and treat it as a lower bound; keep `models.json` (catalogue) and
-   `inventory/summary.json` (eligible universe) reconciled + consistent (same scan depth), and note
-   that the catalogue is a growing subset of the scanned eligible universe. Blocked/device-only stay
-   counted; "coming soon" is pending.
+   `inventory/summary.json` is SELF-DOCUMENTING (`scanPages`, `depthCurve`, and `missionBaseline` =
+   {scanPages: 8, eligibleFamilies: 635} — the original mission number); the 635→2355 change is ONLY
+   the scan depth, not a definition change (same sources + eligibility + dedup) — whenever you
+   deepen the scan, say so. Always state the scan depth and treat it as a lower bound; keep
+   `models.json` (catalogue) and `inventory/summary.json` (eligible universe) reconciled +
+   consistent (same scan depth), and note that the catalogue is a growing subset of the scanned
+   eligible universe. Blocked/device-only stay counted; "coming soon" is pending.
 
 2. **SECONDARY — architecture-family coverage.** `node scripts/coverage.mjs` reports built vs a
    bounded curated taxonomy of ~60+ canonical _kinds_ of model (BERT, ViT, Whisper, Llama, DETR,

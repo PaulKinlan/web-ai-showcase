@@ -14,7 +14,7 @@
 // Rules of the road (see AGENTS.md / SKILL): denominator = eligible families; blocked (gated/too
 // large) and device-only stay IN the denominator; we never shrink it because a model is hard.
 
-import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 
 const MAX_PAGES = Number(argVal("--pages") ?? 8); // 100/page => up to 800 models per source
 const NO_MERGE = process.argv.includes("--no-merge");
@@ -107,7 +107,10 @@ function familyKey(id) {
   let n = id.split("/").pop().toLowerCase();
   n = n
     .replace(/[-_.](onnx|ort|web|mlc|gguf|ggml)\b/g, "")
-    .replace(/[-_.](q4f16|q4|q8|int8|int4|fp16|fp32|bf16|uint8|quantized|8bit|4bit)([-_.]\w+)?/g, "")
+    .replace(
+      /[-_.](q4f16|q4|q8|int8|int4|fp16|fp32|bf16|uint8|quantized|8bit|4bit)([-_.]\w+)?/g,
+      "",
+    )
     .replace(/[-_.]\d+(\.\d+)?b\b/g, "") // 0.5b, 1b, 7b size markers
     .replace(/[-_.](base|small|tiny|mini|large|xl|xxl|medium|nano|micro)\b/g, "")
     .replace(/[-_.]v?\d+(\.\d+)*\b/g, "") // version tails
@@ -117,7 +120,10 @@ function familyKey(id) {
 }
 
 function slugify(id) {
-  return id.split("/").pop().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 80);
+  return id.split("/").pop().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(
+    0,
+    80,
+  );
 }
 
 // MediaPipe Tasks Web runtime — model-backed landmarkers/segmenters Google ships as .task/.tflite
@@ -176,7 +182,10 @@ async function collectWebLLM() {
 
 async function main() {
   const sources = [
-    { query: { library: "transformers.js", sort: "downloads", limit: "100", full: "false" }, runtime: "transformers.js" },
+    {
+      query: { library: "transformers.js", sort: "downloads", limit: "100", full: "false" },
+      runtime: "transformers.js",
+    },
     { query: { library: "onnx", sort: "downloads", limit: "100", full: "false" }, runtime: "onnx" },
   ];
 
@@ -187,7 +196,9 @@ async function main() {
       const { models, apiTotal } = await collect(s.query, s.runtime);
       apiTotals[s.runtime] = apiTotal;
       all.push(...models);
-      console.error(`  ${s.runtime}: HF reports ${apiTotal} total; collected ${models.length} with a supported task`);
+      console.error(
+        `  ${s.runtime}: HF reports ${apiTotal} total; collected ${models.length} with a supported task`,
+      );
     } catch (e) {
       console.error(`  ${s.runtime}: FAILED ${e.message}`);
       apiTotals[s.runtime] = `error: ${e.message}`;
@@ -210,7 +221,9 @@ async function main() {
   for (const m of all) {
     const key = `${m.task}::${familyKey(m.id)}`;
     const cur = byFamily.get(key);
-    if (!cur || m.downloads > cur.downloads) byFamily.set(key, { ...m, familyKey: familyKey(m.id) });
+    if (!cur || m.downloads > cur.downloads) {
+      byFamily.set(key, { ...m, familyKey: familyKey(m.id) });
+    }
   }
   const reps = [...byFamily.values()].sort((a, b) => b.downloads - a.downloads);
 
@@ -264,7 +277,26 @@ async function main() {
 
   const builtCount = cat.models.filter((m) => m.status === "built").length;
   const summary = {
-    generatedNote: "denominator = eligible families (deduped). blocked (gated) + device-only stay IN the denominator.",
+    denominatorNote:
+      "eligibleFamilies is a REFINING LOWER BOUND, not a fixed number — it scales with scanPages " +
+      "because the browser-runnable HF long tail (transformers.js/ONNX re-exports + fine-tunes) is " +
+      "effectively unbounded. Same sources + eligibility + family-dedup throughout; ONLY scanPages " +
+      "changes the count. Always report WITH the scan depth. Never imply complete/all coverage.",
+    scanPages: MAX_PAGES,
+    sources: [
+      "library=transformers.js",
+      "library=onnx",
+      "author=mlc-ai (-MLC)",
+      "MediaPipe Tasks (curated)",
+    ],
+    depthCurve: { "8": 635, "10": 754, "20": 1288, "40": 2355 },
+    missionBaseline: {
+      scanPages: 8,
+      eligibleFamilies: 635,
+      note: "the original mission denominator; this run scans deeper",
+    },
+    blockedRule:
+      "gated / device-only stay IN the denominator; never shrink it because a model is hard",
     apiTotalsRaw: apiTotals,
     collectedRepresentativeFamilies: reps.length,
     eligibleFamilies: eligible.length,
@@ -282,7 +314,9 @@ async function main() {
 
   console.error("\n=== INVENTORY SUMMARY ===");
   console.error(`eligible families: ${eligible.length} (blocked/gated: ${blocked.length})`);
-  console.error(`catalogue: ${cat.models.length} total, ${builtCount} built, +${mergedInto} added this run`);
+  console.error(
+    `catalogue: ${cat.models.length} total, ${builtCount} built, +${mergedInto} added this run`,
+  );
   console.error(`tasks covered: ${Object.keys(byTask).length}`);
   console.error("evidence -> inventory/eligible.ndjson + inventory/summary.json");
 }
