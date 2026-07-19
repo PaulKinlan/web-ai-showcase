@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>PaliGemma Practical — detect objects with boxes · Web AI Showcase</title>
+    <meta name="description" content="Name a thing and PaliGemma locates it: the detect prefix emits location tokens this page decodes into boxes drawn over your image, on your GPU." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🧩</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">PaliGemma 2</a></p>
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Practical: detect objects by name</h1>
+      <p class="lede">
+        PaliGemma's <code>detect</code> prefix is open-vocabulary object detection with no bespoke
+        detector: name any thing and the model emits <code>&lt;locNNNN&gt;</code> coordinate tokens. This
+        page decodes those <em>real</em> tokens into boxes drawn over your image — labelled honestly as
+        derived from the model's output.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="vlm-grid" style="margin-top:.6rem">
+        <div class="vlm-img-col">
+          <div class="sample-strip" id="samples">
+            <img class="sample-thumb active" src="../sample-cats.jpg" data-src="../sample-cats.jpg" alt="Two cats on a couch" tabindex="0" role="button" />
+            <img class="sample-thumb" src="../sample-street.jpg" data-src="../sample-street.jpg" alt="A busy street scene" tabindex="0" role="button" />
+            <img class="sample-thumb" src="../sample-room.jpg" data-src="../sample-room.jpg" alt="A cozy bedroom" tabindex="0" role="button" />
+          </div>
+          <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image" style="margin-bottom:.5rem">
+            <span id="dropText">…or drop / choose your own</span>
+            <input type="file" id="file" accept="image/*" hidden />
+          </div>
+          <div class="preview-wrap">
+            <img class="preview-img" id="preview" src="../sample-cats.jpg" alt="Selected image" />
+            <div class="box-layer" id="boxes" aria-hidden="true"></div>
+          </div>
+        </div>
+        <div class="vlm-out-col">
+          <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">
+            Object(s) to detect (separate with " ; ")
+            <input type="text" id="what" value="cat" />
+          </label>
+          <div class="chips" id="quick">
+            <button class="chip" type="button" data-w="cat">cat</button>
+            <button class="chip" type="button" data-w="person">person</button>
+            <button class="chip" type="button" data-w="car">car</button>
+            <button class="chip" type="button" data-w="dog ; cat">dog ; cat</button>
+          </div>
+          <button id="run" type="button" disabled>Detect</button>
+          <div class="answer" id="answer" style="margin-top:.5rem" aria-live="polite"><span class="muted">Detections appear here, and as boxes on the image.</span></div>
+          <div class="readout" id="readout" hidden><span>boxes <b id="rN">–</b></span><span>time <b id="rMs">–</b></span></div>
+          <details style="margin-top:.5rem">
+            <summary style="font-size:.8rem;cursor:pointer">Raw model output (with location tokens)</summary>
+            <pre class="tmpl" id="raw" style="margin-top:.3rem"><span class="muted">The raw &lt;loc&gt; token string appears here.</span></pre>
+          </details>
+        </div>
+      </div>
+    </section>
+
+    <p class="crumbs"><a href="../basics/">← Basics</a> · <a href="../">PaliGemma 2</a> · Next: <a href="../wild/">Wild →</a></p>
+
+    <script type="module">
+      import { PaliGemmaEngine, fileToDataURL, escapeHTML, decodeDetections, PALI_CSS } from "../paligemma.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = PALI_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new PaliGemmaEngine();
+      let currentImageURL = null;
+
+      function clearBoxes() { $("boxes").replaceChildren(); }
+      function drawBoxes(dets) {
+        clearBoxes();
+        const img = $("preview");
+        const w = img.clientWidth, h = img.clientHeight;
+        for (const d of dets) {
+          const [x, y, bw, bh] = d.box;
+          const el = document.createElement("div"); el.className = "det-box";
+          el.style.left = (x * w) + "px"; el.style.top = (y * h) + "px";
+          el.style.width = (bw * w) + "px"; el.style.height = (bh * h) + "px";
+          const lab = document.createElement("span"); lab.className = "det-label"; lab.textContent = d.label;
+          el.append(lab); $("boxes").append(el);
+        }
+      }
+
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        const blob = await (await fetch(el.dataset.src)).blob();
+        currentImageURL = await fileToDataURL(new File([blob], "s", { type: blob.type }));
+        $("preview").src = el.dataset.src; clearBoxes();
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } });
+      }
+      pickSample($("samples").firstElementChild);
+
+      const file = $("file"), drop = $("drop");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) {
+        for (const t of $("samples").children) t.classList.remove("active");
+        currentImageURL = await fileToDataURL(f); $("preview").src = currentImageURL; $("dropText").textContent = f.name; clearBoxes();
+      }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
+
+      for (const c of $("quick").children) c.addEventListener("click", () => { $("what").value = c.dataset.w; });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/paligemma2-3b-pt-224", runtime: "transformers.js", dtype: "q4f16", sizeMB: 2900, requiresWebGPU: true },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: () => { $("run").disabled = false; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!currentImageURL) { $("status").textContent = "Pick an image first."; return; }
+        const what = $("what").value.trim() || "object";
+        $("run").disabled = true; $("status").classList.remove("err"); $("status").textContent = "Detecting…";
+        $("answer").innerHTML = '<span class="caret">&nbsp;</span>'; clearBoxes(); let raw = "";
+        try {
+          const res = await engine.generate(currentImageURL, "detect " + what, {
+            maxTokens: 128, skipSpecial: false,
+            onToken: (tok) => { raw += tok; },
+          });
+          $("raw").textContent = raw || "(empty)";
+          const dets = decodeDetections(raw);
+          drawBoxes(dets);
+          if (dets.length) {
+            $("answer").textContent = dets.map((d, i) => `${i + 1}. ${d.label} @ [${d.box.map((v) => v.toFixed(2)).join(", ")}]`).join("\n");
+          } else {
+            $("answer").innerHTML = '<span class="muted">No location tokens in the output — the model didn\'t localise "' + escapeHTML(what) + '" here. Try another object or image.</span>';
+          }
+          $("readout").hidden = false; $("rN").textContent = dets.length; $("rMs").textContent = res.ms + " ms";
+          $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (err) { $("answer").innerHTML = '<span class="muted">Failed.</span>'; $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>
