@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>NSFW Wild — calibration on the edges · Web AI Showcase</title>
+    <meta name="description" content="Ambiguous and abstract test images show a NSFW classifier's calibration limits: the score is a probability, not a truth, and it wobbles on out-of-distribution input." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🛡️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">NSFW detector</a></p>
+
+    <header>
+      <p class="eyebrow">use case · wild</p>
+      <h1>Wild: where the score wobbles</h1>
+      <p class="lede">
+        A NSFW classifier outputs a <em>probability</em>, not a verdict — and on input unlike its training
+        data (abstract patterns, unusual colour fields, heavy blur) that probability can drift toward the
+        middle. These procedurally generated tiles are all obviously benign, yet they let you watch the
+        model's confidence move. The lesson for content-safety work: never treat a single score as ground
+        truth, and always keep a human in the loop near the threshold.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="muted" style="margin-top:.5rem">Generated benign test tiles — screen them and compare the NSFW
+        probabilities. You can also drop your own image below.</p>
+      <button id="run" type="button" disabled style="margin:.4rem 0">Screen all tiles</button>
+      <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Add your own image" style="margin:.4rem 0">
+        <span id="dropText">Drop your own image to add a tile</span>
+        <input type="file" id="file" accept="image/*" hidden />
+      </div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+      <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>latency <b id="rMs">–</b></span></div>
+      <div class="gallery" id="gallery"></div>
+    </section>
+
+    <p class="crumbs"><a href="../practical/">← Practical</a> · Next: <a href="../multimodel/">Multi-model →</a></p>
+
+    <script type="module">
+      import { NSFWEngine, fileToDataURL, NSFW_CSS } from "../nsfw.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = NSFW_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new NSFWEngine();
+
+      // Procedurally generate benign but out-of-distribution test tiles.
+      function tile(name, draw) {
+        const c = document.createElement("canvas"); c.width = c.height = 224;
+        const ctx = c.getContext("2d"); draw(ctx, c);
+        return { key: name, label: name, url: c.toDataURL("image/png") };
+      }
+      const tiles = [
+        tile("solid blue", (ctx) => { ctx.fillStyle = "#2f6fd0"; ctx.fillRect(0, 0, 224, 224); }),
+        tile("skin-tone field", (ctx) => { const g = ctx.createLinearGradient(0, 0, 224, 224); g.addColorStop(0, "#e8c3a0"); g.addColorStop(1, "#c99b78"); ctx.fillStyle = g; ctx.fillRect(0, 0, 224, 224); }),
+        tile("random noise", (ctx) => { const img = ctx.createImageData(224, 224); for (let i = 0; i < img.data.length; i += 4) { const v = Math.random() * 255 | 0; img.data[i] = img.data[i + 1] = img.data[i + 2] = v; img.data[i + 3] = 255; } ctx.putImageData(img, 0, 0); }),
+        tile("colour blocks", (ctx) => { const cols = ["#d33", "#3d3", "#33d", "#dd3"]; for (let i = 0; i < 4; i++) { ctx.fillStyle = cols[i]; ctx.fillRect((i % 2) * 112, (i >> 1) * 112, 112, 112); } }),
+        tile("gradient sky", (ctx) => { const g = ctx.createLinearGradient(0, 0, 0, 224); g.addColorStop(0, "#89c"); g.addColorStop(1, "#fda"); ctx.fillStyle = g; ctx.fillRect(0, 0, 224, 224); ctx.fillStyle = "#fff8"; ctx.beginPath(); ctx.arc(160, 60, 30, 0, 7); ctx.fill(); }),
+        tile("concentric", (ctx) => { for (let r = 112; r > 0; r -= 14) { ctx.fillStyle = (r / 14) % 2 ? "#222" : "#eee"; ctx.beginPath(); ctx.arc(112, 112, r, 0, 7); ctx.fill(); } }),
+      ];
+
+      function render(verdicts) {
+        $("gallery").replaceChildren(...tiles.map((t) => {
+          const v = verdicts?.[t.key];
+          const cls = v ? (v.safe ? "safe" : "withheld") : "";
+          const fig = document.createElement("figure");
+          if (v) fig.className = cls;
+          fig.innerHTML = `<img src="${t.url}" alt="${t.label}" />
+            <figcaption>${t.label}<br>${v ? `<span class="cap-verdict ${cls}">nsfw ${(v.nsfw * 100).toFixed(0)}%</span>` : "not screened"}</figcaption>`;
+          return fig;
+        }));
+      }
+      render();
+
+      const file = $("file"), drop = $("drop");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function addFile(f) { const url = await fileToDataURL(f); tiles.push({ key: "user" + tiles.length, label: f.name, url }); render(); }
+      file.addEventListener("change", () => file.files[0] && addFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) addFile(f); });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "AdamCodd/vit-base-nsfw-detector", runtime: "transformers.js", dtype: "q8", sizeMB: 88, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("run").disabled = false; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        $("run").disabled = true; $("runStatus").hidden = false; $("runStatus").classList.remove("err");
+        $("runStatus").textContent = "Screening tiles…";
+        try {
+          const r = await engine.screen(tiles.map((t) => ({ key: t.key, url: t.url })), 0.5);
+          render(Object.fromEntries(r.items.map((it) => [it.key, it])));
+          $("readout").hidden = false; $("rBackend").textContent = r.device.toUpperCase(); $("rMs").textContent = r.ms + " ms";
+          $("runStatus").textContent = "Done — note how the abstract tiles don't all land at 0%.";
+          $("runStatus").classList.add("ok");
+        } catch (err) { $("runStatus").textContent = "Failed: " + err.message; $("runStatus").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>
