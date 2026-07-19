@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Distil-Whisper Multi-model — transcribe then summarise · Web AI Showcase</title>
+    <meta name="description" content="Distil-Whisper transcribes a clip fast, then a small on-device LLM summarises it — two models chained entirely in your browser, nothing uploaded." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>⚗️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Distil-Whisper</a></p>
+
+    <header>
+      <p class="eyebrow">use case · multi-model</p>
+      <h1>Multi-model: transcribe, then summarise</h1>
+      <p class="lede">
+        The classic pipeline: Distil-Whisper turns audio into text <em>fast</em>, then a small language
+        model (<a href="../../qwen-tiny-llm/">Qwen2.5-0.5B</a>) boils it down to a sentence or two. Two
+        models chained in your browser — the audio and the transcript never leave the tab.
+      </p>
+    </header>
+
+    <section class="panel">
+      <h3>Step 1 — Distil-Whisper (speech-to-text)</h3>
+      <div id="asr-loader"></div>
+      <h3 style="margin-top:1rem">Step 2 — the LLM (summary)</h3>
+      <div id="llm-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+
+      <div class="audio-row" style="margin-top:.8rem">
+        <button id="rec" type="button" class="secondary" disabled>● Record</button>
+        <button id="upload" type="button" class="secondary" disabled>Upload audio</button>
+        <input type="file" id="file" accept="audio/*" hidden />
+        <span class="muted" style="font-size:.82rem">or a sample:</span>
+        <span class="sample-row" id="samples">
+          <button class="chip" type="button" data-src="../jfk.wav">JFK clip</button>
+          <button class="chip" type="button" data-src="../ted.wav">TED clip</button>
+        </span>
+      </div>
+      <div id="micFallback" class="fallback" hidden>
+        <strong>No microphone here.</strong>
+        <p class="muted" style="margin:.3rem 0">Record needs mic access (unavailable in headless/embedded views). Upload a clip or use a sample; the full chain still runs.</p>
+      </div>
+
+      <div class="audio-row"><audio id="player" controls preload="metadata"></audio></div>
+      <button id="run" type="button" disabled>Transcribe &amp; summarise</button>
+
+      <h3>Transcript</h3>
+      <div class="transcript" id="heard" aria-live="polite">Record, upload, or pick a sample.</div>
+      <h3>Summary</h3>
+      <div class="caption-box" id="answer" aria-live="polite">…</div>
+      <div class="readout" id="readout" hidden>
+        <span>ASR backend <b id="rAsr">–</b></span><span>ASR time <b id="rAsrMs">–</b></span>
+        <span>LLM backend <b id="rLlm">–</b></span><span>LLM time <b id="rLlmMs">–</b></span>
+      </div>
+    </section>
+
+    <p class="crumbs"><a href="../wild/">← Wild</a> · <a href="../">Back to Distil-Whisper</a></p>
+
+    <script type="module">
+      import { DistilEngine, urlToMono16k, blobToMono16k, MicRecorder, DISTIL_CSS } from "../distil.js";
+      import { ChatLLM } from "./chat-llm.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = DISTIL_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const asr = new DistilEngine();
+      const llm = new ChatLLM();
+      let pcm = null, audioDur = 0, asrReady = false, llmReady = false;
+
+      function sync() { $("run").disabled = !(asrReady && llmReady && pcm); }
+
+      async function useAudio(url, { revoke = false } = {}) {
+        $("player").src = url;
+        try { const d = await urlToMono16k(url); pcm = d.pcm; audioDur = d.duration; sync(); $("heard").textContent = "Ready — hit Transcribe & summarise."; }
+        catch (err) { $("status").hidden = false; $("status").textContent = "Couldn't decode: " + err.message; $("status").classList.add("err"); pcm = null; }
+        if (revoke) $("player").addEventListener("emptied", () => URL.revokeObjectURL(url), { once: true });
+      }
+      for (const chip of $("samples").children) chip.addEventListener("click", () => useAudio(chip.dataset.src));
+      $("upload").addEventListener("click", () => $("file").click());
+      $("file").addEventListener("change", async () => { const f = $("file").files[0]; if (f) await useAudio(URL.createObjectURL(f), { revoke: true }); });
+
+      const mic = new MicRecorder(); let recording = false;
+      if (!MicRecorder.supported()) $("micFallback").hidden = false;
+      $("rec").addEventListener("click", async () => {
+        if (!recording) {
+          try { await mic.start(); } catch { $("micFallback").hidden = false; return; }
+          recording = true; $("rec").innerHTML = '<span class="rec-dot"></span>Stop'; $("rec").classList.remove("secondary");
+        } else {
+          recording = false; $("rec").textContent = "● Record"; $("rec").classList.add("secondary");
+          const { blob } = await mic.stop(); const d = await blobToMono16k(blob);
+          pcm = d.pcm; audioDur = d.duration; $("player").src = URL.createObjectURL(blob); sync();
+          $("heard").textContent = "Recorded — hit Transcribe & summarise.";
+        }
+      });
+
+      createModelLoader({
+        mount: $("asr-loader"),
+        model: { modelId: "distil-whisper/distil-small.en", runtime: "transformers.js", dtype: "q8", sizeMB: 172, requiresWebGPU: false },
+        load: async (onProgress) => ({ device: await asr.load((p) => onProgress(p)) }),
+        onReady: () => { asrReady = true; $("rec").disabled = false; $("upload").disabled = false; sync(); },
+      });
+      createModelLoader({
+        mount: $("llm-loader"),
+        model: { modelId: "onnx-community/Qwen2.5-0.5B-Instruct", runtime: "transformers.js", dtype: "q4", sizeMB: 400, requiresWebGPU: false },
+        load: async (onProgress) => ({ device: await llm.load((p) => onProgress(p)) }),
+        onReady: () => { llmReady = true; sync(); },
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!pcm) return;
+        $("run").disabled = true; $("status").hidden = false; $("status").classList.remove("err", "ok");
+        $("answer").textContent = "…";
+        try {
+          $("status").textContent = "Transcribing…";
+          const a = await asr.transcribe(pcm, audioDur);
+          const t = (a.text || "").trim();
+          $("heard").textContent = t || "(nothing heard)";
+          $("rAsr").textContent = a.device.toUpperCase(); $("rAsrMs").textContent = (a.ms / 1000).toFixed(2) + " s";
+          if (!t) { $("answer").textContent = "(no speech detected)"; $("status").textContent = "Done."; $("run").disabled = false; return; }
+          $("status").textContent = "Summarising…"; $("answer").textContent = "";
+          const r = await llm.summarise(t, (tok) => { $("answer").textContent += tok; });
+          $("answer").textContent = r.text || $("answer").textContent;
+          $("readout").hidden = false; $("rLlm").textContent = r.device.toUpperCase(); $("rLlmMs").textContent = (r.ms / 1000).toFixed(2) + " s";
+          $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>
