@@ -1,0 +1,365 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Silero VAD — voice activity detection in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run Silero VAD locally with onnxruntime-web: feed a clip or your mic and watch it mark speech vs silence frame-by-frame — a real speech-probability curve and detected speech segments. No server."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎙</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">voice-activity-detection · audio · WASM (onnxruntime-web) · ~2 MB</p>
+      <h1>Silero VAD — find the speech in any audio</h1>
+      <p class="lede">
+        A voice activity detector answers one small, useful question, thirty-odd times a second:
+        <strong>is someone speaking right now?</strong> Silero VAD is a tiny (~2 MB) recurrent network
+        that reads audio in 512-sample frames and emits a speech probability for each one. It's the
+        quiet workhorse in front of almost every speech system — it decides what to send to a
+        transcriber, when to stop recording, and where the pauses are. Here it runs entirely on your
+        device.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/onnx-community/silero-vad" target="_blank" rel="noopener">onnx-community/silero-vad</a> (Silero VAD v5)</td></tr>
+          <tr><th>Task</th><td><code>voice-activity-detection</code> — a per-frame speech/non-speech probability</td></tr>
+          <tr><th>Runtime</th><td><strong>onnxruntime-web</strong> directly — transformers.js has no VAD pipeline, so this page drives ONNX Runtime Web itself (isolated to this model's worker)</td></tr>
+          <tr><th>Architecture</th><td>Small stateful RNN (LSTM). Inputs: <code>input</code> [1×512] frame · <code>state</code> [2×1×128] LSTM state · <code>sr</code> (16000). Outputs: speech probability + next state.</td></tr>
+          <tr><th>Frame</th><td>512 samples @ 16 kHz = 32 ms per decision; the LSTM state carries context across frames</td></tr>
+          <tr><th>Quantization</th><td>fp32 ONNX (the whole model is ~2 MB — no quantisation needed)</td></tr>
+          <tr><th>Backend</th><td>WebAssembly via onnxruntime-web (single-threaded; runs anywhere)</td></tr>
+          <tr><th>Download</th><td>~2 MB, cached in Cache Storage after first load (auto-inits next visit)</td></tr>
+          <tr><th>License</th><td>MIT</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers, Web Audio, MediaRecorder, Cache Storage, Canvas — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Pick a sample, drop an audio file, or record from your mic, then hit Analyse. Silero walks the clip frame-by-frame and marks where speech is.</p>
+
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an audio file">
+        <span id="dropText">Drop an audio file here, or click to choose</span>
+        <input type="file" id="file" accept="audio/*" hidden />
+      </div>
+
+      <div class="sample-row" id="samples" aria-label="Sample clips" role="group">
+        <button class="chip" type="button" data-src="speech.wav" aria-pressed="true">🗣 Speech (with pauses)</button>
+        <button class="chip" type="button" data-src="ted.wav" aria-pressed="false">🎤 Talk excerpt</button>
+        <button class="chip" type="button" data-src="music.wav" aria-pressed="false">🎵 Music chord</button>
+        <button class="chip" type="button" data-src="ambient.wav" aria-pressed="false">🔇 Ambient / silence</button>
+      </div>
+
+      <div class="field-row">
+        <button id="recBtn" type="button" class="secondary">● Record from mic</button>
+        <span id="recState" class="muted" aria-live="polite"></span>
+      </div>
+      <div class="audio-row"><audio id="player" controls preload="metadata"></audio></div>
+
+      <div class="wave-wrap"><canvas id="wave" class="wave" aria-label="Waveform of the selected audio"></canvas></div>
+
+      <div class="param-grid" aria-label="Detection parameters">
+        <div class="param">
+          <label for="threshold">Speech threshold <span class="muted">(probability to count a frame as speech)</span></label>
+          <div class="row"><input type="range" id="threshold" min="0.1" max="0.9" step="0.05" value="0.5" /><output id="thresholdOut">0.50</output></div>
+        </div>
+        <div class="param">
+          <label for="minSilence">Min silence to split (ms)</label>
+          <div class="row"><input type="range" id="minSilence" min="50" max="700" step="10" value="100" /><output id="minSilenceOut">100</output></div>
+        </div>
+      </div>
+
+      <div style="margin:.6rem 0"><button id="run" type="button" disabled>Analyse for speech</button></div>
+
+      <p class="verdict" id="verdict" hidden></p>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+        <span>clip length <b id="rDur">–</b></span>
+        <span>speech <b id="rRatio">–</b></span>
+        <span>segments <b id="rSegs">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside</h3>
+      <p class="muted">
+        The VAD doesn't return "speech: yes/no" — it returns a <strong>probability for every 32 ms
+        frame</strong>. Everything else (segments, trimming, live meters) is what you do with that
+        curve. Below is the real per-frame probability the model produced, with your decision threshold
+        (dashed) and the frames above it shaded. Under it, the speech segments after a threshold +
+        hysteresis pass (a frame must stay quiet for the "min silence" you set before a segment ends).
+      </p>
+      <canvas id="curve" class="curve" tabindex="0" aria-label="Per-frame speech probability curve: time on the x-axis, probability 0 to 1 on the y-axis, with the threshold as a dashed line and speech frames shaded"></canvas>
+      <p class="muted" style="font-size:.78rem;margin:.3rem 0">Detected speech segments (green = speech):</p>
+      <canvas id="timeline" class="timeline" aria-label="Timeline of detected speech segments across the clip"></canvas>
+      <div id="segTable"><p class="muted" style="font-family:var(--font-mono);font-size:.8rem">Analyse a clip to see its probability curve and speech segments.</p></div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        VAD is infrastructure. It's cheap, it's fast, and it makes everything downstream better — which
+        is exactly why it belongs on-device: no audio needs to leave the browser just to decide whether
+        it's worth processing.
+      </p>
+      <ul>
+        <li><strong>Cut transcription cost and latency</strong> — run an expensive ASR model (Whisper) only on the frames that actually contain speech; skip the silence. Often the biggest single win in a voice pipeline.</li>
+        <li><strong>Endpointing</strong> — know when a speaker has <em>finished</em> so a voice UI can respond, or a recorder can auto-stop, without a "press stop" button.</li>
+        <li><strong>Trim & segment</strong> — auto-remove dead air from recordings, or split a long file into utterances for captioning or dataset building.</li>
+        <li><strong>Push-to-talk that just listens</strong> — a talk-meter that lights up when you speak, with zero cloud round-trip and nothing recorded.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Is there speech in this clip? Get a yes/no plus the probability curve behind it.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Trim the silence and split a clip into speech segments you can export.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">A live mic talk-meter — watch the speech probability move in real time as you talk.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">VAD → Whisper: transcribe only the speech segments, skipping the silence.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>There's no <code>pipeline()</code> for VAD — you drive onnxruntime-web directly. It's a stateful loop: feed 512-sample frames, carry the LSTM <code>state</code> forward, read the probability out.</p>
+      <pre><code>import * as ort from "onnxruntime-web";
+
+const session = await ort.InferenceSession.create(
+  "https://huggingface.co/onnx-community/silero-vad/resolve/main/onnx/model.onnx",
+  { executionProviders: ["wasm"] },
+);
+
+let state = new ort.Tensor("float32", new Float32Array(2 * 1 * 128), [2, 1, 128]);
+const sr = new ort.Tensor("int64", [16000n], []);          // scalar
+
+for (const frame of frames512) {                            // Float32Array, 512 samples @ 16 kHz
+  const input = new ort.Tensor("float32", frame, [1, 512]);
+  const { output, stateN } = await session.run({ input, state, sr });
+  const speechProb = output.data[0];                        // 0 … 1 for this 32 ms frame
+  state = stateN;                                           // carry the recurrent state forward
+}</code></pre>
+      <p class="muted">
+        This page decodes files / mic recordings to 16 kHz mono with an <code>OfflineAudioContext</code>,
+        runs the frame loop inside a Web Worker so the UI never janks, caches the ~2 MB model in Cache
+        Storage (so a return visit auto-initialises with no download), and turns the raw curve into
+        segments with a threshold + hysteresis pass.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/onnx-community/silero-vad" target="_blank" rel="noopener">Model card — onnx-community/silero-vad (ONNX)</a></li>
+        <li><a href="https://github.com/snakers4/silero-vad" target="_blank" rel="noopener">Silero VAD — original repo, docs, and the VADIterator defaults</a></li>
+        <li><a href="https://onnxruntime.ai/docs/tutorials/web/" target="_blank" rel="noopener">ONNX Runtime Web — running ONNX models in the browser</a></li>
+        <li><a href="https://developer.mozilla.org/docs/Web/API/OfflineAudioContext" target="_blank" rel="noopener">OfflineAudioContext — decode &amp; resample audio to 16 kHz</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://onnxruntime.ai/docs/tutorials/web/" target="_blank" rel="noopener">ONNX Runtime Web</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import {
+        VadEngine, blobToMono16k, urlToMono16k, MicRecorder,
+        drawWaveform, drawProbCurve, drawTimeline, renderSegments, VAD_CSS,
+      } from "./vad.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = VAD_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new VadEngine();
+      let pcm = null, dur = 0, ready = false, lastResult = null;
+
+      function setStatus(msg, cls) {
+        $("status").textContent = msg;
+        $("status").classList.remove("err", "ok");
+        if (cls) $("status").classList.add(cls);
+      }
+      function opts() {
+        return {
+          threshold: Number($("threshold").value),
+          minSilenceMs: Number($("minSilence").value),
+        };
+      }
+
+      async function useAudio(pcmData, duration, url) {
+        pcm = pcmData;
+        dur = duration;
+        lastResult = null;
+        $("verdict").hidden = true;
+        $("readout").hidden = true;
+        $("segTable").innerHTML = '<p class="muted" style="font-family:var(--font-mono);font-size:.8rem">Analyse a clip to see its probability curve and speech segments.</p>';
+        drawWaveform($("wave"), pcm);
+        drawProbCurve($("curve"), new Float32Array(0), 0.032, opts());
+        drawTimeline($("timeline"), [], dur);
+        if (url) $("player").src = url;
+        $("run").disabled = !ready;
+      }
+
+      async function pickSample(btn) {
+        for (const b of $("samples").children) b.setAttribute("aria-pressed", String(b === btn));
+        setStatus("Decoding sample…");
+        try {
+          const { pcm: p, duration } = await urlToMono16k(btn.dataset.src);
+          await useAudio(p, duration, btn.dataset.src);
+          setStatus("Sample ready — hit Analyse.");
+        } catch (e) {
+          setStatus("Could not decode the sample: " + e.message, "err");
+        }
+      }
+      for (const btn of $("samples").children) btn.addEventListener("click", () => pickSample(btn));
+
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) {
+        for (const b of $("samples").children) b.setAttribute("aria-pressed", "false");
+        $("dropText").textContent = f.name;
+        setStatus("Decoding " + f.name + "…");
+        try {
+          const { pcm: p, duration } = await blobToMono16k(f);
+          await useAudio(p, duration, URL.createObjectURL(f));
+          setStatus("Audio ready — hit Analyse.");
+        } catch (e) {
+          setStatus("Could not decode that file: " + e.message, "err");
+        }
+      }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f) loadFile(f); });
+
+      const rec = new MicRecorder();
+      let recording = false;
+      if (!MicRecorder.supported()) { $("recBtn").disabled = true; $("recState").textContent = "No microphone API here."; }
+      $("recBtn").addEventListener("click", async () => {
+        if (!recording) {
+          try {
+            await rec.start();
+            recording = true;
+            $("recBtn").textContent = "■ Stop recording";
+            $("recState").innerHTML = '<span class="rec-dot"></span>Recording…';
+          } catch (e) {
+            $("recState").textContent = "Mic blocked: " + e.message;
+          }
+        } else {
+          const { blob, url } = await rec.stop();
+          recording = false;
+          $("recBtn").textContent = "● Record from mic";
+          $("recState").textContent = "Recorded.";
+          setStatus("Decoding recording…");
+          const { pcm: p, duration } = await blobToMono16k(blob);
+          await useAudio(p, duration, url);
+          setStatus("Recording ready — hit Analyse.");
+        }
+      });
+
+      // Threshold / min-silence live outputs; re-render the curve/segments without re-running inference.
+      function bindParam(id, out, fmt) {
+        const el = $(id);
+        el.addEventListener("input", () => {
+          $(out).textContent = fmt(el.value);
+          if (lastResult) rerender();
+        });
+        $(out).textContent = fmt(el.value);
+      }
+      bindParam("threshold", "thresholdOut", (v) => Number(v).toFixed(2));
+      bindParam("minSilence", "minSilenceOut", (v) => String(v));
+
+      // model
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/silero-vad", runtime: "onnxruntime-web", dtype: "fp32", sizeMB: 2, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: () => { ready = true; $("run").disabled = !pcm; },
+      });
+
+      pickSample($("samples").firstElementChild);
+
+      function rerender() {
+        // Re-derive segments client-side from the cached probabilities when a param changes.
+        const o = opts();
+        drawProbCurve($("curve"), lastResult.probs.slice(), lastResult.frameSec, o);
+        // Recompute segments with a light client-side hysteresis mirroring the worker.
+        const segs = deriveSegments(lastResult.probs, lastResult.frameSec, o);
+        drawTimeline($("timeline"), segs, lastResult.durationS);
+        renderSegments($("segTable"), segs);
+        const speech = lastResult.probs.reduce((a, p) => a + (p >= o.threshold ? 1 : 0), 0) / (lastResult.probs.length || 1);
+        $("rRatio").textContent = (speech * 100).toFixed(0) + "%";
+        $("rSegs").textContent = String(segs.length);
+        const has = segs.length > 0;
+        $("verdict").textContent = has ? `Speech detected — ${segs.length} segment${segs.length > 1 ? "s" : ""}.` : "No speech detected.";
+        $("verdict").className = "verdict " + (has ? "speech" : "silent");
+      }
+
+      function deriveSegments(probs, frameSec, o) {
+        const onT = o.threshold, offT = Math.max(0.15, onT - 0.15);
+        const minSilence = o.minSilenceMs / 1000, minSpeech = 0.25, pad = 0.03;
+        const segs = [];
+        let inS = false, start = 0, sil = 0;
+        for (let i = 0; i < probs.length; i++) {
+          const t = i * frameSec;
+          if (!inS) { if (probs[i] >= onT) { inS = true; start = t; sil = 0; } }
+          else {
+            if (probs[i] < offT) { sil += frameSec; if (sil >= minSilence) { const end = t - sil + frameSec; if (end - start >= minSpeech) segs.push({ start, end }); inS = false; sil = 0; } }
+            else sil = 0;
+          }
+        }
+        if (inS) { const end = probs.length * frameSec; if (end - start >= minSpeech) segs.push({ start, end }); }
+        const d = probs.length * frameSec;
+        return segs.map((s) => ({ start: Math.max(0, s.start - pad), end: Math.min(d, s.end + pad) }));
+      }
+
+      $("run").addEventListener("click", async () => {
+        if (!pcm) { setStatus("Pick or record some audio first."); return; }
+        $("run").disabled = true;
+        setStatus("Analysing frame-by-frame…");
+        try {
+          const r = await engine.run(pcm, opts());
+          lastResult = r;
+          drawProbCurve($("curve"), r.probs.slice(), r.frameSec, opts());
+          drawTimeline($("timeline"), r.segments, r.durationS);
+          renderSegments($("segTable"), r.segments);
+          $("rBackend").textContent = r.device;
+          $("rMs").textContent = r.ms + " ms";
+          $("rDur").textContent = r.durationS.toFixed(1) + " s";
+          $("rRatio").textContent = (r.speechRatio * 100).toFixed(0) + "%";
+          $("rSegs").textContent = String(r.segments.length);
+          $("readout").hidden = false;
+          const has = r.segments.length > 0;
+          $("verdict").textContent = has ? `Speech detected — ${r.segments.length} segment${r.segments.length > 1 ? "s" : ""}.` : "No speech detected in this clip.";
+          $("verdict").className = "verdict " + (has ? "speech" : "silent");
+          $("verdict").hidden = false;
+          setStatus(has ? "Done — see the curve and segments below." : "Done — no speech found.", "ok");
+        } catch (e) {
+          setStatus("Analysis failed: " + e.message, "err");
+        } finally {
+          $("run").disabled = false;
+        }
+      });
+    </script>
+  </body>
+</html>

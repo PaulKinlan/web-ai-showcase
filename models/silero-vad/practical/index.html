@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Silero VAD Practical — trim silence &amp; segment · Web AI Showcase</title>
+    <meta name="description" content="Use Silero VAD to find speech segments in a clip, cut the dead air, and export a trimmed WAV — entirely on-device. The classic pre-processing step for transcription and dataset building." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎙</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Silero VAD</a></p>
+
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Practical: trim the silence, split into utterances</h1>
+      <p class="lede">
+        The most shipped use of a VAD: find the speech, drop the dead air. Analyse a clip, review the
+        detected segments, then export a trimmed WAV with the silence removed — the standard prep step
+        before you transcribe, caption, or build a speech dataset. All local, nothing uploaded.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an audio file">
+        <span id="dropText">Drop an audio file, or click to choose</span>
+        <input type="file" id="file" accept="audio/*" hidden />
+      </div>
+      <div class="sample-row" id="samples" aria-label="Sample clips" role="group">
+        <button class="chip" type="button" data-src="../speech.wav" aria-pressed="true">🗣 Speech (with pauses)</button>
+        <button class="chip" type="button" data-src="../ted.wav" aria-pressed="false">🎤 Talk excerpt</button>
+      </div>
+
+      <div class="audio-row"><audio id="player" controls preload="metadata"></audio></div>
+      <div class="wave-wrap"><canvas id="wave" class="wave" aria-label="Waveform of the selected audio"></canvas></div>
+
+      <div class="param-grid" aria-label="Detection parameters">
+        <div class="param">
+          <label for="threshold">Speech threshold</label>
+          <div class="row"><input type="range" id="threshold" min="0.1" max="0.9" step="0.05" value="0.5" /><output id="thresholdOut">0.50</output></div>
+        </div>
+        <div class="param">
+          <label for="minSilence">Min silence to split (ms)</label>
+          <div class="row"><input type="range" id="minSilence" min="50" max="700" step="10" value="150" /><output id="minSilenceOut">150</output></div>
+        </div>
+      </div>
+
+      <div style="margin:.6rem 0"><button id="run" type="button" disabled>Find speech segments</button></div>
+
+      <p class="muted" style="font-size:.78rem;margin:.3rem 0">Timeline (green = speech):</p>
+      <canvas id="timeline" class="timeline" aria-label="Timeline of detected speech segments"></canvas>
+      <div class="readout" id="readout" hidden><span>segments <b id="rSegs">–</b></span><span>original <b id="rDur">–</b></span><span>trimmed <b id="rTrim">–</b></span><span>silence removed <b id="rCut">–</b></span></div>
+
+      <div class="field-row" id="exportRow" hidden>
+        <button id="exportBtn" type="button" class="secondary">⬇ Export trimmed WAV</button>
+        <button id="previewBtn" type="button" class="secondary">▶ Preview trimmed audio</button>
+        <a id="dl" hidden></a>
+      </div>
+      <div id="segTable"></div>
+    </section>
+
+    <p class="crumbs"><a href="../basics/">← Basics</a> · <a href="../">Back to Silero VAD</a> · Next: <a href="../wild/">Wild →</a></p>
+
+    <script type="module">
+      import { VadEngine, blobToMono16k, urlToMono16k, drawWaveform, drawTimeline, renderSegments, VAD_CSS } from "../vad.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = VAD_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new VadEngine();
+      const SR = 16000;
+      let pcm = null, dur = 0, ready = false, segments = [];
+
+      function opts() { return { threshold: Number($("threshold").value), minSilenceMs: Number($("minSilence").value) }; }
+      async function useAudio(p, duration, url) {
+        pcm = p; dur = duration; segments = [];
+        $("readout").hidden = true; $("exportRow").hidden = true; $("segTable").innerHTML = "";
+        drawWaveform($("wave"), pcm); drawTimeline($("timeline"), [], dur);
+        if (url) $("player").src = url;
+        $("run").disabled = !ready;
+      }
+      async function pickSample(btn) {
+        for (const b of $("samples").children) b.setAttribute("aria-pressed", String(b === btn));
+        $("status").textContent = "Decoding sample…";
+        try { const { pcm: p, duration } = await urlToMono16k(btn.dataset.src); await useAudio(p, duration, btn.dataset.src); $("status").textContent = "Ready — hit Find speech segments."; }
+        catch (e) { $("status").textContent = "Decode failed: " + e.message; $("status").classList.add("err"); }
+      }
+      for (const btn of $("samples").children) btn.addEventListener("click", () => pickSample(btn));
+
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) {
+        for (const b of $("samples").children) b.setAttribute("aria-pressed", "false");
+        $("dropText").textContent = f.name; $("status").textContent = "Decoding…";
+        try { const { pcm: p, duration } = await blobToMono16k(f); await useAudio(p, duration, URL.createObjectURL(f)); $("status").textContent = "Ready."; }
+        catch (e) { $("status").textContent = "Decode failed: " + e.message; $("status").classList.add("err"); }
+      }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f) loadFile(f); });
+
+      function bindParam(id, out, fmt) { const el = $(id); el.addEventListener("input", () => { $(out).textContent = fmt(el.value); }); $(out).textContent = fmt(el.value); }
+      bindParam("threshold", "thresholdOut", (v) => Number(v).toFixed(2));
+      bindParam("minSilence", "minSilenceOut", (v) => String(v));
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/silero-vad", runtime: "onnxruntime-web", dtype: "fp32", sizeMB: 2, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: () => { ready = true; $("run").disabled = !pcm; },
+      });
+      pickSample($("samples").firstElementChild);
+
+      // Concatenate the speech segments of `pcm` into one Float32Array; encode as 16 kHz mono WAV.
+      function buildTrimmed() {
+        const parts = segments.map((s) => pcm.subarray(Math.floor(s.start * SR), Math.floor(s.end * SR)));
+        const total = parts.reduce((a, p) => a + p.length, 0);
+        const out = new Float32Array(total);
+        let off = 0; for (const p of parts) { out.set(p, off); off += p.length; }
+        return out;
+      }
+      function encodeWav(float32) {
+        const n = float32.length, buf = new ArrayBuffer(44 + n * 2), view = new DataView(buf);
+        const wr = (o, s) => { for (let i = 0; i < s.length; i++) view.setUint8(o + i, s.charCodeAt(i)); };
+        wr(0, "RIFF"); view.setUint32(4, 36 + n * 2, true); wr(8, "WAVE"); wr(12, "fmt ");
+        view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true);
+        view.setUint32(24, SR, true); view.setUint32(28, SR * 2, true); view.setUint16(32, 2, true); view.setUint16(34, 16, true);
+        wr(36, "data"); view.setUint32(40, n * 2, true);
+        for (let i = 0; i < n; i++) { let v = Math.max(-1, Math.min(1, float32[i])); view.setInt16(44 + i * 2, v < 0 ? v * 0x8000 : v * 0x7fff, true); }
+        return new Blob([buf], { type: "audio/wav" });
+      }
+
+      $("run").addEventListener("click", async () => {
+        if (!pcm) return;
+        $("run").disabled = true; $("status").textContent = "Finding speech…";
+        try {
+          const r = await engine.run(pcm, opts());
+          segments = r.segments;
+          drawTimeline($("timeline"), segments, r.durationS);
+          renderSegments($("segTable"), segments);
+          const speechDur = segments.reduce((a, s) => a + (s.end - s.start), 0);
+          $("rSegs").textContent = String(segments.length);
+          $("rDur").textContent = r.durationS.toFixed(1) + " s";
+          $("rTrim").textContent = speechDur.toFixed(1) + " s";
+          $("rCut").textContent = (r.durationS - speechDur).toFixed(1) + " s";
+          $("readout").hidden = false;
+          $("exportRow").hidden = segments.length === 0;
+          $("status").textContent = segments.length ? "Done — export or preview the trimmed audio below." : "No speech segments found.";
+          $("status").classList.add("ok");
+        } catch (e) { $("status").textContent = "Failed: " + e.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+
+      $("exportBtn").addEventListener("click", () => {
+        if (!segments.length) return;
+        const blob = encodeWav(buildTrimmed());
+        const a = $("dl"); a.href = URL.createObjectURL(blob); a.download = "trimmed-speech.wav"; a.click();
+        $("status").textContent = "Exported trimmed-speech.wav."; $("status").classList.add("ok");
+      });
+      $("previewBtn").addEventListener("click", () => {
+        if (!segments.length) return;
+        const blob = encodeWav(buildTrimmed());
+        $("player").src = URL.createObjectURL(blob); $("player").play();
+        $("status").textContent = "Playing the trimmed audio (silence removed).";
+      });
+    </script>
+  </body>
+</html>

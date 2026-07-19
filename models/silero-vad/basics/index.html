@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Silero VAD Basics — is there speech? · Web AI Showcase</title>
+    <meta name="description" content="The fundamental VAD move: give Silero a clip and it tells you whether anyone is speaking — plus the per-frame speech-probability curve behind the answer. In your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎙</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Silero VAD</a></p>
+
+    <header>
+      <p class="eyebrow">use case · basics</p>
+      <h1>Basics: is there speech?</h1>
+      <p class="lede">
+        The simplest question a VAD answers. Give Silero a clip and it walks it frame-by-frame,
+        emitting a speech probability for each 32 ms. If enough frames clear the threshold, there's
+        speech. Pick a sample or drop your own.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an audio file">
+        <span id="dropText">Drop an audio file, or click to choose</span>
+        <input type="file" id="file" accept="audio/*" hidden />
+      </div>
+      <div class="sample-row" id="samples" aria-label="Sample clips" role="group">
+        <button class="chip" type="button" data-src="../speech.wav" aria-pressed="true">🗣 Speech</button>
+        <button class="chip" type="button" data-src="../music.wav" aria-pressed="false">🎵 Music</button>
+        <button class="chip" type="button" data-src="../ambient.wav" aria-pressed="false">🔇 Ambient</button>
+      </div>
+
+      <div class="wave-wrap"><canvas id="wave" class="wave" aria-label="Waveform of the selected audio"></canvas></div>
+      <div style="margin:.6rem 0"><button id="run" type="button" disabled>Check for speech</button></div>
+
+      <p class="verdict" id="verdict" hidden></p>
+      <canvas id="curve" class="curve" tabindex="0" aria-label="Per-frame speech probability curve with the decision threshold"></canvas>
+      <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>latency <b id="rMs">–</b></span><span>speech frames <b id="rRatio">–</b></span></div>
+    </section>
+
+    <p class="crumbs"><a href="../">← Back to Silero VAD</a> · Next: <a href="../practical/">Practical →</a></p>
+
+    <script type="module">
+      import { VadEngine, blobToMono16k, urlToMono16k, drawWaveform, drawProbCurve, VAD_CSS } from "../vad.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = VAD_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new VadEngine();
+      let pcm = null, ready = false;
+
+      async function useAudio(p) {
+        pcm = p;
+        $("verdict").hidden = true; $("readout").hidden = true;
+        drawWaveform($("wave"), pcm); drawProbCurve($("curve"), new Float32Array(0), 0.032, { threshold: 0.5 });
+        $("run").disabled = !ready;
+      }
+      async function pickSample(btn) {
+        for (const b of $("samples").children) b.setAttribute("aria-pressed", String(b === btn));
+        $("status").textContent = "Decoding sample…";
+        try { const { pcm: p } = await urlToMono16k(btn.dataset.src); await useAudio(p); $("status").textContent = "Ready — hit Check for speech."; }
+        catch (e) { $("status").textContent = "Decode failed: " + e.message; $("status").classList.add("err"); }
+      }
+      for (const btn of $("samples").children) btn.addEventListener("click", () => pickSample(btn));
+
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) {
+        for (const b of $("samples").children) b.setAttribute("aria-pressed", "false");
+        $("dropText").textContent = f.name; $("status").textContent = "Decoding…";
+        try { const { pcm: p } = await blobToMono16k(f); await useAudio(p); $("status").textContent = "Ready — hit Check for speech."; }
+        catch (e) { $("status").textContent = "Decode failed: " + e.message; $("status").classList.add("err"); }
+      }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f) loadFile(f); });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/silero-vad", runtime: "onnxruntime-web", dtype: "fp32", sizeMB: 2, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: () => { ready = true; $("run").disabled = !pcm; },
+      });
+      pickSample($("samples").firstElementChild);
+
+      $("run").addEventListener("click", async () => {
+        if (!pcm) return;
+        $("run").disabled = true; $("status").textContent = "Analysing…";
+        try {
+          const r = await engine.run(pcm, { threshold: 0.5, minSilenceMs: 100 });
+          drawProbCurve($("curve"), r.probs.slice(), r.frameSec, { threshold: 0.5 });
+          const has = r.segments.length > 0;
+          $("verdict").textContent = has ? "✓ Speech detected." : "✗ No speech — this looks like silence / non-speech.";
+          $("verdict").className = "verdict " + (has ? "speech" : "silent");
+          $("verdict").hidden = false;
+          $("rBackend").textContent = r.device; $("rMs").textContent = r.ms + " ms"; $("rRatio").textContent = (r.speechRatio * 100).toFixed(0) + "%";
+          $("readout").hidden = false;
+          $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (e) { $("status").textContent = "Failed: " + e.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>

@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Silero VAD × Whisper — transcribe speech only · Web AI Showcase</title>
+    <meta name="description" content="A two-model pipeline: Silero VAD finds the speech segments, then Whisper transcribes only those — skipping the silence — entirely in your browser. See how much audio the VAD saves the transcriber." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎙</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Silero VAD</a></p>
+
+    <header>
+      <p class="eyebrow">use case · multi-model</p>
+      <h1>Multi-model: VAD → Whisper, transcribe speech only</h1>
+      <p class="lede">
+        This is why VAD earns its keep. Whisper is expensive; silence is free to skip. Silero finds the
+        speech segments first, then Whisper transcribes only those — so the transcriber never burns time
+        on dead air. Two models, both on-device: a tiny recurrent VAD and a Transformer ASR, composed.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="load-h">
+      <h3 id="load-h">Two models, both local</h3>
+      <p class="muted">Silero VAD (~2 MB, onnxruntime-web) segments; Whisper-base (transformers.js) transcribes. Both auto-initialise from cache on a return visit.</p>
+      <div class="param-grid">
+        <div class="param"><label>1 · Silero VAD</label><div id="vad-loader"></div></div>
+        <div class="param"><label>2 · Whisper (ASR)</label><div id="asr-loader"></div></div>
+      </div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+    </section>
+
+    <section class="panel">
+      <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an audio file">
+        <span id="dropText">Drop an audio file, or click to choose</span>
+        <input type="file" id="file" accept="audio/*" hidden />
+      </div>
+      <div class="sample-row" id="samples" aria-label="Sample clips" role="group">
+        <button class="chip" type="button" data-src="../speech.wav" aria-pressed="true">🗣 Speech (with pauses)</button>
+        <button class="chip" type="button" data-src="../ted.wav" aria-pressed="false">🎤 Talk excerpt</button>
+      </div>
+      <div class="audio-row"><audio id="player" controls preload="metadata"></audio></div>
+      <div class="wave-wrap"><canvas id="wave" class="wave" aria-label="Waveform of the selected audio"></canvas></div>
+
+      <div style="margin:.6rem 0"><button id="run" type="button" disabled>Segment &amp; transcribe</button></div>
+
+      <p class="muted" style="font-size:.78rem;margin:.3rem 0">Timeline (green = speech VAD sends to Whisper):</p>
+      <canvas id="timeline" class="timeline" aria-label="Timeline of speech segments sent to the transcriber"></canvas>
+      <div class="readout" id="readout" hidden><span>segments <b id="rSegs">–</b></span><span>clip <b id="rDur">–</b></span><span>sent to ASR <b id="rSent">–</b></span><span>silence skipped <b id="rSkip">–</b></span></div>
+
+      <div id="transcript"></div>
+    </section>
+
+    <p class="crumbs"><a href="../wild/">← Wild</a> · <a href="../">Back to Silero VAD</a></p>
+
+    <script type="module">
+      import { VadEngine, blobToMono16k, urlToMono16k, drawWaveform, drawTimeline, escapeHTML, VAD_CSS } from "../vad.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = VAD_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const SR = 16000;
+      const vad = new VadEngine();
+
+      // Minimal ASR worker handshake (Whisper via shared lib/webai.js).
+      const asr = new Worker("./asr-worker.js", { type: "module" });
+      let asrReady = false; const asrWaiters = []; const asrPending = new Map(); let asrId = 0; let asrProgress = null; let asrDevice = "wasm";
+      asr.addEventListener("message", (e) => {
+        const m = e.data;
+        if (m.type === "progress") asrProgress?.(m.p);
+        else if (m.type === "ready") { asrReady = true; asrDevice = m.device; asrWaiters.forEach((w) => w.resolve(m.device)); asrWaiters.length = 0; }
+        else if (m.type === "result") { const p = asrPending.get(m.id); if (p) { asrPending.delete(m.id); p.resolve(m); } }
+        else if (m.type === "error") { if (m.id != null && asrPending.has(m.id)) { asrPending.get(m.id).reject(new Error(m.message)); asrPending.delete(m.id); } else asrWaiters.forEach((w) => w.reject(new Error(m.message))); }
+      });
+      const asrLoad = (onProgress) => { asrProgress = onProgress; if (asrReady) return Promise.resolve(asrDevice); return new Promise((resolve, reject) => { asrWaiters.push({ resolve, reject }); asr.postMessage({ type: "load" }); }); };
+      const asrTranscribe = (audio) => { const id = ++asrId; const copy = audio.slice(); return new Promise((resolve, reject) => { asrPending.set(id, { resolve, reject }); asr.postMessage({ type: "transcribe", id, audio: copy }, [copy.buffer]); }); };
+
+      let pcm = null, dur = 0, vadReady = false;
+      function bothReady() { return vadReady && asrReady; }
+      function refresh() { $("run").disabled = !(pcm && bothReady()); }
+
+      async function useAudio(p, duration, url) {
+        pcm = p; dur = duration;
+        $("readout").hidden = true; $("transcript").innerHTML = "";
+        drawWaveform($("wave"), pcm); drawTimeline($("timeline"), [], dur);
+        if (url) $("player").src = url;
+        refresh();
+      }
+      async function pickSample(btn) {
+        for (const b of $("samples").children) b.setAttribute("aria-pressed", String(b === btn));
+        $("status").textContent = "Decoding sample…";
+        try { const { pcm: p, duration } = await urlToMono16k(btn.dataset.src); await useAudio(p, duration, btn.dataset.src); $("status").textContent = "Ready."; }
+        catch (e) { $("status").textContent = "Decode failed: " + e.message; $("status").classList.add("err"); }
+      }
+      for (const btn of $("samples").children) btn.addEventListener("click", () => pickSample(btn));
+
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) {
+        for (const b of $("samples").children) b.setAttribute("aria-pressed", "false");
+        $("dropText").textContent = f.name; $("status").textContent = "Decoding…";
+        try { const { pcm: p, duration } = await blobToMono16k(f); await useAudio(p, duration, URL.createObjectURL(f)); $("status").textContent = "Ready."; }
+        catch (e) { $("status").textContent = "Decode failed: " + e.message; $("status").classList.add("err"); }
+      }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f) loadFile(f); });
+
+      createModelLoader({
+        mount: $("vad-loader"),
+        model: { modelId: "onnx-community/silero-vad", runtime: "onnxruntime-web", dtype: "fp32", sizeMB: 2, requiresWebGPU: false },
+        load: (onProgress) => vad.load(onProgress),
+        onReady: () => { vadReady = true; refresh(); },
+      });
+      createModelLoader({
+        mount: $("asr-loader"),
+        model: { modelId: "onnx-community/whisper-base", runtime: "transformers.js", dtype: "q8", sizeMB: 145, requiresWebGPU: false },
+        load: (onProgress) => asrLoad(onProgress),
+        onReady: () => { refresh(); },
+      });
+      pickSample($("samples").firstElementChild);
+
+      $("run").addEventListener("click", async () => {
+        if (!pcm || !bothReady()) return;
+        $("run").disabled = true; $("transcript").innerHTML = "";
+        $("status").textContent = "1/2 · Silero finding speech segments…"; $("status").classList.remove("err", "ok");
+        try {
+          const r = await vad.run(pcm, { threshold: 0.5, minSilenceMs: 200 });
+          drawTimeline($("timeline"), r.segments, r.durationS);
+          const sent = r.segments.reduce((a, s) => a + (s.end - s.start), 0);
+          $("rSegs").textContent = String(r.segments.length);
+          $("rDur").textContent = r.durationS.toFixed(1) + " s";
+          $("rSent").textContent = sent.toFixed(1) + " s";
+          $("rSkip").textContent = (r.durationS - sent).toFixed(1) + " s";
+          $("readout").hidden = false;
+          if (!r.segments.length) { $("status").textContent = "No speech found — nothing to transcribe."; return; }
+          const container = $("transcript");
+          for (let i = 0; i < r.segments.length; i++) {
+            const s = r.segments[i];
+            $("status").textContent = `2/2 · Whisper transcribing segment ${i + 1}/${r.segments.length}…`;
+            const row = document.createElement("div");
+            row.className = "seg-line";
+            row.innerHTML = `<b>[${s.start.toFixed(1)}–${s.end.toFixed(1)}s]</b> <span class="muted">transcribing…</span>`;
+            container.append(row);
+            const slice = pcm.subarray(Math.floor(s.start * SR), Math.floor(s.end * SR));
+            try {
+              const t = await asrTranscribe(slice);
+              row.innerHTML = `<b>[${s.start.toFixed(1)}–${s.end.toFixed(1)}s]</b> ${escapeHTML(t.text || "(no words)")}`;
+            } catch (e) {
+              row.innerHTML = `<b>[${s.start.toFixed(1)}–${s.end.toFixed(1)}s]</b> <span class="status err">ASR failed: ${escapeHTML(e.message)}</span>`;
+            }
+          }
+          $("status").textContent = `Done — transcribed ${r.segments.length} speech segment(s), skipped ${(r.durationS - sent).toFixed(1)} s of silence.`;
+          $("status").classList.add("ok");
+        } catch (e) {
+          $("status").textContent = "Failed: " + e.message; $("status").classList.add("err");
+        } finally { $("run").disabled = false; }
+      });
+
+      const s2 = document.createElement("style");
+      s2.textContent = ".seg-line{padding:.35rem 0;border-bottom:1px solid var(--border);font-size:.9rem;line-height:1.5}.seg-line b{font-family:var(--font-mono);font-size:.8rem;color:var(--accent)}";
+      document.head.append(s2);
+    </script>
+  </body>
+</html>
