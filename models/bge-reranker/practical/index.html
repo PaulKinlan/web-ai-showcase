@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>BGE-reranker Practical — two-stage multilingual RAG · Web AI Showcase</title>
+    <meta name="description" content="Retrieve a shortlist fast, then rerank it for precision — including a mixed-language corpus where an English query surfaces the best answer in any language. Runs in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🌐</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">BGE-reranker</a></p>
+
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Practical: two-stage retrieval for multilingual RAG</h1>
+      <p class="lede">
+        The pattern that powers production search and RAG: a cheap first stage returns a shortlist, then the
+        cross-encoder reranks that shortlist for real precision. Here the corpus is <strong>mixed-language</strong>
+        — English, Spanish, French, German — and the reranker still finds the passage that actually answers your
+        query, whatever language it's written in. Pick a scenario or edit the query.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <div style="display:flex;gap:.4rem;flex-wrap:wrap;margin:.4rem 0">
+        <button class="chip" type="button" data-scenario="refund">Refund policy</button>
+        <button class="chip" type="button" data-scenario="reset">Password reset</button>
+        <button class="chip" type="button" data-scenario="hours">Opening hours</button>
+      </div>
+
+      <label for="query" style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.4rem">
+        Query (English)
+        <input id="query" type="text" disabled style="font:inherit;padding:.4rem .5rem;border:1px solid var(--border);border-radius:6px;background:var(--bg-raised);color:var(--color)" />
+      </label>
+      <label for="passages" style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
+        Retrieved shortlist — a mixed-language knowledge base (one passage per line)
+        <textarea id="passages" rows="7" disabled></textarea>
+      </label>
+      <div style="margin:.5rem 0"><button id="run" type="button" disabled>Rerank the shortlist</button></div>
+      <div class="rr-list" id="results" aria-live="polite"></div>
+      <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>latency <b id="rMs">–</b></span><span>pairs <b id="rN">–</b></span></div>
+    </section>
+
+    <p class="muted" style="font-size:.85rem">
+      In a real system your first stage (a keyword index or a multilingual embedder) would return dozens of
+      candidates like these; the reranker is the precision filter that decides which one the LLM actually reads.
+      Because BGE is multilingual, you keep <em>one</em> reranker for every locale — the top result here is
+      often not in English.
+    </p>
+
+    <p class="crumbs"><a href="../basics/">← Basics</a> · <a href="../">Back to BGE-reranker</a> · Next: <a href="../wild/">Wild →</a></p>
+
+    <script type="module">
+      import { RerankEngine, parseLines, renderResults, RERANK_CSS } from "../rerank.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = RERANK_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new RerankEngine();
+      let loaded = false;
+
+      const SCENARIOS = {
+        refund: {
+          query: "How long do I have to return an item for a refund?",
+          passages: [
+            "Nuestra política de devoluciones permite reembolsos completos dentro de los 30 días posteriores a la compra, con el recibo.",
+            "Shipping is free on orders over 50 euros and takes three to five business days.",
+            "Les articles en promotion ne peuvent pas être échangés une fois achetés.",
+            "Gift cards never expire and can be used across all our stores.",
+            "Defekte Ware können Sie jederzeit im Rahmen der gesetzlichen Gewährleistung reklamieren.",
+          ],
+        },
+        reset: {
+          query: "How do I reset my password if I forgot it?",
+          passages: [
+            "To update your billing address, open Account Settings and edit the payment section.",
+            "Si has olvidado tu contraseña, haz clic en «¿Olvidaste tu contraseña?» e introduce tu correo para recibir un enlace de restablecimiento.",
+            "Two-factor authentication adds a one-time code sent to your phone at login.",
+            "Notre application mobile est disponible sur iOS et Android.",
+            "Passwörter müssen mindestens zwölf Zeichen lang sein.",
+          ],
+        },
+        hours: {
+          query: "What time does the store open on weekends?",
+          passages: [
+            "El fin de semana abrimos de 10:00 a 20:00 los sábados y de 11:00 a 18:00 los domingos.",
+            "We accept all major credit cards as well as contactless payment.",
+            "Le parking souterrain est gratuit pour les deux premières heures.",
+            "Unsere Filiale in der Innenstadt hat einen barrierefreien Zugang.",
+            "The loyalty programme gives you one point for every euro spent.",
+          ],
+        },
+      };
+
+      function apply(name) {
+        const s = SCENARIOS[name];
+        $("query").value = s.query;
+        $("passages").value = s.passages.join("\n");
+        if (loaded) run();
+      }
+      for (const b of document.querySelectorAll("[data-scenario]")) {
+        b.addEventListener("click", () => apply(b.dataset.scenario));
+      }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/bge-reranker-base", runtime: "transformers.js", dtype: "q8", sizeMB: 270, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("query").disabled = false; $("passages").disabled = false; $("run").disabled = false; loaded = true; run(); },
+      });
+
+      apply("refund");
+      $("run").addEventListener("click", run);
+      $("query").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); run(); } });
+      async function run() {
+        if (!loaded) return;
+        const query = $("query").value.trim(), passages = parseLines($("passages").value);
+        if (!query || passages.length < 2) return;
+        $("run").disabled = true;
+        try {
+          const r = await engine.rerank(query, passages);
+          renderResults($("results"), r.ranked);
+          $("readout").hidden = false; $("rBackend").textContent = r.device.toUpperCase(); $("rMs").textContent = r.ms + " ms"; $("rN").textContent = r.ranked.length;
+        } catch (err) { $("runStatus").hidden = false; $("runStatus").textContent = "Failed: " + err.message; $("runStatus").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      }
+    </script>
+  </body>
+</html>

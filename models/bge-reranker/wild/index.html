@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>BGE-reranker Wild — beating adversarial hard negatives · Web AI Showcase</title>
+    <meta name="description" content="Distractor passages engineered to fool keyword and embedding search — packed with the query's words but answering the wrong thing. Watch the cross-encoder demote them. Runs in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🌐</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">BGE-reranker</a></p>
+
+    <header>
+      <p class="eyebrow">use case · wild</p>
+      <h1>Wild: hard negatives that fool word-matching and embeddings</h1>
+      <p class="lede">
+        A <strong>hard negative</strong> is a passage stuffed with the query's exact words that nonetheless
+        answers the wrong question — the kind of thing keyword search ranks first and bi-encoder embeddings
+        often can't tell apart. Because a cross-encoder reads the query and passage <em>together</em>, it can
+        catch the mismatch. The contrast below ranks by the cross-encoder on the left and by shared-word overlap
+        on the right, so you can watch the trap passages fall.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <div style="display:flex;gap:.4rem;flex-wrap:wrap;margin:.4rem 0">
+        <button class="chip" type="button" data-scenario="bank">River vs. money "bank"</button>
+        <button class="chip" type="button" data-scenario="apple">Apple: fruit vs. company</button>
+        <button class="chip" type="button" data-scenario="negation">Negation trap</button>
+      </div>
+
+      <label for="query" style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.4rem">
+        Query
+        <input id="query" type="text" disabled style="font:inherit;padding:.4rem .5rem;border:1px solid var(--border);border-radius:6px;background:var(--bg-raised);color:var(--color)" />
+      </label>
+      <label for="passages" style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
+        Candidates — one real answer hidden among word-matching decoys (one per line)
+        <textarea id="passages" rows="6" disabled></textarea>
+      </label>
+      <div style="margin:.5rem 0"><button id="run" type="button" disabled>Rerank &amp; expose the traps</button></div>
+      <div class="rr-list" id="results" aria-live="polite"></div>
+      <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>latency <b id="rMs">–</b></span><span>pairs <b id="rN">–</b></span></div>
+
+      <h4 style="margin:1rem 0 .2rem;font-size:.85rem">Cross-encoder rank vs. word-overlap rank</h4>
+      <div class="ct-wrap" id="contrast" hidden></div>
+    </section>
+
+    <p class="muted" style="font-size:.85rem">
+      The lexical column is exactly what a naive keyword engine would return — the decoys, packed with the
+      query's words, float to the top. The cross-encoder reads for meaning and demotes them. This is why
+      reranking is worth a second, heavier pass: it fixes precisely the mistakes cheap retrieval makes.
+    </p>
+
+    <p class="crumbs"><a href="../practical/">← Practical</a> · <a href="../">Back to BGE-reranker</a> · Next: <a href="../multi-model/">Multi-model →</a></p>
+
+    <script type="module">
+      import { RerankEngine, parseLines, renderResults, renderContrast, RERANK_CSS } from "../rerank.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = RERANK_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new RerankEngine();
+      let loaded = false;
+
+      const SCENARIOS = {
+        bank: {
+          query: "How do I open a checking account at my bank?",
+          passages: [
+            "The river bank flooded its banks after heavy rain, and residents near the bank of the river were evacuated.",
+            "To open a checking account, bring photo ID and proof of address to a branch or apply online in minutes.",
+            "The banking crash of 2008 shook every major bank and reshaped how banks are regulated.",
+            "A food bank near the river bank distributes meals to families every weekend.",
+            "Plant roots stabilise a river bank and slow erosion along the bank.",
+          ],
+        },
+        apple: {
+          query: "How do I keep cut apples from turning brown?",
+          passages: [
+            "Apple reported record iPhone sales, and Apple shares rose as Apple expanded its services.",
+            "Toss cut apple slices in a little lemon juice; the acid slows the browning of the apple flesh.",
+            "The Apple Store on Apple's campus sells the latest Apple accessories.",
+            "Apple pie needs firm baking apples so the apple pieces hold their shape.",
+            "Apple's new laptop uses an Apple-designed chip that Apple says is faster.",
+          ],
+        },
+        negation: {
+          query: "Which foods are safe to eat during pregnancy?",
+          passages: [
+            "Pregnant people should avoid high-mercury fish, unpasteurised cheese, and raw or undercooked meat during pregnancy.",
+            "Cooked lean meats, pasteurised dairy, and well-washed fruit and vegetables are safe and nutritious during pregnancy.",
+            "During pregnancy, pregnancy cravings for unsafe foods are common, so knowing what to avoid during pregnancy matters.",
+            "Foods to strictly avoid during pregnancy include raw eggs, unpasteurised juice, and too much caffeine.",
+          ],
+        },
+      };
+
+      function apply(name) {
+        const s = SCENARIOS[name];
+        $("query").value = s.query;
+        $("passages").value = s.passages.join("\n");
+        if (loaded) run();
+      }
+      for (const b of document.querySelectorAll("[data-scenario]")) {
+        b.addEventListener("click", () => apply(b.dataset.scenario));
+      }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/bge-reranker-base", runtime: "transformers.js", dtype: "q8", sizeMB: 270, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("query").disabled = false; $("passages").disabled = false; $("run").disabled = false; loaded = true; run(); },
+      });
+
+      apply("bank");
+      $("run").addEventListener("click", run);
+      $("query").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); run(); } });
+      async function run() {
+        if (!loaded) return;
+        const query = $("query").value.trim(), passages = parseLines($("passages").value);
+        if (!query || passages.length < 2) return;
+        $("run").disabled = true;
+        try {
+          const r = await engine.rerank(query, passages);
+          renderResults($("results"), r.ranked);
+          renderContrast($("contrast"), r.ranked);
+          $("contrast").hidden = false;
+          $("readout").hidden = false; $("rBackend").textContent = r.device.toUpperCase(); $("rMs").textContent = r.ms + " ms"; $("rN").textContent = r.ranked.length;
+        } catch (err) { $("runStatus").hidden = false; $("runStatus").textContent = "Failed: " + err.message; $("runStatus").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      }
+    </script>
+  </body>
+</html>
