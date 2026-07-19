@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Qwen3 Basics — a streaming chat with a thinking toggle · Web AI Showcase</title>
+    <meta name="description" content="The fundamental chat loop: ask Qwen3 1.7B a question and watch it stream the answer on your GPU via WebLLM — with a toggle to turn its step-by-step reasoning trace on or off." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🧠</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Qwen3 1.7B</a></p>
+    <header>
+      <p class="eyebrow">use case · basics</p>
+      <h1>Basics: a streaming chat with a thinking toggle</h1>
+      <p class="lede">
+        The fundamental move: you type, Qwen3 answers, streaming on your GPU. Leave <strong>thinking on</strong>
+        and it reasons in a trace first; turn it off for a fast, direct reply. Pick a prompt or write your
+        own. WebLLM keeps everything on-device. (First load is a ~1.1 GB download; then it's cached.)
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <div id="fallback" class="fallback" hidden></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="thinktoggle" style="margin-top:.6rem">
+        <label><input type="checkbox" id="think" checked /> <strong>Thinking mode</strong></label>
+        <span class="hint" id="thinkHint">On — reasons before answering (<code>/think</code>).</span>
+      </div>
+
+      <div class="chat-wrap">
+        <div class="chips" id="examples" role="group" aria-label="Example prompts" style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.2rem 0">
+          <button class="chip" type="button">If a shirt costs £40 after a 20% discount, what was the original price?</button>
+          <button class="chip" type="button">Explain what an embedding is, simply.</button>
+          <button class="chip" type="button">I have 3 apples and buy 2 bags of 6. How many apples now?</button>
+          <button class="chip" type="button">Write a limerick about a cat who codes.</button>
+        </div>
+        <div class="chat-log" id="log" aria-live="polite" aria-label="Conversation">
+          <div class="msg system"><span class="bubble">Load the model, then ask something.</span></div>
+        </div>
+        <div class="composer">
+          <textarea id="input" placeholder="Ask anything… (Enter to send)" aria-label="Your message" disabled></textarea>
+          <button id="send" type="button" disabled>Ask</button>
+          <button id="stop" type="button" class="secondary" hidden>Stop</button>
+        </div>
+        <div class="readout" id="readout" hidden><span>first token <b id="rTtft">–</b></span><span>decode <b id="rTps">–</b></span><span>reasoning <b id="rReason">–</b></span><span>answer <b id="rGen">–</b></span></div>
+      </div>
+    </section>
+
+    <p class="crumbs"><a href="../">← Qwen3 1.7B</a> · Next: <a href="../practical/">Practical →</a></p>
+
+    <script type="module">
+      import { Qwen3ChatEngine, probeWebGPU, escapeHTML, applyThinkingSwitch, webgpuFallbackHTML, CHAT_CSS } from "../webllm-chat.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = CHAT_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new Qwen3ChatEngine();
+      let generating = false;
+
+      $("think").addEventListener("change", () => {
+        $("thinkHint").innerHTML = $("think").checked ? 'On — reasons before answering (<code>/think</code>).' : 'Off — answers directly (<code>/no_think</code>). Faster.';
+      });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Qwen3-1.7B-q4f16_1-MLC", runtime: "webllm", dtype: "q4f16_1", sizeMB: 1100, requiresWebGPU: true },
+        load: async (onProgress) => { await engine.load((p) => { if (typeof p.progress === "number") onProgress({ status: "progress", progress: p.progress * 100 }); }); return engine; },
+        onReady: () => { $("input").disabled = false; $("send").disabled = false; $("log").querySelector(".msg.system .bubble").textContent = "Model ready. Ask something 👋"; $("input").focus(); },
+        onError: async (err) => { if (String(err?.message ?? err).includes("needs-webgpu")) { const probe = await probeWebGPU(); $("fallback").hidden = false; $("fallback").innerHTML = webgpuFallbackHTML(probe); } },
+      });
+      for (const c of $("examples").children) c.addEventListener("click", () => { $("input").value = c.textContent; $("input").focus(); });
+
+      function addUser(text) {
+        const wrap = document.createElement("div"); wrap.className = "msg user";
+        const who = document.createElement("span"); who.className = "who"; who.textContent = "you";
+        const b = document.createElement("div"); b.className = "bubble"; b.textContent = text;
+        wrap.append(who, b); $("log").append(wrap); $("log").scrollTop = $("log").scrollHeight;
+      }
+      function addAssistant(thinking) {
+        const wrap = document.createElement("div"); wrap.className = "msg assistant";
+        const who = document.createElement("span"); who.className = "who"; who.textContent = "qwen3"; wrap.append(who);
+        let think = null, thinkBody = null;
+        if (thinking) {
+          think = document.createElement("details"); think.className = "think"; think.open = true;
+          const sum = document.createElement("summary"); sum.innerHTML = '<span class="spin" aria-hidden="true"></span> Thinking…';
+          thinkBody = document.createElement("div"); thinkBody.className = "think-body";
+          think.append(sum, thinkBody); wrap.append(think);
+        }
+        const b = document.createElement("div"); b.className = "bubble"; b.innerHTML = '<span class="caret"></span>'; wrap.append(b);
+        $("log").append(wrap); $("log").scrollTop = $("log").scrollHeight;
+        return { bubble: b, think, thinkBody, summary: think?.querySelector("summary") };
+      }
+
+      async function ask() {
+        const text = $("input").value.trim(); if (!text || generating) return;
+        generating = true; const thinking = $("think").checked;
+        $("input").value = ""; $("send").disabled = true; $("stop").hidden = false; $("input").disabled = true;
+        addUser(text);
+        const ui = addAssistant(thinking); let ans = "", reason = "";
+        try {
+          const messages = applyThinkingSwitch([{ role: "user", content: text }], thinking);
+          const res = await engine.chat(
+            { messages, temperature: 0.7, top_p: 0.8, max_tokens: 512, thinking },
+            {
+              onFirstToken: (t) => { $("rTtft").textContent = t + " ms"; },
+              onReasoning: (d) => { reason += d; if (ui.thinkBody) { ui.thinkBody.textContent = reason; ui.thinkBody.scrollTop = ui.thinkBody.scrollHeight; } $("log").scrollTop = $("log").scrollHeight; },
+              onToken: (d) => { ans += d; ui.bubble.innerHTML = escapeHTML(ans) + '<span class="caret"></span>'; $("log").scrollTop = $("log").scrollHeight; },
+            },
+          );
+          ui.bubble.textContent = ans || "(no answer text)";
+          if (ui.think) { if ((res.reasoning || "").trim()) { ui.summary.innerHTML = 'Reasoning trace <span class="muted">(' + res.reasoningChunks + ' tok)</span>'; ui.think.open = false; } else { ui.think.remove(); } }
+          const decodeMs = Math.max(1, res.ms - res.ttft); const totalTok = res.chunks + res.reasoningChunks;
+          $("readout").hidden = false; $("rTtft").textContent = res.ttft + " ms";
+          $("rTps").textContent = (totalTok > 1 ? ((totalTok - 1) / (decodeMs / 1000)).toFixed(1) : "0") + " tok/s";
+          $("rReason").textContent = res.reasoningChunks + " tok"; $("rGen").textContent = res.chunks + " tok";
+          $("status").textContent = "Done."; $("status").classList.remove("err"); $("status").classList.add("ok");
+        } catch (err) { ui.bubble.innerHTML = '<span class="muted">Failed.</span>'; if (ui.think) ui.think.remove(); $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { generating = false; $("stop").hidden = true; $("input").disabled = false; $("send").disabled = false; $("input").focus(); }
+      }
+      $("send").addEventListener("click", ask);
+      $("stop").addEventListener("click", () => { engine.stop(); $("status").textContent = "Stopping…"; });
+      $("input").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); ask(); } });
+    </script>
+  </body>
+</html>

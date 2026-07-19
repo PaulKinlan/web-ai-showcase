@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Qwen3 Practical — reasoned extraction to strict JSON · Web AI Showcase</title>
+    <meta name="description" content="A real developer task: hand Qwen3 1.7B a messy sentence and ask for strict JSON. With thinking on it reasons about ambiguous fields first, then emits JSON your app can parse — proven live with JSON.parse in the browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🧠</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Qwen3 1.7B</a></p>
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Practical: reasoned extraction to strict JSON</h1>
+      <p class="lede">
+        The workhorse task: turn unstructured text into a structured object your code can use. Qwen3 reads a
+        messy sentence and returns JSON matching a schema. With <strong>thinking on</strong> it reasons about
+        the ambiguous fields first (dates, currencies, implied values) and tends to get them right; then it
+        emits only JSON — which this page runs <code>JSON.parse()</code> on, live, to prove it's
+        machine-readable. All on your GPU.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <div id="fallback" class="fallback" hidden></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="thinktoggle" style="margin-top:.6rem">
+        <label><input type="checkbox" id="think" checked /> <strong>Reason about tricky fields first</strong></label>
+        <span class="hint">Thinking mode helps with implied dates, currencies and totals.</span>
+      </div>
+
+      <div class="chips" id="examples" role="group" aria-label="Example inputs" style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.4rem 0">
+        <button class="chip" type="button">Invoice</button>
+        <button class="chip" type="button">Calendar event</button>
+        <button class="chip" type="button">Support ticket</button>
+      </div>
+      <label style="font-size:.82rem;color:var(--muted)" for="src">Unstructured input</label>
+      <textarea id="src" rows="4" style="width:100%" aria-label="Unstructured input">Reminder: dinner with Priya next Friday at 7:30pm at Dishoom Covent Garden, table for 4 under the name Kinlan.</textarea>
+      <label style="font-size:.82rem;color:var(--muted);margin-top:.4rem;display:block" for="schema">Target JSON keys (comma-separated)</label>
+      <input id="schema" type="text" style="width:100%" value="event, people, date, time, location, party_size, booking_name" aria-label="Target JSON keys" />
+      <div class="composer" style="margin-top:.5rem">
+        <button id="run" type="button" disabled>Extract JSON</button>
+        <button id="stop" type="button" class="secondary" hidden>Stop</button>
+      </div>
+
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr));gap:1rem;margin-top:.8rem">
+        <div>
+          <h4 style="font-family:var(--font-body);font-size:.85rem;margin:.2rem 0">Reasoning trace</h4>
+          <div id="reasonBox" class="wire" style="min-block-size:5rem;padding:.5rem;border:1px solid var(--border);border-radius:8px;background:var(--bg-raised);font-style:italic;color:var(--muted)"><span class="muted">If thinking is on, the model's reasoning appears here.</span></div>
+        </div>
+        <div>
+          <h4 style="font-family:var(--font-body);font-size:.85rem;margin:.2rem 0">Extracted JSON <span id="valid" class="muted" style="font-weight:400"></span></h4>
+          <pre id="out" class="wire" style="min-block-size:5rem;padding:.5rem;border:1px solid var(--border);border-radius:8px;background:var(--bg-raised)"><span class="muted">Valid, parsed JSON appears here.</span></pre>
+        </div>
+      </div>
+      <div class="readout" id="readout" hidden><span>first token <b id="rTtft">–</b></span><span>decode <b id="rTps">–</b></span><span>reasoning <b id="rReason">–</b></span></div>
+    </section>
+
+    <section aria-labelledby="how-h">
+      <h2 id="how-h">Why reasoning helps here</h2>
+      <p class="muted">
+        Extraction looks easy until a field is implied rather than stated: "next Friday" is a date the model
+        has to compute, "table for 4" is a party size buried in prose, a name is attached to a booking not a
+        person. In non-thinking mode a small model guesses; with thinking on it works the ambiguity out in
+        the trace before committing. Either way, the contract is the same — the answer is strict JSON, and
+        this page enforces it with a real <code>JSON.parse()</code>, so you can see when the model breaks the
+        format and needs a retry.
+      </p>
+    </section>
+
+    <p class="crumbs"><a href="../basics/">← Basics</a> · <a href="../">Qwen3 1.7B</a> · Next: <a href="../wild/">Wild →</a></p>
+
+    <script type="module">
+      import { Qwen3ChatEngine, probeWebGPU, escapeHTML, applyThinkingSwitch, webgpuFallbackHTML, CHAT_CSS } from "../webllm-chat.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = CHAT_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new Qwen3ChatEngine();
+      let busy = false;
+
+      const SAMPLES = {
+        Invoice: { src: "Acme Ltd billed us £1,248.50 on 3 March for 15 hours of consulting; net-30 terms so it's due early April. Invoice ref AC-9921.", keys: "vendor, amount, currency, date, hours, due_date, invoice_ref" },
+        "Calendar event": { src: "Reminder: dinner with Priya next Friday at 7:30pm at Dishoom Covent Garden, table for 4 under the name Kinlan.", keys: "event, people, date, time, location, party_size, booking_name" },
+        "Support ticket": { src: "User can't log in on the iOS app since the 2.4 update this morning, keeps getting a 500 on the /session endpoint. Seems urgent, ~200 users affected.", keys: "platform, version, symptom, endpoint, http_status, severity, users_affected" },
+      };
+      for (const c of $("examples").children) c.addEventListener("click", () => { const s = SAMPLES[c.textContent]; if (s) { $("src").value = s.src; $("schema").value = s.keys; } });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Qwen3-1.7B-q4f16_1-MLC", runtime: "webllm", dtype: "q4f16_1", sizeMB: 1100, requiresWebGPU: true },
+        load: async (onProgress) => { await engine.load((p) => { if (typeof p.progress === "number") onProgress({ status: "progress", progress: p.progress * 100 }); }); return engine; },
+        onReady: () => { $("run").disabled = false; },
+        onError: async (err) => { if (String(err?.message ?? err).includes("needs-webgpu")) { const probe = await probeWebGPU(); $("fallback").hidden = false; $("fallback").innerHTML = webgpuFallbackHTML(probe); } },
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (busy) return;
+        const src = $("src").value.trim(); if (!src) { $("status").textContent = "Paste some text first."; return; }
+        const keys = $("schema").value.split(",").map((k) => k.trim()).filter(Boolean);
+        busy = true; $("run").disabled = true; $("stop").hidden = false; $("status").classList.remove("err"); $("status").textContent = "Extracting…";
+        $("reasonBox").textContent = ""; $("out").textContent = ""; $("valid").textContent = "";
+        const thinking = $("think").checked;
+        const system = "You are a precise information-extraction engine. Reply with ONLY a single JSON object — no prose, no code fences, no explanation outside the JSON. Use null for anything genuinely absent.";
+        const user = `Extract these keys: ${keys.join(", ")}.\n\nText:\n"""${src}"""\n\nReturn ONLY the JSON object.`;
+        const messages = applyThinkingSwitch([{ role: "system", content: system }, { role: "user", content: user }], thinking);
+        let ans = "", reason = "";
+        try {
+          const res = await engine.chat(
+            { messages, temperature: 0.2, top_p: 0.9, max_tokens: 640, thinking },
+            {
+              onFirstToken: (t) => { $("rTtft").textContent = t + " ms"; },
+              onReasoning: (d) => { reason += d; $("reasonBox").textContent = reason; $("reasonBox").scrollTop = $("reasonBox").scrollHeight; },
+              onToken: (d) => { ans += d; $("out").textContent = ans; },
+            },
+          );
+          if (!reason.trim()) $("reasonBox").innerHTML = '<span class="muted">No reasoning (thinking off).</span>';
+          // Prove it's machine-readable: pull the JSON object and parse it.
+          const m = ans.match(/\{[\s\S]*\}/);
+          if (m) {
+            try {
+              const obj = JSON.parse(m[0]);
+              $("out").textContent = JSON.stringify(obj, null, 2);
+              $("valid").innerHTML = '<span style="color:var(--ok,#2e7d32)">✓ valid JSON · ' + Object.keys(obj).length + ' keys parsed</span>';
+            } catch (e) {
+              $("valid").innerHTML = '<span class="err">✗ not valid JSON (' + escapeHTML(e.message) + ') — retry or turn thinking on</span>';
+            }
+          } else {
+            $("valid").innerHTML = '<span class="err">✗ no JSON object found in the reply</span>';
+          }
+          const decodeMs = Math.max(1, res.ms - res.ttft); const totalTok = res.chunks + res.reasoningChunks;
+          $("readout").hidden = false; $("rTps").textContent = (totalTok > 1 ? ((totalTok - 1) / (decodeMs / 1000)).toFixed(1) : "0") + " tok/s"; $("rReason").textContent = res.reasoningChunks + " tok";
+          $("status").textContent = "Done."; $("status").classList.remove("err"); $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { busy = false; $("stop").hidden = true; $("run").disabled = false; }
+      });
+      $("stop").addEventListener("click", () => { engine.stop(); $("status").textContent = "Stopping…"; });
+    </script>
+  </body>
+</html>

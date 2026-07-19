@@ -1,0 +1,375 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Qwen3 1.7B on WebLLM — a hybrid thinking / non-thinking model in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run Alibaba's Qwen3 1.7B locally on WebGPU via MLC's WebLLM engine: a real streaming chat with a hybrid thinking / non-thinking toggle. Flip /think on and watch the model reason step by step in a live trace before it answers; flip it off for a fast direct reply. Sampling controls, a system prompt, tok/s — all on your GPU, nothing sent to a server."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🧠</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">text-generation · hybrid-reasoning chat LLM · WebLLM (MLC) · WebGPU · ~1.1 GB</p>
+      <h1>Qwen3 1.7B — a hybrid thinking model on your GPU</h1>
+      <p class="lede">
+        Qwen3 is the first model in this catalogue that can <strong>think out loud on demand</strong>. It's
+        a single 1.7B model with two modes: flip <strong>thinking on</strong> and it emits a
+        <code>&lt;think&gt;…&lt;/think&gt;</code> chain of reasoning before answering — you watch the trace
+        stream live — or flip it <strong>off</strong> for a fast, direct reply. One model, two behaviours,
+        toggled with Qwen3's <code>/think</code> and <code>/no_think</code> switches. It runs entirely in
+        your browser on MLC's <strong>WebLLM</strong> engine: streaming tokens, sampling controls, a real
+        system prompt, nothing uploaded and no API bill. WebGPU only — a ~1.1 GB download, cached after
+        first load.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="glance">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/Qwen/Qwen3-1.7B" target="_blank" rel="noopener">Qwen/Qwen3-1.7B</a></td></tr>
+          <tr><th>MLC build</th><td><code>Qwen3-1.7B-q4f16_1-MLC</code></td></tr>
+          <tr><th>Runtime</th><td><strong>WebLLM / MLC</strong> — <em>not</em> Transformers.js. Weights are precompiled to WebGPU shaders.</td></tr>
+          <tr><th>Task</th><td><code>text-generation</code> (instruction-tuned, hybrid reasoning)</td></tr>
+          <tr><th>Params / dtype</th><td>1.7B · <code>q4f16_1</code> (4-bit weights, fp16 compute)</td></tr>
+          <tr><th>Thinking control</th><td><code>/think</code> · <code>/no_think</code> soft switch appended to the last user turn — one model, two modes</td></tr>
+          <tr><th>Chat template</th><td>Qwen ChatML — <strong>real <code>system</code> role</strong> (no folding needed), plus a <code>&lt;think&gt;</code> reasoning segment in thinking mode</td></tr>
+          <tr><th>Backend</th><td>WebGPU <strong>only</strong> — no WASM fallback. Gated on a real GPU adapter. ~2 GB GPU memory.</td></tr>
+          <tr><th>Download</th><td><strong>~1.1 GB</strong>, cached after first load</td></tr>
+          <tr><th>Context window</th><td>4096 tokens (MLC build cap)</td></tr>
+          <tr><th>License</th><td><a href="https://www.apache.org/licenses/LICENSE-2.0" target="_blank" rel="noopener">Apache 2.0</a></td></tr>
+          <tr><th>Web APIs</th><td>WebGPU, Web Workers, ES module imports</td></tr>
+        </tbody>
+      </table>
+      <p class="muted" style="font-size:.82rem;margin-block-start:.6rem">
+        How it differs from the other chat pages: Qwen3 is a <strong>hybrid reasoning</strong> model — the
+        only one here that exposes an explicit, toggleable chain-of-thought — and a distinct
+        <strong>Qwen</strong> architecture (Apache-2.0) from Alibaba, separate from the Gemma-family
+        (<a href="/web-ai-showcase/models/gemma-3-webllm/">Gemma 3 1B</a>), Mistral
+        (<a href="/web-ai-showcase/models/mistral-webllm/">Mistral 7B</a>) and Llama-family models. It's
+        also newer than the <a href="/web-ai-showcase/models/qwen2.5-0.5b-wasm/">Qwen2.5 0.5B</a> WASM page:
+        a bigger, reasoning-capable successor that runs on the GPU.
+      </p>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it — chat</h3>
+      <p class="muted" style="font-size:.82rem;margin:0 0 .4rem"><strong>Heads up:</strong> loading transfers ~1.1 GB the first time (then it's cached). Best on a GPU with ≥2 GB of memory.</p>
+      <div id="model-loader"></div>
+      <div id="fallback" class="fallback" hidden></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="thinktoggle">
+        <label>
+          <input type="checkbox" id="think" checked />
+          <strong>Thinking mode</strong>
+        </label>
+        <span class="hint" id="thinkHint">On — Qwen3 will reason in a <code>&lt;think&gt;</code> trace before answering (<code>/think</code>).</span>
+      </div>
+
+      <div class="sysbox" style="margin-top:.2rem">
+        <label for="sys">System prompt (Qwen3 has a real system role — sent as-is)</label>
+        <textarea id="sys">You are a concise, helpful assistant running locally in the user's browser.</textarea>
+      </div>
+
+      <div class="controls">
+        <label class="control">temperature
+          <span class="row"><input type="range" id="temp" min="0" max="1.5" step="0.05" value="0.7" /><b id="tempV">0.70</b></span>
+        </label>
+        <label class="control">top_p
+          <span class="row"><input type="range" id="topp" min="0.1" max="1" step="0.05" value="0.8" /><b id="toppV">0.80</b></span>
+        </label>
+        <label class="control">max tokens
+          <span class="row"><input type="range" id="maxtok" min="64" max="2048" step="64" value="512" /><b id="maxtokV">512</b></span>
+        </label>
+      </div>
+
+      <div class="chat-wrap">
+        <div class="chat-log" id="log" aria-live="polite" aria-label="Conversation">
+          <div class="msg system"><span class="bubble">The conversation will appear here. Load the model, then say hello.</span></div>
+        </div>
+        <div class="composer">
+          <textarea id="input" placeholder="Type a message… (Enter to send, Shift+Enter for a newline)" aria-label="Your message" disabled></textarea>
+          <button id="send" type="button" disabled>Send</button>
+          <button id="stop" type="button" class="secondary" hidden>Stop</button>
+        </div>
+        <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">
+          <button id="reset" type="button" class="secondary" disabled>Clear conversation</button>
+          <span class="muted" style="font-size:.76rem">History is kept in-tab only — reloading forgets it.</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside</h3>
+      <p class="muted">
+        A reasoning model spends tokens in two places: the <strong>&lt;think&gt; trace</strong> (private
+        reasoning you'd normally never see) and the <strong>answer</strong>. The split below is measured
+        live. Turn thinking off and the reasoning count drops to zero and the reply comes faster —
+        thinking trades latency and tokens for better answers on hard prompts. Time-to-first-token is the
+        prefill cost; everything after is decode. WebLLM reuses a KV cache across turns.
+      </p>
+      <div class="inside-grid" id="insideGrid">
+        <div class="stat"><div class="k">decode speed</div><div class="v" id="sTps">–</div></div>
+        <div class="stat"><div class="k">time to first token</div><div class="v" id="sTtft">–</div></div>
+        <div class="stat"><div class="k">reasoning tokens</div><div class="v" id="sReason">–</div></div>
+        <div class="stat"><div class="k">answer tokens</div><div class="v" id="sGen">–</div></div>
+        <div class="stat"><div class="k">context used <small>(est.)</small></div><div class="v" id="sCtx">–</div></div>
+        <div class="stat"><div class="k">total time</div><div class="v" id="sTotal">–</div></div>
+      </div>
+      <p class="muted" id="statsRaw" style="font-family:var(--font-mono);font-size:.76rem"></p>
+      <h4 style="font-family:var(--font-body);font-size:.85rem;margin:.6rem 0 .2rem">Exact chat messages sent to the model (last turn, with the thinking switch appended)</h4>
+      <pre class="wire" id="wire"><span class="muted">Send a message to see the messages array that WebLLM receives.</span></pre>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        Reasoning models were, until recently, a server-side, premium-API affair. Qwen3 on WebLLM puts a
+        genuinely capable <em>hybrid</em> reasoner on the client: for easy prompts you turn thinking off
+        and get a fast reply; for hard ones — multi-step maths, planning, careful extraction — you turn it
+        on and the model works through the problem in a visible trace before committing to an answer. All
+        of it private by construction, free to run, and available offline once cached.
+      </p>
+      <ul>
+        <li><strong>Show your work</strong> — the reasoning trace is a first-class UI surface: audit how the model reached an answer, or hide it for a clean reply. No other model here exposes this.</li>
+        <li><strong>Spend compute only when it helps</strong> — a per-request thinking toggle lets you pay the reasoning cost on the 10% of prompts that need it and stay fast on the rest.</li>
+        <li><strong>Private step-by-step assistants</strong> — tutoring, debugging, and "explain your reasoning" flows that never leave the device.</li>
+        <li><strong>On-device RAG with reasoning</strong> — pair it with a local embedding model for grounded answers that can reason over the retrieved passages (see the multi-model demo).</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">A clean streaming chat with the thinking toggle — the fundamental loop.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Reasoned extraction: strict JSON and step-by-step problem solving with the trace on.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Thinking on vs off — the SAME hard prompt run both ways, side by side, to see what reasoning buys.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">RAG: MiniLM retrieves from a pasted doc, Qwen3 reasons over the passages and answers grounded.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>
+        WebLLM gives you an OpenAI-shaped chat API backed by a WebGPU engine. You create the engine
+        (which downloads and compiles the weights), then stream a completion. Qwen3 has a real
+        <code>system</code> role, so no folding is needed; the hybrid mode is selected by appending
+        <code>/think</code> or <code>/no_think</code> to the last user turn. In thinking mode the model
+        streams a <code>&lt;think&gt;…&lt;/think&gt;</code> segment (or, on some builds, a separate
+        <code>reasoning_content</code> delta) before the answer — this page separates the two streams in
+        <code>worker.js</code>:
+      </p>
+      <pre><code>import { webGPUAdapterAvailable, createEngine }
+  from "/web-ai-showcase/lib/webllm.js";
+
+// WebLLM is WebGPU-only — gate before doing anything (headless requestAdapter() → null).
+if (!(await webGPUAdapterAvailable())) {
+  showNeedsWebGPU();          // never a faked reply
+} else {
+  const engine = await createEngine({
+    model: "Qwen3-1.7B-q4f16_1-MLC",
+    onProgress: (p) => setProgress(p.text, p.progress),   // ~1.1 GB, cached after first load
+  });
+
+  const thinking = true;      // per-request toggle
+  const messages = [
+    { role: "system", content: "You are a concise assistant." },
+    { role: "user", content: "Is 97 prime? " + (thinking ? "/think" : "/no_think") },
+  ];
+
+  const stream = await engine.chat.completions.create({
+    messages, temperature: 0.7, top_p: 0.8, max_tokens: 512, stream: true,
+  });
+  for await (const chunk of stream) {
+    const d = chunk.choices[0].delta;
+    if (d.reasoning_content) appendReasoning(d.reasoning_content); // the &lt;think&gt; trace
+    if (d.content)           appendAnswer(d.content);              // the final answer
+  }
+  // engine.interruptGenerate() stops decoding early; engine.runtimeStatsText() reports tok/s.
+}</code></pre>
+      <p class="muted">
+        Everything here runs exactly that path in <code>worker.js</code>, and gates on a real WebGPU
+        adapter first. No adapter → a labelled needs-WebGPU state, never a canned answer.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/Qwen/Qwen3-1.7B" target="_blank" rel="noopener">Model card — Qwen/Qwen3-1.7B</a></li>
+        <li><a href="https://github.com/mlc-ai/web-llm" target="_blank" rel="noopener">WebLLM — in-browser LLM inference engine (MLC)</a></li>
+        <li><a href="https://webllm.mlc.ai/docs/" target="_blank" rel="noopener">WebLLM documentation &amp; prebuilt model list</a></li>
+        <li><a href="https://qwenlm.github.io/blog/qwen3/" target="_blank" rel="noopener">Qwen team — introducing Qwen3 (hybrid thinking)</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/mlc-ai/web-llm" target="_blank" rel="noopener">WebLLM / MLC</a> on WebGPU.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <style>
+      .glance { inline-size:100%; border-collapse:collapse; font-size:.85rem; }
+      .glance th, .glance td { text-align:left; padding:.3rem .5rem; border-bottom:1px solid var(--border); vertical-align:top; }
+      .glance th { color:var(--muted); font-weight:600; inline-size:11rem; }
+      .glance td { font-family:var(--font-mono); overflow-wrap:anywhere; }
+    </style>
+
+    <script type="module">
+      import { Qwen3ChatEngine, probeWebGPU, escapeHTML, estimateTokens, applyThinkingSwitch, webgpuFallbackHTML, CHAT_CSS }
+        from "./webllm-chat.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = CHAT_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new Qwen3ChatEngine();
+      let generating = false;
+      const history = []; // { role:"user"|"assistant", content }
+
+      const MODEL = { modelId: "Qwen3-1.7B-q4f16_1-MLC", runtime: "webllm", dtype: "q4f16_1", sizeMB: 1100, requiresWebGPU: true };
+
+      const bind = (r, out, fmt) => { const el = $(r), o = $(out); const upd = () => o.textContent = fmt(el.value); el.addEventListener("input", upd); upd(); };
+      bind("temp", "tempV", (v) => (+v).toFixed(2));
+      bind("topp", "toppV", (v) => (+v).toFixed(2));
+      bind("maxtok", "maxtokV", (v) => String(v));
+      $("think").addEventListener("change", () => {
+        $("thinkHint").innerHTML = $("think").checked
+          ? 'On — Qwen3 will reason in a <code>&lt;think&gt;</code> trace before answering (<code>/think</code>).'
+          : 'Off — Qwen3 answers directly, no reasoning trace (<code>/no_think</code>). Faster.';
+      });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: MODEL,
+        load: async (onProgress) => {
+          await engine.load((p) => { if (typeof p.progress === "number") onProgress({ status: "progress", progress: p.progress * 100 }); });
+          return engine;
+        },
+        onReady: () => {
+          $("input").disabled = false; $("send").disabled = false; $("reset").disabled = false;
+          $("log").querySelector(".msg.system .bubble").textContent = "Model ready. Ask something — try a maths or logic question with thinking on 👋";
+          $("input").focus();
+        },
+        onError: async (err) => {
+          if (String(err?.message ?? err).includes("needs-webgpu")) {
+            const probe = await probeWebGPU();
+            $("fallback").hidden = false; $("fallback").innerHTML = webgpuFallbackHTML(probe);
+          }
+        },
+      });
+
+      // An assistant turn is a reasoning <details> (only when thinking) above the answer bubble.
+      function addAssistant(thinking) {
+        const wrap = document.createElement("div"); wrap.className = "msg assistant";
+        const who = document.createElement("span"); who.className = "who"; who.textContent = "qwen3";
+        wrap.append(who);
+        let think = null, thinkBody = null;
+        if (thinking) {
+          think = document.createElement("details"); think.className = "think"; think.open = true;
+          const sum = document.createElement("summary");
+          sum.innerHTML = '<span class="spin" aria-hidden="true"></span> Thinking…';
+          thinkBody = document.createElement("div"); thinkBody.className = "think-body";
+          think.append(sum, thinkBody); wrap.append(think);
+        }
+        const b = document.createElement("div"); b.className = "bubble"; b.innerHTML = '<span class="caret"></span>';
+        wrap.append(b);
+        $("log").append(wrap); $("log").scrollTop = $("log").scrollHeight;
+        return { bubble: b, think, thinkBody, summary: think?.querySelector("summary") };
+      }
+      function addUser(text) {
+        const wrap = document.createElement("div"); wrap.className = "msg user";
+        const who = document.createElement("span"); who.className = "who"; who.textContent = "you";
+        const b = document.createElement("div"); b.className = "bubble"; b.textContent = text;
+        wrap.append(who, b); $("log").append(wrap); $("log").scrollTop = $("log").scrollHeight;
+      }
+      function buildMessages(userText) {
+        const sys = $("sys").value.trim();
+        const msgs = [];
+        if (sys) msgs.push({ role: "system", content: sys });
+        for (const m of history) msgs.push(m);
+        msgs.push({ role: "user", content: userText });
+        return applyThinkingSwitch(msgs, $("think").checked);
+      }
+
+      async function send() {
+        const text = $("input").value.trim();
+        if (!text || generating) return;
+        generating = true;
+        const thinking = $("think").checked;
+        $("input").value = ""; $("send").disabled = true; $("stop").hidden = false; $("input").disabled = true;
+        addUser(text);
+        const messages = buildMessages(text);
+        $("wire").textContent = JSON.stringify(messages, null, 2);
+        const ui = addAssistant(thinking);
+        const temperature = +$("temp").value, top_p = +$("topp").value, max_tokens = +$("maxtok").value;
+        let ans = "", reason = "";
+        try {
+          const res = await engine.chat(
+            { messages, temperature, top_p, max_tokens, thinking },
+            {
+              onFirstToken: () => {},
+              onReasoning: (d) => {
+                reason += d;
+                if (ui.thinkBody) { ui.thinkBody.textContent = reason; ui.thinkBody.scrollTop = ui.thinkBody.scrollHeight; }
+                $("log").scrollTop = $("log").scrollHeight;
+              },
+              onToken: (d) => {
+                ans += d;
+                ui.bubble.innerHTML = escapeHTML(ans) + '<span class="caret"></span>';
+                $("log").scrollTop = $("log").scrollHeight;
+              },
+            },
+          );
+          ui.bubble.textContent = ans || "(no answer text)";
+          if (ui.think) {
+            if ((res.reasoning || "").trim()) {
+              ui.summary.innerHTML = 'Reasoning trace <span class="muted">(' + res.reasoningChunks + ' tok*)</span>';
+              ui.think.open = false;
+            } else {
+              ui.think.remove();
+            }
+          }
+          history.push({ role: "user", content: text });
+          history.push({ role: "assistant", content: ans });
+          const decodeMs = Math.max(1, res.ms - res.ttft);
+          const totalTok = res.chunks + res.reasoningChunks;
+          const tps = totalTok > 1 ? ((totalTok - 1) / (decodeMs / 1000)) : 0;
+          $("sTps").innerHTML = tps.toFixed(1) + ' <small>tok/s</small>';
+          $("sTtft").innerHTML = res.ttft + ' <small>ms</small>';
+          $("sReason").innerHTML = res.reasoningChunks + ' <small>tok*</small>';
+          $("sGen").innerHTML = res.chunks + ' <small>tok*</small>';
+          const ctxEst = estimateTokens(messages.map((m) => m.content).join("\n")) + totalTok;
+          $("sCtx").innerHTML = '≈' + ctxEst + ' <small>/ 4096</small>';
+          $("sTotal").innerHTML = res.ms + ' <small>ms</small>';
+          $("statsRaw").textContent = (res.stats ? "WebLLM runtime: " + res.stats + "  ·  " : "") + "* counts are streamed chunks (≈ tokens); context is a ~4-chars/token estimate.";
+          $("status").textContent = "Done." + (thinking && (res.reasoning || "").trim() ? " (reasoned first)" : ""); $("status").classList.remove("err"); $("status").classList.add("ok");
+        } catch (err) {
+          ui.bubble.innerHTML = '<span class="muted">Generation failed.</span>';
+          if (ui.think) ui.think.remove();
+          $("status").textContent = "Generation failed: " + err.message; $("status").classList.remove("ok"); $("status").classList.add("err");
+        } finally {
+          generating = false; $("stop").hidden = true; $("input").disabled = false; $("send").disabled = false; $("input").focus();
+        }
+      }
+
+      $("send").addEventListener("click", send);
+      $("stop").addEventListener("click", () => { engine.stop(); $("status").textContent = "Stopping…"; });
+      $("input").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } });
+      $("reset").addEventListener("click", () => {
+        history.length = 0;
+        $("log").replaceChildren();
+        const d = document.createElement("div"); d.className = "msg system";
+        d.innerHTML = '<span class="bubble">Conversation cleared. The model keeps no memory of it.</span>';
+        $("log").append(d);
+        $("wire").textContent = "";
+      });
+    </script>
+  </body>
+</html>
