@@ -175,7 +175,7 @@ const { depth, predicted_depth } = await estimator(imageURL);
     </footer>
 
     <script type="module">
-      import { DepthEngine, fileToDataURL, urlToDataURL, renderDepthColor, renderColorLegend, DEPTH_CSS }
+      import { DepthEngine, fileToDataURL, urlToDataURL, paintDepth, renderColorLegend, DEPTH_CSS }
         from "./depth.js";
       import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
 
@@ -217,9 +217,12 @@ const { depth, predicted_depth } = await estimator(imageURL);
       file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
       drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
 
-      $("cmap").addEventListener("change", () => {
+      $("cmap").addEventListener("change", async () => {
         renderColorLegend($("legend"), $("cmap").value);
-        if (lastResult) renderDepthColor($("depthCanvas"), lastResult.width, lastResult.height, lastResult.depth, $("cmap").value);
+        if (!lastResult) return;
+        // Recolour off the main thread — the worker rebuilds the composite, we only drawImage.
+        const bmp = await engine.recolor(lastResult.depth, lastResult.width, lastResult.height, $("cmap").value);
+        paintDepth($("depthCanvas"), lastResult, $("cmap").value, bmp);
       });
 
       // Depth Anything runs fp16 on WebGPU when there's a real adapter, else the q8 WASM build — an
@@ -238,9 +241,9 @@ const { depth, predicted_depth } = await estimator(imageURL);
         if (!currentImageURL) { $("status").textContent = "Pick a photo first."; return; }
         $("run").disabled = true; $("status").classList.remove("err"); $("status").textContent = "Estimating depth…";
         try {
-          const r = await engine.estimate(currentImageURL);
+          const r = await engine.estimate(currentImageURL, $("cmap").value);
           lastResult = r;
-          renderDepthColor($("depthCanvas"), r.width, r.height, r.depth, $("cmap").value);
+          paintDepth($("depthCanvas"), r, $("cmap").value, r.bitmap);
           $("readout").hidden = false;
           $("rBackend").textContent = r.device.toUpperCase() + (r.dtype ? " · " + r.dtype : "");
           $("rMs").textContent = r.ms + " ms";
