@@ -185,9 +185,15 @@ const output = await segment(imageURL);
 
       const rgb = (c) => `rgb(${c.r},${c.g},${c.b})`;
 
+      // Prefer the worker-composited ImageBitmap (drawImage-only, no main-thread putImageData); the raw
+      // buffer stays the fallback. Free a superseded bitmap so repeated runs don't leak GPU memory.
+      const overlaySrc = (r) => (r && r.overlayBitmap) ? r.overlayBitmap : r.overlay;
+      function releaseResult(r) { try { r?.overlayBitmap?.close?.(); } catch { /* noop */ } }
+
       async function useURL(url, srcForPreview) {
         currentImageURL = url;
         currentImg = await loadImage(srcForPreview || url);
+        releaseResult(lastResult);
         lastResult = null;
         $("insideWrap").hidden = true;
         $("insideEmpty").hidden = false;
@@ -226,6 +232,7 @@ const output = await segment(imageURL);
         $("run").disabled = true; $("status").classList.remove("err", "ok"); $("status").textContent = "Segmenting every pixel…";
         try {
           const r = await engine.segment(currentImageURL);
+          releaseResult(lastResult);
           lastResult = r;
           $("rBackend").textContent = r.device.toUpperCase();
           $("rMs").textContent = r.ms + " ms";
@@ -247,7 +254,7 @@ const output = await segment(imageURL);
       opacity.addEventListener("input", () => { $("opacityOut").textContent = Math.round(opacity.value * 100) + "%"; if (lastResult) renderMap(); });
 
       function renderMap() {
-        paintSemanticMap($("stage"), currentImg, lastResult.overlay, lastResult.width, lastResult.height, +opacity.value);
+        paintSemanticMap($("stage"), currentImg, overlaySrc(lastResult), lastResult.width, lastResult.height, +opacity.value);
       }
       function renderLegend(classes) {
         $("legend").replaceChildren(...classes.map((c) => {
@@ -259,7 +266,7 @@ const output = await segment(imageURL);
       }
       function renderInside(r) {
         $("insideEmpty").hidden = true; $("insideWrap").hidden = false;
-        paintMapOnly($("mapOnly"), r.overlay, r.width, r.height, r.width, r.height);
+        paintMapOnly($("mapOnly"), overlaySrc(r), r.width, r.height, r.width, r.height);
         const max = Math.max(...r.classes.map((c) => c.coverage), 0.0001);
         $("covList").replaceChildren(...r.classes.map((c) => {
           const row = document.createElement("div"); row.className = "cov-row";

@@ -111,8 +111,16 @@ async function run(id, imageURL) {
   // Any pixel no mask claimed (rare) stays transparent so the photo shows through there.
   classes.sort((a, b) => b.pixels - a.pixels);
 
+  // Composite the colour-coded overlay into an ImageBitmap HERE (off the main thread) so the page only
+  // has to drawImage() it — no full-res putImageData on the main thread on every render/opacity drag
+  // (invariant 15: dense-output composite in the worker, transfer an ImageBitmap back). We still send
+  // the raw RGBA buffer too: the practical/multi-model pages read its pixels for class hit-testing.
+  const { overlayBitmap, compositeMs } = buildOverlayBitmap(overlay, w, h);
+
   const ms = Math.round(performance.now() - t0);
   const buf = overlay.buffer;
+  const transfer = [buf];
+  if (overlayBitmap) transfer.push(overlayBitmap);
   post(
     {
       type: "result",
@@ -120,13 +128,31 @@ async function run(id, imageURL) {
       width: w,
       height: h,
       overlay: buf,
+      overlayBitmap,
       classes,
       classCount: classes.length,
       ms,
+      compositeMs,
       device,
     },
-    [buf],
+    transfer,
   );
+}
+
+// Render the RGBA overlay into an OffscreenCanvas and hand back a transferable ImageBitmap. Guarded:
+// if a worker realm lacks OffscreenCanvas we return null and the page falls back to its measured
+// main-thread putImageData path (overlayToDrawable in segformer.js).
+function buildOverlayBitmap(overlay, w, h) {
+  if (typeof OffscreenCanvas === "undefined") return { overlayBitmap: null, compositeMs: 0 };
+  try {
+    const t = performance.now();
+    const oc = new OffscreenCanvas(w, h);
+    oc.getContext("2d").putImageData(new ImageData(overlay, w, h), 0, 0);
+    const overlayBitmap = oc.transferToImageBitmap();
+    return { overlayBitmap, compositeMs: +(performance.now() - t).toFixed(2) };
+  } catch {
+    return { overlayBitmap: null, compositeMs: 0 };
+  }
 }
 
 self.addEventListener("message", async (e) => {

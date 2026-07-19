@@ -1,0 +1,99 @@
+{
+  "schemaVersion": 1,
+  "id": "segformer-semantic",
+  "revision": 1,
+  "reviewedAt": "2026-07-19T00:00:00Z",
+  "reviewer": "off-main-thread composite retrofit (invariant 15) + live headless verification, revision 1",
+  "frontend": true,
+  "rubric": [
+    {
+      "dimension": "real-inference",
+      "score": 5,
+      "severity": "info",
+      "evidence": "AGENT VERDICT: live headless-Chrome run (fresh profile, real download of Xenova/segformer-b0-finetuned-ade-512-512, wasm/q8) segmented the river sample and returned 9 ADE20K classes at 512×342. No canned path — the SegformerEngine drives worker.js → transformers.js image-segmentation pipeline. console + network clean. screenshot: scratchpad/e2e-segformer.png (read).",
+      "notes": "conformance loads-clean + calls-real-inference cover the static side; this pass adds a real end-to-end run."
+    },
+    {
+      "dimension": "io-shape",
+      "score": 5,
+      "severity": "info",
+      "evidence": "AGENT VERDICT: read the rendered composite — a dense colour-coded semantic map over the photo, correct per-pixel classes (floor, ceiling, person, water, wall among the top classes; people/trees green, water blue/purple, path olive, walls red). Matches SegFormer's argmax-per-pixel semantic output; every class also mirrored in the legend + coverage bars as accessible text.",
+      "notes": "Masks/labels IDENTICAL before/after the retrofit — the worker still computes the same argmax overlay; only the transport (raw buffer → also an ImageBitmap) changed."
+    },
+    {
+      "dimension": "runtime-config",
+      "score": 5,
+      "severity": "info",
+      "evidence": "conformance (source/page-text): declares-model-id, declares-task (image-segmentation), declares-backend (WASM), declares-quantisation (q8), inference-off-main-thread all derive from real metadata and match the live run (device WASM).",
+      "notes": ""
+    },
+    {
+      "dimension": "performance",
+      "score": 5,
+      "severity": "info",
+      "evidence": "AGENT VERDICT (invariant-15 retrofit): the dense-output mask→colour-overlay composite moved OFF the main thread. worker.js builds the colour-coded RGBA overlay in an OffscreenCanvas and transfers an ImageBitmap back (transferToImageBitmap); the page's paintSemanticMap/paintMapOnly are now a bare drawImage of the transferred bitmap and the opacity slider re-drawImage()s the same bitmap — no main-thread putImageData per render/tick. MEASURED, headless Chrome (software raster): real SegFormer masks return at ~512px, so the pre-existing main-thread render composite was already small (~0.5ms); the retrofit removes it (live worker compositeMs 0.2 off-main; main-thread paint drawImage-only). Synthetic scaling proof (full-res inputs): paintSemanticMap composite median 15.0ms→3.3ms @12MP (4032×3024), 1.9ms→0.0ms @2MP; MessageChannel opacity-drag stall-probe worst gap 36ms→11.4ms @12MP, 16ms→1.4ms @2MP. New immutable conformance assertion worker-compliance added.",
+      "notes": "Out of THIS retrofit's scope (discrete user actions, not the continuous render path): scaledOverlayData (multi-model class×depth combine) and composeClassReplace (practical sky-replace) still do a full-resolution getImageData + per-pixel class hit-test on the main thread (~32ms @12MP measured). Tracked as a follow-up; they need the raw per-pixel class data, not the colour overlay."
+    },
+    {
+      "dimension": "accessibility",
+      "score": 5,
+      "severity": "info",
+      "evidence": "conformance (script): images-have-alt + buttons-have-names pass. The result canvas carries a descriptive aria-label and every class is mirrored as accessible text (legend list + per-class coverage bars); loader/run status use role=status aria-live.",
+      "notes": "Retrofit is JS-behavioural only — no DOM/ARIA change."
+    },
+    {
+      "dimension": "responsive",
+      "score": 4,
+      "severity": "info",
+      "evidence": "responsive-check automated pre-scan after the change: desktop clean · mobile clean (no horizontal overflow, no clipped controls) on 1280×800 + 360×740. support stays needs-review pending a full agent tap-target pass (automation flagged sub-24px sample thumbs/legend chips — pre-existing, unrelated to this JS-only change).",
+      "notes": "Automated-only signal ⇒ needs-review, never auto-flipped to ok. Layout unchanged by the retrofit."
+    }
+  ],
+  "guidanceConsulted": [
+    {
+      "id": "performance",
+      "query": "move heavy canvas pixel compositing off the main thread with a worker and OffscreenCanvas transferable ImageBitmap; keep INP low during opacity slider drag",
+      "recommendation": "INP & Main-Thread Unblocking — separate UI updates from heavy computations and push background processing to a Web Worker; break tasks over 50ms; keep the main thread painting only.",
+      "appliedOrException": "applied — the mask→colour overlay composite moved into the inference worker (OffscreenCanvas + transferToImageBitmap → transferred ImageBitmap). The main thread only drawImage()s the transferred bitmap; the opacity slider re-drawImage()s the cached bitmap instead of re-running putImageData. OffscreenCanvas/transferToImageBitmap/transferable ImageBitmap are Baseline widely-available (same primitives lib/worker-protocol.js documents); a guarded main-thread putImageData fallback (overlayToDrawable) remains for worker realms without OffscreenCanvas.",
+      "evidence": "MEASURED composite median 15.0ms→3.3ms @12MP, 1.9ms→0.0ms @2MP; opacity-drag stall 36ms→11.4ms @12MP, 16ms→1.4ms @2MP; live headless run: overlayBitmap=ImageBitmap 512×342, worker compositeMs 0.2, console+network clean"
+    },
+    {
+      "id": "break-up-long-tasks",
+      "query": "break up long tasks INP responsiveness worker offload",
+      "recommendation": "Move heavy synchronous work off the main thread so input/paint stay responsive.",
+      "appliedOrException": "applied — inference AND the per-pixel argmax overlay compositing run in models/segformer-semantic/worker.js (a Web Worker); the worker now also rasterises the overlay into an OffscreenCanvas and transfers an ImageBitmap so the main thread never does a full-res putImageData.",
+      "evidence": "conformance inference-off-main-thread=pass + worker-compliance=pass; source uses new Worker(worker.js) + OffscreenCanvas.transferToImageBitmap"
+    },
+    {
+      "id": "identify-inp-causes",
+      "query": "reduce interaction to next paint from heavy processing offload to web worker",
+      "recommendation": "The worst interaction latency comes from long main-thread tasks; move heavy work off-thread and keep interaction handlers paint-only.",
+      "appliedOrException": "applied — the opacity slider input handler no longer builds an ImageData / calls putImageData on the main thread; it re-drawImage()s the worker-composited bitmap. Verified with a MessageChannel stall probe over 30 opacity ticks.",
+      "evidence": "stall-probe worst main-thread gap 16ms→1.4ms @2MP, 36ms→11.4ms @12MP"
+    },
+    {
+      "id": "expose-canvas-content-to-browser-features",
+      "query": "canvas semantic overlay exposed to assistive tech",
+      "recommendation": "Canvas pixels are not exposed to assistive tech / find-in-page; provide an accessible parallel representation.",
+      "appliedOrException": "applied (fallback path) — the result canvas carries a descriptive aria-label AND every class is ALSO rendered as accessible text (the legend list + per-class coverage bars). Unchanged by the retrofit.",
+      "evidence": "page has <canvas aria-label> + #legend + #covList mirroring the canvas"
+    }
+  ],
+  "openQuestions": [
+    "Should scaledOverlayData / composeClassReplace (full-res getImageData class hit-testing on the practical + multi-model pages) also move into the worker, returning a per-pixel class-index map transfer, to bring those discrete actions under 8ms at full input resolution?",
+    "SegFormer masks come back at ~512px (processing resolution), so the render composite is small on real inputs — is a higher-resolution mask upsample worth exposing for the map-poster (wild) export?"
+  ],
+  "followUpGoals": [
+    {
+      "goal": "Move the practical sky-replace (composeClassReplace) and multi-model class×depth combine (scaledOverlayData) class-hit-testing off the main thread — return a transferable per-pixel class-index map from the worker so those full-res getImageData loops (~32ms @12MP) no longer run on the main thread.",
+      "kind": "targeted-fix",
+      "priority": "medium"
+    },
+    {
+      "goal": "Agent tap-target matrix pass to flip segformer-semantic support desktop/mobile from needs-review to ok (or record honest evidence) — resolve the automation's sub-24px sample-thumb/legend flag.",
+      "kind": "targeted-fix",
+      "priority": "low"
+    }
+  ],
+  "summary": "Revision-1 critique for segformer-semantic (dense semantic image-segmentation, Xenova/segformer-b0-finetuned-ade-512-512, wasm/q8), created during an invariant-15 in-place perf retrofit. Live headless run verified real inference (9 ADE20K classes on the river sample) and a correct colour-coded semantic map (screenshot read). The dense-output mask→colour-overlay composite moved into the inference worker (OffscreenCanvas → transferToImageBitmap → transferred ImageBitmap); the page is now drawImage-only and the opacity slider re-draws the cached bitmap (no per-tick putImageData). Real masks are ~512px so the pre-existing composite was already small (~0.5ms); measured synthetic scaling shows 15.0ms→3.3ms @12MP, confirming the architecture. New immutable conformance assertion worker-compliance added. Route/slug/identity/controls/examples unchanged. Guidance: performance, break-up-long-tasks, identify-inp-causes, expose-canvas-content-to-browser-features."
+}
