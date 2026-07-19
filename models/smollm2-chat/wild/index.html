@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SmolLM2 Wild — a tiny text-adventure agent · Web AI Showcase</title>
+    <meta name="description" content="A choose-your-own-adventure game run entirely by SmolLM2-360M in your browser: the model is the dungeon master, narrates the scene, and offers you choices — an on-device agent loop with no server." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🐤</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">SmolLM2 360M</a></p>
+    <header>
+      <p class="eyebrow">use case · wild</p>
+      <h1>Wild: a tiny text-adventure agent</h1>
+      <p class="lede">
+        Let the model run a game. SmolLM2 plays dungeon master: it narrates a scene, then offers you a few
+        choices; you pick one, and it continues the story — a self-contained agent loop that keeps its own
+        state, entirely on your device. Set the scene, then play.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="chat" style="margin-top:.6rem">
+        <div class="sysrow">
+          <label for="setting"><strong>Setting</strong> — the world the adventure takes place in</label>
+          <input type="text" id="setting" value="a misty forest at the edge of a forgotten kingdom" style="width:100%" />
+        </div>
+        <div class="composer">
+          <button id="begin" type="button" disabled>Begin adventure</button>
+          <button id="stop" type="button" class="secondary" hidden>Stop</button>
+        </div>
+
+        <div class="transcript" id="story" aria-live="polite" aria-label="Story so far">
+          <div class="bubble assistant"><span class="role">dungeon master</span>Load the model and press "Begin adventure".</div>
+        </div>
+
+        <div class="chips" id="choices" aria-label="Your choices"></div>
+        <div class="composer">
+          <textarea id="freeform" rows="1" placeholder="…or type your own action" disabled></textarea>
+          <button id="act" type="button" disabled>Act</button>
+        </div>
+        <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>tokens <b id="rTok">–</b></span><span>tok/s <b id="rTps">–</b></span></div>
+      </div>
+    </section>
+
+    <section aria-labelledby="how-h">
+      <h2 id="how-h">What makes this an "agent"</h2>
+      <p class="muted">
+        The page keeps a running transcript and re-sends it each turn, and the system prompt asks the
+        model to always end with 2-3 concrete options. The buttons you see are parsed out of the model's
+        own reply — so the loop is: model narrates &amp; proposes actions → you choose → model continues.
+        No server, no game engine; the LLM <em>is</em> the engine, deciding what happens next.
+      </p>
+    </section>
+
+    <p class="crumbs"><a href="../practical/">← Practical</a> · <a href="../">SmolLM2 360M</a> · Next: <a href="../multi-model/">Multi-model →</a></p>
+
+    <script type="module">
+      import { SmolLMEngine, escapeHTML, SMOLLM_CSS } from "../smollm2.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = SMOLLM_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new SmolLMEngine();
+      let loaded = false, backend = "…", busy = false;
+      const history = []; // running story (user/assistant turns)
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "HuggingFaceTB/SmolLM2-360M-Instruct", runtime: "transformers.js", dtype: "q4f16", sizeMB: 360, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: (device) => { loaded = true; backend = String(device || "wasm").toUpperCase(); $("begin").disabled = false; },
+      });
+
+      function systemPrompt() {
+        return `You are the dungeon master of a short interactive adventure set in ${$("setting").value.trim() || "a mysterious place"}. `
+          + "Narrate vividly but briefly (2-4 sentences per turn). After each narration, ALWAYS end your reply with 2 or 3 numbered choices for what the player does next, each on its own line like '1. ...'. Keep it family-friendly.";
+      }
+
+      function addBubble(role, label, text) {
+        const b = document.createElement("div"); b.className = "bubble " + role;
+        b.innerHTML = `<span class="role">${label}</span>`;
+        const span = document.createElement("span"); span.textContent = text; b.append(span);
+        $("story").append(b); $("story").scrollTop = $("story").scrollHeight;
+        return span;
+      }
+
+      function parseChoices(text) {
+        const out = [];
+        for (const line of text.split("\n")) {
+          const m = line.match(/^\s*(\d+)[.)]\s+(.*\S)/);
+          if (m) out.push(m[2]);
+        }
+        return out.slice(0, 3);
+      }
+
+      function renderChoices(text) {
+        $("choices").replaceChildren();
+        for (const c of parseChoices(text)) {
+          const btn = document.createElement("button"); btn.type = "button"; btn.className = "chip"; btn.textContent = c;
+          btn.addEventListener("click", () => turn(c));
+          $("choices").append(btn);
+        }
+      }
+
+      async function turn(action) {
+        if (!loaded || busy) return;
+        busy = true; $("begin").disabled = true; $("act").disabled = true; $("freeform").disabled = true; $("stop").hidden = false;
+        $("choices").replaceChildren();
+        $("status").classList.remove("err"); $("status").textContent = "The story continues…";
+        if (action) { addBubble("user", "you", action); history.push({ role: "user", content: action }); }
+        const span = addBubble("assistant", "dungeon master", "");
+        span.insertAdjacentHTML("beforeend", '<span class="caret"></span>');
+        let acc = "";
+        try {
+          const res = await engine.chat(
+            [{ role: "system", content: systemPrompt() }, ...history],
+            { maxTokens: 220, temperature: 0.9, topP: 0.95, doSample: true, onToken: (t) => { acc += t; span.innerHTML = escapeHTML(acc) + '<span class="caret"></span>'; $("story").scrollTop = $("story").scrollHeight; } },
+          );
+          const finalText = (res.text && res.text.trim()) ? res.text : acc;
+          span.textContent = finalText || "(no output)";
+          history.push({ role: "assistant", content: finalText });
+          renderChoices(finalText);
+          $("readout").hidden = false; $("rBackend").textContent = backend; $("rTok").textContent = res.tokens; $("rTps").textContent = res.ms ? (res.tokens / (res.ms / 1000)).toFixed(1) : "–";
+          $("status").textContent = "Your move."; $("status").classList.add("ok");
+          $("freeform").disabled = false; $("act").disabled = false;
+        } catch (err) { span.textContent = acc || "(failed)"; $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { busy = false; $("begin").disabled = false; $("stop").hidden = true; }
+      }
+
+      $("begin").addEventListener("click", () => { history.length = 0; $("story").replaceChildren(); turn("Begin the adventure. Set the opening scene."); });
+      $("act").addEventListener("click", () => { const v = $("freeform").value.trim(); if (v) { $("freeform").value = ""; turn(v); } });
+      $("freeform").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("act").click(); } });
+      $("stop").addEventListener("click", () => engine.stop());
+    </script>
+  </body>
+</html>
