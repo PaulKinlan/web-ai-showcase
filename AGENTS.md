@@ -40,7 +40,14 @@ short version for tools that look for `AGENTS.md`.
   **vilt** (no `vilt` class / no `visual-question-answering` pipeline / no ONNX), **kosmos-2** (no
   `kosmos` class in transformers.js; no browser ONNX), **mask2former** (no `Mask2Former...` class in
   transformers.js 3.7.5/4.2 — only the image processor; no browser ONNX), **internvl** (no
-  `internvl` class → `Unsupported model type: internvl`), **videomae / video-classification** (no
+  `internvl` class → `Unsupported model type: internvl`), **yi-1.5** / **internlm2.5** /
+  **starcoder2** / **codegemma** (distinct LLM families with no browser-runnable path: not in WebLLM
+  prebuiltAppConfig AND no transformers.js-loadable ONNX — Yi/StarCoder2 have the llama/gpt_bigcode
+  class but no ONNX on the Hub [only ORT-GenAI DirectML exports w/ 404 configs]; InternLM has no
+  class in 3.7.5/4.2; CodeGemma has no browser-feasible ONNX. Don't relabel Gemma/Qwen-Coder/other
+  LLMs), **nomic-embed-v2-moe** (no ONNX export exists anywhere [~200-repo scan:
+  safetensors/GGUF/ExecuTorch only] AND transformers.js registers only dense `nomic_bert`, not the
+  MoE expert-routing — don't relabel the dense v1.5), **videomae / video-classification** (no
   videomae class AND `video-classification` is not a supported pipeline task in transformers.js
   3.7.5/4.2; no browser ONNX), **parler-tts** (no `parler_tts` class in 3.7.5/4.2 →
   `Unsupported model type: parler_tts`; custom T5+DAC-codec+description-cross-attn unimplemented; no

@@ -55,13 +55,20 @@ of every model you can genuinely run in a browser — not a token set. Read `CLA
   `visual-question-answering` pipeline / no ONNX), **kosmos-2** (no `kosmos` class in
   transformers.js; no browser ONNX), **mask2former** (no `Mask2Former...` class in transformers.js
   3.7.5/4.2 — only the image processor; no browser ONNX), **internvl** (no `internvl` class →
-  `Unsupported model type: internvl`), **videomae / video-classification** (no videomae class AND
-  `video-classification` is not a supported pipeline task in transformers.js 3.7.5/4.2; no browser
-  ONNX), **parler-tts** (no `parler_tts` class in 3.7.5/4.2 → `Unsupported model type: parler_tts`;
-  custom T5+DAC-codec+description-cross-attn unimplemented; no loadable ONNX), **layoutlmv3** (no
-  `layoutlmv3`/`layoutlm` class in 3.7.5/4.2 despite ONNX exports existing — the text+bbox+patch
-  token-classification path has no class/processor, same as gliner), **aimv2** (no
-  `aimv2`/`Aimv2VisionModel` class in transformers.js 3.7.5 or 4.2; Apple repos
+  `Unsupported model type: internvl`), **yi-1.5** / **internlm2.5** / **starcoder2** / **codegemma**
+  (distinct LLM families with no browser-runnable path: not in WebLLM prebuiltAppConfig AND no
+  transformers.js-loadable ONNX — Yi/StarCoder2 have the llama/gpt_bigcode class but no ONNX on the
+  Hub [only ORT-GenAI DirectML exports w/ 404 configs]; InternLM has no class in 3.7.5/4.2;
+  CodeGemma has no browser-feasible ONNX. Don't relabel Gemma/Qwen-Coder/other LLMs),
+  **nomic-embed-v2-moe** (no ONNX export exists anywhere [~200-repo scan:
+  safetensors/GGUF/ExecuTorch only] AND transformers.js registers only dense `nomic_bert`, not the
+  MoE expert-routing — don't relabel the dense v1.5), **videomae / video-classification** (no
+  videomae class AND `video-classification` is not a supported pipeline task in transformers.js
+  3.7.5/4.2; no browser ONNX), **parler-tts** (no `parler_tts` class in 3.7.5/4.2 →
+  `Unsupported model type: parler_tts`; custom T5+DAC-codec+description-cross-attn unimplemented; no
+  loadable ONNX), **layoutlmv3** (no `layoutlmv3`/`layoutlm` class in 3.7.5/4.2 despite ONNX exports
+  existing — the text+bbox+patch token-classification path has no class/processor, same as gliner),
+  **aimv2** (no `aimv2`/`Aimv2VisionModel` class in transformers.js 3.7.5 or 4.2; Apple repos
   safetensors/custom-code no ONNX; community ONNX lacks config — don't relabel DINOv2/CLIP),
   **image-quality/aesthetic-assessment** (no honest browser IQA: aesthetic-predictor repos are
   safetensors-only custom classes or configless 1.7GB ONNX; the loadable swin 'quality' ONNX doesn't

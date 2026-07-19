@@ -141,21 +141,27 @@ unimplemented, no ONNX export anywhere), **kosmos-2** (no `kosmos` class in any 
 version; no browser ONNX — repos gated / safetensors-only), **mask2former** (no `Mask2Former...`
 class in transformers.js 3.7.5/4.2 — only the image processor; no browser ONNX), **internvl** (no
 `internvl` class → `Unsupported model type: internvl`; only third-party ONNX, upstream
-safetensors-only), **videomae / video-classification** (no videomae class AND `video-classification`
-is not a supported pipeline task in transformers.js 3.7.5/4.2; no browser ONNX), **parler-tts** (no
-`parler_tts` class in 3.7.5/4.2 → `Unsupported model type: parler_tts`; custom
-T5+DAC-codec+description-cross-attn unimplemented; no loadable ONNX), **layoutlmv3** (no
-`layoutlmv3`/`layoutlm` class in 3.7.5/4.2 despite ONNX exports existing — the text+bbox+patch
-token-classification path has no class/processor, same as gliner), **aimv2** (no
-`aimv2`/`Aimv2VisionModel` class in transformers.js 3.7.5 or 4.2; Apple repos
-safetensors/custom-code no ONNX; community ONNX lacks config — don't relabel DINOv2/CLIP),
-**image-quality/aesthetic-assessment** (no honest browser IQA: aesthetic-predictor repos are
-safetensors-only custom classes or configless 1.7GB ONNX; the loadable swin 'quality' ONNX doesn't
-track degradation [sharp≈blur≈noise] and the aesthetic-shadow ONNX is anime-only/rights-unclear —
-measured, blocked not faked), **marigold** (latent-diffusion depth pipeline —
-diffusers/VAE/UNet/DDIM, no transformers.js class; the one ONNX is a 3.46GB SD pipeline; don't
-relabel a regression depth model), **places365 / scene-classification** (no Places365/scene model
-ships a transformers.js-loadable ONNX — only .pt/.tflite/Caffe; don't relabel ImageNet ViT),
+safetensors-only), **yi-1.5** / **internlm2.5** / **starcoder2** / **codegemma** (distinct LLM
+families with no browser-runnable path: not in WebLLM prebuiltAppConfig AND no
+transformers.js-loadable ONNX — Yi/StarCoder2 have the llama/gpt_bigcode class but no ONNX on the
+Hub [only ORT-GenAI DirectML exports w/ 404 configs]; InternLM has no class in 3.7.5/4.2; CodeGemma
+has no browser-feasible ONNX. Don't relabel Gemma/Qwen-Coder/other LLMs), **nomic-embed-v2-moe** (no
+ONNX export exists anywhere [~200-repo scan: safetensors/GGUF/ExecuTorch only] AND transformers.js
+registers only dense `nomic_bert`, not the MoE expert-routing — don't relabel the dense v1.5),
+**videomae / video-classification** (no videomae class AND `video-classification` is not a supported
+pipeline task in transformers.js 3.7.5/4.2; no browser ONNX), **parler-tts** (no `parler_tts` class
+in 3.7.5/4.2 → `Unsupported model type: parler_tts`; custom T5+DAC-codec+description-cross-attn
+unimplemented; no loadable ONNX), **layoutlmv3** (no `layoutlmv3`/`layoutlm` class in 3.7.5/4.2
+despite ONNX exports existing — the text+bbox+patch token-classification path has no
+class/processor, same as gliner), **aimv2** (no `aimv2`/`Aimv2VisionModel` class in transformers.js
+3.7.5 or 4.2; Apple repos safetensors/custom-code no ONNX; community ONNX lacks config — don't
+relabel DINOv2/CLIP), **image-quality/aesthetic-assessment** (no honest browser IQA:
+aesthetic-predictor repos are safetensors-only custom classes or configless 1.7GB ONNX; the loadable
+swin 'quality' ONNX doesn't track degradation [sharp≈blur≈noise] and the aesthetic-shadow ONNX is
+anime-only/rights-unclear — measured, blocked not faked), **marigold** (latent-diffusion depth
+pipeline — diffusers/VAE/UNet/DDIM, no transformers.js class; the one ONNX is a 3.46GB SD pipeline;
+don't relabel a regression depth model), **places365 / scene-classification** (no Places365/scene
+model ships a transformers.js-loadable ONNX — only .pt/.tflite/Caffe; don't relabel ImageNet ViT),
 **legal-bert / legal fill-mask** (no legal-domain fill-mask ships a browser ONNX with a real MLM
 head — exports are NSP-only [logits [1,2]] or feature-extraction-only), **tapas** (no `tapas`
 class + no `table-question-answering` pipeline in transformers.js 3.7.5/4.2; no browser ONNX; needs
