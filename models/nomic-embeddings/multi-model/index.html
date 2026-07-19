@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Nomic Multi-model — retrieve then rerank · Web AI Showcase</title>
+    <meta name="description" content="The production retrieval pattern in your browser: Nomic embeds and retrieves a shortlist fast, then a MS-MARCO cross-encoder reranks it precisely. Watch the order change between the two stages." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🔗</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Nomic</a></p>
+
+    <header>
+      <p class="eyebrow">use case · multi-model</p>
+      <h1>Multi-model: retrieve with Nomic, rerank with a cross-encoder</h1>
+      <p class="lede">
+        This is how real search is built. A <strong>bi-encoder</strong> (Nomic) embeds the query and every passage
+        separately and retrieves a shortlist by cosine — fast and scalable. Then a <strong>cross-encoder</strong>
+        (MS-MARCO MiniLM) reads the query and each shortlisted passage <em>together</em> and re-scores them
+        precisely. Both models run in your browser; watch the ranking change between the two stages.
+      </p>
+    </header>
+
+    <section class="panel">
+      <h3>Load both models</h3>
+      <p class="muted">Nomic embedder (~140 MB) and the MS-MARCO cross-encoder (~23 MB) each cache and then auto-init.</p>
+      <div class="grid-2">
+        <div><p class="muted" style="font-size:.8rem;margin:.2rem 0">Nomic (retriever)</p><div id="loader-nomic"></div></div>
+        <div><p class="muted" style="font-size:.8rem;margin:.2rem 0">MS-MARCO (reranker)</p><div id="loader-rr"></div></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h3>Retrieve → rerank</h3>
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">Query
+        <input type="text" id="query" value="how do I stop condensation on my windows in winter?" />
+      </label>
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.5rem">Corpus (one passage per line)
+        <textarea id="corpus" rows="8">Run a dehumidifier or crack a window to cut indoor moisture.
+Ventilation is key: extractor fans in the kitchen and bathroom reduce damp air.
+Double glazing keeps the inner pane warmer so water is less likely to form on it.
+Wipe the glass each morning and improve airflow to stop mould taking hold.
+The best houseplants for low light include pothos and snake plants.
+A sourdough starter needs feeding with flour and water every day.
+Trickle vents let a small amount of fresh air in without a cold draught.
+Cavity wall insulation lowers heating bills over a full winter.</textarea>
+      </label>
+      <div style="margin:.5rem 0;display:flex;gap:.8rem;flex-wrap:wrap;align-items:center">
+        <label style="font-size:.82rem;display:flex;gap:.4rem;align-items:center">Shortlist size (top-k from Nomic)
+          <input type="number" id="topk" min="2" max="8" value="5" style="inline-size:4rem" />
+        </label>
+        <button id="run" type="button" disabled>Retrieve then rerank</button>
+      </div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <div class="grid-2" id="results" hidden style="margin-top:.6rem">
+        <div>
+          <h3 style="margin-top:.3rem">Stage 1 — Nomic retrieves (cosine)</h3>
+          <div id="stage1"></div>
+        </div>
+        <div>
+          <h3 style="margin-top:.3rem">Stage 2 — cross-encoder reranks</h3>
+          <div id="stage2"></div>
+        </div>
+      </div>
+      <p class="muted" style="font-size:.85rem;margin-top:.6rem">The cross-encoder often <strong>reorders</strong>
+        the shortlist — a passage Nomic ranked #3 can jump to #1 once the reranker reads it against the query word
+        for word. That two-stage split (cheap recall, then precise ranking) is the backbone of modern search and RAG.</p>
+    </section>
+
+    <p class="crumbs"><a href="../wild/">← Wild</a> · <a href="../">Back to Nomic</a></p>
+
+    <script type="module">
+      import { EmbedEngine, asQuery, asDocument, rank, escapeHTML, NOMIC_CSS } from "../nomic.js";
+      import { RerankEngine } from "/web-ai-showcase/models/ms-marco-reranker/rerank.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = NOMIC_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const nomic = new EmbedEngine();
+      const rr = new RerankEngine();
+      let nomicReady = false, rrReady = false;
+      const maybeEnable = () => { if (nomicReady && rrReady) { $("run").disabled = false; $("runStatus").hidden = false; $("runStatus").textContent = "Both models ready."; $("runStatus").classList.add("ok"); } };
+
+      createModelLoader({
+        mount: $("loader-nomic"),
+        model: { modelId: "Xenova/nomic-embed-text-v1", runtime: "transformers.js", dtype: "q8", sizeMB: 140, requiresWebGPU: false },
+        load: async (onProgress) => { await nomic.load(onProgress); return nomic; },
+        onReady: () => { nomicReady = true; maybeEnable(); },
+      });
+      createModelLoader({
+        mount: $("loader-rr"),
+        model: { modelId: "Xenova/ms-marco-MiniLM-L-6-v2", runtime: "transformers.js", dtype: "q8", sizeMB: 23, requiresWebGPU: false },
+        load: async (onProgress) => { await rr.load(onProgress); return rr; },
+        onReady: () => { rrReady = true; maybeEnable(); },
+      });
+
+      function renderList(container, items) {
+        // items: [{text, score, badge}]
+        container.replaceChildren(...items.map((it, i) => {
+          const row = document.createElement("div"); row.className = "result-row"; row.style.marginBottom = ".4rem";
+          row.innerHTML = `<div class="result-head"><span><strong>#${i + 1}</strong> ${escapeHTML(it.text)}</span><span class="result-score">${it.score}</span></div>` +
+            (it.badge ? `<div style="margin-top:.2rem"><span class="pill">${it.badge}</span></div>` : "");
+          return row;
+        }));
+      }
+
+      $("run").addEventListener("click", async () => {
+        const query = $("query").value.trim();
+        const corpus = [...new Set($("corpus").value.split(/\n/).map((s) => s.trim()).filter(Boolean))];
+        const topk = Math.max(2, Math.min(8, +$("topk").value || 5));
+        if (!query || corpus.length < 2) { $("runStatus").hidden = false; $("runStatus").textContent = "Need a query and ≥2 passages."; $("runStatus").classList.add("err"); return; }
+        $("runStatus").hidden = false; $("runStatus").classList.remove("err"); $("runStatus").textContent = "Stage 1: embedding + retrieving…"; $("run").disabled = true;
+        try {
+          // Stage 1 — Nomic bi-encoder retrieval.
+          const r = await nomic.embed([asQuery(query), ...corpus.map(asDocument)]);
+          const qv = r.embeddings[0], cv = r.embeddings.slice(1);
+          const ranked = rank(qv, cv).slice(0, topk);
+          const shortlist = ranked.map((x) => corpus[x.index]);
+          $("results").hidden = false;
+          renderList($("stage1"), ranked.map((x) => ({ text: corpus[x.index], score: x.score.toFixed(3), badge: "cosine" })));
+
+          // Stage 2 — cross-encoder rerank of the shortlist.
+          $("runStatus").textContent = "Stage 2: cross-encoder reranking the shortlist…";
+          const rrRes = await rr.rerank(query, shortlist);
+          renderList($("stage2"), rrRes.results.map((x) => ({ text: x.passage, score: (x.prob != null ? x.prob.toFixed(3) : x.logit.toFixed(2)), badge: "relevance logit " + x.logit.toFixed(2) })));
+
+          $("runStatus").textContent = `Done — retrieved ${shortlist.length}, reranked with the cross-encoder.`; $("runStatus").classList.add("ok");
+        } catch (err) { $("runStatus").textContent = "Failed: " + err.message; $("runStatus").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>

@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Nomic Basics — similarity as one number, and the prefix effect · Web AI Showcase</title>
+    <meta name="description" content="The fundamental embedding move: turn two texts into vectors and read their cosine similarity as one number. Then watch Nomic's task prefix change the very same sentence's embedding." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🧭</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Nomic</a></p>
+
+    <header>
+      <p class="eyebrow">use case · basics</p>
+      <h1>Basics: similarity as one number, and the prefix effect</h1>
+      <p class="lede">
+        An embedding turns text into a point in 768-dimensional space; two texts that mean similar things land
+        close together. The first demo reads that closeness as a single cosine number. The second shows the thing
+        that makes Nomic different from an ordinary encoder: the <strong>task prefix</strong> literally moves the
+        sentence to a different point.
+      </p>
+    </header>
+
+    <section class="panel">
+      <h3>1 · How similar are two texts?</h3>
+      <div id="model-loader"></div>
+      <div class="grid-2" style="margin-top:.6rem">
+        <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">Text A
+          <textarea id="a" rows="2">A dog is chasing a ball in the park.</textarea>
+        </label>
+        <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">Text B
+          <textarea id="b" rows="2">A puppy runs after a toy on the grass.</textarea>
+        </label>
+      </div>
+      <div style="display:flex;gap:.8rem;flex-wrap:wrap;align-items:center;margin:.5rem 0">
+        <label style="font-size:.82rem;display:flex;gap:.4rem;align-items:center">Prefix
+          <select id="prefix">
+            <option value="classification" selected>classification: (symmetric)</option>
+            <option value="clustering">clustering:</option>
+            <option value="none">none (raw text)</option>
+          </select>
+        </label>
+        <button id="runSim" type="button" disabled>Compare</button>
+        <div style="display:flex;flex-wrap:wrap;gap:.4rem">
+          <button class="chip" type="button" data-a="A dog is chasing a ball in the park." data-b="A puppy runs after a toy on the grass.">paraphrase</button>
+          <button class="chip" type="button" data-a="The stock market fell sharply today." data-b="A recipe for chocolate cake.">unrelated</button>
+          <button class="chip" type="button" data-a="I love this movie." data-b="I hate this movie.">opposite</button>
+        </div>
+      </div>
+      <p class="status" id="simStatus" role="status" aria-live="polite" hidden></p>
+      <div id="simOut" hidden style="margin-top:.4rem">
+        <div class="cos-big"><span id="cosNum">–</span><span class="muted" style="font-size:1rem"> cosine similarity</span></div>
+        <div class="result-bar" style="max-inline-size:420px"><div class="result-fill" id="cosFill" style="inline-size:0%"></div></div>
+        <p class="muted" id="simInterp" style="font-size:.82rem;margin-top:.4rem"></p>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h3>2 · The prefix effect — same sentence, different point</h3>
+      <p class="muted">Nomic bakes the task into the text as a prefix, so one sentence has a <em>different</em> embedding
+        under each prefix. Type a sentence and see how much the vector moves between prefixes — measured as the
+        cosine similarity between the prefixed versions (1.00 would mean "no change").</p>
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;max-inline-size:520px">Sentence
+        <input type="text" id="pfxText" value="how to keep a laptop battery healthy" />
+      </label>
+      <button id="runPfx" type="button" disabled style="margin-top:.5rem">Embed under every prefix</button>
+      <p class="status" id="pfxStatus" role="status" aria-live="polite" hidden></p>
+      <div id="pfxOut" hidden class="matrix-scroll" style="margin-top:.5rem">
+        <div id="pfxMatrix"></div>
+        <p class="muted" style="font-size:.78rem;margin-top:.4rem">Off-diagonal values below 1.00 prove the prefix
+          shifts the embedding. <code>search_query:</code> and <code>search_document:</code> are pulled furthest
+          apart — that gap is exactly what powers asymmetric query-to-passage retrieval.</p>
+      </div>
+    </section>
+
+    <p class="crumbs"><a href="../">← Back to Nomic</a> · Next: <a href="../practical/">Practical →</a></p>
+
+    <script type="module">
+      import { EmbedEngine, PREFIXES, cosine, simMatrix, renderMatrix, NOMIC_CSS } from "../nomic.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style");
+      style.textContent = NOMIC_CSS + `.cos-big{font-family:var(--font-display);font-size:2.4rem;line-height:1}`;
+      document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new EmbedEngine();
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/nomic-embed-text-v1", runtime: "transformers.js", dtype: "q8", sizeMB: 140, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("runSim").disabled = false; $("runPfx").disabled = false; },
+      });
+
+      for (const c of document.querySelectorAll(".chip")) c.addEventListener("click", () => { $("a").value = c.dataset.a; $("b").value = c.dataset.b; });
+
+      function withPrefix(text) {
+        const p = $("prefix").value;
+        return p === "none" ? text : PREFIXES[p] + text;
+      }
+      $("runSim").addEventListener("click", async () => {
+        const a = $("a").value.trim(), b = $("b").value.trim();
+        if (!a || !b) { $("simStatus").hidden = false; $("simStatus").textContent = "Fill in both texts."; $("simStatus").classList.add("err"); return; }
+        $("simStatus").hidden = false; $("simStatus").classList.remove("err"); $("simStatus").textContent = "Embedding…"; $("runSim").disabled = true;
+        try {
+          const r = await engine.embed([withPrefix(a), withPrefix(b)]);
+          const cos = cosine(r.embeddings[0], r.embeddings[1]);
+          $("simOut").hidden = false;
+          $("cosNum").textContent = cos.toFixed(3);
+          $("cosFill").style.inlineSize = `${(Math.max(0, cos) * 100).toFixed(0)}%`;
+          $("simInterp").textContent = cos > 0.75 ? "Very similar in meaning." : cos > 0.5 ? "Related." : cos > 0.3 ? "Loosely related." : "Different meanings — note that opposites (love/hate) still share topic, so they aren't near zero.";
+          $("simStatus").textContent = "Done."; $("simStatus").classList.add("ok");
+        } catch (err) { $("simStatus").textContent = "Failed: " + err.message; $("simStatus").classList.add("err"); }
+        finally { $("runSim").disabled = false; }
+      });
+
+      $("runPfx").addEventListener("click", async () => {
+        const t = $("pfxText").value.trim();
+        if (!t) { $("pfxStatus").hidden = false; $("pfxStatus").textContent = "Type a sentence."; $("pfxStatus").classList.add("err"); return; }
+        $("pfxStatus").hidden = false; $("pfxStatus").classList.remove("err"); $("pfxStatus").textContent = "Embedding under 4 prefixes…"; $("runPfx").disabled = true;
+        try {
+          const names = ["search_query:", "search_document:", "classification:", "clustering:"];
+          const keys = ["query", "document", "classification", "clustering"];
+          const r = await engine.embed(keys.map((k) => PREFIXES[k] + t));
+          renderMatrix($("pfxMatrix"), simMatrix(r.embeddings), names);
+          $("pfxOut").hidden = false;
+          $("pfxStatus").textContent = "Done."; $("pfxStatus").classList.add("ok");
+        } catch (err) { $("pfxStatus").textContent = "Failed: " + err.message; $("pfxStatus").classList.add("err"); }
+        finally { $("runPfx").disabled = false; }
+      });
+    </script>
+  </body>
+</html>

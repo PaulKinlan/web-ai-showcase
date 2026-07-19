@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Nomic Practical — semantic search & near-duplicate clustering · Web AI Showcase</title>
+    <meta name="description" content="Ship Nomic: semantic search that beats keyword matching on synonyms and paraphrases, and label-free near-duplicate clustering over a pasted corpus — all client-side, no vector DB." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🔎</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Nomic</a></p>
+
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Practical: semantic search &amp; near-duplicate clustering</h1>
+      <p class="lede">
+        Two things you'd actually ship. First, meaning-based <strong>search</strong> that finds the right passage
+        even when it shares no keywords with the query — with a naive keyword score alongside so you can see Nomic
+        win. Second, label-free <strong>clustering</strong> that collapses "same thing, different words." Both run
+        entirely in the tab, no vector database.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div class="seg" role="group" aria-label="Mode">
+        <button id="modeSearch" type="button" aria-pressed="true">Semantic search</button>
+        <button id="modeCluster" type="button" aria-pressed="false">Near-duplicate clustering</button>
+      </div>
+      <div id="model-loader" style="margin-top:.6rem"></div>
+
+      <!-- SEARCH -->
+      <div id="searchPane">
+        <div class="grid-2" style="margin-top:.6rem">
+          <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">Query
+            <input type="text" id="query" value="how to make my phone battery last longer" />
+          </label>
+          <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">Corpus (one passage per line)
+            <textarea id="corpus" rows="7">Dim the screen and turn off background app refresh to extend runtime.
+Lithium cells degrade faster in heat, so keep the handset cool.
+The new café on the corner serves excellent flat whites.
+Enable low-power mode when the charge drops below twenty percent.
+Our quarterly revenue grew twelve percent year over year.
+A total solar eclipse will be visible across the region next spring.</textarea>
+          </label>
+        </div>
+        <div style="margin:.5rem 0;display:flex;gap:.6rem;flex-wrap:wrap">
+          <button id="runSearch" type="button" disabled>Search</button>
+          <button id="resetSearch" type="button" class="secondary">Reset</button>
+        </div>
+        <p class="status" id="searchStatus" role="status" aria-live="polite" hidden></p>
+        <div id="searchOut" hidden>
+          <table class="sim-matrix" style="inline-size:100%">
+            <thead><tr><th scope="col" style="text-align:left">passage</th><th scope="col">semantic (cosine)</th><th scope="col">keyword overlap</th></tr></thead>
+            <tbody id="searchRows"></tbody>
+          </table>
+          <p class="muted" style="font-size:.8rem;margin-top:.4rem">Ranked by semantic similarity. Watch rows where
+            the keyword score is 0 but the semantic score is high — those are the synonym/paraphrase matches pure
+            keyword search would miss entirely.</p>
+        </div>
+      </div>
+
+      <!-- CLUSTER -->
+      <div id="clusterPane" hidden>
+        <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">Items (one per line)
+          <textarea id="items" rows="9">How do I reset my password?
+I forgot my password, how can I recover it?
+The app keeps crashing on startup.
+My application won't open, it closes immediately.
+Can I get a refund for my order?
+I'd like my money back for this purchase.
+What are your customer support hours?
+When is your support team available?
+The weather is lovely today.</textarea>
+        </label>
+        <div style="margin:.5rem 0;display:flex;gap:.8rem;flex-wrap:wrap;align-items:center">
+          <label style="font-size:.82rem;display:flex;gap:.5rem;align-items:center">Merge threshold
+            <input type="range" id="cThresh" min="50" max="95" value="70" step="1" style="accent-color:var(--accent)" />
+            <output id="cThreshOut">0.70</output>
+          </label>
+          <button id="runCluster" type="button" disabled>Cluster</button>
+        </div>
+        <p class="status" id="clusterStatus" role="status" aria-live="polite" hidden></p>
+        <div id="clusterOut" hidden></div>
+      </div>
+    </section>
+
+    <p class="crumbs"><a href="../basics/">← Basics</a> · <a href="../">Nomic</a> · Next: <a href="../wild/">Wild →</a></p>
+
+    <script type="module">
+      import { EmbedEngine, PREFIXES, asQuery, asDocument, asClustering, cosine, rank, clusterByThreshold, escapeHTML, NOMIC_CSS } from "../nomic.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = NOMIC_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new EmbedEngine();
+      const DEF_Q = $("query").value, DEF_C = $("corpus").value;
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/nomic-embed-text-v1", runtime: "transformers.js", dtype: "q8", sizeMB: 140, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("runSearch").disabled = false; $("runCluster").disabled = false; },
+      });
+
+      $("modeSearch").addEventListener("click", () => setMode("search"));
+      $("modeCluster").addEventListener("click", () => setMode("cluster"));
+      function setMode(m) {
+        $("modeSearch").setAttribute("aria-pressed", String(m === "search"));
+        $("modeCluster").setAttribute("aria-pressed", String(m === "cluster"));
+        $("searchPane").hidden = m !== "search"; $("clusterPane").hidden = m !== "cluster";
+      }
+      $("resetSearch").addEventListener("click", () => { $("query").value = DEF_Q; $("corpus").value = DEF_C; });
+
+      const STOP = new Set("the a an of to in on and or is are was were be for with as at by from this that it my i how do does can what when your you".split(" "));
+      const words = (s) => new Set(s.toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter((w) => w.length > 1 && !STOP.has(w)));
+      function keywordOverlap(q, p) { const qs = words(q); if (!qs.size) return 0; const ps = words(p); let n = 0; for (const w of qs) if (ps.has(w)) n++; return n / qs.size; }
+
+      $("runSearch").addEventListener("click", async () => {
+        const query = $("query").value.trim();
+        const corpus = [...new Set($("corpus").value.split(/\n/).map((s) => s.trim()).filter(Boolean))];
+        if (!query || corpus.length < 2) { $("searchStatus").hidden = false; $("searchStatus").textContent = "Need a query and ≥2 passages."; $("searchStatus").classList.add("err"); return; }
+        $("searchStatus").hidden = false; $("searchStatus").classList.remove("err"); $("searchStatus").textContent = "Embedding…"; $("runSearch").disabled = true;
+        try {
+          const r = await engine.embed([asQuery(query), ...corpus.map(asDocument)]);
+          const qv = r.embeddings[0], cv = r.embeddings.slice(1);
+          const ranked = rank(qv, cv);
+          $("searchOut").hidden = false;
+          $("searchRows").replaceChildren(...ranked.map(({ index, score }) => {
+            const kw = keywordOverlap(query, corpus[index]);
+            const tr = document.createElement("tr");
+            const c0 = document.createElement("td"); c0.style.textAlign = "left"; c0.textContent = corpus[index];
+            const c1 = document.createElement("td"); c1.textContent = score.toFixed(3); c1.style.background = `color-mix(in srgb, var(--accent) ${(Math.max(0, score) * 100).toFixed(0)}%, transparent)`;
+            const c2 = document.createElement("td"); c2.textContent = kw.toFixed(2); if (kw === 0 && score > 0.4) { c2.style.color = "var(--bad)"; c2.title = "keyword search would miss this"; }
+            tr.append(c0, c1, c2); return tr;
+          }));
+          $("searchStatus").textContent = "Done."; $("searchStatus").classList.add("ok");
+        } catch (err) { $("searchStatus").textContent = "Failed: " + err.message; $("searchStatus").classList.add("err"); }
+        finally { $("runSearch").disabled = false; }
+      });
+
+      $("cThresh").addEventListener("input", () => { $("cThreshOut").value = (+$("cThresh").value / 100).toFixed(2); });
+      $("runCluster").addEventListener("click", async () => {
+        const items = [...new Set($("items").value.split(/\n/).map((s) => s.trim()).filter(Boolean))];
+        if (items.length < 2) { $("clusterStatus").hidden = false; $("clusterStatus").textContent = "Add at least two items."; $("clusterStatus").classList.add("err"); return; }
+        $("clusterStatus").hidden = false; $("clusterStatus").classList.remove("err"); $("clusterStatus").textContent = "Embedding…"; $("runCluster").disabled = true;
+        try {
+          const r = await engine.embed(items.map(asClustering));
+          const th = +$("cThresh").value / 100;
+          const ids = clusterByThreshold(r.embeddings, th);
+          const groups = new Map();
+          ids.forEach((g, i) => { if (!groups.has(g)) groups.set(g, []); groups.get(g).push(items[i]); });
+          const ordered = [...groups.values()].sort((a, b) => b.length - a.length);
+          $("clusterOut").hidden = false;
+          $("clusterOut").replaceChildren(...ordered.map((members, gi) => {
+            const box = document.createElement("div"); box.className = "result-row"; box.style.marginBottom = ".5rem";
+            box.innerHTML = `<div class="result-head"><span><strong>Cluster ${gi + 1}</strong> ${members.length > 1 ? "· near-duplicates" : "· unique"}</span><span class="pill">${members.length} item${members.length > 1 ? "s" : ""}</span></div>` +
+              `<ul style="margin:.3rem 0 0 1rem;font-size:.85rem">${members.map((m) => `<li>${escapeHTML(m)}</li>`).join("")}</ul>`;
+            return box;
+          }));
+          $("clusterStatus").textContent = `Done — ${ordered.length} cluster(s) from ${items.length} items.`; $("clusterStatus").classList.add("ok");
+        } catch (err) { $("clusterStatus").textContent = "Failed: " + err.message; $("clusterStatus").classList.add("err"); }
+        finally { $("runCluster").disabled = false; }
+      });
+    </script>
+  </body>
+</html>

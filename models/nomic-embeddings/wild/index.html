@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Nomic Wild — analogies in embedding space · Web AI Showcase</title>
+    <meta name="description" content="Do arithmetic on meaning: A is to B as C is to ? Nomic embeds each phrase, computes B − A + C, and finds the nearest candidate. king − man + woman ≈ queen, in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🪄</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Nomic</a></p>
+
+    <header>
+      <p class="eyebrow">use case · wild</p>
+      <h1>Wild: arithmetic on meaning</h1>
+      <p class="lede">
+        Because meanings live as vectors, you can do algebra on them. The classic: <em>A is to B as C is to&nbsp;?</em>
+        Compute <code>B − A + C</code> and find the phrase whose embedding lands closest. Nomic embeds every phrase
+        with the <code>classification:</code> prefix and does the vector maths right here — no word2vec, no server.
+      </p>
+    </header>
+
+    <section class="panel">
+      <h3>Analogy solver — B − A + C ≈ ?</h3>
+      <div id="model-loader"></div>
+      <div class="analogy-row">
+        <label>A <input type="text" id="wa" value="man" /></label>
+        <span class="op">is to</span>
+        <label>B <input type="text" id="wb" value="king" /></label>
+        <span class="op">as</span>
+        <label>C <input type="text" id="wc" value="woman" /></label>
+        <span class="op">is to …</span>
+      </div>
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.5rem">Candidate answers (comma-separated)
+        <textarea id="cands" rows="2">queen, princess, prince, president, actor, daughter, mother, empress</textarea>
+      </label>
+      <div style="margin:.5rem 0;display:flex;gap:.6rem;flex-wrap:wrap">
+        <button id="run" type="button" disabled>Solve analogy</button>
+        <div style="display:flex;flex-wrap:wrap;gap:.4rem">
+          <button class="chip" type="button" data-a="man" data-b="king" data-c="woman" data-cands="queen, princess, prince, president, actor, daughter, empress">king / woman</button>
+          <button class="chip" type="button" data-a="France" data-b="Paris" data-c="Japan" data-cands="Tokyo, Kyoto, Beijing, Seoul, London, Osaka">capital cities</button>
+          <button class="chip" type="button" data-a="walk" data-b="walked" data-c="run" data-cands="ran, running, runs, jogged, sprint, went">past tense</button>
+          <button class="chip" type="button" data-a="cold" data-b="colder" data-c="warm" data-cands="warmer, hot, warmest, cool, heat, hotter">comparative</button>
+        </div>
+      </div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+      <div id="out" hidden style="margin-top:.4rem">
+        <p style="font-size:1.1rem"><span class="muted" id="eqText"></span></p>
+        <div id="ranked" aria-live="polite"></div>
+        <p class="muted" style="font-size:.8rem;margin-top:.4rem">Ranked by cosine to the target vector
+          <code id="vecEq"></code>. It won't be perfect — sentence embedders aren't pure word vectors — but the
+          intended answer usually lands at or near the top, which is remarkable for a model doing no lookup at all.</p>
+      </div>
+    </section>
+
+    <p class="crumbs"><a href="../practical/">← Practical</a> · <a href="../">Nomic</a> · Next: <a href="../multi-model/">Multi-model →</a></p>
+
+    <script type="module">
+      import { EmbedEngine, asClassification, cosine, renderRanked, NOMIC_CSS } from "../nomic.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style");
+      style.textContent = NOMIC_CSS + `
+        .analogy-row{display:flex;flex-wrap:wrap;gap:.5rem;align-items:end;margin-top:.6rem}
+        .analogy-row label{display:flex;flex-direction:column;gap:.2rem;font-size:.82rem}
+        .analogy-row input{inline-size:120px}
+        .analogy-row .op{padding-bottom:.5rem;color:var(--muted);font-size:.85rem}`;
+      document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new EmbedEngine();
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/nomic-embed-text-v1", runtime: "transformers.js", dtype: "q8", sizeMB: 140, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("run").disabled = false; },
+      });
+
+      for (const c of document.querySelectorAll(".chip")) c.addEventListener("click", () => {
+        $("wa").value = c.dataset.a; $("wb").value = c.dataset.b; $("wc").value = c.dataset.c; $("cands").value = c.dataset.cands;
+      });
+
+      function normalize(v) { let n = 0; for (const x of v) n += x * x; n = Math.sqrt(n) || 1; return v.map((x) => x / n); }
+
+      $("run").addEventListener("click", async () => {
+        const a = $("wa").value.trim(), b = $("wb").value.trim(), c = $("wc").value.trim();
+        const cands = [...new Set($("cands").value.split(/[,\n]/).map((s) => s.trim()).filter(Boolean))].filter((x) => ![a, c].includes(x));
+        if (!a || !b || !c || cands.length < 2) { $("runStatus").hidden = false; $("runStatus").textContent = "Fill A, B, C and at least two candidates."; $("runStatus").classList.add("err"); return; }
+        $("runStatus").hidden = false; $("runStatus").classList.remove("err"); $("runStatus").textContent = "Embedding…"; $("run").disabled = true;
+        try {
+          const r = await engine.embed([a, b, c, ...cands].map(asClassification));
+          const [va, vb, vc, ...vcands] = r.embeddings;
+          // target = B − A + C, then renormalize.
+          const target = normalize(vb.map((x, i) => x - va[i] + vc[i]));
+          const ranked = cands.map((text, i) => ({ text, score: cosine(target, vcands[i]) })).sort((x, y) => y.score - x.score);
+          $("out").hidden = false;
+          $("eqText").textContent = `${b} − ${a} + ${c} ≈ ?`;
+          $("vecEq").textContent = `${b} − ${a} + ${c}`;
+          renderRanked($("ranked"), ranked);
+          $("runStatus").textContent = "Done."; $("runStatus").classList.add("ok");
+        } catch (err) { $("runStatus").textContent = "Failed: " + err.message; $("runStatus").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>
