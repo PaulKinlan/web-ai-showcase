@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Moondream2 Multi-model — multilingual alt-text · Web AI Showcase</title>
+    <meta name="description" content="Chain two on-device models: Moondream2 describes an image, then an OPUS-MT translator turns the caption into another language — a full multilingual alt-text pipeline in the browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🌙</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Moondream2</a></p>
+    <header>
+      <p class="eyebrow">use case · multi-model</p>
+      <h1>Multi-model: multilingual alt-text pipeline</h1>
+      <p class="lede">
+        Two models, one job. <strong>Moondream2</strong> (vision-language, WebGPU) writes an English
+        description of the image, then <strong>OPUS-MT</strong> (a small translation model, on CPU/WASM)
+        renders it in the language you pick — an end-to-end, on-device pipeline that produces alt-text
+        for a multilingual audience with no server.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+      <p class="status" id="tstatus" role="status" aria-live="polite"></p>
+
+      <div class="vlm-grid" style="margin-top:.6rem">
+        <div class="vlm-img-col">
+          <div class="sample-strip" id="samples">
+            <img class="sample-thumb active" src="../sample-cats.jpg" data-src="../sample-cats.jpg" alt="Two cats on a couch" tabindex="0" role="button" />
+            <img class="sample-thumb" src="../sample-river.jpg" data-src="../sample-river.jpg" alt="A riverside at golden hour" tabindex="0" role="button" />
+            <img class="sample-thumb" src="../sample-room.jpg" data-src="../sample-room.jpg" alt="A cozy bedroom" tabindex="0" role="button" />
+          </div>
+          <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image" style="margin-bottom:.5rem">
+            <span id="dropText">…or drop / choose your own</span>
+            <input type="file" id="file" accept="image/*" hidden />
+          </div>
+          <img class="preview-img" id="preview" src="../sample-cats.jpg" alt="Selected image" />
+        </div>
+        <div class="vlm-out-col">
+          <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">
+            Translate the caption into
+            <select id="lang">
+              <option value="Xenova/opus-mt-en-fr" data-lang="French">French</option>
+              <option value="Xenova/opus-mt-en-es" data-lang="Spanish">Spanish</option>
+              <option value="Xenova/opus-mt-en-de" data-lang="German">German</option>
+            </select>
+          </label>
+          <button id="run" type="button" disabled style="margin-top:.5rem">Caption &amp; translate</button>
+
+          <h4 style="font-family:var(--font-body);font-size:.8rem;margin:.7rem 0 .2rem">1 · Moondream caption (English)</h4>
+          <div class="answer" id="caption" aria-live="polite"><span class="muted">The English caption streams here.</span></div>
+          <h4 style="font-family:var(--font-body);font-size:.8rem;margin:.7rem 0 .2rem">2 · <span id="langLabel">French</span> translation</h4>
+          <div class="answer" id="translation" aria-live="polite"><span class="muted">The translation appears here.</span></div>
+          <div style="margin-top:.4rem"><button id="copy" class="secondary" type="button" disabled>Copy translated alt-text</button></div>
+        </div>
+      </div>
+      <p class="muted" style="margin-top:.8rem;font-size:.82rem">
+        The translation model (~75 MB) downloads on first use and runs on CPU/WASM — it doesn't need
+        WebGPU, so only the Moondream step gates on a GPU.
+      </p>
+    </section>
+
+    <p class="crumbs"><a href="../wild/">← Wild</a> · <a href="../">Moondream2</a></p>
+
+    <script type="module">
+      import { MoondreamEngine, fileToDataURL, escapeHTML, MOON_CSS } from "../moondream.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      import { loadPipeline } from "/web-ai-showcase/lib/webai.js";
+      const style = document.createElement("style"); style.textContent = MOON_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new MoondreamEngine();
+      let currentImageURL = null, ready = false, lastTranslation = "";
+      const translators = new Map(); // modelId -> pipe
+
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        const blob = await (await fetch(el.dataset.src)).blob();
+        currentImageURL = await fileToDataURL(new File([blob], "s", { type: blob.type }));
+        $("preview").src = el.dataset.src;
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } });
+      }
+      pickSample($("samples").firstElementChild);
+
+      const file = $("file"), drop = $("drop");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) {
+        for (const t of $("samples").children) t.classList.remove("active");
+        currentImageURL = await fileToDataURL(f); $("preview").src = currentImageURL; $("dropText").textContent = f.name;
+      }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
+
+      $("lang").addEventListener("change", () => { $("langLabel").textContent = $("lang").selectedOptions[0].dataset.lang; });
+      $("copy").addEventListener("click", async () => {
+        try { await navigator.clipboard.writeText(lastTranslation); $("copy").textContent = "Copied!"; setTimeout(() => $("copy").textContent = "Copy translated alt-text", 1200); }
+        catch { $("tstatus").textContent = "Clipboard blocked — select and copy manually."; }
+      });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/moondream2", runtime: "transformers.js", dtype: "q4f16", sizeMB: 1800, requiresWebGPU: true },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: () => { ready = true; $("run").disabled = false; },
+      });
+
+      async function getTranslator(modelId) {
+        if (translators.has(modelId)) return translators.get(modelId);
+        $("tstatus").classList.remove("err"); $("tstatus").textContent = "Loading translation model (" + modelId + ")…";
+        const { pipe } = await loadPipeline({
+          task: "translation", model: modelId, backend: "wasm",
+          onProgress: (p) => { if (p.status === "progress" && typeof p.progress === "number") $("tstatus").textContent = "Translation model " + p.progress.toFixed(0) + "%"; },
+        });
+        translators.set(modelId, pipe);
+        $("tstatus").textContent = "Translation model ready.";
+        return pipe;
+      }
+
+      $("run").addEventListener("click", async () => {
+        if (!ready) return;
+        if (!currentImageURL) { $("status").textContent = "Pick an image first."; return; }
+        const modelId = $("lang").value;
+        $("run").disabled = true; $("copy").disabled = true;
+        $("status").classList.remove("err"); $("status").textContent = "Captioning with Moondream…";
+        $("caption").innerHTML = '<span class="caret">&nbsp;</span>'; $("translation").innerHTML = '<span class="muted">Waiting for the caption…</span>';
+        let caption = "";
+        try {
+          await engine.generate(currentImageURL, "Describe this image in one detailed sentence.", {
+            maxTokens: 120,
+            onToken: (tok) => { caption += tok; $("caption").innerHTML = escapeHTML(caption) + '<span class="caret">&nbsp;</span>'; },
+          });
+          caption = caption.trim();
+          $("caption").textContent = caption || "(no caption)";
+          $("status").textContent = "Caption done — translating…"; $("status").classList.add("ok");
+          if (!caption) throw new Error("empty caption");
+
+          const translate = await getTranslator(modelId);
+          $("translation").innerHTML = '<span class="caret">&nbsp;</span>';
+          const out = await translate(caption);
+          const t = Array.isArray(out) ? (out[0]?.translation_text ?? "") : (out?.translation_text ?? "");
+          lastTranslation = t; $("translation").textContent = t || "(no translation)"; $("copy").disabled = !t;
+          $("tstatus").textContent = "Done."; $("tstatus").classList.add("ok");
+        } catch (err) {
+          $("status").textContent = "Failed: " + err.message; $("status").classList.add("err");
+          if ($("translation").querySelector(".caret")) $("translation").innerHTML = '<span class="muted">Translation skipped.</span>';
+        } finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>
