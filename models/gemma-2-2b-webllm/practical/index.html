@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Gemma 2 Practical — reasoning &amp; structured extraction · Web AI Showcase</title>
+    <meta name="description" content="Put Gemma 2 2B's extra capability to work: step-by-step reasoning and strict JSON extraction from messy text, validated and re-formatted on-device." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>💎</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Gemma 2 2B</a></p>
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Practical: reasoning &amp; structured extraction</h1>
+      <p class="lede">
+        A 2.6B model has more headroom than the sub-1B chat models for two shipped patterns: working
+        through a problem <strong>step by step</strong>, and pulling <strong>strict JSON</strong> out of
+        messy text. Pick a mode, try the samples, and watch it run — with JSON validated and re-formatted
+        on-device.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <div id="fallback" class="fallback" hidden></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="controls" style="margin-top:.6rem">
+        <label class="control" style="min-inline-size:auto">mode
+          <span class="row">
+            <select id="mode">
+              <option value="reason">Step-by-step reasoning</option>
+              <option value="json">Structured JSON extraction</option>
+            </select>
+          </span>
+        </label>
+      </div>
+
+      <div class="chips" id="examples" style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.4rem 0"></div>
+
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:1rem;margin-top:.2rem">
+        <div>
+          <label id="fieldsRow" style="font-size:.82rem;color:var(--muted);display:none">Fields to extract (comma-separated)
+            <input type="text" id="schema" value="name, email, company, role, sentiment" style="inline-size:100%;margin-block-start:.2rem" />
+          </label>
+          <label style="font-size:.82rem;color:var(--muted);display:block;margin-block-start:.5rem" id="inLabel">Question</label>
+          <textarea id="input" rows="5" style="inline-size:100%" disabled>If a train leaves at 2:15pm and the journey takes 1 hour 50 minutes, what time does it arrive? Think step by step.</textarea>
+          <button id="run" type="button" disabled style="margin-block-start:.4rem">Run</button>
+          <button id="stop" type="button" class="secondary" hidden>Stop</button>
+        </div>
+        <div>
+          <p style="font-size:.82rem;color:var(--muted);margin:0 0 .2rem">Result</p>
+          <pre id="out" style="min-block-size:8rem;margin:0"><span class="muted">The answer appears here.</span></pre>
+          <p class="status" id="valid" role="status" style="margin-block-start:.3rem"></p>
+          <div class="readout" id="readout" hidden><span>first token <b id="rTtft">–</b></span><span>decode <b id="rTps">–</b></span></div>
+        </div>
+      </div>
+    </section>
+
+    <p class="crumbs"><a href="../basics/">← Basics</a> · <a href="../">Gemma 2 2B</a> · Next: <a href="../wild/">Wild →</a></p>
+
+    <script type="module">
+      import { GemmaChatEngine, probeWebGPU, escapeHTML, foldSystemForGemma, webgpuFallbackHTML, CHAT_CSS } from "../webllm-chat.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = CHAT_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new GemmaChatEngine();
+      let ready = false, generating = false;
+
+      const SAMPLES = {
+        reason: [
+          { label: "Train arrival", text: "If a train leaves at 2:15pm and the journey takes 1 hour 50 minutes, what time does it arrive? Think step by step." },
+          { label: "Marbles", text: "A bag has 4 red, 6 blue and 2 green marbles. If I draw one at random, what's the probability it is NOT blue? Reason step by step, then give the fraction." },
+          { label: "Logic", text: "Alice is older than Bob. Bob is older than Carol. Carol is older than Dave. Order them oldest to youngest and explain briefly." },
+        ],
+        json: [
+          { label: "Intro email", text: "Hi, I'm Dana Okafor from Northwind Labs. I lead their data platform team and honestly I'm thrilled with the new API — reach me at dana.okafor@northwind.dev.", schema: "name, email, company, role, sentiment" },
+          { label: "Coffee order", text: "Order #4821: 3x oat milk latte, 1x blueberry muffin. Pickup at 8:30am for Priya. Total $18.40.", schema: "order_id, items, pickup_time, customer, total" },
+          { label: "Trip request", text: "Booking: London Heathrow to Tokyo Narita, dep 14 Aug 2026, return 28 Aug, 2 adults, economy, budget under £1400.", schema: "origin, destination, depart_date, return_date, passengers, cabin, budget" },
+        ],
+      };
+
+      function renderExamples() {
+        const mode = $("mode").value;
+        $("examples").replaceChildren();
+        for (const s of SAMPLES[mode]) {
+          const b = document.createElement("button"); b.className = "chip"; b.type = "button"; b.textContent = s.label;
+          b.addEventListener("click", () => { $("input").value = s.text; if (s.schema) $("schema").value = s.schema; });
+          $("examples").append(b);
+        }
+        const json = mode === "json";
+        $("fieldsRow").style.display = json ? "block" : "none";
+        $("inLabel").textContent = json ? "Unstructured text" : "Question";
+        $("input").value = SAMPLES[mode][0].text;
+        if (SAMPLES[mode][0].schema) $("schema").value = SAMPLES[mode][0].schema;
+        $("out").innerHTML = '<span class="muted">The answer appears here.</span>'; $("valid").textContent = "";
+      }
+      $("mode").addEventListener("change", renderExamples); renderExamples();
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "gemma-2-2b-it-q4f16_1-MLC", runtime: "webllm", dtype: "q4f16_1", sizeMB: 1600, requiresWebGPU: true },
+        load: async (onProgress) => { await engine.load((p) => { if (typeof p.progress === "number") onProgress({ status: "progress", progress: p.progress * 100 }); }); return engine; },
+        onReady: () => { ready = true; $("input").disabled = false; $("run").disabled = false; },
+        onError: async (err) => { if (String(err?.message ?? err).includes("needs-webgpu")) { const probe = await probeWebGPU(); $("fallback").hidden = false; $("fallback").innerHTML = webgpuFallbackHTML(probe); } },
+      });
+
+      function extractJSON(s) {
+        const fenced = s.match(/```(?:json)?\s*([\s\S]*?)```/i);
+        const body = fenced ? fenced[1] : s;
+        const start = body.indexOf("{"), end = body.lastIndexOf("}");
+        if (start === -1 || end === -1 || end < start) return null;
+        return body.slice(start, end + 1);
+      }
+
+      async function run() {
+        if (!ready || generating) return;
+        const mode = $("mode").value;
+        const text = $("input").value.trim(); if (!text) return;
+        generating = true; $("run").disabled = true; $("stop").hidden = false;
+        $("status").classList.remove("err"); $("status").textContent = "Generating…"; $("valid").textContent = ""; $("out").textContent = "";
+        let system, user, temperature, max_tokens;
+        if (mode === "json") {
+          const fields = $("schema").value.split(",").map((f) => f.trim()).filter(Boolean);
+          if (!fields.length) { $("valid").textContent = "Add at least one field."; $("valid").className = "status err"; generating = false; $("run").disabled = false; $("stop").hidden = true; return; }
+          system = `You are a precise information-extraction engine. Extract the requested fields from the user's text and reply with ONLY a single minified JSON object — no prose, no code fences. Use these exact keys: ${fields.join(", ")}. If a field is absent, use null.`;
+          user = text; temperature = 0.1; max_tokens = 300;
+        } else {
+          system = "You are a careful reasoning assistant. Work through the problem step by step, then give a clearly labelled final answer.";
+          user = text; temperature = 0.4; max_tokens = 400;
+        }
+        const messages = foldSystemForGemma([{ role: "system", content: system }, { role: "user", content: user }]);
+        let acc = "";
+        try {
+          const res = await engine.chat({ messages, temperature, top_p: 0.9, max_tokens }, {
+            onFirstToken: (t) => { $("rTtft").textContent = t + " ms"; },
+            onToken: (d) => { acc += d; $("out").textContent = acc; },
+          });
+          if (mode === "json") {
+            const jsonStr = extractJSON(acc);
+            if (jsonStr) {
+              try { const obj = JSON.parse(jsonStr); $("out").textContent = JSON.stringify(obj, null, 2); $("valid").textContent = "✓ Valid JSON — parsed and re-formatted on-device."; $("valid").className = "status ok"; }
+              catch (e) { $("out").textContent = acc; $("valid").textContent = "△ JSON-like text that didn't parse: " + e.message; $("valid").className = "status err"; }
+            } else { $("out").textContent = acc; $("valid").textContent = "△ No JSON object found — try again."; $("valid").className = "status err"; }
+          } else {
+            $("out").textContent = acc || "(no output)";
+          }
+          const decodeMs = Math.max(1, res.ms - res.ttft);
+          $("readout").hidden = false; $("rTtft").textContent = res.ttft + " ms"; $("rTps").textContent = (res.chunks > 1 ? ((res.chunks - 1) / (decodeMs / 1000)).toFixed(1) : "0") + " tok/s";
+          $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (err) { $("valid").textContent = "Failed: " + err.message; $("valid").className = "status err"; $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { generating = false; $("run").disabled = false; $("stop").hidden = true; }
+      }
+      $("run").addEventListener("click", run);
+      $("stop").addEventListener("click", () => { engine.stop(); $("status").textContent = "Stopping…"; });
+    </script>
+  </body>
+</html>
