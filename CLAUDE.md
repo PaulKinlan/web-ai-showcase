@@ -141,8 +141,14 @@ unimplemented, no ONNX export anywhere), **kosmos-2** (no `kosmos` class in any 
 version; no browser ONNX — repos gated / safetensors-only), **mask2former** (no `Mask2Former...`
 class in transformers.js 3.7.5/4.2 — only the image processor; no browser ONNX), **internvl** (no
 `internvl` class → `Unsupported model type: internvl`; only third-party ONNX, upstream
-safetensors-only), **yi-1.5** / **internlm2.5** / **starcoder2** / **codegemma** (distinct LLM
-families with no browser-runnable path: not in WebLLM prebuiltAppConfig AND no
+safetensors-only), **audio-captioning** (no audio-captioning pipeline task in transformers.js + ZERO
+ONNX exports for any audio captioner [whisper-captioners/CNN14/BEATs — all pytorch/espnet w/ custom
+generate()]; don't relabel CLAP/ASR), **deplot / pix2struct chart-to-table** (no `Pix2Struct`
+class/processor in 3.7.5 or 4.2 — DePlot/MatCha/ChartQA are all Pix2Struct; ONNX exists but no
+library support; don't relabel a captioner), **monot5** (T5ForConditionalGeneration class IS
+supported but no monoT5 checkpoint ships a transformers.js-loadable ONNX — all safetensors-only;
+don't relabel a cross-encoder), **yi-1.5** / **internlm2.5** / **starcoder2** / **codegemma**
+(distinct LLM families with no browser-runnable path: not in WebLLM prebuiltAppConfig AND no
 transformers.js-loadable ONNX — Yi/StarCoder2 have the llama/gpt_bigcode class but no ONNX on the
 Hub [only ORT-GenAI DirectML exports w/ 404 configs]; InternLM has no class in 3.7.5/4.2; CodeGemma
 has no browser-feasible ONNX. Don't relabel Gemma/Qwen-Coder/other LLMs), **nomic-embed-v2-moe** (no
