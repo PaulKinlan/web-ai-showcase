@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>RT-DETRv2 × ViT — detect then classify · Web AI Showcase</title>
+    <meta name="description" content="Two models, one pipeline: RT-DETRv2 finds and boxes every object, then you tap one and a ViT image classifier looks only at that crop and names it in fine-grained ImageNet detail — 'sofa' becomes 'studio couch', 'dog' becomes 'golden retriever'. Both run locally in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🔗</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">RT-DETRv2</a> · <a href="/web-ai-showcase/models/vit-image-classification/">ViT</a></p>
+
+    <header>
+      <p class="eyebrow">use case · multi-model</p>
+      <h1>RT-DETRv2 × ViT: detect, then classify</h1>
+      <p class="lede">
+        Compose two models into one flow. <strong>RT-DETRv2</strong> answers "what's here and where"
+        with 80 coarse COCO boxes, fast; then you tap an object and a <strong>ViT classifier</strong>
+        looks <em>only at that crop</em> and names it in fine-grained ImageNet detail — "dog" becomes a
+        breed, "sofa" becomes "studio couch", "bird" becomes a species. Detection localises; classification
+        specialises — both entirely on your device.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="detr-loader"></div>
+      <div id="vit-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image">
+        <span id="dropText">Drop an image, or click to choose</span>
+        <input type="file" id="file" accept="image/*" hidden />
+      </div>
+      <div class="sample-strip" id="samples">
+        <img class="sample-thumb active" src="../sample-cats.jpg" data-src="../sample-cats.jpg" alt="Two cats on a couch" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-players.jpg" data-src="../sample-players.jpg" alt="Athletes on a field" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-room.jpg" data-src="../sample-room.jpg" alt="A cozy bedroom" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-river.jpg" data-src="../sample-river.jpg" alt="A riverside at golden hour" tabindex="0" role="button" />
+      </div>
+
+      <div style="margin:.6rem 0"><button id="run" type="button" disabled>Detect objects</button></div>
+
+      <div class="two-up" style="display:flex;flex-wrap:wrap;gap:1rem;align-items:flex-start">
+        <div style="flex:2 1 340px;min-inline-size:0">
+          <div class="canvas-wrap">
+            <canvas id="stage" class="stage-canvas" tabindex="0" role="button"
+              aria-label="Image with detection boxes — click a box to classify that object; or use the object list below"></canvas>
+          </div>
+        </div>
+        <div style="flex:1 1 240px;min-inline-size:0">
+          <p class="muted" style="font-size:.8rem;margin:.2rem 0">Detected objects — pick one to classify:</p>
+          <div class="obj-list" id="objList" role="group" aria-label="Detected objects"><span class="muted" style="font-size:.82rem">Run detection to list objects.</span></div>
+          <div id="cropWrap" hidden style="margin-top:.6rem">
+            <p class="muted" style="font-size:.8rem;margin:.2rem 0">ViT sees this crop:</p>
+            <canvas id="crop" style="inline-size:120px;block-size:120px;object-fit:contain;border:1px solid var(--border);border-radius:8px;background:var(--bg-raised)"></canvas>
+            <div id="bars" style="margin-top:.5rem"></div>
+          </div>
+        </div>
+      </div>
+      <div class="readout" id="readout" hidden><span>RT-DETRv2 <b id="rDetr">–</b></span><span>detect <b id="rDetectMs">–</b></span><span>ViT <b id="rVitMs">–</b></span><span>top-1 margin <b id="rMargin">–</b></span></div>
+      <p class="muted" style="font-size:.85rem">
+        Each model runs in its own Web Worker. Tapping a box crops that region to a small canvas and
+        hands the pixels to ViT — so classification only ever sees the one object, not the whole scene.
+        That crop-then-classify trick is the entire bridge: no shared weights, no retraining.
+      </p>
+    </section>
+
+    <section aria-labelledby="how-h">
+      <h2 id="how-h">How the two connect</h2>
+      <p>
+        RT-DETRv2's output is a list of boxes with coarse labels ("dog", "bird", "chair"). Each box is a
+        crop, and a crop is exactly what an ImageNet classifier wants: one centred object. Feed the crop
+        to ViT and its 1,000-way head refines the coarse label into a specific one. Because RT-DETRv2 is
+        real-time and NMS-free, this "detect → crop → classify" pattern scales to every object in the
+        frame, and on to video.
+      </p>
+    </section>
+
+    <p class="crumbs"><a href="../wild/">← Wild</a> · <a href="../">RT-DETRv2</a> · <a href="/web-ai-showcase/models/vit-image-classification/">ViT →</a></p>
+
+    <script type="module">
+      import { RtDetrV2Engine, fileToDataURL, colorForLabel, escapeHTML, DETR_CSS } from "../rtdetrv2.js";
+      import { ViTEngine, cleanLabel, renderBars, VIT_CSS } from "/web-ai-showcase/models/vit-image-classification/vit.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style"); style.textContent = DETR_CSS + VIT_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const detr = new RtDetrV2Engine();
+      const vit = new ViTEngine();
+      let currentImg = null, currentURL = null, detections = [], selectedIndex = -1;
+      const THRESH = 0.5;
+
+      function compose() {
+        if (!currentImg) return;
+        const w = currentImg.naturalWidth || currentImg.width, h = currentImg.naturalHeight || currentImg.height;
+        const c = $("stage"); c.width = w; c.height = h; const ctx = c.getContext("2d");
+        ctx.drawImage(currentImg, 0, 0, w, h);
+        const lw = Math.max(2, w / 320);
+        const fontPx = Math.max(13, Math.round(w / 42));
+        ctx.font = `600 ${fontPx}px "Avenir Next","Segoe UI",system-ui,sans-serif`; ctx.textBaseline = "middle";
+        detections.forEach((d, i) => {
+          const { xmin, ymin, xmax, ymax } = d.box; const color = colorForLabel(d.label);
+          ctx.lineWidth = i === selectedIndex ? lw * 2.2 : lw; ctx.strokeStyle = color;
+          ctx.strokeRect(xmin, ymin, xmax - xmin, ymax - ymin);
+          const text = `${d.label} ${(d.score * 100).toFixed(0)}%`; const padX = fontPx * 0.35; const th = fontPx * 1.35;
+          const tw = ctx.measureText(text).width + padX * 2; const ly = Math.max(0, ymin - th);
+          ctx.fillStyle = color; ctx.fillRect(xmin - lw / 2, ly, tw, th);
+          ctx.fillStyle = "#fff"; ctx.fillText(text, xmin - lw / 2 + padX, ly + th / 2);
+        });
+      }
+
+      function decode(url) { return new Promise((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = () => rej(new Error("decode failed")); im.src = url; }); }
+      async function useURL(url) {
+        currentURL = url; currentImg = await decode(url); detections = []; selectedIndex = -1;
+        $("objList").replaceChildren(Object.assign(document.createElement("span"), { className: "muted", textContent: "Run detection to list objects.", style: "font-size:.82rem" }));
+        $("cropWrap").hidden = true; $("readout").hidden = true;
+        compose();
+      }
+      async function pickSample(el) { for (const t of $("samples").children) t.classList.toggle("active", t === el); const blob = await (await fetch(el.dataset.src)).blob(); await useURL(await fileToDataURL(new File([blob], "s", { type: blob.type }))); }
+      for (const thumb of $("samples").children) { thumb.addEventListener("click", () => pickSample(thumb)); thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } }); }
+      pickSample($("samples").firstElementChild);
+
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) { for (const t of $("samples").children) t.classList.remove("active"); await useURL(await fileToDataURL(f)); $("dropText").textContent = f.name; }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
+
+      let detrReady = false, vitReady = false;
+      function maybeEnable() { if (detrReady && vitReady) { $("run").disabled = false; $("status").textContent = "Both models ready — pick an image and Detect."; $("status").classList.add("ok"); } }
+      createModelLoader({
+        mount: $("detr-loader"),
+        model: { modelId: "onnx-community/rtdetr_v2_r18vd-ONNX", runtime: "transformers.js", dtype: "q8", sizeMB: 21, requiresWebGPU: false },
+        load: (onProgress) => detr.load(onProgress),
+        onReady: (dev) => { detrReady = true; $("rDetr").textContent = dev.toUpperCase(); maybeEnable(); },
+      });
+      createModelLoader({
+        mount: $("vit-loader"),
+        model: { modelId: "Xenova/vit-base-patch16-224", runtime: "transformers.js", dtype: "q8", sizeMB: 88, requiresWebGPU: false },
+        load: (onProgress) => vit.load(onProgress),
+        onReady: () => { vitReady = true; maybeEnable(); },
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!currentURL) { $("status").textContent = "Pick an image first."; return; }
+        $("run").disabled = true; $("status").classList.remove("err"); $("status").textContent = "Detecting…";
+        try {
+          const r = await detr.detect(currentURL);
+          detections = r.detections.filter((d) => d.score >= THRESH).sort((a, b) => b.score - a.score);
+          $("rDetr").textContent = r.device.toUpperCase(); $("rDetectMs").textContent = r.ms + " ms"; $("readout").hidden = false;
+          buildList(); selectedIndex = -1; $("cropWrap").hidden = true; compose();
+          $("status").textContent = `RT-DETRv2 found ${detections.length} objects. Tap one to classify it.`; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Detection failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+
+      function buildList() {
+        if (!detections.length) { $("objList").replaceChildren(Object.assign(document.createElement("span"), { className: "muted", textContent: "No objects detected.", style: "font-size:.82rem" })); return; }
+        $("objList").replaceChildren(...detections.map((d, i) => {
+          const b = document.createElement("button"); b.type = "button"; b.className = "obj-btn"; b.setAttribute("aria-pressed", "false");
+          b.innerHTML = `<span class="swatch" style="background:${colorForLabel(d.label)}"></span>${escapeHTML(d.label)}<span class="sc">${(d.score * 100).toFixed(0)}%</span>`;
+          b.addEventListener("click", () => classifyObject(i));
+          return b;
+        }));
+      }
+
+      function cropToURL(box) {
+        const w = currentImg.naturalWidth || currentImg.width, h = currentImg.naturalHeight || currentImg.height;
+        const x = Math.max(0, Math.floor(box.xmin)), y = Math.max(0, Math.floor(box.ymin));
+        const cw = Math.max(1, Math.min(w - x, Math.round(box.xmax - box.xmin)));
+        const ch = Math.max(1, Math.min(h - y, Math.round(box.ymax - box.ymin)));
+        const cv = document.createElement("canvas"); cv.width = cw; cv.height = ch;
+        cv.getContext("2d").drawImage(currentImg, x, y, cw, ch, 0, 0, cw, ch);
+        // preview
+        const pv = $("crop"); pv.width = cw; pv.height = ch; pv.getContext("2d").drawImage(cv, 0, 0);
+        return cv.toDataURL("image/jpeg", 0.92);
+      }
+
+      async function classifyObject(index) {
+        if (!vit.ready) { $("status").textContent = "Load the models first."; return; }
+        selectedIndex = index;
+        for (const [i, btn] of [...$("objList").querySelectorAll(".obj-btn")].entries()) btn.setAttribute("aria-pressed", String(i === index));
+        compose(); $("cropWrap").hidden = false; $("status").textContent = "Classifying crop…"; $("status").classList.remove("err");
+        try {
+          const url = cropToURL(detections[index].box);
+          const r = await vit.classify(url, 5);
+          renderBars($("bars"), r.top.map((t) => ({ label: t.label, prob: t.prob })));
+          $("rVitMs").textContent = r.ms + " ms"; $("rMargin").textContent = (r.margin * 100).toFixed(1) + "%"; $("readout").hidden = false;
+          const coarse = detections[index].label; const fine = cleanLabel(r.top[0].label);
+          $("status").textContent = `“${coarse}” → ViT says “${fine}” (${(r.top[0].prob * 100).toFixed(1)}%).`; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Classification failed: " + err.message; $("status").classList.add("err"); }
+      }
+
+      const stage = $("stage");
+      function normFromEvent(e) {
+        const rect = stage.getBoundingClientRect();
+        return { x: (e.clientX - rect.left) / rect.width, y: (e.clientY - rect.top) / rect.height };
+      }
+      stage.addEventListener("click", (e) => {
+        if (!detections.length) return;
+        const n = normFromEvent(e); const w = currentImg.naturalWidth || currentImg.width, h = currentImg.naturalHeight || currentImg.height; const px = n.x * w, py = n.y * h;
+        let best = -1, bestArea = Infinity;
+        detections.forEach((d, i) => { const { xmin, ymin, xmax, ymax } = d.box; if (px >= xmin && px <= xmax && py >= ymin && py <= ymax) { const a = (xmax - xmin) * (ymax - ymin); if (a < bestArea) { bestArea = a; best = i; } } });
+        if (best >= 0) classifyObject(best); else $("status").textContent = "Click inside a detected box (or use the object list).";
+      });
+      stage.addEventListener("keydown", (e) => {
+        if (!detections.length) return;
+        if (e.key === "Enter" || e.key === " ") { classifyObject(selectedIndex >= 0 ? selectedIndex : 0); e.preventDefault(); }
+        else if (e.key === "ArrowRight" || e.key === "ArrowDown") { selectedIndex = (selectedIndex + 1) % detections.length; compose(); e.preventDefault(); }
+        else if (e.key === "ArrowLeft" || e.key === "ArrowUp") { selectedIndex = (selectedIndex - 1 + detections.length) % detections.length; compose(); e.preventDefault(); }
+      });
+    </script>
+  </body>
+</html>

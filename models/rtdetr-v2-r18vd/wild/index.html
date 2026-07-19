@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>RT-DETRv2 Wild — crowd counter · Web AI Showcase</title>
+    <meta name="description" content="Turn a dense scene into a number: RT-DETRv2 boxes every person it can find in a crowd and counts them, live. Drop your own crowd photo or run the webcam — a real-time people counter running entirely on your device." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>👥</text></svg>" />
+    <style>
+      .stage2 { display:flex; flex-wrap:wrap; gap:1rem; align-items:flex-start; }
+      .cam-col { flex:2 1 340px; min-inline-size:0; }
+      .count-col { flex:1 1 220px; }
+      .big-count { font-family:var(--font-display); font-size:3.2rem; line-height:1; margin:.1rem 0; }
+      .big-count small { font-size:1rem; color:var(--muted); }
+      .peak { font-family:var(--font-mono); color:var(--muted); font-size:.85rem; }
+      #spark { inline-size:100%; block-size:64px; background:var(--bg-raised); border:1px solid var(--border); border-radius:8px; }
+    </style>
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">RT-DETRv2</a></p>
+
+    <header>
+      <p class="eyebrow">use case · wild</p>
+      <h1>Wild: crowd counter</h1>
+      <p class="lede">
+        A crowd is just a number waiting to be read. RT-DETRv2 boxes every <em>person</em> it can pick
+        out of a dense scene and tallies them — this is where the improved decoder earns its keep, when
+        bodies overlap and the boxes get tight. Drop your own crowd photo, or run the webcam for a live
+        people counter. All on-device; the crowd never leaves your machine.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="slider-row" style="margin-top:.6rem">
+        <label for="cls" style="font-size:.85rem">Count</label>
+        <select id="cls" style="font:inherit;padding:.2rem .4rem"></select>
+        <button id="scanStill" type="button" disabled>Count the image</button>
+        <button id="startCam" type="button" class="secondary" disabled>Start webcam</button>
+        <button id="stopCam" type="button" class="secondary" hidden>Stop</button>
+        <span style="flex:1"></span>
+        <label for="thresh" style="font-size:.85rem">Sensitivity</label>
+        <input type="range" id="thresh" min="0.05" max="0.9" step="0.05" value="0.3" style="flex:0 1 120px;accent-color:var(--accent)" />
+        <output id="threshOut" for="thresh">0.30</output>
+      </div>
+
+      <div id="fallback" class="fallback" hidden>
+        <strong>No webcam available here.</strong>
+        <p class="muted" style="margin:.3rem 0">This device or context didn't grant camera access. Use
+          <em>Count the image</em> on a still instead.</p>
+      </div>
+
+      <div class="sample-strip" id="samples" style="margin-top:.5rem">
+        <img class="sample-thumb active" src="../sample-crowd.jpg" data-src="../sample-crowd.jpg" alt="A busy crowd of people" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-players.jpg" data-src="../sample-players.jpg" alt="Athletes on a field" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-cats.jpg" data-src="../sample-cats.jpg" alt="Two cats on a couch" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-room.jpg" data-src="../sample-room.jpg" alt="A cozy bedroom" tabindex="0" role="button" />
+      </div>
+
+      <div class="stage2" style="margin-top:.6rem">
+        <div class="cam-col">
+          <video id="cam" playsinline muted style="position:absolute;opacity:0;pointer-events:none;inline-size:1px;block-size:1px"></video>
+          <div class="canvas-wrap">
+            <canvas id="stage" class="stage-canvas" aria-label="Scene with every counted object boxed"></canvas>
+          </div>
+        </div>
+        <div class="count-col">
+          <p class="muted" style="font-size:.8rem;margin:0" id="countLabel">“person” in view</p>
+          <div class="big-count" id="bigCount">—</div>
+          <p class="peak" id="peak">peak 0 · frames 0</p>
+          <svg id="spark" viewBox="0 0 240 64" preserveAspectRatio="none" role="img" aria-label="Count over recent frames"></svg>
+          <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>frame <b id="rMs">–</b></span><span>fps <b id="rFps">–</b></span></div>
+          <button id="reset" type="button" class="secondary" style="margin-top:.5rem">Reset stats</button>
+        </div>
+      </div>
+      <p class="muted" style="font-size:.85rem">
+        Crowd counting by detection has a ceiling — very distant or heavily occluded people are missed,
+        and this is an r18vd (small) model. Lower the sensitivity to catch more faint boxes (at the cost
+        of false positives). It's an honest live count of what the detector can resolve, not a
+        density-estimation model. The loop schedules the next frame only after the last finishes.
+      </p>
+    </section>
+
+    <p class="crumbs"><a href="../practical/">← Practical</a> · <a href="../">RT-DETRv2</a> · Next: <a href="../multi-model/">Multi-model →</a></p>
+
+    <script type="module">
+      import { RtDetrV2Engine, fileToDataURL, drawDetections, colorForLabel, DETR_CSS } from "../rtdetrv2.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = DETR_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new RtDetrV2Engine();
+
+      const COCO = ["person","bicycle","car","motorbike","aeroplane","bus","train","truck","boat","traffic light","fire hydrant","stop sign","parking meter","bench","bird","cat","dog","horse","sheep","cow","elephant","bear","zebra","giraffe","backpack","umbrella","handbag","tie","suitcase","frisbee","skis","snowboard","sports ball","kite","baseball bat","baseball glove","skateboard","surfboard","tennis racket","bottle","wine glass","cup","fork","knife","spoon","bowl","banana","apple","sandwich","orange","broccoli","carrot","hot dog","pizza","donut","cake","chair","sofa","pottedplant","bed","diningtable","toilet","tvmonitor","laptop","mouse","remote","keyboard","cell phone","microwave","oven","toaster","sink","refrigerator","book","clock","vase","scissors","teddy bear","hair drier","toothbrush"];
+      $("cls").replaceChildren(...COCO.map((c) => { const o = document.createElement("option"); o.value = c; o.textContent = c; if (c === "person") o.selected = true; return o; }));
+      $("cls").addEventListener("change", () => { $("countLabel").textContent = `“${$("cls").value}” in view`; resetStats(); if (currentURL && engine.ready && !running) scanStill(); });
+
+      let stream = null, running = false, busy = false, lastT = 0;
+      let peak = 0, frames = 0; const history = [];
+      let currentURL = null, currentImg = null;
+      const frameCanvas = document.createElement("canvas");
+      const thresh = $("thresh");
+      thresh.addEventListener("input", () => { $("threshOut").textContent = (+thresh.value).toFixed(2); });
+
+      function resetStats() { peak = 0; frames = 0; history.length = 0; $("bigCount").textContent = "—"; $("peak").textContent = "peak 0 · frames 0"; $("spark").replaceChildren(); }
+      $("reset").addEventListener("click", resetStats);
+
+      function decode(url) { return new Promise((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = () => rej(new Error("decode failed")); im.src = url; }); }
+      async function useURL(url) { currentURL = url; currentImg = await decode(url); const c = $("stage"); c.width = currentImg.naturalWidth; c.height = currentImg.naturalHeight; c.getContext("2d").drawImage(currentImg, 0, 0); }
+      async function pickSample(el) { for (const t of $("samples").children) t.classList.toggle("active", t === el); const blob = await (await fetch(el.dataset.src)).blob(); await useURL(await fileToDataURL(new File([blob], "s", { type: blob.type }))); }
+      for (const thumb of $("samples").children) { thumb.addEventListener("click", () => pickSample(thumb)); thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } }); }
+      pickSample($("samples").firstElementChild);
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/rtdetr_v2_r18vd-ONNX", runtime: "transformers.js", dtype: "q8", sizeMB: 21, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: (device) => { $("scanStill").disabled = false; $("startCam").disabled = false; $("rBackend").textContent = device.toUpperCase(); if (!navigator.mediaDevices?.getUserMedia) { $("fallback").hidden = false; $("startCam").disabled = true; } },
+      });
+
+      async function scoreURL(url, imgEl, frameMs) {
+        const cls = $("cls").value;
+        const r = await engine.detect(url);
+        const of = r.detections.filter((d) => d.score >= +thresh.value && d.label === cls);
+        drawDetections($("stage"), imgEl, of);
+        const n = of.length;
+        $("bigCount").innerHTML = `${n} <small>${cls}${n === 1 ? "" : "s"}</small>`;
+        peak = Math.max(peak, n); frames++;
+        history.push(n); if (history.length > 60) history.shift();
+        $("peak").textContent = `peak ${peak} · frames ${frames}`;
+        drawSpark();
+        $("readout").hidden = false; $("rMs").textContent = r.ms + " ms"; if (frameMs) $("rFps").textContent = (1000 / frameMs).toFixed(1);
+        return r;
+      }
+      function drawSpark() {
+        const max = Math.max(1, ...history); const n = history.length; if (!n) { $("spark").replaceChildren(); return; }
+        const step = 240 / Math.max(1, n - 1);
+        const pts = history.map((v, i) => `${(i * step).toFixed(1)},${(62 - (v / max) * 58).toFixed(1)}`).join(" ");
+        $("spark").innerHTML = `<polyline points="${pts}" fill="none" stroke="var(--accent)" stroke-width="2" vector-effect="non-scaling-stroke" /><line x1="0" y1="62" x2="240" y2="62" stroke="var(--border)" stroke-width="1" />`;
+      }
+
+      async function scanStill() {
+        if (!engine.ready || !currentURL) return;
+        $("scanStill").disabled = true; $("status").textContent = "Counting…"; $("status").classList.remove("err");
+        try { resetStats(); await scoreURL(currentURL, currentImg, 0); $("status").textContent = "Done."; $("status").classList.add("ok"); }
+        catch (e) { $("status").textContent = "Failed: " + e.message; $("status").classList.add("err"); }
+        finally { $("scanStill").disabled = false; }
+      }
+      $("scanStill").addEventListener("click", scanStill);
+
+      $("startCam").addEventListener("click", async () => {
+        if (!engine.ready) return;
+        try { stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } }); }
+        catch (err) { $("fallback").hidden = false; $("status").textContent = "Camera unavailable — count a sample instead."; $("status").classList.add("err"); return; }
+        const cam = $("cam"); cam.srcObject = stream; await cam.play();
+        for (const t of $("samples").children) t.classList.remove("active");
+        $("startCam").hidden = true; $("stopCam").hidden = false; running = true; resetStats(); loop();
+      });
+      $("stopCam").addEventListener("click", stopCam);
+      function stopCam() { running = false; stream?.getTracks().forEach((t) => t.stop()); stream = null; $("stopCam").hidden = true; $("startCam").hidden = false; }
+      async function loop() {
+        if (!running || busy) return; busy = true;
+        const cam = $("cam");
+        if (cam.videoWidth) {
+          frameCanvas.width = cam.videoWidth; frameCanvas.height = cam.videoHeight; frameCanvas.getContext("2d").drawImage(cam, 0, 0);
+          const url = frameCanvas.toDataURL("image/jpeg", 0.85); const now = performance.now();
+          try { await scoreURL(url, frameCanvas, lastT ? now - lastT : 0); } catch (e) { $("status").textContent = "Frame failed: " + e.message; }
+          lastT = now;
+        }
+        busy = false; if (running) setTimeout(loop, 0);
+      }
+      addEventListener("pagehide", stopCam);
+    </script>
+  </body>
+</html>

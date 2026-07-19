@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>RT-DETRv2 Basics — box every object · Web AI Showcase</title>
+    <meta name="description" content="The fundamental RT-DETRv2 move: pick an image, hit detect, and watch the improved real-time DETR draw labelled, scored boxes with no NMS pass. Slide the threshold to trade recall for precision. In your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎯</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">RT-DETRv2</a></p>
+
+    <header>
+      <p class="eyebrow">use case · basics</p>
+      <h1>Basics: box every object</h1>
+      <p class="lede">
+        Detection in its simplest form. Give RT-DETRv2 an image and it draws a labelled box around every
+        object it recognises, each with a confidence score — and because it's NMS-free, you get one clean
+        box per object with no suppression tuning. Slide the threshold to decide how sure it has to be.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image">
+        <span id="dropText">Drop an image, or click to choose</span>
+        <input type="file" id="file" accept="image/*" hidden />
+      </div>
+      <div class="sample-strip" id="samples">
+        <img class="sample-thumb active" src="../sample-cats.jpg" data-src="../sample-cats.jpg" alt="Two cats on a couch" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-crowd.jpg" data-src="../sample-crowd.jpg" alt="A busy crowd of people" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-players.jpg" data-src="../sample-players.jpg" alt="Athletes on a field" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-room.jpg" data-src="../sample-room.jpg" alt="A cozy bedroom" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-river.jpg" data-src="../sample-river.jpg" alt="A riverside at golden hour" tabindex="0" role="button" />
+      </div>
+
+      <div style="margin:.6rem 0"><button id="run" type="button" disabled>Detect objects</button></div>
+
+      <div class="slider-row">
+        <label for="thresh">Score threshold</label>
+        <input type="range" id="thresh" min="0.05" max="0.95" step="0.05" value="0.5" />
+        <output id="threshOut" for="thresh">0.50</output>
+      </div>
+
+      <div class="canvas-wrap">
+        <canvas id="stage" class="stage-canvas" aria-label="Detection result: image with labelled boxes"></canvas>
+      </div>
+      <div class="count-chips" id="countChips" aria-live="polite"></div>
+      <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>latency <b id="rMs">–</b></span><span>objects <b id="rN">–</b></span></div>
+
+      <p class="muted" style="font-size:.85rem">
+        The model runs once; the slider just filters the boxes it already found. Raise it and only the
+        confident boxes survive; lower it and more (noisier) boxes appear.
+      </p>
+    </section>
+
+    <p class="crumbs"><a href="../">← Back to RT-DETRv2</a> · Next: <a href="../practical/">Practical →</a></p>
+
+    <script type="module">
+      import { RtDetrV2Engine, fileToDataURL, drawDetections, countByLabel, colorForLabel, escapeHTML, DETR_CSS } from "../rtdetrv2.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = DETR_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new RtDetrV2Engine();
+      let currentImageURL = null, currentImg = null, allDetections = [], lastMs = 0;
+
+      function decode(url) { return new Promise((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = () => rej(new Error("decode failed")); im.src = url; }); }
+      async function useURL(url) {
+        currentImageURL = url; currentImg = await decode(url); allDetections = [];
+        $("countChips").replaceChildren(); $("readout").hidden = true;
+        const c = $("stage"); c.width = currentImg.naturalWidth; c.height = currentImg.naturalHeight; c.getContext("2d").drawImage(currentImg, 0, 0);
+      }
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        const blob = await (await fetch(el.dataset.src)).blob();
+        await useURL(await fileToDataURL(new File([blob], "s", { type: blob.type })));
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } });
+      }
+      pickSample($("samples").firstElementChild);
+
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) { for (const t of $("samples").children) t.classList.remove("active"); await useURL(await fileToDataURL(f)); $("dropText").textContent = f.name; }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/rtdetr_v2_r18vd-ONNX", runtime: "transformers.js", dtype: "q8", sizeMB: 21, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: (dev) => { $("run").disabled = false; $("rBackend").textContent = dev.toUpperCase(); },
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!currentImageURL) { $("status").textContent = "Pick an image first."; return; }
+        $("run").disabled = true; $("status").classList.remove("err"); $("status").textContent = "Detecting…";
+        try { const r = await engine.detect(currentImageURL); allDetections = r.detections; lastMs = r.ms; $("rBackend").textContent = r.device.toUpperCase(); render(); $("status").textContent = "Done."; $("status").classList.add("ok"); }
+        catch (err) { $("status").textContent = "Detection failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+
+      const thresh = $("thresh");
+      thresh.addEventListener("input", () => { $("threshOut").textContent = (+thresh.value).toFixed(2); if (allDetections.length) render(); });
+      function render() {
+        const shown = allDetections.filter((d) => d.score >= +thresh.value);
+        drawDetections($("stage"), currentImg, shown);
+        $("countChips").replaceChildren(...countByLabel(shown).map(({ label, count }) => { const el = document.createElement("span"); el.className = "count-chip"; el.innerHTML = `<span class="swatch" style="background:${colorForLabel(label)}"></span>${escapeHTML(label)} <b>×${count}</b>`; return el; }));
+        $("readout").hidden = false; $("rMs").textContent = lastMs + " ms"; $("rN").textContent = shown.length;
+      }
+    </script>
+  </body>
+</html>
