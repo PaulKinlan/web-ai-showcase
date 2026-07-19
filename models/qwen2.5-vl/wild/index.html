@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Qwen2.5-VL Wild — visual grounding, drawn on the image · Web AI Showcase</title>
+    <meta name="description" content="Ask Qwen2.5-VL to locate objects and watch it hand back bounding-box coordinates that get drawn on the image — on-device, language-guided object localisation with no detector model." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🔍</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Qwen2.5-VL</a></p>
+    <header>
+      <p class="eyebrow">use case · wild</p>
+      <h1>Wild: visual grounding — point at what it sees</h1>
+      <p class="lede">
+        Something you couldn't do before this ran in a browser: ask the model <em>where</em> something is,
+        and it answers with coordinates. Qwen2.5-VL is trained to emit bounding boxes, so a plain-language
+        request — "find every piece of fruit" — comes back as boxes we draw straight onto the image. No
+        separate object detector, no server: language-guided localisation, entirely on your GPU.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="vlm-grid" style="margin-top:.6rem">
+        <div class="vlm-img-col">
+          <div class="sample-strip" id="samples">
+            <img class="sample-thumb active" src="/web-ai-showcase/media/assets/fruit-still-life.jpg" data-src="/web-ai-showcase/media/assets/fruit-still-life.jpg" data-attrib="Citrus fruits — Scott Bauer, USDA, Public domain" data-p="Locate every piece of fruit. Output the bounding boxes in JSON format as a list of {bbox_2d, label}." alt="Citrus fruits arranged on a surface" tabindex="0" role="button" />
+            <img class="sample-thumb" src="/web-ai-showcase/media/assets/market-crowd.jpg" data-src="/web-ai-showcase/media/assets/market-crowd.jpg" data-attrib="Market stalls — Francisco Anzola, via Wikimedia Commons, CC BY 3.0" data-p="Detect all the people in this image. Output the bounding boxes in JSON format as a list of {bbox_2d, label}." alt="A busy market with many people and stalls" tabindex="0" role="button" />
+            <img class="sample-thumb" src="/web-ai-showcase/media/assets/bicycle-object.jpg" data-src="/web-ai-showcase/media/assets/bicycle-object.jpg" data-attrib="Mountain bike — Ingolfson, via Wikimedia Commons, Public domain" data-p="Locate the bicycle. Output its bounding box in JSON format as a list of {bbox_2d, label}." alt="A mountain bike leaning against a wall" tabindex="0" role="button" />
+          </div>
+          <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image" style="margin-bottom:.5rem">
+            <span id="dropText">…or drop / choose your own image</span>
+            <input type="file" id="file" accept="image/*" hidden />
+          </div>
+          <div class="preview-wrap">
+            <img class="preview-img" id="preview" src="/web-ai-showcase/media/assets/fruit-still-life.jpg" alt="Selected image with grounding boxes drawn over it" />
+            <svg class="box-overlay" id="overlay" preserveAspectRatio="none" role="img" aria-label="Bounding boxes returned by the model" hidden></svg>
+          </div>
+          <p class="attrib" id="attrib">Citrus fruits — Scott Bauer, USDA, Public domain</p>
+        </div>
+        <div class="vlm-out-col">
+          <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">
+            What should it locate?
+            <input type="text" id="prompt" value="Locate every piece of fruit. Output the bounding boxes in JSON format as a list of {bbox_2d, label}." />
+          </label>
+          <div class="controls-row"><button id="run" type="button" disabled>Locate &amp; draw boxes</button></div>
+          <p class="muted" style="font-size:.78rem;margin:.2rem 0">Boxes found: <b id="boxCount">–</b></p>
+          <h4 style="font-family:var(--font-body);font-size:.8rem;margin:.6rem 0 .2rem">Raw model output (coordinates)</h4>
+          <div class="answer" id="answer" aria-live="polite"><span class="muted">The model's coordinate output streams here.</span></div>
+          <div class="readout" id="readout" hidden>
+            <span>backend <b>WEBGPU</b></span>
+            <span>processed size <b id="rProc">–</b></span>
+            <span>time <b id="rMs">–</b></span>
+          </div>
+        </div>
+      </div>
+      <p class="muted" style="margin-top:.8rem;font-size:.82rem">
+        How the coordinates line up: the model emits pixel coordinates in the resized image it actually saw
+        (a multiple of 28 on each side, native aspect ratio). We report that processed size and scale the
+        boxes back onto the displayed picture. If the model returns text with no parseable boxes, we show
+        the raw output and draw nothing — never a fabricated box.
+      </p>
+    </section>
+
+    <p class="crumbs"><a href="../practical/">← Practical</a> · <a href="../">Qwen2.5-VL</a> · <a href="../multi-model/">Multi-model →</a></p>
+
+    <script type="module">
+      import { Qwen25VLEngine, fileToDataURL, escapeHTML, parseBoxes, QWEN25_CSS } from "../qwen25vl.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = QWEN25_CSS; document.head.append(style);
+      const SVGNS = "http://www.w3.org/2000/svg";
+      const $ = (id) => document.getElementById(id);
+      const engine = new Qwen25VLEngine();
+      let currentImageURL = null;
+
+      function clearOverlay() { $("overlay").replaceChildren(); $("overlay").hidden = true; }
+
+      function drawBoxes(boxes, procW, procH) {
+        const ov = $("overlay");
+        ov.setAttribute("viewBox", `0 0 ${procW} ${procH}`);
+        ov.replaceChildren();
+        boxes.forEach((b, i) => {
+          const x = Math.min(b.x1, b.x2), y = Math.min(b.y1, b.y2);
+          const w = Math.abs(b.x2 - b.x1), h = Math.abs(b.y2 - b.y1);
+          const rect = document.createElementNS(SVGNS, "rect");
+          rect.setAttribute("x", x); rect.setAttribute("y", y);
+          rect.setAttribute("width", w); rect.setAttribute("height", h);
+          rect.setAttribute("fill", "none");
+          rect.setAttribute("stroke", "var(--accent)");
+          rect.setAttribute("stroke-width", "2");
+          rect.setAttribute("vector-effect", "non-scaling-stroke");
+          rect.setAttribute("rx", "2");
+          ov.append(rect);
+          if (b.label) {
+            const t = document.createElementNS(SVGNS, "text");
+            t.setAttribute("x", x + 3); t.setAttribute("y", Math.max(12, y + 14));
+            t.setAttribute("fill", "var(--accent)");
+            t.setAttribute("font-size", Math.round(procH / 26));
+            t.setAttribute("font-family", "sans-serif");
+            t.setAttribute("font-weight", "700");
+            t.textContent = b.label;
+            ov.append(t);
+          }
+        });
+        ov.setAttribute("aria-label", boxes.length
+          ? `${boxes.length} bounding box(es) drawn: ${boxes.map((b) => b.label).filter(Boolean).join(", ")}`
+          : "No bounding boxes returned");
+        ov.hidden = boxes.length === 0;
+      }
+
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        const blob = await (await fetch(el.dataset.src)).blob();
+        currentImageURL = await fileToDataURL(new File([blob], "s", { type: blob.type }));
+        $("preview").src = el.dataset.src; $("attrib").textContent = el.dataset.attrib || "";
+        if (el.dataset.p) $("prompt").value = el.dataset.p;
+        clearOverlay(); $("boxCount").textContent = "–";
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } });
+      }
+      pickSample($("samples").firstElementChild);
+
+      const file = $("file"), drop = $("drop");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) {
+        for (const t of $("samples").children) t.classList.remove("active");
+        currentImageURL = await fileToDataURL(f); $("preview").src = currentImageURL; $("dropText").textContent = f.name;
+        $("attrib").textContent = "Your own image — processed entirely on-device."; clearOverlay(); $("boxCount").textContent = "–";
+      }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/Qwen2.5-VL-3B-Instruct-ONNX", runtime: "transformers.js", dtype: "q4f16", sizeMB: 2900, requiresWebGPU: true },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: () => { $("run").disabled = false; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!currentImageURL) { $("status").textContent = "Pick an image first."; return; }
+        const prompt = $("prompt").value.trim() || "Locate the main objects and output bounding boxes in JSON.";
+        $("run").disabled = true; $("status").classList.remove("err"); $("status").textContent = "Locating…";
+        $("answer").innerHTML = '<span class="caret">&nbsp;</span>'; clearOverlay(); $("boxCount").textContent = "…";
+        let text = "", proc = { procW: null, procH: null };
+        try {
+          const res = await engine.generate(currentImageURL, prompt, {
+            maxTokens: 320,
+            onMeta: (m) => { proc = m; },
+            onToken: (tok) => { text += tok; $("answer").innerHTML = escapeHTML(text) + '<span class="caret">&nbsp;</span>'; },
+          });
+          $("answer").textContent = text || "(no output)";
+          const boxes = parseBoxes(text);
+          const pw = res.procW ?? proc.procW, ph = res.procH ?? proc.procH;
+          if (boxes.length && pw && ph) { drawBoxes(boxes, pw, ph); }
+          $("boxCount").textContent = boxes.length;
+          $("readout").hidden = false;
+          $("rProc").textContent = (pw && ph) ? `${pw}×${ph}` : "–"; $("rMs").textContent = res.ms + " ms";
+          $("status").textContent = boxes.length ? `Drew ${boxes.length} box(es).` : "No parseable boxes — showing raw output.";
+          $("status").classList.add("ok");
+        } catch (err) {
+          $("answer").innerHTML = '<span class="muted">Generation failed.</span>';
+          $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); $("boxCount").textContent = "–";
+        } finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>

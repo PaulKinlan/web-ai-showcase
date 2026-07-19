@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Qwen2.5-VL Multi-model — read then summarise a document · Web AI Showcase</title>
+    <meta name="description" content="Chain two on-device models: Qwen2.5-VL transcribes a document at native resolution, then DistilBART condenses the extract into a one-line digest — a full read-and-summarise pipeline in the browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🔍</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Qwen2.5-VL</a></p>
+    <header>
+      <p class="eyebrow">use case · multi-model</p>
+      <h1>Multi-model: read then summarise a document</h1>
+      <p class="lede">
+        Two models, one job. <strong>Qwen2.5-VL</strong> (vision-language, WebGPU) transcribes the text in a
+        document image at native resolution, then <strong>DistilBART</strong> (a small summariser, on
+        CPU/WASM) condenses that extract into a one-line digest — an end-to-end, on-device "page → gist"
+        pipeline with no server.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+      <p class="status" id="sstatus" role="status" aria-live="polite"></p>
+
+      <div class="vlm-grid" style="margin-top:.6rem">
+        <div class="vlm-img-col">
+          <div class="sample-strip" id="samples">
+            <img class="sample-thumb active" src="/web-ai-showcase/media/assets/screenshot-wikipedia-article.jpg" data-src="/web-ai-showcase/media/assets/screenshot-wikipedia-article.jpg" data-attrib="Screenshot of the Wikipedia 'Depth map' article — Wikipedia contributors, CC BY-SA 4.0" alt="A dense text-heavy Wikipedia article screenshot" tabindex="0" role="button" />
+            <img class="sample-thumb" src="/web-ai-showcase/media/assets/screenshot-paul-post.jpg" data-src="/web-ai-showcase/media/assets/screenshot-paul-post.jpg" data-attrib="Screenshot of a paul.kinlan.me blog post — owner: Paul Kinlan" alt="A text- and code-heavy blog post screenshot" tabindex="0" role="button" />
+          </div>
+          <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop a document image" style="margin-bottom:.5rem">
+            <span id="dropText">…or drop / choose your own document</span>
+            <input type="file" id="file" accept="image/*" hidden />
+          </div>
+          <div class="preview-wrap"><img class="preview-img" id="preview" src="/web-ai-showcase/media/assets/screenshot-wikipedia-article.jpg" alt="Selected document" /></div>
+          <p class="attrib" id="attrib">Screenshot of the Wikipedia 'Depth map' article — Wikipedia contributors, CC BY-SA 4.0</p>
+        </div>
+        <div class="vlm-out-col">
+          <button id="run" type="button" disabled>Read &amp; summarise</button>
+
+          <h4 style="font-family:var(--font-body);font-size:.8rem;margin:.7rem 0 .2rem">1 · Qwen2.5-VL transcript</h4>
+          <div class="answer" id="transcript" aria-live="polite"><span class="muted">The transcript streams here.</span></div>
+          <h4 style="font-family:var(--font-body);font-size:.8rem;margin:.7rem 0 .2rem">2 · DistilBART one-line digest</h4>
+          <div class="answer" id="digest" aria-live="polite"><span class="muted">The digest appears here.</span></div>
+          <div class="controls-row" style="margin-top:.4rem"><button id="copy" class="secondary" type="button" disabled>Copy digest</button></div>
+        </div>
+      </div>
+      <p class="muted" style="margin-top:.8rem;font-size:.82rem">
+        The summariser (~300 MB) downloads on first use and runs on CPU/WASM — it doesn't need WebGPU, so
+        only the Qwen2.5-VL step gates on a GPU.
+      </p>
+    </section>
+
+    <p class="crumbs"><a href="../wild/">← Wild</a> · <a href="../">Qwen2.5-VL</a></p>
+
+    <script type="module">
+      import { Qwen25VLEngine, fileToDataURL, escapeHTML, QWEN25_CSS } from "../qwen25vl.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      import { loadPipeline } from "/web-ai-showcase/lib/webai.js";
+      const style = document.createElement("style"); style.textContent = QWEN25_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new Qwen25VLEngine();
+      let currentImageURL = null, ready = false, lastDigest = "", summariser = null;
+
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        const blob = await (await fetch(el.dataset.src)).blob();
+        currentImageURL = await fileToDataURL(new File([blob], "s", { type: blob.type }));
+        $("preview").src = el.dataset.src; $("attrib").textContent = el.dataset.attrib || "";
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } });
+      }
+      pickSample($("samples").firstElementChild);
+
+      const file = $("file"), drop = $("drop");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) {
+        for (const t of $("samples").children) t.classList.remove("active");
+        currentImageURL = await fileToDataURL(f); $("preview").src = currentImageURL; $("dropText").textContent = f.name;
+        $("attrib").textContent = "Your own document — processed entirely on-device.";
+      }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
+
+      $("copy").addEventListener("click", async () => {
+        try { await navigator.clipboard.writeText(lastDigest); $("copy").textContent = "Copied!"; setTimeout(() => $("copy").textContent = "Copy digest", 1200); }
+        catch { $("sstatus").textContent = "Clipboard blocked — select and copy manually."; }
+      });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/Qwen2.5-VL-3B-Instruct-ONNX", runtime: "transformers.js", dtype: "q4f16", sizeMB: 2900, requiresWebGPU: true },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: () => { ready = true; $("run").disabled = false; },
+      });
+
+      async function getSummariser() {
+        if (summariser) return summariser;
+        $("sstatus").classList.remove("err"); $("sstatus").textContent = "Loading summariser (Xenova/distilbart-cnn-6-6)…";
+        const { pipe } = await loadPipeline({
+          task: "summarization", model: "Xenova/distilbart-cnn-6-6", backend: "wasm", dtype: "q8",
+          onProgress: (p) => { if (p.status === "progress" && typeof p.progress === "number") $("sstatus").textContent = "Summariser " + p.progress.toFixed(0) + "%"; },
+        });
+        summariser = pipe; $("sstatus").textContent = "Summariser ready.";
+        return pipe;
+      }
+
+      $("run").addEventListener("click", async () => {
+        if (!ready) return;
+        if (!currentImageURL) { $("status").textContent = "Pick a document first."; return; }
+        $("run").disabled = true; $("copy").disabled = true;
+        $("status").classList.remove("err"); $("status").textContent = "Transcribing with Qwen2.5-VL…";
+        $("transcript").innerHTML = '<span class="caret">&nbsp;</span>'; $("digest").innerHTML = '<span class="muted">Waiting for the transcript…</span>';
+        let transcript = "";
+        try {
+          await engine.generate(currentImageURL, "Transcribe the main body text in this image, keeping the reading order.", {
+            maxTokens: 340,
+            onToken: (tok) => { transcript += tok; $("transcript").innerHTML = escapeHTML(transcript) + '<span class="caret">&nbsp;</span>'; },
+          });
+          transcript = transcript.trim();
+          $("transcript").textContent = transcript || "(no transcript)";
+          $("status").textContent = "Transcript done — summarising…"; $("status").classList.add("ok");
+          if (!transcript) throw new Error("empty transcript");
+
+          const summarise = await getSummariser();
+          $("digest").innerHTML = '<span class="caret">&nbsp;</span>';
+          const out = await summarise(transcript, { max_new_tokens: 60 });
+          const d = Array.isArray(out) ? (out[0]?.summary_text ?? "") : (out?.summary_text ?? "");
+          lastDigest = d.trim(); $("digest").textContent = lastDigest || "(no digest)"; $("copy").disabled = !lastDigest;
+          $("sstatus").textContent = "Done."; $("sstatus").classList.add("ok");
+        } catch (err) {
+          $("status").textContent = "Failed: " + err.message; $("status").classList.add("err");
+          if ($("digest").querySelector(".caret")) $("digest").innerHTML = '<span class="muted">Summary skipped.</span>';
+        } finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>
