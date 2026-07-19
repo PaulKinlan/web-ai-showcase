@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Reference-architecture self-test — worker-protocol + model-download</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font: 15px/1.5 system-ui, sans-serif; margin: 2rem; max-width: 60rem; }
+    h1 { font-size: 1.3rem; }
+    ol { padding-inline-start: 1.2rem; }
+    li { margin: .35rem 0; }
+    .pass { color: #17803d; }
+    .fail { color: #c2213a; font-weight: 600; }
+    code { background: color-mix(in srgb, currentColor 12%, transparent); padding: 0 .25em; border-radius: 3px; }
+    #summary { font-weight: 700; font-size: 1.1rem; margin: 1rem 0; }
+    progress { width: 16rem; vertical-align: middle; }
+  </style>
+</head>
+<body>
+  <h1>Reference-architecture self-test</h1>
+  <p>Exercises <code>lib/worker-protocol.js</code> (transferables · progress · cancel · stale-suppression ·
+     backpressure) and <code>lib/model-download.js</code> (interrupt at ~50% → resume via HTTP 206 → sha256 verify).</p>
+  <p>Download progress: <progress id="dl" max="1" value="0"></progress> <span id="dlpct">0%</span></p>
+  <div id="summary" role="status" aria-live="polite">Running…</div>
+  <ol id="results"></ol>
+
+  <script type="module">
+    import { WorkerClient, QueueOverflowError, SupersededError } from "../worker-protocol.js";
+    import { downloadModelFile, resumeState, clearPartial } from "../model-download.js";
+
+    const results = [];
+    const listEl = document.getElementById("results");
+    const summaryEl = document.getElementById("summary");
+    const dlEl = document.getElementById("dl");
+    const dlPct = document.getElementById("dlpct");
+
+    function record(name, ok, detail) {
+      results.push({ name, ok: !!ok, detail: detail == null ? "" : String(detail) });
+      const li = document.createElement("li");
+      li.className = ok ? "pass" : "fail";
+      li.textContent = `${ok ? "PASS" : "FAIL"} — ${name}${detail ? ` · ${detail}` : ""}`;
+      listEl.append(li);
+    }
+
+    // A small real HF LFS file (git-LFS sha256 known from the feasibility probe).
+    const DL_URL =
+      "https://huggingface.co/Xenova/all-MiniLM-L6-v2/resolve/main/onnx/model_quantized.onnx";
+    const KNOWN_SHA256 =
+      "afdb6f1a0e45b715d0bb9b11772f032c399babd23bfc31fed1c170afc848bdb1";
+
+    async function workerTests() {
+      const client = new WorkerClient({
+        url: new URL("./worker.js", import.meta.url),
+        name: "selftest",
+        maxInFlight: 1,
+        maxQueue: 1,
+      });
+      await client.ready;
+      record("worker reaches ready state", client.state === "ready", `state=${client.state}`);
+
+      // 1) Round-trip with transferables (both directions) + progress.
+      {
+        const N = 100000;
+        const arr = new Float64Array(N);
+        let expected = 0;
+        for (let i = 0; i < N; i++) { arr[i] = i % 7; expected += i % 7; }
+        const ab = arr.buffer;
+        const before = ab.byteLength;
+        let progressCount = 0;
+        const { result } = await client.request("sumBuffer", { buffer: ab }, {
+          transfer: [ab],
+          onProgress: () => progressCount++,
+        });
+        const detached = ab.byteLength === 0 && before > 0;
+        record("transfer detaches the main-thread ArrayBuffer (in)", detached,
+          `before=${before} after=${ab.byteLength}`);
+        record("round-trip result is correct", result.sum === expected,
+          `sum=${result.sum} expected=${expected}`);
+        const doubled = new Float64Array(result.doubled);
+        record("result buffer transferred BACK from worker",
+          doubled.length === N && doubled[5] === (5 % 7) * 2,
+          `len=${doubled.length}`);
+        record("progress events streamed during compute", progressCount >= 2, `count=${progressCount}`);
+      }
+
+      // 2) Cancellation via AbortSignal → cooperative worker abort; worker stays usable.
+      {
+        const c = new AbortController();
+        let cancelled = false, name = "";
+        const p = client.request("slow", { steps: 60 }, {
+          signal: c.signal,
+          onProgress: () => { if (!c.signal.aborted) c.abort(); },
+        });
+        try { await p; } catch (e) { cancelled = true; name = e.name; }
+        record("cancel rejects with AbortError", cancelled && name === "AbortError", `name=${name}`);
+        const after = await client.request("slow", { steps: 3 });
+        record("worker still usable after a cancel", after.result?.done === true);
+      }
+
+      // 3) Stale-response suppression via latest-wins channel.
+      {
+        const p1 = client.request("slow", { steps: 40, tag: "A" }, { channel: "live" });
+        let p1Name = "";
+        p1.catch((e) => { p1Name = e.name; });
+        const p2 = client.request("slow", { steps: 3, tag: "B" }, { channel: "live" });
+        const r2 = await p2;
+        // allow the superseded rejection + any late worker message to flush
+        await new Promise((r) => setTimeout(r, 50));
+        let p1Rejected = false;
+        try { await p1; } catch { p1Rejected = true; }
+        record("superseded request rejects (stale response suppressed)",
+          p1Rejected && p1Name === "SupersededError", `name=${p1Name}`);
+        record("only the latest same-channel request resolves", r2.result?.tag === "B",
+          `tag=${r2.result?.tag}`);
+      }
+
+      // 4) Bounded queue backpressure — 3rd concurrent request overflows deterministically.
+      {
+        const a = client.request("slow", { steps: 5 });
+        const b = client.request("slow", { steps: 5 });
+        let overflowed = false, name = "";
+        try {
+          await client.request("slow", { steps: 5 }); // maxInFlight=1, maxQueue=1 → this must overflow
+        } catch (e) { overflowed = true; name = e.name; }
+        record("overflow rejects with QueueOverflowError", overflowed && name === "QueueOverflowError",
+          `name=${name}`);
+        await Promise.allSettled([a, b]);
+      }
+
+      // 5) Deterministic teardown.
+      {
+        await client.terminate();
+        record("terminate() reaches terminated state", client.state === "terminated",
+          `state=${client.state}`);
+      }
+    }
+
+    async function downloadTest() {
+      await clearPartial(DL_URL); // start from a clean slate for a deterministic test
+
+      // First attempt: interrupt at ~50% via AbortSignal.
+      const c1 = new AbortController();
+      let interrupted = false, interruptName = "";
+      const events1 = [];
+      try {
+        await downloadModelFile({
+          url: DL_URL,
+          signal: c1.signal,
+          onEvent: (e) => events1.push(e),
+          onProgress: ({ ratio }) => {
+            if (ratio != null) { dlEl.value = ratio; dlPct.textContent = `${Math.round(ratio * 100)}%`; }
+            if (ratio != null && ratio >= 0.5 && !c1.signal.aborted) c1.abort();
+          },
+        });
+      } catch (e) { interrupted = true; interruptName = e.name; }
+      record("download interrupts cleanly on abort", interrupted && interruptName === "AbortError",
+        `name=${interruptName}`);
+
+      const partial = await resumeState(DL_URL);
+      record("partial persisted for resume", !!partial && partial.receivedBytes > 0,
+        partial ? `received=${partial.receivedBytes}/${partial.total}` : "none");
+
+      // Resume: expect a 206 continuation and a verified sha256.
+      const events2 = [];
+      const res = await downloadModelFile({
+        url: DL_URL,
+        onEvent: (e) => events2.push(e),
+        onProgress: ({ ratio }) => {
+          if (ratio != null) { dlEl.value = ratio; dlPct.textContent = `${Math.round(ratio * 100)}%`; }
+        },
+      });
+      const resume206 = events2.find((e) => e.type === "response" && e.resumed);
+      record("resume issues a ranged request answered with 206",
+        !!resume206 && resume206.status === 206,
+        resume206 ? `status=${resume206.status} range=${resume206.contentRange}` : "no ranged response");
+      record("resume reports it resumed (not a fresh download)", res.resumed === true);
+      record("assembled size matches Content-Range total", res.total === partial?.total,
+        `size=${res.total} total=${partial?.total}`);
+      record("sha256 VERIFIED against the git-LFS hash", res.sha256Verified === true,
+        `sha256=${res.sha256}`);
+      record("verified sha256 equals the known file hash", res.sha256 === KNOWN_SHA256);
+      record("returned value is a Blob", res.blob instanceof Blob, `bytes=${res.blob?.size}`);
+
+      await clearPartial(DL_URL);
+    }
+
+    (async () => {
+      try {
+        await workerTests();
+      } catch (e) {
+        record("worker test harness crashed", false, e.message);
+      }
+      try {
+        await downloadTest();
+      } catch (e) {
+        record("download test harness crashed", false, e.message);
+      }
+      const passed = results.filter((r) => r.ok).length;
+      const failed = results.length - passed;
+      summaryEl.textContent = `${passed}/${results.length} passed${failed ? ` · ${failed} FAILED` : " · ALL PASS"}`;
+      summaryEl.className = failed ? "fail" : "pass";
+      window.__SELFTEST_RESULT__ = { passed, failed, total: results.length, results };
+      window.__SELFTEST_DONE__ = true;
+    })();
+  </script>
+</body>
+</html>
