@@ -105,7 +105,7 @@ export class CDP {
   }
 }
 
-function connect(url) {
+function connectOnce(url) {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(url);
     ws.addEventListener("open", () => resolve(ws));
@@ -113,8 +113,22 @@ function connect(url) {
   });
 }
 
-export async function launchChrome() {
-  const userDataDir = join(repoRoot, ".conformance-chrome-profile");
+// The DevTools endpoint can briefly refuse the WS upgrade right after the port file appears (a
+// startup race, worse under IO/memory pressure). Retry a few times with a short settle delay.
+async function connect(url, attempts = 6) {
+  let lastErr;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await connectOnce(url);
+    } catch (e) {
+      lastErr = e;
+      await new Promise((r) => setTimeout(r, 400));
+    }
+  }
+  throw lastErr;
+}
+
+async function spawnChromeOnce(userDataDir) {
   try {
     rmSync(userDataDir, { recursive: true, force: true });
   } catch { /* ignore */ }
@@ -125,27 +139,57 @@ export async function launchChrome() {
     "--disable-dev-shm-usage",
     "--hide-scrollbars",
     "--remote-debugging-port=0",
+    // Chrome 111+ rejects DevTools WebSocket upgrades unless the connecting origin is allow-listed.
+    // Without this the CDP client's WS handshake is closed immediately ("ws error"). Harmless on older
+    // Chrome. Required for the harness to run on modern Chrome.
+    "--remote-allow-origins=*",
     `--user-data-dir=${userDataDir}`,
     "about:blank",
   ], { stdio: ["ignore", "ignore", "ignore"] });
   const portFile = join(userDataDir, "DevToolsActivePort");
   let wsUrl = null;
-  for (let i = 0; i < 100 && !wsUrl; i++) {
+  for (let i = 0; i < 150 && !wsUrl; i++) {
     await new Promise((r) => setTimeout(r, 100));
     try {
       const [port, path] = readFileSync(portFile, "utf8").trim().split("\n");
       if (port && path) wsUrl = `ws://127.0.0.1:${port}${path}`;
     } catch { /* not ready */ }
   }
-  if (!wsUrl) throw new Error("Chrome did not expose a DevTools endpoint");
-  const ws = await connect(wsUrl);
+  if (!wsUrl) {
+    try {
+      proc.kill("SIGKILL");
+    } catch { /* ignore */ }
+    return null;
+  }
+  await new Promise((r) => setTimeout(r, 300)); // let the endpoint finish coming up before upgrading
+  try {
+    const ws = await connect(wsUrl);
+    return { proc, ws };
+  } catch {
+    try {
+      proc.kill("SIGKILL");
+    } catch { /* ignore */ }
+    return null;
+  }
+}
+
+export async function launchChrome() {
+  const userDataDir = join(repoRoot, ".conformance-chrome-profile");
+  // Chrome can intermittently fail to expose its endpoint under IO/memory pressure — retry the whole
+  // spawn a few times before giving up so the harness is reliable in constrained sandboxes.
+  let started = null;
+  for (let attempt = 0; attempt < 4 && !started; attempt++) {
+    started = await spawnChromeOnce(userDataDir);
+    if (!started) await new Promise((r) => setTimeout(r, 500));
+  }
+  if (!started) throw new Error("Chrome did not expose a DevTools endpoint (after retries)");
   return {
-    proc,
-    ws,
+    proc: started.proc,
+    ws: started.ws,
     userDataDir,
     kill() {
       try {
-        proc.kill("SIGKILL");
+        started.proc.kill("SIGKILL");
       } catch { /* ignore */ }
       try {
         rmSync(userDataDir, { recursive: true, force: true });
