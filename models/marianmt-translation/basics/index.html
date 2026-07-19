@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MarianMT Basics — a phrase, one pair at a time · Web AI Showcase</title>
+    <meta name="description" content="The fundamental move: type an English phrase, pick a pair, and get a translation — from a small, fast, single-pair model, locally in your browser. Switch pairs to feel each one load." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🗣️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">MarianMT</a></p>
+
+    <header>
+      <p class="eyebrow">use case · basics</p>
+      <h1>Basics: translate a phrase</h1>
+      <p class="lede">
+        The simplest thing the model does: take an English sentence and render it in another language. Type a
+        phrase, choose a pair, translate. Then switch the pair — the first time you pick German, French, or
+        Spanish, that small (~105 MB) model downloads; after that it's instant and offline.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.6rem 0">
+        <button class="chip" type="button" data-text="Good morning! I would like a coffee, please." data-pair="en-de">EN→DE</button>
+        <button class="chip" type="button" data-text="Thank you very much for your help." data-pair="en-fr">EN→FR</button>
+        <button class="chip" type="button" data-text="Where can I find a good restaurant near here?" data-pair="en-es">EN→ES</button>
+      </div>
+
+      <div class="pair-row">
+        <label>Language pair <select id="pair" disabled></select></label>
+        <button id="run" type="button" disabled>Translate</button>
+      </div>
+
+      <div class="tr-io">
+        <label style="display:flex;flex-direction:column;gap:.3rem;font-size:.82rem">
+          Phrase (English)
+          <textarea id="text" disabled>Good morning! I would like a coffee, please.</textarea>
+        </label>
+        <div style="display:flex;flex-direction:column;gap:.3rem">
+          <span style="font-size:.82rem">Translation</span>
+          <div class="tr-out" id="out" aria-live="polite"></div>
+        </div>
+      </div>
+      <div class="readout" id="readout" hidden>
+        <span>pair <b id="rPair">–</b></span><span>tokens <b id="rTok">–</b></span>
+        <span>backend <b id="rBackend">–</b></span><span>time <b id="rMs">–</b></span>
+      </div>
+    </section>
+
+    <p class="muted" style="font-size:.85rem">
+      Each pair is its own model — there's no language code to set, the direction is the model. That's the Marian
+      trade: swap M2M100's one-big-model for several small, fast ones, and only ship the directions you need.
+    </p>
+
+    <p class="crumbs"><a href="../">← Back to MarianMT</a> · Next: <a href="../practical/">Practical →</a></p>
+
+    <script type="module">
+      import { MarianEngine, fillPairSelect, renderStats, PAIR_NAME, MARIAN_CSS } from "../marian.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = MARIAN_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new MarianEngine();
+      let loaded = false;
+      fillPairSelect($("pair"), "en-de");
+      engine.onPairLoading = (pair) => { $("runStatus").hidden = false; $("runStatus").classList.remove("err", "ok"); $("runStatus").textContent = `Downloading the ${PAIR_NAME[pair]} model…`; };
+      for (const c of document.querySelectorAll(".chip")) c.addEventListener("click", () => { $("text").value = c.dataset.text; $("pair").value = c.dataset.pair; });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/opus-mt-en-de", runtime: "transformers.js", dtype: "q8", sizeMB: 105, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress, "en-de"); return engine; },
+        onReady: () => { $("pair").disabled = false; $("text").disabled = false; $("run").disabled = false; loaded = true; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!loaded) return;
+        const text = $("text").value.trim(), pair = $("pair").value;
+        if (!text) { $("runStatus").hidden = false; $("runStatus").textContent = "Type a phrase first."; return; }
+        $("run").disabled = true; $("runStatus").hidden = false; $("runStatus").classList.remove("err", "ok"); $("runStatus").textContent = "Translating…"; $("out").textContent = "";
+        try {
+          const r = await engine.translate(text, pair, { numBeams: 1 }, (p) => $("out").textContent = p);
+          $("out").textContent = r.translation;
+          $("rTok").textContent = `${r.inTokens} → ${r.outTokens}`;
+          renderStats({ pair: $("rPair"), backend: $("rBackend"), ms: $("rMs") }, r);
+          $("readout").hidden = false; $("runStatus").textContent = "Done."; $("runStatus").classList.add("ok");
+        } catch (err) { $("runStatus").textContent = "Failed: " + err.message; $("runStatus").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>
