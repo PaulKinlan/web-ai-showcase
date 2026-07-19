@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Multilingual QA Basics — ask in any language · Web AI Showcase</title>
+    <meta name="description" content="The fundamental move: ask a question about a passage in French, German, Japanese or English, and the model highlights the exact answer span. Runs entirely in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🌍</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Multilingual QA</a></p>
+
+    <header>
+      <p class="eyebrow">use case · basics</p>
+      <h1>Basics: point at the answer, in any language</h1>
+      <p class="lede">
+        The simplest thing multilingual extractive QA does: read a passage, take a question — in the same
+        language — and highlight the exact words that answer it. Switch languages with a click and watch the
+        same model work on each.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.2rem 0" id="samples">
+        <button class="chip" type="button" data-s="fr">🇫🇷 Français</button>
+        <button class="chip" type="button" data-s="de">🇩🇪 Deutsch</button>
+        <button class="chip" type="button" data-s="ja">🇯🇵 日本語</button>
+        <button class="chip" type="button" data-s="pt">🇵🇹 Português</button>
+      </div>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.4rem">
+        Passage <span class="lang-badge" id="ctxLang" hidden></span>
+        <textarea id="context" dir="auto" rows="4" disabled></textarea>
+      </label>
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
+        Question
+        <input id="question" dir="auto" type="text" disabled style="font:inherit;padding:.4rem .5rem;border:1px solid var(--border);border-radius:6px;background:var(--bg-raised);color:var(--color)" />
+      </label>
+      <div style="margin:.3rem 0"><button id="ask" type="button" disabled>Answer</button></div>
+
+      <div id="answerWrap" hidden>
+        <p class="muted" style="font-size:.8rem;margin-bottom:.1rem">Answer</p>
+        <p class="qa-answer" id="answer" dir="auto">–</p>
+        <div class="qa-context" id="ctxHi" aria-live="polite"></div>
+        <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>latency <b id="rMs">–</b></span><span>score <b id="rScore">–</b></span></div>
+      </div>
+    </section>
+
+    <p class="muted" style="font-size:.85rem">
+      One model, four languages, no translation step. Because the answer is always a span of the passage,
+      the model can only point at what's there — the same grounding guarantee as English extractive QA,
+      extended across languages.
+    </p>
+
+    <p class="crumbs"><a href="../">← Back to Multilingual QA</a> · Next: <a href="../practical/">Practical →</a></p>
+
+    <script type="module">
+      import { MQAEngine, renderHighlighted, guessLang, MQA_CSS } from "../mqa.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = MQA_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new MQAEngine();
+      let loaded = false;
+
+      const SAMPLES = {
+        fr: { q: "Qui a écrit Les Misérables ?", c: "Les Misérables est un roman de Victor Hugo publié en 1862. Il raconte l'histoire de Jean Valjean, un ancien forçat, dans la France du XIXe siècle." },
+        de: { q: "Wie viele Bundesländer hat Deutschland?", c: "Deutschland ist eine föderale Republik mit sechzehn Bundesländern. Die Hauptstadt ist Berlin, das zugleich ein eigenes Bundesland ist." },
+        ja: { q: "富士山の高さは何メートルですか？", c: "富士山は日本で最も高い山で、標高は3776メートルです。静岡県と山梨県にまたがり、2013年に世界文化遺産に登録されました。" },
+        pt: { q: "Qual é a capital do Brasil?", c: "O Brasil é o maior país da América do Sul. A sua capital é Brasília, inaugurada em 1960, embora a maior cidade seja São Paulo." },
+      };
+      function applySample(k){ const s=SAMPLES[k]; if(!s) return; $("context").value=s.c; $("question").value=s.q; $("ctxLang").hidden=false; $("ctxLang").textContent=guessLang(s.c); if(loaded) ask(); }
+      for (const b of document.querySelectorAll("#samples .chip")) b.addEventListener("click", () => applySample(b.dataset.s));
+      applySample("fr");
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/xlm-roberta-base-finetuned-squad2-ONNX", runtime: "transformers.js", dtype: "q8", sizeMB: 295, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("context").disabled = false; $("question").disabled = false; $("ask").disabled = false; loaded = true; ask(); },
+      });
+
+      $("ask").addEventListener("click", ask);
+      $("question").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); ask(); } });
+      async function ask() {
+        if (!loaded) return;
+        const context = $("context").value.trim(), question = $("question").value.trim();
+        if (!context || !question) return;
+        $("ask").disabled = true;
+        try {
+          const r = await engine.ask(question, context, 1);
+          const top = r.answers[0];
+          $("answerWrap").hidden = false;
+          $("answer").textContent = top?.answer || "No answer";
+          $("answer").className = "qa-answer" + (top?.answer ? "" : " empty");
+          renderHighlighted($("ctxHi"), context, top?.start, top?.end);
+          $("readout").hidden = false; $("rBackend").textContent = r.device.toUpperCase(); $("rMs").textContent = r.ms + " ms"; $("rScore").textContent = top ? (top.score * 100).toFixed(1) + "%" : "–";
+        } catch (err) { $("runStatus").hidden = false; $("runStatus").textContent = "Failed: " + err.message; $("runStatus").classList.add("err"); }
+        finally { $("ask").disabled = false; }
+      }
+    </script>
+  </body>
+</html>
