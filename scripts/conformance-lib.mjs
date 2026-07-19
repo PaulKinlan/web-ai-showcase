@@ -115,6 +115,8 @@ const IO_SHAPE = {
   "image-to-image": "produces a transformed output image (e.g. upscaled/cleaned) from the input",
   "document-question-answering": "produces an answer grounded in the document image + question",
   "audio-classification": "produces ranked audio class labels with probabilities",
+  "pitch-estimation":
+    "produces a per-frame fundamental-frequency (f0) curve in Hz over time with voicing confidence, tracking the pitch of the input audio (and the nearest musical note)",
   "face-landmark-detection": "produces face landmark points overlaid live on the video/image",
   "hand-landmark-detection": "produces hand landmark points overlaid live on the video/image",
   "pose-landmark-detection": "produces body pose landmark points overlaid live on the video/image",

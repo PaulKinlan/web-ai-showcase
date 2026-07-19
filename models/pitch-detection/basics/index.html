@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CREPE Basics — what note is this? · Web AI Showcase</title>
+    <meta name="description" content="The fundamental pitch move: play or hum a single note and CREPE reads it back — the frequency in Hz, the nearest musical note, and how many cents sharp or flat. In your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎵</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">CREPE</a></p>
+
+    <header>
+      <p class="eyebrow">use case · basics</p>
+      <h1>Basics: what note is this?</h1>
+      <p class="lede">
+        The simplest thing a pitch tracker does. Give CREPE a single sustained note — hummed, sung, or
+        played — and it reads the fundamental frequency out of every window and tells you the note: the
+        pitch in Hz, the nearest key on a piano, and how many cents sharp or flat you are. Record
+        yourself, or pick a sample.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="field-row">
+        <button id="recBtn" type="button">● Record a note</button>
+        <span id="recState" class="muted" aria-live="polite"></span>
+      </div>
+
+      <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an audio file">
+        <span id="dropText">…or drop an audio file, or click to choose</span>
+        <input type="file" id="file" accept="audio/*" hidden />
+      </div>
+      <div class="sample-row" id="samples" aria-label="Sample notes" role="group">
+        <button class="chip" type="button" data-src="../sample-vibrato.wav" aria-pressed="true">〰 Held A4 (vibrato)</button>
+        <button class="chip" type="button" data-src="../sample-glide.wav" aria-pressed="false">↗ Rising glide</button>
+      </div>
+      <div class="audio-row"><audio id="player" controls preload="metadata"></audio></div>
+
+      <div style="margin:.6rem 0"><button id="run" type="button" disabled>Read the note</button></div>
+
+      <div id="result" hidden>
+        <p class="notebig"><span id="noteName">–</span><span class="oct" id="noteOct"></span></p>
+        <p class="muted" id="centsLabel">–</p>
+        <div class="cents-meter" role="img" aria-label="Tuning meter: how far the pitch is from the nearest note in cents">
+          <span class="cents-center"></span>
+          <span class="cents-needle" id="needle"></span>
+        </div>
+        <div class="readout">
+          <span>pitch <b id="rHz">–</b></span>
+          <span>note <b id="rNote">–</b></span>
+          <span>cents off <b id="rCents">–</b></span>
+          <span>confidence <b id="rConf">–</b></span>
+          <span>backend <b id="rBackend">–</b></span>
+        </div>
+      </div>
+    </section>
+
+    <section aria-labelledby="how-h">
+      <h2 id="how-h">How the note is read</h2>
+      <p>
+        CREPE gives a 360-bin pitch salience per window; we take the confidence-weighted peak → a
+        frequency in Hz, then the median across the voiced frames of your note (so a little wobble
+        doesn't change the answer). The nearest equal-tempered note is
+        <code>round(69 + 12·log₂(f/440))</code>; the leftover is the <strong>cents</strong> deviation —
+        100 cents is one semitone, so ±50 cents is exactly between two keys. Everything runs locally in a
+        Web Worker.
+      </p>
+    </section>
+
+    <p class="crumbs"><a href="../practical/">Practical: live tuner →</a> · <a href="../">Back to CREPE</a></p>
+
+    <script type="module">
+      import { PitchEngine, blobToMono16k, urlToMono16k, MicRecorder, freqToNote, PITCH_CSS } from "../pitch.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = PITCH_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new PitchEngine();
+      let pcm = null, ready = false;
+      const setStatus = (m, c) => { $("status").textContent = m; $("status").classList.remove("err", "ok"); if (c) $("status").classList.add(c); };
+      const median = (a) => { if (!a.length) return 0; const s = [...a].sort((x, y) => x - y); return s[s.length >> 1]; };
+
+      function use(p, url) { pcm = p; $("result").hidden = true; if (url) $("player").src = url; $("run").disabled = !ready; }
+      async function pickSample(btn) {
+        for (const b of $("samples").children) b.setAttribute("aria-pressed", String(b === btn));
+        setStatus("Decoding sample…");
+        try { const { pcm: p } = await urlToMono16k(btn.dataset.src); use(p, btn.dataset.src); setStatus("Ready — hit Read the note."); }
+        catch (e) { setStatus("Decode failed: " + e.message, "err"); }
+      }
+      for (const b of $("samples").children) b.addEventListener("click", () => pickSample(b));
+
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) {
+        for (const b of $("samples").children) b.setAttribute("aria-pressed", "false");
+        $("dropText").textContent = f.name; setStatus("Decoding…");
+        try { const { pcm: p } = await blobToMono16k(f); use(p, URL.createObjectURL(f)); setStatus("Ready — hit Read the note."); }
+        catch (e) { setStatus("Decode failed: " + e.message, "err"); }
+      }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f) loadFile(f); });
+
+      const rec = new MicRecorder(); let recording = false;
+      if (!MicRecorder.supported()) { $("recBtn").disabled = true; $("recState").textContent = "No microphone API here — use a sample or upload."; }
+      $("recBtn").addEventListener("click", async () => {
+        if (!recording) {
+          try { await rec.start(); recording = true; $("recBtn").textContent = "■ Stop"; $("recState").innerHTML = '<span class="rec-dot"></span>Sing or hum a steady note…'; }
+          catch (e) { $("recState").textContent = "Mic blocked: " + e.message; }
+        } else {
+          const { blob, url } = await rec.stop(); recording = false; $("recBtn").textContent = "● Record a note"; $("recState").textContent = "Recorded.";
+          for (const b of $("samples").children) b.setAttribute("aria-pressed", "false");
+          setStatus("Decoding recording…");
+          const { pcm: p } = await blobToMono16k(blob); use(p, url); setStatus("Ready — hit Read the note.");
+        }
+      });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "niobures/CREPE", runtime: "onnxruntime-web", dtype: "fp32", sizeMB: 2, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: () => { ready = true; $("run").disabled = !pcm; },
+      });
+      pickSample($("samples").firstElementChild);
+
+      $("run").addEventListener("click", async () => {
+        if (!pcm) return; $("run").disabled = true; setStatus("Reading the pitch…");
+        try {
+          const r = await engine.run(pcm, { hopMs: 16 });
+          const voiced = [], confs = [];
+          for (let i = 0; i < r.f0.length; i++) if (r.conf[i] >= 0.5) { voiced.push(r.f0[i]); confs.push(r.conf[i]); }
+          if (!voiced.length) { setStatus("No confident pitch found — try a clearer, steadier note.", "err"); $("run").disabled = false; return; }
+          const f0 = median(voiced);
+          const n = freqToNote(f0);
+          const avgConf = confs.reduce((a, b) => a + b, 0) / confs.length;
+          $("noteName").textContent = n.name; $("noteOct").textContent = n.octave;
+          const dir = n.cents === 0 ? "in tune" : (n.cents > 0 ? "sharp" : "flat");
+          $("centsLabel").textContent = `${Math.abs(n.cents)} cents ${dir}`;
+          const needle = $("needle"); needle.style.insetInlineStart = `calc(50% + ${Math.max(-50, Math.min(50, n.cents)) * 0.9}%)`;
+          needle.classList.toggle("intune", Math.abs(n.cents) <= 10);
+          $("rHz").textContent = f0.toFixed(1) + " Hz";
+          $("rNote").textContent = n.label;
+          $("rCents").textContent = (n.cents > 0 ? "+" : "") + n.cents;
+          $("rConf").textContent = avgConf.toFixed(2);
+          $("rBackend").textContent = r.device;
+          $("result").hidden = false;
+          setStatus(`That's ${n.label} — ${Math.abs(n.cents)} cents ${dir}.`, "ok");
+        } catch (e) { setStatus("Failed: " + e.message, "err"); } finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>

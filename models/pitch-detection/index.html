@@ -1,0 +1,357 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CREPE — monophonic pitch detection in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run CREPE locally with onnxruntime-web: feed a clip, hum, or sing and watch it trace the fundamental frequency (f0) over time — a real pitch curve in Hz and musical notes, plus the model's raw 360-bin salience map. No server."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎵</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">pitch-estimation · audio · WASM (onnxruntime-web) · ~2 MB</p>
+      <h1>CREPE — trace the pitch of any sound</h1>
+      <p class="lede">
+        Pitch is the note you'd hum back. CREPE answers one focused question, many times a second:
+        <strong>what is the fundamental frequency right now?</strong> It's a small (~2 MB) convolutional
+        network that reads audio in 1024-sample windows and returns a 360-bin <em>pitch salience</em> —
+        the confidence-weighted peak is the frequency, in Hz and as a musical note. It's the engine
+        behind tuners, vocal-pitch monitors, auto-tune, and melody transcription. Here it runs entirely
+        on your device.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h2 id="glance-h">At a glance</h2>
+      <table class="inside-table">
+        <tbody>
+          <tr><th scope="row">Model</th><td><a href="https://huggingface.co/niobures/CREPE" target="_blank" rel="noopener">niobures/CREPE</a> — an ONNX conversion of CREPE "tiny" (Kim et al., ICASSP 2018)</td></tr>
+          <tr><th scope="row">Task</th><td><code>pitch-estimation</code> — a per-frame fundamental frequency (f0) + voicing confidence</td></tr>
+          <tr><th scope="row">Runtime</th><td><strong>onnxruntime-web</strong> directly — transformers.js has no pitch/CREPE pipeline, so this page drives ONNX Runtime Web itself (isolated to this model's worker)</td></tr>
+          <tr><th scope="row">Architecture</th><td>6-layer CNN. Input <code>frames</code> [N×1024] (per-frame-normalised 16 kHz windows) → output <code>probabilities</code> [N×360] pitch-salience bins (C1…B7, 20 cents apart)</td></tr>
+          <tr><th scope="row">f0 read-out</th><td>confidence-weighted average of cents around the peak bin, then <code>10·2^(cents/1200)</code> Hz; the peak height is the voicing confidence</td></tr>
+          <tr><th scope="row">Quantization</th><td>fp32 ONNX (the "tiny" model is ~1.9 MB — no quantisation needed)</td></tr>
+          <tr><th scope="row">Backend</th><td>WebAssembly via onnxruntime-web (single-threaded; runs anywhere)</td></tr>
+          <tr><th scope="row">Download</th><td>~2 MB, cached in Cache Storage after first load (auto-inits next visit)</td></tr>
+          <tr><th scope="row">License</th><td>Model weights MIT (marl/crepe). Bundled sample clips are self-authored (CC0).</td></tr>
+          <tr><th scope="row">Web APIs</th><td>WebAssembly, Web Workers, Web Audio, MediaRecorder, Cache Storage, Canvas — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h2 id="run-h">Run it</h2>
+      <p class="muted">Pick a sample, drop an audio file, or record yourself humming/singing, then hit Trace pitch. CREPE walks the clip window-by-window and reads the fundamental out of each one.</p>
+
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an audio file">
+        <span id="dropText">Drop an audio file here, or click to choose</span>
+        <input type="file" id="file" accept="audio/*" hidden />
+      </div>
+
+      <div class="sample-row" id="samples" aria-label="Sample clips" role="group">
+        <button class="chip" type="button" data-src="sample-scale.wav" aria-pressed="true">🎹 Scale (C4→C5)</button>
+        <button class="chip" type="button" data-src="sample-melody.wav" aria-pressed="false">🎶 Melody</button>
+        <button class="chip" type="button" data-src="sample-vibrato.wav" aria-pressed="false">〰 Vibrato A4</button>
+        <button class="chip" type="button" data-src="sample-glide.wav" aria-pressed="false">↗ Glide (G3→G5)</button>
+      </div>
+
+      <div class="field-row">
+        <button id="recBtn" type="button" class="secondary">● Record from mic</button>
+        <span id="recState" class="muted" aria-live="polite"></span>
+      </div>
+      <div class="audio-row"><audio id="player" controls preload="metadata"></audio></div>
+
+      <div class="wave-wrap"><canvas id="wave" class="wave" aria-label="Waveform of the selected audio"></canvas></div>
+
+      <div class="param-grid" aria-label="Detection parameters">
+        <div class="param">
+          <label for="conf">Confidence threshold <span class="muted">(hide frames the model is unsure about)</span></label>
+          <div class="row"><input type="range" id="conf" min="0.1" max="0.9" step="0.05" value="0.5" /><output id="confOut">0.50</output></div>
+        </div>
+        <div class="param">
+          <label for="hop">Time resolution <span class="muted">(ms between pitch readings)</span></label>
+          <div class="row"><input type="range" id="hop" min="8" max="40" step="2" value="16" /><output id="hopOut">16</output></div>
+        </div>
+      </div>
+
+      <div style="margin:.6rem 0"><button id="run" type="button" disabled>Trace pitch</button></div>
+
+      <p class="verdict" id="verdict" hidden></p>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+        <span>clip length <b id="rDur">–</b></span>
+        <span>frames <b id="rFrames">–</b></span>
+        <span>voiced <b id="rVoiced">–</b></span>
+        <span>median pitch <b id="rMedian">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h2 id="inside-h">See inside</h2>
+      <p class="muted">
+        CREPE never outputs "the note is A4". For every window it outputs a <strong>360-bin salience
+        curve</strong> — how much energy sits at each of 360 pitch candidates from C1 to B7. The top map
+        is that raw salience over time (brighter = higher activation); the white line is the f0 we read
+        out of it, and the peak brightness at each moment <em>is</em> the confidence. Below it, the same
+        f0 drawn on a note grid — voiced frames only, opacity following confidence.
+      </p>
+      <canvas id="pgram" class="pgram" tabindex="0" aria-label="CREPE salience pitchgram: horizontal axis is time, vertical axis is pitch from low (bottom) to high (top), brightness is the model's activation at each pitch, and the white line is the extracted fundamental frequency"></canvas>
+      <p class="muted" style="font-size:.78rem;margin:.4rem 0 .2rem">Extracted f0 on a musical-note grid (C and A lines labelled):</p>
+      <canvas id="pcurve" class="pcurve" tabindex="0" aria-label="Extracted fundamental-frequency curve over time on a logarithmic musical-note axis; voiced frames only"></canvas>
+      <div id="noteTable"><p class="muted" style="font-family:var(--font-mono);font-size:.8rem">Trace a clip to see its pitch curve and note histogram.</p></div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        Pitch tracking is small, fast infrastructure that a surprising amount of music and voice tech is
+        built on — and it belongs on-device, because it's cheap and nobody needs to upload their singing
+        to a server to get a note back.
+      </p>
+      <ul>
+        <li><strong>Instrument &amp; voice tuners</strong> — turn f0 into a note + cents-off readout with zero latency and no cloud round-trip.</li>
+        <li><strong>Vocal-pitch training</strong> — show a singer their pitch against a target in real time; score how close they held a note.</li>
+        <li><strong>Melody transcription &amp; search</strong> — hum a tune and turn the contour into notes you can search or notate ("query by humming").</li>
+        <li><strong>Pitch-aware audio tools</strong> — auto-tune, pitch-correction, expressive-performance analysis, and prosody features for speech, all computed locally.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Play or hum a single note and read the pitch back — Hz, the nearest note, and how many cents off.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">A live chromatic tuner: sing or play into your mic and watch the needle settle on the note.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Hum a melody and CREPE traces the contour, then snaps it to notes — query-by-humming.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">CREPE + Whisper: transcribe the words <em>and</em> track the pitch of speech — prosody, side by side.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>There's no <code>pipeline()</code> for pitch — you drive onnxruntime-web directly. Frame the audio into per-frame-normalised 1024-sample windows, run the CNN, and read the fundamental out of the 360-bin salience.</p>
+      <pre><code>import * as ort from "onnxruntime-web";
+
+const session = await ort.InferenceSession.create(
+  "https://huggingface.co/niobures/CREPE/resolve/main/models/onnx/crepe_onnx_tiny.onnx",
+  { executionProviders: ["wasm"] },
+);
+
+// One 1024-sample window @16 kHz, normalised (subtract mean, divide by std):
+const frame = normalise(win1024);
+const out = await session.run({ frames: new ort.Tensor("float32", frame, [1, 1024]) });
+const act = out.probabilities.data;                 // 360 salience bins, C1…B7, 20 cents apart
+
+// f0 = confidence-weighted centre of the peak, in cents → Hz:
+const peak = argmax(act);
+const cents = weightedCents(act, peak);             // avg over ±4 bins around the peak
+const f0 = 10 * 2 ** (cents / 1200);                // Hz
+const confidence = act[peak];                       // 0…1 voicing confidence</code></pre>
+      <p class="muted">
+        This page decodes files / mic recordings to 16 kHz mono with an <code>OfflineAudioContext</code>,
+        batches the windows and runs them inside a Web Worker (so the UI never janks), caches the ~2 MB
+        model in Cache Storage (return visits auto-initialise with no download), and converts each f0 to
+        the nearest equal-tempered note plus a cents deviation.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/niobures/CREPE" target="_blank" rel="noopener">Model repo — niobures/CREPE (ONNX export used here)</a></li>
+        <li><a href="https://github.com/marl/crepe" target="_blank" rel="noopener">CREPE — original repo, weights, and the cents mapping (Kim et al., MIT)</a></li>
+        <li><a href="https://arxiv.org/abs/1802.06182" target="_blank" rel="noopener">"CREPE: A Convolutional Representation for Pitch Estimation" (ICASSP 2018)</a></li>
+        <li><a href="https://onnxruntime.ai/docs/tutorials/web/" target="_blank" rel="noopener">ONNX Runtime Web — running ONNX models in the browser</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://onnxruntime.ai/docs/tutorials/web/" target="_blank" rel="noopener">ONNX Runtime Web</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import {
+        PitchEngine, blobToMono16k, urlToMono16k, MicRecorder, freqToNote,
+        drawWaveform, drawPitchCurve, drawPitchgram, renderNoteTable, summariseNotes, PITCH_CSS,
+      } from "./pitch.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = PITCH_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new PitchEngine();
+      let pcm = null, dur = 0, ready = false, lastResult = null;
+
+      function setStatus(msg, cls) {
+        $("status").textContent = msg;
+        $("status").classList.remove("err", "ok");
+        if (cls) $("status").classList.add(cls);
+      }
+      const confT = () => Number($("conf").value);
+
+      function median(arr) {
+        if (!arr.length) return 0;
+        const s = [...arr].sort((a, b) => a - b);
+        return s[s.length >> 1];
+      }
+
+      async function useAudio(pcmData, duration, url) {
+        pcm = pcmData;
+        dur = duration;
+        lastResult = null;
+        $("verdict").hidden = true;
+        $("readout").hidden = true;
+        $("noteTable").innerHTML = '<p class="muted" style="font-family:var(--font-mono);font-size:.8rem">Trace a clip to see its pitch curve and note histogram.</p>';
+        drawWaveform($("wave"), pcm);
+        drawPitchgram($("pgram"), null);
+        drawPitchCurve($("pcurve"), null, { confThreshold: confT() });
+        if (url) $("player").src = url;
+        $("run").disabled = !ready;
+      }
+
+      async function pickSample(btn) {
+        for (const b of $("samples").children) b.setAttribute("aria-pressed", String(b === btn));
+        setStatus("Decoding sample…");
+        try {
+          const { pcm: p, duration } = await urlToMono16k(btn.dataset.src);
+          await useAudio(p, duration, btn.dataset.src);
+          setStatus("Sample ready — hit Trace pitch.");
+        } catch (e) {
+          setStatus("Could not decode the sample: " + e.message, "err");
+        }
+      }
+      for (const btn of $("samples").children) btn.addEventListener("click", () => pickSample(btn));
+
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) {
+        for (const b of $("samples").children) b.setAttribute("aria-pressed", "false");
+        $("dropText").textContent = f.name;
+        setStatus("Decoding " + f.name + "…");
+        try {
+          const { pcm: p, duration } = await blobToMono16k(f);
+          await useAudio(p, duration, URL.createObjectURL(f));
+          setStatus("Audio ready — hit Trace pitch.");
+        } catch (e) {
+          setStatus("Could not decode that file: " + e.message, "err");
+        }
+      }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f) loadFile(f); });
+
+      const rec = new MicRecorder();
+      let recording = false;
+      if (!MicRecorder.supported()) { $("recBtn").disabled = true; $("recState").textContent = "No microphone API here."; }
+      $("recBtn").addEventListener("click", async () => {
+        if (!recording) {
+          try {
+            await rec.start();
+            recording = true;
+            $("recBtn").textContent = "■ Stop recording";
+            $("recState").innerHTML = '<span class="rec-dot"></span>Recording…';
+          } catch (e) {
+            $("recState").textContent = "Mic blocked: " + e.message;
+          }
+        } else {
+          const { blob, url } = await rec.stop();
+          recording = false;
+          $("recBtn").textContent = "● Record from mic";
+          $("recState").textContent = "Recorded.";
+          setStatus("Decoding recording…");
+          const { pcm: p, duration } = await blobToMono16k(blob);
+          await useAudio(p, duration, url);
+          setStatus("Recording ready — hit Trace pitch.");
+        }
+      });
+
+      // Live param outputs. Confidence re-renders client-side (no re-inference); hop needs a re-run.
+      $("conf").addEventListener("input", () => {
+        $("confOut").textContent = confT().toFixed(2);
+        if (lastResult) rerender();
+      });
+      $("hop").addEventListener("input", () => { $("hopOut").textContent = String($("hop").value); });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "niobures/CREPE", runtime: "onnxruntime-web", dtype: "fp32", sizeMB: 2, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: () => { ready = true; $("run").disabled = !pcm; },
+      });
+
+      pickSample($("samples").firstElementChild);
+
+      function voicedF0s(res, t) {
+        const out = [];
+        for (let i = 0; i < res.f0.length; i++) if (res.conf[i] >= t) out.push(res.f0[i]);
+        return out;
+      }
+
+      function rerender() {
+        const t = confT();
+        drawPitchgram($("pgram"), lastResult, { confThreshold: t });
+        drawPitchCurve($("pcurve"), lastResult, { confThreshold: t });
+        renderNoteTable($("noteTable"), lastResult, t);
+        const { voiced, total } = summariseNotes(lastResult, t);
+        const vf = voicedF0s(lastResult, t);
+        const med = median(vf);
+        $("rVoiced").textContent = `${((voiced / (total || 1)) * 100).toFixed(0)}%`;
+        $("rMedian").textContent = med ? `${med.toFixed(1)} Hz (${freqToNote(med).label})` : "–";
+        const has = voiced > 0;
+        $("verdict").textContent = has
+          ? `Median pitch ${med.toFixed(1)} Hz — ${freqToNote(med).label}. ${voiced} of ${total} frames voiced.`
+          : "No confident pitch found — try a lower confidence threshold or a clearer tone.";
+        $("verdict").className = "verdict " + (has ? "speech" : "silent");
+      }
+
+      $("run").addEventListener("click", async () => {
+        if (!pcm) { setStatus("Pick or record some audio first."); return; }
+        $("run").disabled = true;
+        setStatus("Tracing pitch window-by-window…");
+        try {
+          const r = await engine.run(pcm, { hopMs: Number($("hop").value) });
+          lastResult = r;
+          const t = confT();
+          drawPitchgram($("pgram"), r, { confThreshold: t });
+          drawPitchCurve($("pcurve"), r, { confThreshold: t });
+          renderNoteTable($("noteTable"), r, t);
+          const { voiced, total } = summariseNotes(r, t);
+          const med = median(voicedF0s(r, t));
+          $("rBackend").textContent = r.device;
+          $("rMs").textContent = r.ms + " ms";
+          $("rDur").textContent = r.durationS.toFixed(1) + " s";
+          $("rFrames").textContent = String(r.nFrames);
+          $("rVoiced").textContent = `${((voiced / (total || 1)) * 100).toFixed(0)}%`;
+          $("rMedian").textContent = med ? `${med.toFixed(1)} Hz (${freqToNote(med).label})` : "–";
+          $("readout").hidden = false;
+          const has = voiced > 0;
+          $("verdict").textContent = has
+            ? `Median pitch ${med.toFixed(1)} Hz — ${freqToNote(med).label}. ${voiced} of ${total} frames voiced.`
+            : "No confident pitch found in this clip.";
+          $("verdict").className = "verdict " + (has ? "speech" : "silent");
+          $("verdict").hidden = false;
+          setStatus(has ? "Done — see the salience map and pitch curve below." : "Done — no confident pitch found.", "ok");
+        } catch (e) {
+          setStatus("Pitch tracking failed: " + e.message, "err");
+        } finally {
+          $("run").disabled = false;
+        }
+      });
+    </script>
+  </body>
+</html>

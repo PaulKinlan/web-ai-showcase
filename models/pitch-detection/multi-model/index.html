@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CREPE × Whisper — words and pitch together · Web AI Showcase</title>
+    <meta name="description" content="A two-model pipeline: Whisper transcribes the words while CREPE tracks the pitch of the same speech — the prosody, the melody of a voice — side by side, entirely in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎵</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">CREPE</a></p>
+
+    <header>
+      <p class="eyebrow">use case · multi-model</p>
+      <h1>Multi-model: CREPE × Whisper — words <em>and</em> pitch</h1>
+      <p class="lede">
+        A transcript tells you <em>what</em> was said. Pitch tells you <em>how</em> — the intonation, the
+        questioning rise, the emphasis. Here two on-device models run on the same speech: Whisper writes
+        the words, and CREPE traces the fundamental frequency, so you can see the prosody underneath the
+        sentence. Both local, nothing uploaded.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="load-h">
+      <h2 id="load-h">Two models, both local</h2>
+      <p class="muted">CREPE (~2 MB, onnxruntime-web) tracks pitch; Whisper-tiny.en (transformers.js) transcribes. Both auto-initialise from cache on a return visit.</p>
+      <div class="param-grid">
+        <div class="param"><label>1 · CREPE (pitch)</label><div id="crepe-loader"></div></div>
+        <div class="param"><label>2 · Whisper (words)</label><div id="asr-loader"></div></div>
+      </div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+    </section>
+
+    <section class="panel">
+      <div class="field-row">
+        <button id="recBtn" type="button">● Record speech</button>
+        <span id="recState" class="muted" aria-live="polite"></span>
+      </div>
+      <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an audio file">
+        <span id="dropText">…or drop an audio file, or click to choose</span>
+        <input type="file" id="file" accept="audio/*" hidden />
+      </div>
+      <div class="sample-row" id="samples" aria-label="Sample speech" role="group">
+        <button class="chip" type="button" data-src="../../silero-vad/speech.wav" aria-pressed="true">🗣 Speech sample</button>
+        <button class="chip" type="button" data-src="../../silero-vad/ted.wav" aria-pressed="false">🎤 Talk excerpt</button>
+      </div>
+      <div class="audio-row"><audio id="player" controls preload="metadata"></audio></div>
+
+      <div style="margin:.6rem 0"><button id="run" type="button" disabled>Transcribe &amp; track pitch</button></div>
+
+      <div id="transcript" class="transcript"></div>
+
+      <p class="muted" style="font-size:.78rem;margin:.6rem 0 .2rem">Speech pitch contour (the prosody underneath the words):</p>
+      <canvas id="pcurve" class="pcurve" tabindex="0" aria-label="Pitch contour of the spoken audio over time on a musical-note axis"></canvas>
+      <div class="readout" id="readout" hidden>
+        <span>median pitch <b id="rMedian">–</b></span>
+        <span>pitch range <b id="rRange">–</b></span>
+        <span>voiced <b id="rVoiced">–</b></span>
+        <span>backends <b id="rBackend">–</b></span>
+      </div>
+    </section>
+
+    <section aria-labelledby="how-h">
+      <h2 id="how-h">Why two models</h2>
+      <p>
+        ASR throws away pitch — Whisper gives you the words but a flat transcript can't tell a question
+        from a statement, or where the stress fell. CREPE recovers exactly that signal. Run together they
+        give a fuller picture of speech: transcript plus intonation — useful for language learning,
+        expressive TTS reference, sentiment/emphasis cues, or clinical voice analysis. Each runs off the
+        main thread in its own worker; CREPE is tiny and instant, Whisper is the heavier of the two.
+      </p>
+    </section>
+
+    <p class="crumbs"><a href="../wild/">← Wild</a> · <a href="../">Back to CREPE</a></p>
+
+    <script type="module">
+      import { PitchEngine, blobToMono16k, urlToMono16k, MicRecorder, freqToNote, drawPitchCurve, escapeHTML, summariseNotes, PITCH_CSS } from "../pitch.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style");
+      style.textContent = PITCH_CSS + ".transcript{font-size:1.05rem;line-height:1.6;margin:.6rem 0;padding:.6rem .8rem;background:var(--bg-raised);border:1px solid var(--border);border-radius:var(--radius);min-block-size:2.4rem}.transcript:empty::before{content:'The transcript will appear here.';color:var(--muted);font-size:.9rem}";
+      document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const crepe = new PitchEngine();
+
+      // Minimal ASR worker handshake (Whisper via shared lib/webai.js).
+      const asr = new Worker("./asr-worker.js", { type: "module" });
+      let asrReady = false; const asrWaiters = []; const asrPending = new Map(); let asrId = 0; let asrProgress = null; let asrDevice = "wasm";
+      asr.addEventListener("message", (e) => {
+        const m = e.data;
+        if (m.type === "progress") asrProgress?.(m.p);
+        else if (m.type === "ready") { asrReady = true; asrDevice = m.device; asrWaiters.forEach((w) => w.resolve(m.device)); asrWaiters.length = 0; }
+        else if (m.type === "result") { const p = asrPending.get(m.id); if (p) { asrPending.delete(m.id); p.resolve(m); } }
+        else if (m.type === "error") { if (m.id != null && asrPending.has(m.id)) { asrPending.get(m.id).reject(new Error(m.message)); asrPending.delete(m.id); } else asrWaiters.forEach((w) => w.reject(new Error(m.message))); }
+      });
+      const asrLoad = (onProgress) => { asrProgress = onProgress; if (asrReady) return Promise.resolve(asrDevice); return new Promise((resolve, reject) => { asrWaiters.push({ resolve, reject }); asr.postMessage({ type: "load" }); }); };
+      const asrTranscribe = (audio) => { const id = ++asrId; const copy = audio.slice(); return new Promise((resolve, reject) => { asrPending.set(id, { resolve, reject }); asr.postMessage({ type: "transcribe", id, audio: copy }, [copy.buffer]); }); };
+
+      let pcm = null, crepeReady = false;
+      const bothReady = () => crepeReady && asrReady;
+      const refresh = () => { $("run").disabled = !(pcm && bothReady()); };
+      const setStatus = (m, c) => { $("status").textContent = m; $("status").classList.remove("err", "ok"); if (c) $("status").classList.add(c); };
+      const median = (a) => { if (!a.length) return 0; const s = [...a].sort((x, y) => x - y); return s[s.length >> 1]; };
+
+      function use(p, url) { pcm = p; $("readout").hidden = true; $("transcript").innerHTML = ""; drawPitchCurve($("pcurve"), null, {}); if (url) $("player").src = url; refresh(); }
+      async function pickSample(btn) {
+        for (const b of $("samples").children) b.setAttribute("aria-pressed", String(b === btn));
+        setStatus("Decoding sample…");
+        try { const { pcm: p } = await urlToMono16k(btn.dataset.src); use(p, btn.dataset.src); setStatus("Ready."); }
+        catch (e) { setStatus("Decode failed: " + e.message, "err"); }
+      }
+      for (const b of $("samples").children) b.addEventListener("click", () => pickSample(b));
+
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) {
+        for (const b of $("samples").children) b.setAttribute("aria-pressed", "false");
+        $("dropText").textContent = f.name; setStatus("Decoding…");
+        try { const { pcm: p } = await blobToMono16k(f); use(p, URL.createObjectURL(f)); setStatus("Ready."); }
+        catch (e) { setStatus("Decode failed: " + e.message, "err"); }
+      }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f) loadFile(f); });
+
+      const rec = new MicRecorder(); let recording = false;
+      if (!MicRecorder.supported()) { $("recBtn").disabled = true; $("recState").textContent = "No mic here — use a sample."; }
+      $("recBtn").addEventListener("click", async () => {
+        if (!recording) {
+          try { await rec.start(); recording = true; $("recBtn").textContent = "■ Stop"; $("recState").innerHTML = '<span class="rec-dot"></span>Say a sentence…'; }
+          catch (e) { $("recState").textContent = "Mic blocked: " + e.message; }
+        } else {
+          const { blob, url } = await rec.stop(); recording = false; $("recBtn").textContent = "● Record speech"; $("recState").textContent = "Recorded.";
+          for (const b of $("samples").children) b.setAttribute("aria-pressed", "false");
+          setStatus("Decoding…"); const { pcm: p } = await blobToMono16k(blob); use(p, url); setStatus("Ready.");
+        }
+      });
+
+      createModelLoader({
+        mount: $("crepe-loader"),
+        model: { modelId: "niobures/CREPE", runtime: "onnxruntime-web", dtype: "fp32", sizeMB: 2, requiresWebGPU: false },
+        load: (onProgress) => crepe.load(onProgress),
+        onReady: () => { crepeReady = true; refresh(); },
+      });
+      createModelLoader({
+        mount: $("asr-loader"),
+        model: { modelId: "onnx-community/whisper-tiny.en", runtime: "transformers.js", dtype: "q8", sizeMB: 40, requiresWebGPU: false },
+        load: (onProgress) => asrLoad(onProgress),
+        onReady: () => { refresh(); },
+      });
+      pickSample($("samples").firstElementChild);
+
+      $("run").addEventListener("click", async () => {
+        if (!pcm || !bothReady()) return;
+        $("run").disabled = true; $("transcript").innerHTML = "";
+        setStatus("1/2 · CREPE tracing pitch…");
+        try {
+          const r = await crepe.run(pcm, { hopMs: 16 });
+          drawPitchCurve($("pcurve"), r, { confThreshold: 0.5 });
+          const voiced = [];
+          for (let i = 0; i < r.f0.length; i++) if (r.conf[i] >= 0.5) voiced.push(r.f0[i]);
+          const med = median(voiced);
+          const { voiced: vc, total } = summariseNotes(r, 0.5);
+          $("rMedian").textContent = med ? `${med.toFixed(0)} Hz (${freqToNote(med).label})` : "–";
+          if (voiced.length) { const lo = Math.min(...voiced), hi = Math.max(...voiced); $("rRange").textContent = `${lo.toFixed(0)}–${hi.toFixed(0)} Hz`; }
+          $("rVoiced").textContent = `${((vc / (total || 1)) * 100).toFixed(0)}%`;
+          setStatus("2/2 · Whisper transcribing…");
+          const t = await asrTranscribe(pcm);
+          $("transcript").innerHTML = escapeHTML(t.text || "(no words recognised)");
+          $("rBackend").textContent = `pitch ${r.device.split(" ")[0]} · asr ${t.device}`;
+          $("readout").hidden = false;
+          setStatus("Done — words above, pitch contour below.", "ok");
+        } catch (e) {
+          setStatus("Failed: " + e.message, "err");
+        } finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>

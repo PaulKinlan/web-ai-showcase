@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CREPE Practical — a live chromatic tuner · Web AI Showcase</title>
+    <meta name="description" content="A real chromatic instrument/voice tuner running on CREPE in your browser: sing or play into your mic and watch the needle settle on the note, with a live cents-off readout. No app, no server." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎵</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">CREPE</a></p>
+
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Practical: a live chromatic tuner</h1>
+      <p class="lede">
+        This is the everyday product built on pitch tracking. Point your mic at a guitar, a violin, or
+        your own voice; CREPE reads the fundamental many times a second and the needle tells you the
+        note and how many cents sharp or flat you are — green when you're in tune. No native app, no
+        cloud: the model runs on your device, and the audio never leaves it.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="field-row">
+        <button id="micBtn" type="button" disabled>● Start tuner (mic)</button>
+        <span id="micState" class="muted" aria-live="polite"></span>
+      </div>
+      <p class="muted" style="font-size:.82rem">No mic? Play a sample through the tuner instead:</p>
+      <div class="sample-row" id="samples" aria-label="Sample audio" role="group">
+        <button class="chip" type="button" data-src="../sample-scale.wav">🎹 Scale</button>
+        <button class="chip" type="button" data-src="../sample-melody.wav">🎶 Melody</button>
+        <button class="chip" type="button" data-src="../sample-glide.wav">↗ Glide</button>
+      </div>
+
+      <div class="tuner" aria-live="off">
+        <p class="notebig"><span id="noteName">–</span><span class="oct" id="noteOct"></span></p>
+        <div class="cents-meter" role="img" id="meter" aria-label="Tuning meter, needle at 0 cents">
+          <span class="cents-center"></span>
+          <span class="cents-needle" id="needle"></span>
+        </div>
+        <div class="readout">
+          <span>pitch <b id="rHz">–</b></span>
+          <span>cents off <b id="rCents">–</b></span>
+          <span>confidence <b id="rConf">–</b></span>
+          <span>backend <b id="rBackend">–</b></span>
+        </div>
+      </div>
+      <p class="muted" id="live" role="status" aria-live="polite" style="min-block-size:1.4em"></p>
+    </section>
+
+    <section aria-labelledby="how-h">
+      <h2 id="how-h">How the live path works</h2>
+      <p>
+        The mic is tapped only after you press Start (never automatically). Audio is resampled to 16 kHz,
+        and the most-recent 1024-sample window is sent to a Web Worker running CREPE via onnxruntime-web;
+        each result updates the needle. Frames are dropped while the worker is busy, so the UI stays
+        smooth and INP stays low. Press Stop and every mic track is released. Below ~50% confidence
+        (no clear tone) the needle rests and the note blanks — honest, never a made-up pitch.
+      </p>
+    </section>
+
+    <p class="crumbs"><a href="../basics/">← Basics</a> · <a href="../wild/">Wild: query by humming →</a> · <a href="../">Back to CREPE</a></p>
+
+    <script type="module">
+      import { PitchEngine, urlToMono16k, LiveMic, freqToNote, PITCH_CSS } from "../pitch.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style");
+      style.textContent = PITCH_CSS + ".tuner{margin:1rem 0;text-align:center}.tuner .cents-meter{max-inline-size:420px;margin-inline:auto}.tuner .readout{justify-content:center}";
+      document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new PitchEngine();
+      const SR = 16000, WIN = 1024;
+      let ready = false, inFlight = false, mic = null, samplePlaying = null;
+
+      const setStatus = (m, c) => { $("status").textContent = m; $("status").classList.remove("err", "ok"); if (c) $("status").classList.add(c); };
+
+      function updateFromPitch(f0, conf) {
+        if (conf < 0.5 || !f0) {
+          $("noteName").textContent = "–"; $("noteOct").textContent = "";
+          $("needle").style.insetInlineStart = "50%"; $("needle").classList.remove("intune");
+          $("rHz").textContent = "–"; $("rCents").textContent = "–"; $("rConf").textContent = conf ? conf.toFixed(2) : "–";
+          $("live").textContent = "Listening… (no clear tone)";
+          return;
+        }
+        const n = freqToNote(f0);
+        $("noteName").textContent = n.name; $("noteOct").textContent = n.octave;
+        const c = Math.max(-50, Math.min(50, n.cents));
+        $("needle").style.insetInlineStart = `calc(50% + ${c * 0.9}%)`;
+        $("needle").classList.toggle("intune", Math.abs(n.cents) <= 8);
+        $("rHz").textContent = f0.toFixed(1) + " Hz";
+        $("rCents").textContent = (n.cents > 0 ? "+" : "") + n.cents;
+        $("rConf").textContent = conf.toFixed(2);
+        $("meter").setAttribute("aria-label", `Tuning meter, ${n.label} ${Math.abs(n.cents)} cents ${n.cents >= 0 ? "sharp" : "flat"}`);
+        $("live").textContent = `${n.label} · ${(n.cents > 0 ? "+" : "") + n.cents} cents${Math.abs(n.cents) <= 8 ? " · in tune" : ""}`;
+      }
+      engine.onStream = (m) => { inFlight = false; $("rBackend").textContent = engine.device; updateFromPitch(m.f0, m.conf); };
+
+      function send(win) { if (!ready || inFlight) return; inFlight = true; engine.streamWindow(win); }
+
+      // ── Live mic path ──
+      function stopMic() { if (mic) { mic.stop(); mic = null; } $("micBtn").textContent = "● Start tuner (mic)"; $("micState").textContent = ""; }
+      function stopSample() { if (samplePlaying) { clearInterval(samplePlaying.timer); samplePlaying.audio.pause(); samplePlaying = null; } }
+      $("micBtn").addEventListener("click", async () => {
+        if (mic) { stopMic(); $("live").textContent = ""; return; }
+        stopSample();
+        try {
+          mic = new LiveMic({ onWindow: (w) => send(w.subarray(w.length - WIN)), windowSize: 2048 });
+          await mic.start();
+          $("micBtn").textContent = "■ Stop"; $("micState").innerHTML = '<span class="rec-dot"></span>Tuning from mic — play or sing a note.';
+        } catch (e) { mic = null; $("micState").textContent = "Mic blocked: " + e.message; }
+      });
+
+      // ── Sample fallback: stream a clip through the same worker path ──
+      async function playSample(btn) {
+        stopMic();
+        stopSample();
+        for (const b of $("samples").children) b.setAttribute("aria-pressed", String(b === btn));
+        setStatus("Decoding sample…");
+        try {
+          const { pcm } = await urlToMono16k(btn.dataset.src);
+          setStatus("Streaming the sample through the tuner…", "ok");
+          const audio = new Audio(btn.dataset.src); audio.play().catch(() => {});
+          let pos = WIN;
+          const step = Math.round(SR * 0.06); // 60 ms cadence
+          const timer = setInterval(() => {
+            if (pos >= pcm.length) { stopSample(); $("live").textContent = "Sample finished."; return; }
+            send(pcm.subarray(Math.max(0, pos - WIN), pos));
+            pos += step;
+          }, 60);
+          samplePlaying = { timer, audio };
+        } catch (e) { setStatus("Decode failed: " + e.message, "err"); }
+      }
+      for (const b of $("samples").children) b.addEventListener("click", () => playSample(b));
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "niobures/CREPE", runtime: "onnxruntime-web", dtype: "fp32", sizeMB: 2, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: () => {
+          ready = true;
+          if (LiveMic.supported()) { $("micBtn").disabled = false; $("micState").textContent = "Ready — press Start."; }
+          else { $("micBtn").disabled = true; $("micState").textContent = "No microphone here — use a sample below."; }
+        },
+      });
+
+      addEventListener("pagehide", () => { stopMic(); stopSample(); });
+    </script>
+  </body>
+</html>
