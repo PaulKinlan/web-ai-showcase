@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>DPT Multi-model — how far away is each thing? · Web AI Showcase</title>
+    <meta name="description" content="Chain two local models: DPT estimates per-pixel depth, SegFormer labels every pixel with a semantic class, and we average depth per class — so you learn how far the sky, the floor, and the person are. All on-device." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🗻</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">DPT</a></p>
+
+    <header>
+      <p class="eyebrow">use case · multi-model</p>
+      <h1>Multi-model: how far away is each <em>thing</em>?</h1>
+      <p class="lede">
+        DPT answers "how far is every <em>pixel</em>?" <a href="../../segformer-semantic/">SegFormer</a>
+        answers "what <em>is</em> every pixel?" — a semantic class (sky, floor, person, plant…). Line the
+        two maps up and average depth within each class, and you get scene understanding neither model has
+        alone: a ranked list of the things in the photo, nearest to furthest. Two tiny models, one device,
+        no server.
+      </p>
+    </header>
+
+    <section class="panel">
+      <h3>1 · Pick a scene</h3>
+      <div id="dpt-loader"></div>
+      <div id="seg-loader"></div>
+      <div class="sample-strip" id="samples" aria-label="Sample images">
+        <img class="sample-thumb active" src="../sample-room.jpg" data-src="../sample-room.jpg" alt="A sunlit bedroom" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-street.jpg" data-src="../sample-street.jpg" alt="A riverside at golden hour" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-portrait.jpg" data-src="../sample-portrait.jpg" alt="Two cats on a couch" tabindex="0" role="button" />
+      </div>
+      <div style="margin:.6rem 0"><button id="run" type="button" disabled>Analyse depth per class</button></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+    </section>
+
+    <section class="panel">
+      <h3>2 · The two maps</h3>
+      <div class="canvas-grid">
+        <div class="canvas-card">
+          <h4>Depth (DPT)</h4>
+          <canvas class="viz-canvas" id="depthCanvas" width="480" height="360" aria-label="Colourised depth map"></canvas>
+        </div>
+        <div class="canvas-card">
+          <h4>Semantic classes (SegFormer)</h4>
+          <canvas class="viz-canvas" id="segCanvas" width="480" height="360" aria-label="Semantic segmentation overlay"></canvas>
+        </div>
+      </div>
+      <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>depth <b id="rDepthMs">–</b></span><span>segment <b id="rSegMs">–</b></span><span>classes <b id="rClasses">–</b></span></div>
+    </section>
+
+    <section class="panel">
+      <h3>3 · Ranked: nearest thing → furthest thing</h3>
+      <p class="muted" style="font-size:.85rem">Each bar is one semantic class, positioned by its <em>mean</em> normalized depth (100 = nearest, 0 = furthest). This is the join the two models make possible — a distance for every named thing in the scene.</p>
+      <div id="rankEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Run the analysis to rank the scene by distance.</div>
+      <div class="cov-list" id="rankList"></div>
+    </section>
+
+    <p class="crumbs"><a href="../wild/">← Wild</a> · <a href="../">Back to DPT</a></p>
+
+    <script type="module">
+      import { DepthEngine, urlToDataURL, renderDepthColor, DEPTH_CSS } from "../dpt.js";
+      import { SegformerEngine, paintSemanticMap, loadImage, scaledOverlayData, escapeHTML, SEGFORMER_CSS } from "../../segformer-semantic/segformer.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = DEPTH_CSS + SEGFORMER_CSS;
+      document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const dpt = new DepthEngine();
+      const seg = new SegformerEngine();
+      let currentURL = null, currentSrc = null, dptReady = false, segReady = false;
+
+      async function useSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        currentSrc = el.dataset.src;
+        currentURL = await urlToDataURL(el.dataset.src);
+        $("readout").hidden = true; $("rankList").replaceChildren(); $("rankEmpty").hidden = false;
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => useSample(thumb));
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); useSample(thumb); } });
+      }
+      useSample($("samples").firstElementChild);
+
+      let dptDtype = "q8";
+      try { if ("gpu" in navigator && await navigator.gpu.requestAdapter()) dptDtype = "fp16"; } catch { /* wasm */ }
+      const autoRun = new URLSearchParams(location.search).has("auto");
+      function maybeAuto() { if (autoRun && dptReady && segReady) $("run").click(); }
+
+      createModelLoader({
+        mount: $("dpt-loader"),
+        model: { modelId: "Xenova/dpt-hybrid-midas", runtime: "transformers.js", dtype: dptDtype, sizeMB: 210, requiresWebGPU: false },
+        load: (onProgress) => dpt.load(onProgress),
+        onReady: () => { dptReady = true; if (segReady) $("run").disabled = false; maybeAuto(); },
+      });
+      createModelLoader({
+        mount: $("seg-loader"),
+        model: { modelId: "Xenova/segformer-b0-finetuned-ade-512-512", runtime: "transformers.js", dtype: "q8", sizeMB: 15, requiresWebGPU: false },
+        load: (onProgress) => seg.load(onProgress),
+        onReady: () => { segReady = true; if (dptReady) $("run").disabled = false; maybeAuto(); },
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!currentURL) { $("status").textContent = "Pick a scene first."; return; }
+        $("run").disabled = true; $("status").classList.remove("err"); $("status").textContent = "Running DPT depth + SegFormer segmentation…";
+        try {
+          const [d, s] = await Promise.all([dpt.estimate(currentURL), seg.segment(currentURL)]);
+
+          // Depth map (DPT) — colourise at DPT's own resolution.
+          renderDepthColor($("depthCanvas"), d.width, d.height, d.depth, "turbo");
+          // Semantic overlay (SegFormer) over the photo.
+          const img = await loadImage(currentSrc);
+          paintSemanticMap($("segCanvas"), img, s.overlay, s.width, s.height, 0.7);
+
+          // Align the class map to the depth map's grid, then average depth within each class.
+          const cls = scaledOverlayData(s.overlay, s.width, s.height, d.width, d.height);
+          const byColor = new Map(s.classes.map((c) => [(c.r << 16) | (c.g << 8) | c.b, { label: c.label, r: c.r, g: c.g, b: c.b, sum: 0, n: 0 }]));
+          const n = d.width * d.height;
+          for (let i = 0; i < n; i++) {
+            const o = i * 4;
+            if (cls[o + 3] === 0) continue; // no class claimed this pixel
+            const key = (cls[o] << 16) | (cls[o + 1] << 8) | cls[o + 2];
+            const rec = byColor.get(key);
+            if (rec) { rec.sum += d.depth[i]; rec.n++; }
+          }
+          const ranked = [...byColor.values()].filter((r) => r.n > n * 0.005)
+            .map((r) => ({ ...r, mean: r.sum / r.n, share: r.n / n }))
+            .sort((a, b) => b.mean - a.mean);
+
+          $("readout").hidden = false;
+          $("rBackend").textContent = d.device.toUpperCase() + (d.dtype ? " · " + d.dtype : "");
+          $("rDepthMs").textContent = d.ms + " ms";
+          $("rSegMs").textContent = s.ms + " ms";
+          $("rClasses").textContent = ranked.length;
+          renderRanked(ranked);
+          $("status").textContent = `Ranked ${ranked.length} thing(s) by distance — nearest first.`; $("status").classList.add("ok");
+        } catch (err) {
+          $("status").textContent = "Analysis failed: " + err.message; $("status").classList.add("err");
+        } finally { $("run").disabled = false; }
+      });
+
+      function renderRanked(ranked) {
+        $("rankEmpty").hidden = true;
+        $("rankList").replaceChildren(...ranked.map((r) => {
+          const row = document.createElement("div");
+          row.className = "cov-row";
+          const pct = (r.mean / 255 * 100);
+          row.innerHTML = `<span class="name" title="${escapeHTML(r.label)}"><span class="swatch" style="background:rgb(${r.r},${r.g},${r.b})"></span>${escapeHTML(r.label)}</span>
+            <span class="bar"><span style="inline-size:${pct.toFixed(0)}%;background:rgb(${r.r},${r.g},${r.b})"></span></span>
+            <span class="pct">${pct.toFixed(0)}</span>`;
+          return row;
+        }));
+      }
+    </script>
+  </body>
+</html>
