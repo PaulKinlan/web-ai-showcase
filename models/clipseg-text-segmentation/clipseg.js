@@ -44,6 +44,12 @@ export class ClipsegEngine {
         msg.maps = msg.maps.map((m) => ({ prompt: m.prompt, data: new Float32Array(m.data) }));
         p.resolve(msg);
       }
+    } else if (msg.type === "composite") {
+      const p = this._pending.get(msg.id);
+      if (p) {
+        this._pending.delete(msg.id);
+        p.resolve(msg);
+      }
     } else if (msg.type === "error") {
       if (msg.id != null && this._pending.has(msg.id)) {
         this._pending.get(msg.id).reject(new Error(msg.message));
@@ -66,7 +72,9 @@ export class ClipsegEngine {
   }
 
   /** Score `prompts` (array of phrases) against `imageURL`. Resolves
-   *  { mapW, mapH, maps:[{prompt, data:Float32Array}], ms, device }. `data` is RAW per-pixel logits. */
+   *  { mapW, mapH, maps:[{prompt, data:Float32Array}], ms, device }. `data` is RAW per-pixel logits.
+   *  The worker also caches these logits so the composite helpers below re-threshold off the main
+   *  thread on every slider input without re-running the model. */
   segment(imageURL, prompts) {
     const id = ++this._id;
     return new Promise((resolve, reject) => {
@@ -74,6 +82,72 @@ export class ClipsegEngine {
       this.worker.postMessage({ type: "run", id, image: imageURL, prompts });
     });
   }
+
+  // ── Off-main-thread compositing (invariant 15) ─────────────────────────────────────────────────
+  // Each builds the coloured RGBA layer in the worker (OffscreenCanvas) against the cached logits and
+  // resolves with a transferred ImageBitmap; the page only drawImage()s it. Keeps the threshold/opacity
+  // sliders responsive without any main-thread per-pixel loop.
+  composite(op, args) {
+    const id = ++this._id;
+    return new Promise((resolve, reject) => {
+      this._pending.set(id, { resolve, reject });
+      this.worker.postMessage({ type: "composite", id, op, args });
+    });
+  }
+  /** Combined mask overlay for `items` = [{mapIndex, colorIndex}] → { bitmap, mapW, mapH }. */
+  overlay(items, threshold, opacity) {
+    return this.composite("overlay", { items, threshold, opacity });
+  }
+  /** Inferno probability heatmap for one prompt → { bitmap, mapW, mapH }. */
+  heatmap(mapIndex) {
+    return this.composite("heatmap", { mapIndex });
+  }
+  /** Binary alpha stencil (255 above threshold) for a GPU cut-out → { bitmap, above, mapW, mapH }. */
+  maskAlpha(mapIndex, threshold) {
+    return this.composite("maskAlpha", { mapIndex, threshold });
+  }
+  /** Per-image normalised relative render → { heat, overlay, above, mapW, mapH } (the "wild" page). */
+  norm(mapIndex, threshold) {
+    return this.composite("norm", { mapIndex, threshold });
+  }
+}
+
+// ── Main-thread draw helpers (GPU compositing only — no per-pixel loops) ──────────────────────────
+
+/** Draw the photo, then blit a worker-built overlay ImageBitmap scaled to the photo (nearest→smooth). */
+export function drawOverlay(canvas, img, overlayBitmap) {
+  const w = img.naturalWidth, h = img.naturalHeight;
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(img, 0, 0, w, h);
+  if (overlayBitmap) {
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(overlayBitmap, 0, 0, w, h);
+  }
+}
+
+/** Blit a worker-built map-resolution bitmap (e.g. the heatmap) into a canvas sized to the bitmap. */
+export function drawBitmap(canvas, bitmap) {
+  canvas.width = bitmap.width;
+  canvas.height = bitmap.height;
+  canvas.getContext("2d").drawImage(bitmap, 0, 0);
+}
+
+/** Cut the object out of the photo using a worker-built alpha stencil as a GPU destination-in mask.
+ *  Returns a photo-resolution canvas with everything outside the mask transparent (no per-pixel loop). */
+export function cutoutWithMask(img, maskBitmap) {
+  const w = img.naturalWidth, h = img.naturalHeight;
+  const c = document.createElement("canvas");
+  c.width = w;
+  c.height = h;
+  const ctx = c.getContext("2d");
+  ctx.drawImage(img, 0, 0, w, h);
+  ctx.globalCompositeOperation = "destination-in";
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(maskBitmap, 0, 0, w, h);
+  ctx.globalCompositeOperation = "source-over";
+  return c;
 }
 
 // ---- image plumbing ----------------------------------------------------------------------------
@@ -210,97 +284,6 @@ export function paintPhoto(canvas, img) {
   canvas.width = w;
   canvas.height = h;
   canvas.getContext("2d").drawImage(img, 0, 0, w, h);
-}
-
-// Build an ImageData for one thresholded coloured mask at map resolution.
-function maskImageData(map, w, h, rgb, threshold, opacity) {
-  const out = new Uint8ClampedArray(w * h * 4);
-  const [r, g, b] = rgb;
-  const a = Math.round(opacity * 255);
-  for (let i = 0; i < w * h; i++) {
-    if (sigmoid(map[i]) >= threshold) {
-      const o = i * 4;
-      out[o] = r;
-      out[o + 1] = g;
-      out[o + 2] = b;
-      out[o + 3] = a;
-    }
-  }
-  return new ImageData(out, w, h);
-}
-
-/**
- * Paint the photo, then overlay each prompt's thresholded mask in its phrase colour.
- * `maps` = [{prompt, data}], `mapW/mapH` the model resolution, scaled up to the photo (nearest).
- */
-export function paintMasks(canvas, img, maps, mapW, mapH, threshold, opacity = 0.55) {
-  const w = img.naturalWidth, h = img.naturalHeight;
-  canvas.width = w;
-  canvas.height = h;
-  const ctx = canvas.getContext("2d");
-  ctx.drawImage(img, 0, 0, w, h);
-  const tmp = document.createElement("canvas");
-  tmp.width = mapW;
-  tmp.height = mapH;
-  const tctx = tmp.getContext("2d");
-  maps.forEach((m, i) => {
-    tctx.putImageData(
-      maskImageData(m.data, mapW, mapH, colorForIndex(i), threshold, opacity),
-      0,
-      0,
-    );
-    ctx.imageSmoothingEnabled = true;
-    ctx.drawImage(tmp, 0, 0, w, h);
-  });
-}
-
-/** Paint a single prompt's full probability field as an inferno heatmap (the "see inside" view). */
-export function paintHeatmap(canvas, map, mapW, mapH) {
-  const out = new Uint8ClampedArray(mapW * mapH * 4);
-  for (let i = 0; i < mapW * mapH; i++) {
-    const [r, g, b] = probColor(sigmoid(map[i]));
-    const o = i * 4;
-    out[o] = r;
-    out[o + 1] = g;
-    out[o + 2] = b;
-    out[o + 3] = 255;
-  }
-  canvas.width = mapW;
-  canvas.height = mapH;
-  canvas.getContext("2d").putImageData(new ImageData(out, mapW, mapH), 0, 0);
-}
-
-/**
- * Cut out the thresholded region of one mask (everything else transparent), scaled to the photo.
- * Returns a canvas — handy for the "isolate the phrase" practical demo and the multi-model crop.
- */
-export function cutout(img, map, mapW, mapH, threshold) {
-  const w = img.naturalWidth, h = img.naturalHeight;
-  const out = document.createElement("canvas");
-  out.width = w;
-  out.height = h;
-  const octx = out.getContext("2d");
-  octx.drawImage(img, 0, 0, w, h);
-  // Upscale the binary mask to photo size via a temp canvas, then knock out alpha where mask is 0.
-  const tmp = document.createElement("canvas");
-  tmp.width = mapW;
-  tmp.height = mapH;
-  const mData = new Uint8ClampedArray(mapW * mapH * 4);
-  for (let i = 0; i < mapW * mapH; i++) {
-    if (sigmoid(map[i]) >= threshold) mData[i * 4 + 3] = 255;
-  }
-  tmp.getContext("2d").putImageData(new ImageData(mData, mapW, mapH), 0, 0);
-  const up = document.createElement("canvas");
-  up.width = w;
-  up.height = h;
-  const uctx = up.getContext("2d");
-  uctx.imageSmoothingEnabled = true;
-  uctx.drawImage(tmp, 0, 0, w, h);
-  const maskUp = uctx.getImageData(0, 0, w, h).data;
-  const id = octx.getImageData(0, 0, w, h);
-  for (let i = 0; i < w * h; i++) if (maskUp[i * 4 + 3] < 128) id.data[i * 4 + 3] = 0;
-  octx.putImageData(id, 0, 0);
-  return out;
 }
 
 export const CLIPSEG_CSS = `

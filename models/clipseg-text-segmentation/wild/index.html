@@ -87,7 +87,7 @@
     </footer>
 
     <script type="module">
-      import { ClipsegEngine, CLIPSEG_CSS, colorForIndex, loadImage, parsePrompts, peakOfMap, probColor, urlToDataURL, fileToDataURL } from "../clipseg.js";
+      import { ClipsegEngine, CLIPSEG_CSS, drawBitmap, drawOverlay, loadImage, parsePrompts, peakOfMap, urlToDataURL, fileToDataURL } from "../clipseg.js";
       import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
       document.head.append(Object.assign(document.createElement("style"), { textContent: CLIPSEG_CSS }));
       const $ = (id) => document.getElementById(id);
@@ -132,39 +132,20 @@
           $("rMs").textContent = last.ms + " ms";
         } catch (err) { $("runStatus").hidden = false; $("runStatus").classList.add("err"); $("runStatus").textContent = "Failed: " + err.message; }
       }
-      // Per-image normalisation: sigmoid → stretch to the map's own min–max, so an abstract prompt's
-      // low, diffuse field becomes legible as RELATIVE intensity (clearly labelled as such in the UI).
-      function normalize(map) {
-        const p = new Float32Array(map.length);
-        let mn = Infinity, mx = -Infinity;
-        for (let i = 0; i < map.length; i++) { const v = 1 / (1 + Math.exp(-map[i])); p[i] = v; if (v < mn) mn = v; if (v > mx) mx = v; }
-        const span = mx - mn || 1;
-        for (let i = 0; i < p.length; i++) p[i] = (p[i] - mn) / span;
-        return p;
-      }
-      function paint() {
+      // Per-image normalisation (sigmoid → stretch to the map's own min–max) + the relative heatmap and
+      // relative-threshold mask now run in the worker; the page only blits the transferred ImageBitmaps.
+      let paintSeq = 0;
+      async function paint() {
         if (!last || !img) return;
         const thr = +$("thresh").value, m = last.maps[0];
-        const norm = normalize(m.data), W = last.mapW, H = last.mapH;
-        // relative heatmap
-        const heat = $("heat"); heat.width = W; heat.height = H;
-        const hd = new Uint8ClampedArray(W * H * 4);
-        for (let i = 0; i < W * H; i++) { const [r, g, b] = probColor(norm[i]); const o = i * 4; hd[o] = r; hd[o + 1] = g; hd[o + 2] = b; hd[o + 3] = 255; }
-        heat.getContext("2d").putImageData(new ImageData(hd, W, H), 0, 0);
-        // relative mask over photo
-        const stage = $("stage"), iw = img.naturalWidth, ih = img.naturalHeight;
-        stage.width = iw; stage.height = ih;
-        const ctx = stage.getContext("2d"); ctx.drawImage(img, 0, 0, iw, ih);
-        const [mr, mg, mb] = colorForIndex(0);
-        const md = new Uint8ClampedArray(W * H * 4);
-        let above = 0;
-        for (let i = 0; i < W * H; i++) { if (norm[i] >= thr) { const o = i * 4; md[o] = mr; md[o + 1] = mg; md[o + 2] = mb; md[o + 3] = 140; above++; } }
-        const tmp = document.createElement("canvas"); tmp.width = W; tmp.height = H;
-        tmp.getContext("2d").putImageData(new ImageData(md, W, H), 0, 0);
-        ctx.imageSmoothingEnabled = true; ctx.drawImage(tmp, 0, 0, iw, ih);
-        const pk = peakOfMap(m.data, W, H);
+        const seq = ++paintSeq;
+        const res = await engine.norm(0, thr);
+        if (seq !== paintSeq) return;
+        drawBitmap($("heat"), res.heat);           // relative inferno heatmap (map resolution)
+        drawOverlay($("stage"), img, res.overlay); // relative mask over the photo
+        const pk = peakOfMap(m.data, last.mapW, last.mapH);
         $("rPeak").textContent = pk.prob.toFixed(3);
-        $("rCov").textContent = (above / (W * H) * 100).toFixed(1) + "%";
+        $("rCov").textContent = (res.above / (last.mapW * last.mapH) * 100).toFixed(1) + "%";
       }
     </script>
   </body>

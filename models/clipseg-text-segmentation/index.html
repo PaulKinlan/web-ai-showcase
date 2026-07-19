@@ -192,7 +192,7 @@ const { logits } = await model({
 
     <script type="module">
       import {
-        ClipsegEngine, CLIPSEG_CSS, cssColor, loadImage, maskCoverage, paintHeatmap, paintMasks,
+        ClipsegEngine, CLIPSEG_CSS, cssColor, drawBitmap, drawOverlay, loadImage, maskCoverage,
         parsePrompts, peakOfMap, urlToDataURL, fileToDataURL, escapeHTML,
       } from "./clipseg.js";
       import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
@@ -275,10 +275,15 @@ const { logits } = await model({
         }
       }
 
-      function repaint() {
+      let paintSeq = 0, heatSeq = 0;
+      async function repaint() {
         if (!last || !img) return;
         const thr = +$("thresh").value, op = +$("opacity").value;
-        paintMasks($("stage"), img, last.maps, last.mapW, last.mapH, thr, op);
+        // Composite every phrase's mask off the main thread; the page only blits the ImageBitmap.
+        const seq = ++paintSeq;
+        const items = last.maps.map((m, i) => ({ mapIndex: i, colorIndex: i }));
+        const res = await engine.overlay(items, thr, op);
+        if (seq === paintSeq) drawOverlay($("stage"), img, res.bitmap);
         // legend + per-phrase stats
         const leg = last.maps.map((m, i) => {
           const cov = maskCoverage(m.data, thr);
@@ -291,10 +296,12 @@ const { logits } = await model({
           return `<tr><td style="color:${cssColor(i)}">${escapeHTML(m.prompt)}</td><td>${pk.prob.toFixed(3)}</td><td>${(cov * 100).toFixed(1)}%</td></tr>`;
         }).join("");
       }
-      function repaintHeat() {
+      async function repaintHeat() {
         if (!last) return;
         const i = Math.min(last.maps.length - 1, +$("heatSel").value || 0);
-        paintHeatmap($("heat"), last.maps[i].data, last.mapW, last.mapH);
+        const seq = ++heatSeq;
+        const res = await engine.heatmap(i);
+        if (seq === heatSeq) drawBitmap($("heat"), res.bitmap);
       }
     </script>
   </body>

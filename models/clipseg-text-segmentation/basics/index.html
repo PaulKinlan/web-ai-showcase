@@ -69,7 +69,7 @@
     </footer>
 
     <script type="module">
-      import { ClipsegEngine, CLIPSEG_CSS, escapeHTML, loadImage, maskCoverage, paintMasks, parsePrompts, urlToDataURL, fileToDataURL } from "../clipseg.js";
+      import { ClipsegEngine, CLIPSEG_CSS, drawOverlay, escapeHTML, loadImage, maskCoverage, parsePrompts, urlToDataURL, fileToDataURL } from "../clipseg.js";
       import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
       document.head.append(Object.assign(document.createElement("style"), { textContent: CLIPSEG_CSS }));
       const $ = (id) => document.getElementById(id);
@@ -115,19 +115,28 @@
           $("rN").textContent = prompts.length;
         } catch (err) { $("runStatus").hidden = false; $("runStatus").classList.add("err"); $("runStatus").textContent = "Failed: " + err.message; }
       }
-      function paint() {
+      let paintSeq = 0;
+      async function paint() {
         if (!last || !img) return;
         const thr = +$("thresh").value;
-        $("cards").replaceChildren(...last.maps.map((m) => {
+        const seq = ++paintSeq;
+        // Build the card scaffolding synchronously, then fill each canvas with a worker-composited
+        // overlay (colour index 0, matching the former paintMasks([m])) — no main-thread pixel loop.
+        const canvases = last.maps.map((m) => {
           const card = document.createElement("div"); card.className = "canvas-card";
           const cov = maskCoverage(m.data, thr);
           const h = document.createElement("h4"); h.textContent = m.prompt; card.append(h);
           const c = document.createElement("canvas"); c.className = "viz-canvas"; card.append(c);
-          paintMasks(c, img, [m], last.mapW, last.mapH, thr, 0.6);
           const p = document.createElement("p"); p.className = "muted"; p.style.fontSize = ".78rem"; p.style.margin = ".3rem 0 0";
           p.innerHTML = "coverage <b>" + (cov * 100).toFixed(1) + "%</b>"; card.append(p);
-          return card;
-        }));
+          return { card, c };
+        });
+        $("cards").replaceChildren(...canvases.map((x) => x.card));
+        for (let i = 0; i < canvases.length; i++) {
+          const res = await engine.overlay([{ mapIndex: i, colorIndex: 0 }], thr, 0.6);
+          if (seq !== paintSeq) return; // a newer paint superseded this one — drop stale draws
+          drawOverlay(canvases[i].c, img, res.bitmap);
+        }
       }
     </script>
   </body>

@@ -81,7 +81,7 @@
     </footer>
 
     <script type="module">
-      import { ClipsegEngine, CLIPSEG_CSS, cutout, loadImage, maskCoverage, parsePrompts, urlToDataURL, fileToDataURL } from "../clipseg.js";
+      import { ClipsegEngine, CLIPSEG_CSS, cutoutWithMask, loadImage, maskCoverage, parsePrompts, urlToDataURL, fileToDataURL } from "../clipseg.js";
       import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
       document.head.append(Object.assign(document.createElement("style"), { textContent: CLIPSEG_CSS }));
       const $ = (id) => document.getElementById(id);
@@ -137,29 +137,34 @@
           $("rMs").textContent = last.ms + " ms";
         } catch (err) { $("runStatus").hidden = false; $("runStatus").classList.add("err"); $("runStatus").textContent = "Failed: " + err.message; }
       }
-      function paint() {
+      let paintSeq = 0;
+      async function paint() {
         if (!last || !img) return;
         const thr = +$("thresh").value, m = last.maps[0];
         $("rCov").textContent = (maskCoverage(m.data, thr) * 100).toFixed(1) + "%";
+        const seq = ++paintSeq;
+        // Worker thresholds the logits into an alpha stencil off the main thread; the cut-out is then a
+        // GPU destination-in composite (no photo-resolution getImageData / per-pixel alpha loop).
+        const res = await engine.maskAlpha(0, thr);
+        if (seq !== paintSeq) return;
+        const cut = cutoutWithMask(img, res.bitmap); // photo-resolution masked canvas
         const stage = $("stage");
         if (mode === "isolate") {
-          const c = cutout(img, m.data, last.mapW, last.mapH, thr);
-          stage.width = c.width; stage.height = c.height;
-          const ctx = stage.getContext("2d"); ctx.clearRect(0, 0, c.width, c.height); ctx.drawImage(c, 0, 0);
+          stage.width = cut.width; stage.height = cut.height;
+          const ctx = stage.getContext("2d"); ctx.clearRect(0, 0, cut.width, cut.height); ctx.drawImage(cut, 0, 0);
         } else {
-          blurRegion(stage, img, m.data, last.mapW, last.mapH, thr, +$("blur").value);
+          blurRegion(stage, img, cut, +$("blur").value);
         }
       }
-      // Blur only the masked region: sharp photo, blurred photo composited through the (upscaled) mask.
-      function blurRegion(stage, img, map, mapW, mapH, thr, radius) {
+      // Blur only the masked region: sharp photo, blurred masked cut-out composited on top.
+      function blurRegion(stage, img, cut, radius) {
         const w = img.naturalWidth, h = img.naturalHeight;
         stage.width = w; stage.height = h;
         const ctx = stage.getContext("2d");
         ctx.clearRect(0, 0, w, h);
         ctx.drawImage(img, 0, 0, w, h);                       // sharp base
-        const blurred = cutout(img, map, mapW, mapH, thr);    // masked crop (transparent elsewhere)
         const b = document.createElement("canvas"); b.width = w; b.height = h;
-        const bctx = b.getContext("2d"); bctx.filter = "blur(" + radius + "px)"; bctx.drawImage(blurred, 0, 0);
+        const bctx = b.getContext("2d"); bctx.filter = "blur(" + radius + "px)"; bctx.drawImage(cut, 0, 0);
         ctx.drawImage(b, 0, 0);                                // overlay blurred masked region
       }
     </script>
