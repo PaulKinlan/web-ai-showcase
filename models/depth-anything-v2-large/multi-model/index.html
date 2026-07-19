@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Depth Anything V2 Large Multi-model — rank the scene by distance · Web AI Showcase</title>
+    <meta name="description" content="Compose two models: SegFormer labels every region of the photo, Depth Anything V2 Large measures how far each is — together they rank the scene's objects from nearest to furthest, all on-device." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🗺️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Depth Anything V2 Large</a></p>
+
+    <header>
+      <p class="eyebrow">use case · multi-model</p>
+      <h1>Multi-model: rank the scene from nearest to furthest</h1>
+      <p class="lede">
+        Two models, one picture. <a href="/web-ai-showcase/models/segformer-semantic/">SegFormer</a> labels
+        every pixel with a class (person, sofa, wall, plant…); <a href="../">Depth Anything V2 Large</a>
+        measures how far away each pixel is. Intersect them and you get something neither model produces
+        alone: <strong>which object is in front of which</strong> — a distance-ordered list of the scene,
+        computed entirely in your browser.
+      </p>
+    </header>
+
+    <section class="panel">
+      <p class="muted">This page loads <strong>both</strong> models (~360 MB combined at q8, cached after first load). WebGPU accelerates depth where available; both fall back to WebAssembly and the page says so.</p>
+      <div id="depth-loader"></div>
+      <div id="seg-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="sample-strip" id="samples">
+        <img class="sample-thumb active" src="../sample-portrait.jpg" data-src="../sample-portrait.jpg" alt="Two cats on a couch" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-room.jpg" data-src="../sample-room.jpg" alt="A sunlit bedroom" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-street.jpg" data-src="../sample-street.jpg" alt="A riverside at golden hour" tabindex="0" role="button" />
+      </div>
+      <div class="controls-row">
+        <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image" style="flex:1 1 220px"><span id="dropText">…or drop / choose your own</span><input type="file" id="file" accept="image/*" hidden /></div>
+        <button id="run" type="button" disabled>Label + measure the scene</button>
+      </div>
+
+      <div class="canvas-grid">
+        <div class="canvas-card"><h4>Semantic map</h4><canvas class="viz-canvas" id="segCanvas" width="480" height="360" aria-label="Semantic segmentation overlay"></canvas></div>
+        <div class="canvas-card"><h4>Depth (near = bright)</h4><canvas class="viz-canvas" id="depthCanvas" width="480" height="360" aria-label="Colourised depth map"></canvas></div>
+      </div>
+
+      <h4 style="font-family:var(--font-body);font-size:.8rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:1rem 0 .3rem">Scene, ordered nearest → furthest</h4>
+      <div id="ranking" class="rank-list" aria-live="polite"></div>
+
+      <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>depth <b id="rDepthMs">–</b></span><span>segment <b id="rSegMs">–</b></span><span>objects <b id="rN">–</b></span></div>
+      <p class="muted" style="font-size:.85rem">
+        For every class SegFormer found, we average the Large depth model's value over that class's pixels,
+        then sort front-to-back. Sharper depth edges from the ViT-Large encoder make the per-object averages
+        cleaner — a small object touching a distant background is less likely to borrow its neighbour's depth.
+        Both models run once each in their own Web Worker; the ranking is canvas maths.
+      </p>
+    </section>
+
+    <p class="crumbs"><a href="../wild/">← Wild</a> · <a href="../">Depth Anything V2 Large</a> · See also: <a href="/web-ai-showcase/models/segformer-semantic/">SegFormer →</a></p>
+
+    <script type="module">
+      import { DepthEngine, urlToDataURL, fileToDataURL, renderDepthColor, DEPTH_CSS } from "../depth.js";
+      import { SegformerEngine, loadImage, scaledOverlayData } from "/web-ai-showcase/models/segformer-semantic/segformer.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const RANK_CSS = `
+        .rank-list { display: flex; flex-direction: column; gap: .4rem; margin: .3rem 0 .2rem; }
+        .rank-row { display: grid; grid-template-columns: auto auto 1fr auto; gap: .6rem; align-items: center;
+          border: 1px solid var(--border); border-radius: 8px; background: var(--bg-raised); padding: .45rem .6rem; }
+        .rank-row.near { border-color: var(--accent); border-inline-start: 4px solid var(--accent); }
+        .rank-idx { font-family: var(--font-mono); color: var(--muted); font-size: .8rem; }
+        .rank-sw { inline-size: 1rem; block-size: 1rem; border-radius: 3px; border: 1px solid rgba(0,0,0,.2); flex: none; }
+        .rank-name { font-size: .9rem; }
+        .rank-bar { grid-column: 1 / -1; block-size: .5rem; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 999px; overflow: hidden; }
+        .rank-fill { display: block; block-size: 100%; background: var(--accent); }
+        .rank-meta { font-family: var(--font-mono); font-size: .74rem; color: var(--muted); white-space: nowrap; }`;
+      const style = document.createElement("style"); style.textContent = DEPTH_CSS + RANK_CSS; document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+      const depth = new DepthEngine(), seg = new SegformerEngine();
+      let currentImageURL = null, currentSrc = null;
+
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        currentSrc = el.dataset.src; currentImageURL = await urlToDataURL(el.dataset.src);
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } });
+      }
+      pickSample($("samples").firstElementChild);
+
+      const file = $("file"), drop = $("drop");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) { for (const t of $("samples").children) t.classList.remove("active"); currentImageURL = await fileToDataURL(f); currentSrc = currentImageURL; $("dropText").textContent = f.name; }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
+
+      let depthDtype = "q8";
+      try { if ("gpu" in navigator && await navigator.gpu.requestAdapter()) depthDtype = "fp16"; } catch { /* wasm */ }
+      const autoRun = new URLSearchParams(location.search).has("auto");
+      let depthReady = false, segReady = false;
+      function bothReady() {
+        if (depthReady && segReady) {
+          $("run").disabled = false;
+          $("status").textContent = "Both models ready — pick a photo and run."; $("status").classList.add("ok");
+          if (autoRun) run();
+        }
+      }
+      createModelLoader({
+        mount: $("depth-loader"),
+        model: { modelId: "onnx-community/depth-anything-v2-large", runtime: "transformers.js", dtype: depthDtype, sizeMB: depthDtype === "fp16" ? 669 : 347, requiresWebGPU: false },
+        load: (onProgress) => depth.load(onProgress),
+        onReady: () => { depthReady = true; bothReady(); },
+      });
+      createModelLoader({
+        mount: $("seg-loader"),
+        model: { modelId: "Xenova/segformer-b0-finetuned-ade-512-512", runtime: "transformers.js", dtype: "q8", sizeMB: 15, requiresWebGPU: false },
+        load: (onProgress) => seg.load(onProgress),
+        onReady: () => { segReady = true; bothReady(); },
+      });
+
+      function rankByDepth(D, S) {
+        // Resample the class-colour overlay to the depth map's resolution so pixels line up.
+        const cls = scaledOverlayData(S.overlay, S.width, S.height, D.width, D.height);
+        // Accumulate mean depth per class, keyed by its overlay colour.
+        const byColor = new Map();
+        for (const c of S.classes) byColor.set(`${c.r},${c.g},${c.b}`, { label: c.label, r: c.r, g: c.g, b: c.b, sum: 0, n: 0 });
+        for (let i = 0; i < D.depth.length; i++) {
+          const o = i * 4;
+          const key = `${cls[o]},${cls[o + 1]},${cls[o + 2]}`;
+          const rec = byColor.get(key);
+          if (rec) { rec.sum += D.depth[i]; rec.n++; }
+        }
+        const total = D.depth.length;
+        return [...byColor.values()]
+          .filter((r) => r.n > total * 0.005) // ignore slivers (<0.5% of pixels)
+          .map((r) => ({ ...r, mean: r.sum / r.n, coverage: r.n / total }))
+          .sort((a, b) => b.mean - a.mean); // near (high depth) first
+      }
+
+      function renderRanking(ranked) {
+        if (!ranked.length) { $("ranking").innerHTML = `<p class="muted">No sizeable regions found.</p>`; return; }
+        const maxMean = Math.max(...ranked.map((r) => r.mean), 1);
+        $("ranking").replaceChildren(...ranked.map((r, i) => {
+          const row = document.createElement("div");
+          row.className = "rank-row" + (i === 0 ? " near" : "");
+          const w = (r.mean / maxMean) * 100;
+          const rel = (r.mean / 255 * 100).toFixed(0);
+          row.innerHTML = `<span class="rank-idx">#${i + 1}</span>` +
+            `<span class="rank-sw" style="background:rgb(${r.r},${r.g},${r.b})"></span>` +
+            `<span class="rank-name">${esc(r.label)}</span>` +
+            `<span class="rank-meta">${i === 0 ? "nearest · " : ""}rel depth ${rel}% · ${(r.coverage * 100).toFixed(0)}% of frame</span>` +
+            `<span class="rank-bar"><span class="rank-fill" style="inline-size:${w.toFixed(1)}%"></span></span>`;
+          return row;
+        }));
+      }
+
+      async function run() {
+        if (!currentImageURL) { $("status").textContent = "Pick a photo first."; return; }
+        $("run").disabled = true; $("status").classList.remove("err"); $("status").textContent = "Measuring depth + labelling the scene…";
+        try {
+          const [D, S] = await Promise.all([depth.estimate(currentImageURL), seg.segment(currentImageURL)]);
+          renderDepthColor($("depthCanvas"), D.width, D.height, D.depth, "turbo");
+          // Paint the semantic overlay onto its own canvas.
+          const img = await loadImage(currentSrc);
+          const segCanvas = $("segCanvas");
+          segCanvas.width = D.width; segCanvas.height = D.height;
+          const sctx = segCanvas.getContext("2d");
+          sctx.drawImage(img, 0, 0, D.width, D.height);
+          const off = document.createElement("canvas"); off.width = S.width; off.height = S.height;
+          off.getContext("2d").putImageData(new ImageData(S.overlay, S.width, S.height), 0, 0);
+          sctx.globalAlpha = 0.6; sctx.imageSmoothingEnabled = false; sctx.drawImage(off, 0, 0, D.width, D.height); sctx.globalAlpha = 1;
+
+          const ranked = rankByDepth(D, S);
+          renderRanking(ranked);
+          $("readout").hidden = false;
+          $("rBackend").textContent = D.device.toUpperCase() + (D.dtype ? " · " + D.dtype : "");
+          $("rDepthMs").textContent = D.ms + " ms";
+          $("rSegMs").textContent = S.ms + " ms";
+          $("rN").textContent = ranked.length;
+          $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      }
+      $("run").addEventListener("click", run);
+    </script>
+  </body>
+</html>
