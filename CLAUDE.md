@@ -130,8 +130,10 @@ returns, not just that an ONNX folder or weights exist. A family that cannot run
 `status:"blocked"` + a concrete `blockedReason` (evidence + what would unblock) so the routine stops
 reselecting it. **Known-blocked as of 2026-07-19 (re-check only on upstream change): pegasus**
 (transformers.js registers no `pegasus` model class in any version → `Unsupported model type:
-pegasus`), **electra** (ONNX exports encoder-only; RTD discriminator head absent), **blip** / **bark**
-(gated / no usable ONNX). Never mislabel a substitute as the blocked family.
+pegasus`), **gliner** (same failure — `Unsupported model type: gliner`; onnx-community ships an ONNX
+export but no transformers.js class/processor implements GLiNER's span/entity-prompt pipeline),
+**electra** (ONNX exports encoder-only; RTD discriminator head absent), **blip** / **bark** (gated /
+no usable ONNX). Never mislabel a substitute as the blocked family.
 
 Cover the full capability range —
 classification, NER, embeddings/ reranking/search, summarisation/translation/generation, ASR, audio

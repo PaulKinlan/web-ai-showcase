@@ -48,9 +48,10 @@ of every model you can genuinely run in a browser — not a token set. Read `CLA
   (dynamic-import the exact CDN build; check inference returns) before committing to a family — an
   ONNX folder existing is not enough. If it can't run today, set `status:"blocked"` + a concrete
   `blockedReason` so future waves skip it. Known-blocked (re-check only on upstream change):
-  **pegasus** (no `pegasus` model class in transformers.js → `Unsupported model type`), **electra**
-  (ONNX is encoder-only; no RTD discriminator head), **blip** / **bark** (gated / no usable ONNX).
-  Never mislabel a substitute as the blocked family.
+  **pegasus** (no `pegasus` model class in transformers.js → `Unsupported model type`), **gliner**
+  (same — `Unsupported model type: gliner`; ONNX exists but no transformers.js GLiNER class),
+  **electra** (ONNX is encoder-only; no RTD discriminator head), **blip** / **bark** (gated / no
+  usable ONNX). Never mislabel a substitute as the blocked family.
 - Only load weights from the canonical HF repo (or MLC/MediaPipe official). No arbitrary remote
   code.
 - Note device/browser requirements (WebGPU-only, RAM, secure context) in the page's at-a-glance.
