@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SpeechT5 Wild — one line, every voice · Web AI Showcase</title>
+    <meta name="description" content="Speak the same sentence through every speaker x-vector and compare — the words stay identical while the voice changes, because in SpeechT5 the voice is just a vector you swap." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🗣️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">SpeechT5</a></p>
+
+    <header>
+      <p class="eyebrow">use case · wild</p>
+      <h1>Wild: one line, every voice</h1>
+      <p class="lede">
+        SpeechT5's identity is a vector, so voice-swapping is trivial: hold the text fixed and run it through
+        every speaker x-vector. You get the same sentence in each voice, side by side — with each speaker's
+        fingerprint shown next to its clip. Something you could never do with a fixed-voice model.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+
+      <label for="text" style="display:block;font-size:.82rem;margin:.6rem 0 .2rem">One line, spoken by everyone</label>
+      <textarea id="text">The same words, a different voice — all from one small model.</textarea>
+      <div class="tts-grid">
+        <button id="run" type="button" disabled>Speak it in every voice</button>
+      </div>
+
+      <div id="grid" class="voice-grid"></div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span><span>voices <b id="rN">–</b></span>
+        <span>total gen <b id="rMs">–</b></span>
+      </div>
+    </section>
+
+    <p class="muted" style="font-size:.85rem">
+      Every clip is a real, separate synthesis — same input text, different 512-dim x-vector. The accents and
+      timbres are carried entirely by those vectors; the model and the words never change.
+    </p>
+
+    <p class="crumbs"><a href="../">← SpeechT5</a> · Next: <a href="../multi-model/">Multi-model →</a></p>
+
+    <style>
+      .voice-grid { display:grid; gap:.7rem; grid-template-columns:repeat(auto-fit, minmax(240px, 1fr)); margin:.7rem 0; }
+      .voice-cell { border:1px solid var(--border); border-radius:var(--radius); background:var(--bg-secondary); padding:.6rem .7rem; }
+      .voice-cell h3 { margin:0 0 .3rem; font-size:.95rem; }
+      .voice-cell .meta { font-family:var(--font-mono); font-size:.72rem; color:var(--muted); }
+      .voice-cell audio { inline-size:100%; block-size:34px; margin:.35rem 0; }
+      .voice-cell canvas { inline-size:100%; block-size:44px; display:block; background:var(--bg-raised); border:1px solid var(--border); border-radius:6px; }
+    </style>
+
+    <script type="module">
+      import { SpeechT5Engine, SPEAKERS, wavUrl, drawEmbedding, SPEECHT5_CSS } from "../speecht5.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = SPEECHT5_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new SpeechT5Engine();
+      const urls = [];
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/speecht5_tts", runtime: "transformers.js", dtype: "q8", sizeMB: 180, requiresWebGPU: false },
+        load: async (onProgress) => await engine.load((p) => onProgress(p)),
+        onReady: () => { $("run").disabled = false; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        const text = $("text").value.trim();
+        if (!text) { $("status").hidden = false; $("status").textContent = "Type a line first."; return; }
+        $("run").disabled = true; $("status").hidden = false; $("status").classList.remove("err");
+        for (const u of urls.splice(0)) URL.revokeObjectURL(u);
+        $("grid").replaceChildren();
+        const cells = SPEAKERS.map((s) => {
+          const cell = document.createElement("div"); cell.className = "voice-cell";
+          cell.innerHTML = `<h3>${s.name}</h3><div class="meta">${s.accent} · synthesizing…</div>`;
+          const canvas = document.createElement("canvas"); cell.append(canvas);
+          $("grid").append(cell);
+          return { s, cell, canvas };
+        });
+        const t0 = performance.now();
+        let device = "wasm", done = 0;
+        try {
+          for (const { s, cell, canvas } of cells) {
+            $("status").textContent = `Synthesizing ${s.name}…`;
+            const r = await engine.speak(text, s);
+            device = r.device;
+            const url = wavUrl(r.wav); urls.push(url);
+            const audio = document.createElement("audio"); audio.controls = true; audio.preload = "none"; audio.src = url;
+            cell.querySelector(".meta").textContent = `${s.accent} · ${r.durSec.toFixed(1)}s · ${(r.ms / 1000).toFixed(1)}s gen`;
+            cell.insertBefore(audio, canvas);
+            drawEmbedding(canvas, r.emb);
+            done++;
+          }
+          const ms = Math.round(performance.now() - t0);
+          $("readout").hidden = false; $("rBackend").textContent = device.toUpperCase(); $("rN").textContent = done; $("rMs").textContent = (ms / 1000).toFixed(1) + " s";
+          $("status").textContent = "Done — play them back to back."; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>
