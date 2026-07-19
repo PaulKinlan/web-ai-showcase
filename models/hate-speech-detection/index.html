@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>twitter-roberta-hate — protected-group hate scoring in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Score any text for hate speech targeting a protected group — gender, race, sexuality, religion, origin, disability, age — locally in your browser. A softmax over eight classes, an honest look at bias and limits, and no comment ever leaves the device."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🚫</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">text-classification · text · WASM · ~358 MB</p>
+      <h1>twitter-roberta-hate — spot protected-group hate, privately</h1>
+      <p class="lede">
+        Cardiff NLP's RoBERTa-large fine-tuned to detect <strong>hate speech aimed at a protected
+        characteristic</strong>. It reads any text and picks one of <strong>eight</strong> classes — seven
+        kinds of targeted hate (<code>gender</code>, <code>race</code>, <code>sexuality</code>,
+        <code>religion</code>, <code>origin</code>, <code>disability</code>, <code>age</code>) plus
+        <code>not_hate</code> — as a single <strong>softmax</strong>. This is a strictly narrower task than
+        toxicity or offensiveness: not everything rude is hate. It is <strong>an imperfect moderation
+        signal, not a verdict</strong> — it reads surface words, has no speaker model, and carries its
+        training biases. Every score is computed on your device; no comment is ever sent to a server.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/onnx-community/twitter-roberta-large-hate-latest-ONNX" target="_blank" rel="noopener">onnx-community/twitter-roberta-large-hate-latest-ONNX</a> (ONNX of <a href="https://huggingface.co/cardiffnlp/twitter-roberta-large-hate-latest" target="_blank" rel="noopener">cardiffnlp/twitter-roberta-large-hate-latest</a>)</td></tr>
+          <tr><th>Task / pipeline</th><td><code>text-classification</code> · <strong>single-label</strong> (softmax over 8 classes)</td></tr>
+          <tr><th>Classes</th><td><code>hate_gender</code> · <code>hate_race</code> · <code>hate_sexuality</code> · <code>hate_religion</code> · <code>hate_origin</code> · <code>hate_disability</code> · <code>hate_age</code> · <code>not_hate</code></td></tr>
+          <tr><th>Architecture</th><td>RoBERTa-<strong>large</strong> (355M params, 24-layer) fine-tuned on the TweetHate benchmark (Cardiff NLP)</td></tr>
+          <tr><th>Quantization</th><td>q8 (8-bit) ONNX</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (runs anywhere; no WebGPU needed)</td></tr>
+          <tr><th>Download</th><td><strong>~358 MB</strong> — a large model; downloaded once, then cached. Best on a good connection; heavy for low-memory phones.</td></tr>
+          <tr><th>License</th><td>MIT</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Type or paste text; it re-scores automatically a moment after you stop typing. The
+        <strong>hate threshold</strong> decides the verdict: if the combined hate probability
+        (1 − <code>not_hate</code>) lands at or above it, the text is
+        <span style="color:var(--bad)">flagged</span> and the model names the targeted group — otherwise
+        it's <span style="color:var(--good)">allowed</span>. The samples show the difference between
+        rudeness and hate keyed to a protected characteristic.</p>
+
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
+        Text to moderate
+        <textarea id="text" rows="3" disabled>People like you should go back to your own country, you don't belong here.</textarea>
+      </label>
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.5rem 0">
+        <button class="chip" type="button" data-set="People like you should go back to your own country, you don't belong here.">origin</button>
+        <button class="chip" type="button" data-set="All women are stupid and belong in the kitchen, not the workplace.">gender</button>
+        <button class="chip" type="button" data-set="This restaurant was awful and the waiter was incredibly rude to us.">rude, not hate</button>
+        <button class="chip" type="button" data-set="Thanks so much for reviewing my pull request, this feedback is really helpful!">benign</button>
+      </div>
+
+      <div class="thresh-wrap">
+        <label for="thresh">Hate threshold: <b id="threshVal">0.50</b> — flag when 1 − P(not_hate) ≥ this</label>
+        <input type="range" id="thresh" min="0.05" max="0.95" step="0.05" value="0.5" />
+      </div>
+
+      <div class="verdict-row" id="verdictRow" hidden>
+        <span class="verdict-label" id="vLabel">–</span>
+        <span class="verdict-sub" id="vSub"></span>
+      </div>
+      <div class="bars" id="bars" aria-live="polite"></div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+        <span>classes <b>8 (softmax)</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside — one softmax that also names the target</h3>
+      <p class="muted">
+        The final layer produces eight raw <strong>logits</strong>, and a single <strong>softmax</strong>
+        turns them into competing probabilities that <strong>sum to 100%</strong>. Seven of those classes
+        are hate keyed to a <em>protected characteristic</em>; the eighth is <code>not_hate</code>. So the
+        model does two things at once: it decides whether the text is hateful (1 − P(not_hate)) and, if so,
+        <em>which group</em> is targeted — something a plain toxicity score can't tell you. The table shows
+        each class's logit beside its softmax probability.
+      </p>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Score some text to see the raw numbers.</div>
+      <div id="insideWrap" hidden>
+        <table class="inside-table">
+          <thead><tr><th>Class</th><th>logit</th><th>softmax</th><th>role</th></tr></thead>
+          <tbody id="insideRows"></tbody>
+        </table>
+        <p class="muted" style="font-size:.82rem;margin-top:.4rem">Because the classes compete, a comment
+          that is nasty but not group-targeted lands on <code>not_hate</code> — the model is deliberately
+          conservative about calling something hate. That is a feature for precision and a limitation for
+          recall: coded or novel hate can slip through.</p>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        Hate speech is a distinct, high-stakes category: platforms, regulators, and trust-and-safety teams
+        treat protected-group attacks differently from ordinary rudeness. A model that not only flags hate
+        but <em>names the targeted characteristic</em> lets you route, prioritise, and report it correctly —
+        and doing it on-device means sensitive text never leaves the tab.
+      </p>
+      <ul>
+        <li><strong>Targeted-hate routing</strong> — send a <code>race</code> or <code>religion</code> hit to the specialist queue, not the generic spam bin.</li>
+        <li><strong>Separate hate from mere rudeness</strong> — pair with a toxicity or offensiveness model so "you're an idiot" and "[slur], go home" get different responses.</li>
+        <li><strong>Private-by-default</strong> — score reports, DMs, or support tickets for hate without a server round-trip or third-party API.</li>
+        <li><strong>Human-in-the-loop triage</strong> — surface likely hate with its target for a reviewer, instead of an automatic ban on a fallible signal.</li>
+      </ul>
+      <p class="muted" style="font-size:.85rem">
+        Honesty note: this model reflects its training data (English tweets). It is <strong>conservative</strong>
+        — reliable on explicit, surface-level attacks, but it lets a lot of coded, "polite", or subtle hate
+        through as <code>not_hate</code> (a recall gap), and it can encode demographic bias. Treat every
+        score as one <em>signal</em> that routes a human — never a verdict, and never read <code>not_hate</code>
+        as proof that text is safe.
+      </p>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Score one comment: hate vs not-hate, and which protected group is targeted.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Moderation triage — a queue sorted by hate probability, a signal for a reviewer, not a verdict.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Reclaimed language and edge cases where the model false-positives — and why you can't auto-ban on it.</p></a>
+        <a class="model-card" href="multimodel/"><h3>Multi-model</h3><p class="muted">Hate vs toxicity, head to head: where a targeted-hate signal and a toxicity signal agree and diverge.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>The convenience path is one call; ask for every class with <code>topk: null</code>:</p>
+      <pre><code>import { pipeline } from "@huggingface/transformers";
+
+const classify = await pipeline("text-classification", "onnx-community/twitter-roberta-large-hate-latest-ONNX");
+const out = await classify("go back to your own country", { topk: null });
+// → [{ label: "hate_origin", score: 0.94 }, { label: "not_hate", score: 0.03 }, …]  (softmax over 8)</code></pre>
+      <p class="muted">
+        For "See inside" this page runs the <code>tokenizer</code> then the <code>model()</code> directly,
+        reads the raw eight-value <code>logits</code>, and applies the softmax itself — so it can show both
+        the logit and the probability, compute the aggregate hate score (1 − <code>not_hate</code>), and
+        apply <em>your</em> threshold. All of it runs in a Web Worker so typing never janks.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/onnx-community/twitter-roberta-large-hate-latest-ONNX" target="_blank" rel="noopener">Model card — onnx-community/twitter-roberta-large-hate-latest-ONNX</a></li>
+        <li><a href="https://huggingface.co/cardiffnlp/twitter-roberta-large-hate-latest" target="_blank" rel="noopener">Original weights — cardiffnlp/twitter-roberta-large-hate-latest</a></li>
+        <li><a href="https://github.com/cardiffnlp/tweetnlp" target="_blank" rel="noopener">Cardiff NLP · TweetNLP</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { debounce, escapeHTML, HATE_CSS, HateEngine, prettyLabel, renderHateBars, verdict }
+        from "./hate.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = HATE_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new HateEngine();
+      let loaded = false;
+      let last = null;
+
+      for (const c of document.querySelectorAll(".chip")) {
+        c.addEventListener("click", () => { $("text").value = c.dataset.set; scheduleScore(); });
+      }
+
+      const thresh = $("thresh");
+      thresh.addEventListener("input", () => {
+        $("threshVal").textContent = Number(thresh.value).toFixed(2);
+        if (last) render(last);
+      });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: {
+          modelId: "onnx-community/twitter-roberta-large-hate-latest-ONNX",
+          runtime: "transformers.js",
+          dtype: "q8",
+          sizeMB: 358,
+          requiresWebGPU: false,
+        },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("text").disabled = false; loaded = true; score(); },
+      });
+
+      const scheduleScore = debounce(score, 350);
+      $("text").addEventListener("input", scheduleScore);
+
+      async function score() {
+        if (!loaded) return;
+        const text = $("text").value.trim();
+        if (!text) { $("verdictRow").hidden = true; $("bars").replaceChildren(); return; }
+        try {
+          const r = await engine.classify(text);
+          last = r;
+          render(r);
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = r.ms + " ms";
+        } catch (err) {
+          $("runStatus").hidden = false;
+          $("runStatus").textContent = "Scoring failed: " + err.message;
+          $("runStatus").classList.add("err");
+        }
+      }
+
+      function render(r) {
+        const t = Number(thresh.value);
+        renderHateBars($("bars"), r.labels);
+        const v = verdict(r.hateScore, r.argmax.label, t);
+        $("verdictRow").hidden = false;
+        $("vLabel").textContent = v.flag ? "FLAG" : "ALLOW";
+        $("vLabel").className = "verdict-label " + (v.flag ? "flag" : "allow");
+        $("vSub").textContent = v.flag
+          ? `hate ${(r.hateScore * 100).toFixed(1)}% ≥ ${t.toFixed(2)} · target: ${
+            prettyLabel(r.argmax.label)
+          }`
+          : `hate ${(r.hateScore * 100).toFixed(1)}% below ${t.toFixed(2)} · top class ${
+            prettyLabel(r.argmax.label)
+          }`;
+        renderInside(r.labels);
+      }
+
+      function renderInside(labels) {
+        $("insideEmpty").hidden = true;
+        $("insideWrap").hidden = false;
+        $("insideRows").replaceChildren(...labels.map((l) => {
+          const isHate = l.label !== "not_hate";
+          const tr = document.createElement("tr");
+          tr.innerHTML = `<td>${escapeHTML(prettyLabel(l.label))}</td>
+            <td>${l.logit.toFixed(2)}</td>
+            <td>${(l.score * 100).toFixed(2)}%</td>
+            <td style="color:${isHate ? "var(--bad)" : "var(--muted)"}">${
+            isHate ? "targeted hate" : "clean"
+          }</td>`;
+          return tr;
+        }));
+      }
+    </script>
+  </body>
+</html>

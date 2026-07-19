@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>hate_speech_en — offensive-language severity scoring in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Score any comment on a four-step severity ladder — acceptable, inappropriate, offensive, violent — locally in your browser. A softmax over the four classes, an offensive-or-worse threshold, and an honest look at the model's limits. Nothing leaves the device."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🚦</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">text-classification · text · WASM · ~109 MB</p>
+      <h1>hate_speech_en — rate how offensive a comment is, privately</h1>
+      <p class="lede">
+        A BERT fine-tuned by the IMSyPP project on 100k+ labelled English comments. It reads any text and
+        picks a spot on a <strong>four-step severity ladder</strong> —
+        <code>acceptable</code> → <code>inappropriate</code> → <code>offensive</code> →
+        <code>violent</code> — as a single <strong>softmax</strong> distribution (the four add up to 100%).
+        This is a broader signal than hate or toxicity: it catches profanity, insults, and general
+        hostility, not just protected-group attacks. It is <strong>an imperfect moderation signal, not a
+        verdict</strong>. Every score is computed on your device; no comment is ever sent to a server.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/onnx-community/hate_speech_en-ONNX" target="_blank" rel="noopener">onnx-community/hate_speech_en-ONNX</a> (ONNX of <a href="https://huggingface.co/IMSyPP/hate_speech_en" target="_blank" rel="noopener">IMSyPP/hate_speech_en</a>)</td></tr>
+          <tr><th>Task / pipeline</th><td><code>text-classification</code> · <strong>single-label</strong> (softmax over 4 classes)</td></tr>
+          <tr><th>Classes</th><td><code>acceptable</code> · <code>inappropriate</code> · <code>offensive</code> · <code>violent</code> (an ordered severity ladder)</td></tr>
+          <tr><th>Architecture</th><td>BERT-base (12-layer), fine-tuned on 103k labelled English YouTube comments (IMSyPP project)</td></tr>
+          <tr><th>Quantization</th><td>q8 (8-bit) ONNX</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (runs anywhere; no WebGPU needed)</td></tr>
+          <tr><th>Download</th><td>~109 MB, cached after first load</td></tr>
+          <tr><th>License</th><td>MIT</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Type or paste a comment; it re-scores automatically a moment after you stop typing.
+        The <strong>offensive-or-worse threshold</strong> decides the verdict: if the combined
+        <code>offensive</code> + <code>violent</code> probability lands at or above it, the comment is
+        <span style="color:var(--bad)">flagged</span> for review — otherwise it's
+        <span style="color:var(--good)">allowed</span>. The samples run from friendly to hostile so you can
+        watch the distribution slide up the ladder.</p>
+
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
+        Comment to moderate
+        <textarea id="text" rows="3" disabled>Shut up you pathetic waste of space, nobody wants you here.</textarea>
+      </label>
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.5rem 0">
+        <button class="chip" type="button" data-set="Thanks so much for reviewing my pull request, this feedback is really helpful!">acceptable</button>
+        <button class="chip" type="button" data-set="This restaurant was fine but the wait was too long for the price.">fair criticism</button>
+        <button class="chip" type="button" data-set="Shut up you pathetic waste of space, nobody wants you here.">offensive</button>
+        <button class="chip" type="button" data-set="Someone should put a bullet in that guy's head.">violent</button>
+      </div>
+
+      <div class="thresh-wrap">
+        <label for="thresh">Offensive-or-worse threshold: <b id="threshVal">0.50</b> — flag when P(offensive)+P(violent) ≥ this</label>
+        <input type="range" id="thresh" min="0.05" max="0.95" step="0.05" value="0.5" />
+      </div>
+
+      <div class="verdict-row" id="verdictRow" hidden>
+        <span class="verdict-label" id="vLabel">–</span>
+        <span class="verdict-sub" id="vSub"></span>
+      </div>
+      <div class="bars" id="bars" aria-live="polite"></div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+        <span>classes <b>4 (softmax)</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside — one softmax over a severity ladder</h3>
+      <p class="muted">
+        toxic-bert emits six <em>independent</em> sigmoids that need not add up. This model is the other
+        shape: its final layer produces four raw <strong>logits</strong>, and a single
+        <strong>softmax</strong> turns them into <em>competing</em> probabilities that
+        <strong>sum to 100%</strong>. So the model is forced to spread one unit of belief across
+        <code>acceptable</code>, <code>inappropriate</code>, <code>offensive</code>, and
+        <code>violent</code>. Because those classes are <em>ordered</em> by severity, we can read a single
+        "offensive-or-worse" number off the top two rungs — that is what the threshold acts on. The table
+        shows each class's raw logit beside its softmax probability.
+      </p>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Score a comment to see the raw numbers.</div>
+      <div id="insideWrap" hidden>
+        <table class="inside-table">
+          <thead><tr><th>Class</th><th>logit</th><th>softmax</th><th>role</th></tr></thead>
+          <tbody id="insideRows"></tbody>
+        </table>
+        <p class="muted" style="font-size:.82rem;margin-top:.4rem">A single-label softmax is the right tool
+          when the classes are <em>mutually exclusive rungs of one scale</em> — a comment has one severity.
+          Contrast that with toxicity, where a comment can be several kinds of bad at once and independent
+          sigmoids keep each signal separate.</p>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        "Offensive" is a much broader net than "hateful" or "toxic". A comment can be crude, insulting, or
+        aggressive without attacking a protected group — and a moderation queue still wants to see it. A
+        fast, private, offline severity score is a first triage pass: it runs the instant someone hits
+        submit, without the text leaving the tab, and hands a human only what actually needs eyes.
+      </p>
+      <ul>
+        <li><strong>Comment-queue triage</strong> — sort an incoming stream so <code>violent</code> and <code>offensive</code> rise to the top and the <code>acceptable</code> majority is auto-approved.</li>
+        <li><strong>Pre-submit nudges</strong> — warn a user their draft reads as offensive <em>before</em> they post it, entirely client-side.</li>
+        <li><strong>A severity dial, not a yes/no</strong> — the ordered ladder lets you set different actions for <code>inappropriate</code> vs <code>violent</code> instead of one blunt ban.</li>
+        <li><strong>Cheap pre-filter</strong> — clear the easy cases on-device before spending a human reviewer or a big LLM on the hard ones.</li>
+      </ul>
+      <p class="muted" style="font-size:.85rem">
+        Honesty note: this is a single model trained mostly on YouTube comments. It misreads sarcasm,
+        quoted abuse, and reclaimed language, and it inherits the biases of its labels. Treat its output as
+        one <em>signal</em> that routes a human — never as an automatic verdict.
+      </p>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Score a single comment and read the four-class severity distribution.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">A comment queue: paste many comments, set a threshold, auto-sort into flag / allow by severity.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Sarcasm and context flips — where "offensive" surface words and hidden intent pull the model apart.</p></a>
+        <a class="model-card" href="multimodel/"><h3>Multi-model</h3><p class="muted">Three heads side by side: offensive vs hate vs toxicity, on the same comment.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>The convenience path is one call; ask for every class with <code>topk: null</code>:</p>
+      <pre><code>import { pipeline } from "@huggingface/transformers";
+
+const classify = await pipeline("text-classification", "onnx-community/hate_speech_en-ONNX");
+const out = await classify("shut up you idiot", { topk: null });
+// → [{ label: "LABEL_2", score: 0.99 }, …]  (softmax over 4 classes; LABEL_2 = "offensive")</code></pre>
+      <p class="muted">
+        The config only ships generic <code>LABEL_0…3</code> ids, so this page maps them to the model
+        card's documented names (<code>acceptable / inappropriate / offensive / violent</code>). For "See
+        inside" it runs the <code>tokenizer</code> then the <code>model()</code> directly, reads the raw
+        four-value <code>logits</code>, and applies the softmax itself — so it can show both the logit and
+        the probability, and compute <em>your</em> offensive-or-worse threshold. All of it runs in a Web
+        Worker so typing never janks.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/onnx-community/hate_speech_en-ONNX" target="_blank" rel="noopener">Model card — onnx-community/hate_speech_en-ONNX</a></li>
+        <li><a href="https://huggingface.co/IMSyPP/hate_speech_en" target="_blank" rel="noopener">Original weights — IMSyPP/hate_speech_en</a></li>
+        <li><a href="https://link.springer.com/chapter/10.1007/978-3-031-08974-9_54" target="_blank" rel="noopener">Kralj Novak et al., "Handling disagreement in hate speech modelling" (2022)</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { debounce, escapeHTML, OffensiveEngine, OFFENSIVE_CSS, renderSeverityBars, verdict }
+        from "./offensive.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = OFFENSIVE_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new OffensiveEngine();
+      let loaded = false;
+      let last = null;
+
+      for (const c of document.querySelectorAll(".chip")) {
+        c.addEventListener("click", () => { $("text").value = c.dataset.set; scheduleScore(); });
+      }
+
+      const thresh = $("thresh");
+      thresh.addEventListener("input", () => {
+        $("threshVal").textContent = Number(thresh.value).toFixed(2);
+        if (last) render(last);
+      });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: {
+          modelId: "onnx-community/hate_speech_en-ONNX",
+          runtime: "transformers.js",
+          dtype: "q8",
+          sizeMB: 109,
+          requiresWebGPU: false,
+        },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("text").disabled = false; loaded = true; score(); },
+      });
+
+      const scheduleScore = debounce(score, 350);
+      $("text").addEventListener("input", scheduleScore);
+
+      async function score() {
+        if (!loaded) return;
+        const text = $("text").value.trim();
+        if (!text) { $("verdictRow").hidden = true; $("bars").replaceChildren(); return; }
+        try {
+          const r = await engine.classify(text);
+          last = r;
+          render(r);
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = r.ms + " ms";
+        } catch (err) {
+          $("runStatus").hidden = false;
+          $("runStatus").textContent = "Scoring failed: " + err.message;
+          $("runStatus").classList.add("err");
+        }
+      }
+
+      function render(r) {
+        const t = Number(thresh.value);
+        renderSeverityBars($("bars"), r.labels);
+        const v = verdict(r.offensiveScore, r.argmax.label, t);
+        $("verdictRow").hidden = false;
+        $("vLabel").textContent = v.flag ? "FLAG" : "ALLOW";
+        $("vLabel").className = "verdict-label " + (v.flag ? "flag" : "allow");
+        $("vSub").textContent =
+          `offensive-or-worse ${(r.offensiveScore * 100).toFixed(1)}% ${v.flag ? "≥" : "<"} ${
+            t.toFixed(2)
+          } · top class ${r.argmax.label}`;
+        renderInside(r.labels, t);
+      }
+
+      function renderInside(labels, t) {
+        $("insideEmpty").hidden = true;
+        $("insideWrap").hidden = false;
+        $("insideRows").replaceChildren(...labels.map((l) => {
+          const flag = l.label === "offensive" || l.label === "violent";
+          const tr = document.createElement("tr");
+          tr.innerHTML = `<td>${escapeHTML(l.label)}</td>
+            <td>${l.logit.toFixed(2)}</td>
+            <td>${(l.score * 100).toFixed(2)}%</td>
+            <td style="color:${flag ? "var(--bad)" : "var(--muted)"}">${
+            flag ? "counts toward flag" : "clean rung"
+          }</td>`;
+          return tr;
+        }));
+      }
+    </script>
+  </body>
+</html>

@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Offensive Practical — comment-queue triage · Web AI Showcase</title>
+    <meta name="description" content="Paste a stream of comments, set an offensive-or-worse threshold, and auto-sort them into flag / allow by severity — a real content-moderation queue running in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🚦</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">hate_speech_en</a></p>
+
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Practical: a comment queue sorted by severity</h1>
+      <p class="lede">
+        The shape of a real moderation pipeline. Paste a batch of comments (one per line), pick a threshold,
+        and the queue auto-sorts by <em>offensive-or-worse</em> probability: anything at or above it is
+        <span style="color:var(--bad)">flagged</span> for human review, the rest are
+        <span style="color:var(--good)">auto-allowed</span>. Worst first, so a reviewer starts where it
+        matters. The model is one signal — a queue, not a judge.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.4rem">
+        Comments (one per line)
+        <textarea id="text" rows="8" disabled>Thanks for the thorough writeup, this really cleared things up for me.
+Shut up you absolute clown, this is the worst take I have ever read.
+The delivery was late but the support team sorted it out quickly.
+I will hunt you down and make you pay for what you did.
+Honestly this update is a bit disappointing, hoping for a fix soon.
+You people are disgusting and the world would be better without you.
+Great work on the release, the new dashboard is lovely.
+What a pathetic, brain-dead excuse for a developer you are.</textarea>
+      </label>
+
+      <div class="thresh-wrap" style="margin:.5rem 0">
+        <label for="thresh">Offensive-or-worse threshold: <b id="threshVal">0.50</b></label>
+        <input type="range" id="thresh" min="0.05" max="0.95" step="0.05" value="0.5" />
+      </div>
+      <button id="run" type="button" disabled>Triage the queue</button>
+
+      <div class="readout" id="readout" hidden>
+        <span>flagged <b id="rFlag">–</b></span>
+        <span>allowed <b id="rAllow">–</b></span>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+      </div>
+      <div class="queue-list" id="queue" aria-live="polite"></div>
+    </section>
+
+    <p class="crumbs"><a href="../basics/">← Basics</a> · Next: <a href="../wild/">Wild →</a></p>
+
+    <script type="module">
+      import { escapeHTML, OffensiveEngine, OFFENSIVE_CSS } from "../offensive.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = OFFENSIVE_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new OffensiveEngine();
+
+      const thresh = $("thresh");
+      thresh.addEventListener("input", () => { $("threshVal").textContent = Number(thresh.value).toFixed(2); });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/hate_speech_en-ONNX", runtime: "transformers.js", dtype: "q8", sizeMB: 109, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("run").disabled = false; $("text").disabled = false; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        const lines = $("text").value.split("\n").map((s) => s.trim()).filter(Boolean);
+        if (!lines.length) { $("runStatus").hidden = false; $("runStatus").textContent = "Add some comments first."; return; }
+        $("run").disabled = true; $("runStatus").hidden = false; $("runStatus").classList.remove("err", "ok");
+        $("runStatus").textContent = `Scoring ${lines.length} comments…`;
+        try {
+          const t = Number(thresh.value);
+          const r = await engine.triage(lines, t);
+          const sorted = [...r.items].sort((a, b) => (b.flag - a.flag) || (b.offensiveScore - a.offensiveScore));
+          $("queue").replaceChildren(...sorted.map((it) => {
+            const row = document.createElement("div");
+            row.className = "queue-row " + (it.flag ? "flag" : "allow");
+            row.innerHTML = `
+              <span class="queue-text">${escapeHTML(it.text)}</span>
+              <span class="queue-meta">
+                <span class="badge ${it.flag ? "flag" : "allow"}">${it.flag ? "FLAG" : "ALLOW"}</span><br>
+                ${escapeHTML(it.argmax)} · ${(it.offensiveScore * 100).toFixed(0)}%
+              </span>`;
+            return row;
+          }));
+          const flagged = r.items.filter((i) => i.flag).length;
+          $("readout").hidden = false;
+          $("rFlag").textContent = flagged; $("rAllow").textContent = r.items.length - flagged;
+          $("rBackend").textContent = r.device.toUpperCase(); $("rMs").textContent = r.ms + " ms";
+          $("runStatus").textContent = `Done — ${flagged} flagged, ${r.items.length - flagged} allowed.`;
+          $("runStatus").classList.add("ok");
+        } catch (err) { $("runStatus").textContent = "Failed: " + err.message; $("runStatus").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>

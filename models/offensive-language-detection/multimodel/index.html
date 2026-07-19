@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Offensive Multi-model — offensive vs hate vs toxicity · Web AI Showcase</title>
+    <meta name="description" content="Three moderation heads on one comment: offensive-language severity, protected-group hate, and multi-label toxicity. See how three different questions give three different answers — all in the browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🚦</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">hate_speech_en</a></p>
+
+    <header>
+      <p class="eyebrow">use case · multi-model</p>
+      <h1>Multi-model: offensive vs hate vs toxicity</h1>
+      <p class="lede">
+        "Offensive", "hateful", and "toxic" are <em>three different questions</em>, and a real
+        trust-and-safety stack often asks all three. Here three heads score the same comment at once:
+        <strong>hate_speech_en</strong> (how offensive, on a severity ladder), <strong>twitter-roberta-hate</strong>
+        (targeted at a protected group?), and <strong>toxic-bert</strong> (toxic / insult / threat?). Watch
+        them agree on the clear cases and split on the interesting ones — a plain insult is offensive and
+        toxic but not hate; polite bigotry is hate but barely "offensive". Three models, all local.
+      </p>
+      <p class="muted" style="font-size:.82rem">Heads up: this page loads three separate models
+        (~109 + ~358 + ~110 MB). Each caches independently and auto-initialises on your next visit; the hate
+        head is large, so first load is best on a good connection.</p>
+    </header>
+
+    <section class="panel">
+      <h3>Head 1 — offensive severity</h3>
+      <div id="model-loader"></div>
+      <h3 style="margin-top:.8rem">Head 2 — protected-group hate (loads on demand)</h3>
+      <div id="model-loader-2"></div>
+      <h3 style="margin-top:.8rem">Head 3 — toxicity (loads on demand)</h3>
+      <div id="model-loader-3"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
+        Comment
+        <textarea id="text" rows="3" disabled>Go back to your own country, you worthless piece of garbage.</textarea>
+      </label>
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.5rem 0">
+        <button class="chip" type="button" data-set="Go back to your own country, you worthless piece of garbage.">all three</button>
+        <button class="chip" type="button" data-set="Shut up, nobody cares about your stupid opinion.">offensive + toxic, not hate</button>
+        <button class="chip" type="button" data-set="Your religion is a disease and the world would be better without it.">targeted hate</button>
+        <button class="chip" type="button" data-set="Thanks for the help, this genuinely made my day so much easier!">none</button>
+      </div>
+      <button id="run" type="button" disabled>Compare all three heads</button>
+
+      <div class="readout" id="readout" hidden>
+        <span>latency <b id="rMs">–</b></span>
+      </div>
+      <div class="compare-grid" id="compare" hidden>
+        <div class="compare-col">
+          <h4>Offensive</h4>
+          <div class="verdict-row"><span class="verdict-label" id="oLabel">–</span></div>
+          <p class="muted" id="oSub" style="font-family:var(--font-mono);font-size:.8rem"></p>
+          <div class="bars" id="oBars"></div>
+        </div>
+        <div class="compare-col">
+          <h4>Hate</h4>
+          <div class="verdict-row"><span class="verdict-label" id="hLabel">–</span></div>
+          <p class="muted" id="hSub" style="font-family:var(--font-mono);font-size:.8rem"></p>
+          <div class="bars" id="hBars"></div>
+        </div>
+        <div class="compare-col">
+          <h4>Toxicity</h4>
+          <div class="verdict-row"><span class="verdict-label" id="xLabel">–</span></div>
+          <p class="muted" id="xSub" style="font-family:var(--font-mono);font-size:.8rem"></p>
+          <div class="bars" id="xBars"></div>
+        </div>
+      </div>
+      <p class="muted" id="insight" style="font-size:.85rem;margin-top:.6rem" hidden></p>
+    </section>
+
+    <p class="crumbs"><a href="../wild/">← Wild</a> · <a href="../">Back to hate_speech_en →</a></p>
+
+    <script type="module">
+      import { OffensiveEngine, OFFENSIVE_CSS, renderSeverityBars } from "../offensive.js";
+      import { HateEngine, prettyLabel, renderHateBars } from "/web-ai-showcase/models/hate-speech-detection/hate.js";
+      import { renderLabelBars, ToxicityEngine, verdict as toxVerdict }
+        from "/web-ai-showcase/models/toxicity-detection/toxicity.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = OFFENSIVE_CSS + `
+        .compare-grid { display: grid; grid-template-columns: 1fr; gap: 1rem; margin-top: .8rem; }
+        @media (min-width: 720px) { .compare-grid { grid-template-columns: repeat(3, 1fr); } }
+        .compare-col { border: 1px solid var(--border); border-radius: 10px; padding: .7rem .8rem; background: var(--bg-raised); min-inline-size: 0; }
+        .compare-col h4 { margin: 0 0 .3rem; font-family: var(--font-display); }
+        .verdict-label { font-size: 1.25rem; }`;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const off = new OffensiveEngine();
+      const hate = new HateEngine();
+      const tox = new ToxicityEngine();
+      let offReady = false;
+
+      for (const c of document.querySelectorAll(".chip")) {
+        c.addEventListener("click", () => { $("text").value = c.dataset.set; });
+      }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/hate_speech_en-ONNX", runtime: "transformers.js", dtype: "q8", sizeMB: 109, requiresWebGPU: false },
+        load: async (onProgress) => { await off.load(onProgress); return off; },
+        onReady: () => { offReady = true; $("run").disabled = false; $("text").disabled = false; },
+      });
+      createModelLoader({
+        mount: $("model-loader-2"),
+        model: { modelId: "onnx-community/twitter-roberta-large-hate-latest-ONNX", runtime: "transformers.js", dtype: "q8", sizeMB: 358, requiresWebGPU: false },
+        load: async (onProgress) => { await hate.load(onProgress); return hate; },
+      });
+      createModelLoader({
+        mount: $("model-loader-3"),
+        model: { modelId: "Xenova/toxic-bert", runtime: "transformers.js", dtype: "q8", sizeMB: 110, requiresWebGPU: false },
+        load: async (onProgress) => { await tox.load(onProgress); return tox; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        const text = $("text").value.trim();
+        if (!text || !offReady) { $("runStatus").hidden = false; $("runStatus").textContent = "Type a comment first."; return; }
+        $("run").disabled = true; $("runStatus").hidden = false; $("runStatus").classList.remove("err", "ok");
+        $("runStatus").textContent = "Scoring all three heads (loading any that aren't ready)…";
+        const t0 = performance.now();
+        try {
+          const [o, h, x] = await Promise.all([off.classify(text), hate.classify(text), tox.classify(text)]);
+          const ms = Math.round(performance.now() - t0);
+          // Offensive
+          const oFlag = o.offensiveScore >= 0.5;
+          renderSeverityBars($("oBars"), o.labels);
+          $("oLabel").textContent = oFlag ? "OFFENSIVE" : "OK";
+          $("oLabel").className = "verdict-label " + (oFlag ? "flag" : "allow");
+          $("oSub").textContent = `top ${o.argmax.label} · off-or-worse ${(o.offensiveScore * 100).toFixed(0)}%`;
+          // Hate
+          const hFlag = h.hateScore >= 0.5 && h.argmax.label !== "not_hate";
+          renderHateBars($("hBars"), h.labels.slice(0, 4));
+          $("hLabel").textContent = hFlag ? "HATE" : "NOT HATE";
+          $("hLabel").className = "verdict-label " + (hFlag ? "flag" : "allow");
+          $("hSub").textContent = hFlag ? `target ${prettyLabel(h.argmax.label)} · ${(h.hateScore * 100).toFixed(0)}%` : `hate ${(h.hateScore * 100).toFixed(0)}%`;
+          // Toxicity
+          const xv = toxVerdict(x.labels, 0.5);
+          renderLabelBars($("xBars"), x.labels.slice(0, 4), 0.5);
+          $("xLabel").textContent = xv.flag ? "TOXIC" : "CLEAN";
+          $("xLabel").className = "verdict-label " + (xv.flag ? "flag" : "allow");
+          $("xSub").textContent = xv.flag ? xv.labelsHit.map((l) => l.label.replace(/_/g, " ")).join(", ") : `top ${x.labels[0].label.replace(/_/g, " ")} ${(x.labels[0].score * 100).toFixed(0)}%`;
+
+          $("compare").hidden = false;
+          $("readout").hidden = false;
+          $("rMs").textContent = ms + " ms";
+          $("insight").hidden = false;
+          $("insight").textContent = describe(oFlag, hFlag, xv.flag);
+          $("runStatus").textContent = "Done.";
+          $("runStatus").classList.add("ok");
+        } catch (err) { $("runStatus").textContent = "Failed: " + err.message; $("runStatus").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+
+      function describe(o, h, x) {
+        if (h && o && x) return "All three fire: offensive, group-targeted hate, and toxic — escalate.";
+        if (h && !o) return "Hate without high offensiveness: calmly-worded bigotry that an offensiveness or toxicity filter alone would under-rate.";
+        if (o && x && !h) return "Offensive and toxic but not hate: a plain insult — nasty, but not aimed at a protected group.";
+        if (o && !x && !h) return "Offensive to this model but not toxic to the other: the two disagree on where the line is — exactly why you keep a human in the loop.";
+        if (!o && !h && !x) return "All three clear it: nothing to escalate.";
+        return "The three heads disagree — three different questions, three different answers. Route to a human.";
+      }
+    </script>
+  </body>
+</html>

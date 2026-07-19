@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Hate Multi-model — hate vs toxicity, head to head · Web AI Showcase</title>
+    <meta name="description" content="Run two moderation heads on the same comment: a protected-group hate classifier and a multi-label toxicity classifier. See where a targeted-hate signal and a toxicity signal agree and where they diverge — all in the browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🚫</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">twitter-roberta-hate</a></p>
+
+    <header>
+      <p class="eyebrow">use case · multi-model</p>
+      <h1>Multi-model: hate vs toxicity, side by side</h1>
+      <p class="lede">
+        "Hateful" and "toxic" are <em>different questions</em>. Here two heads score the same comment:
+        <strong>twitter-roberta-hate</strong> (is this targeted at a protected group, and which one?) and
+        <strong>toxic-bert</strong> (is this toxic / an insult / a threat?). Watch them <span
+        style="color:var(--good)">agree</span> on clear group-directed hate — and <span
+        style="color:var(--warn)">diverge</span> when text is toxic-but-not-hate (a plain insult) or
+        hateful-but-calm (polite bigotry). Two models, both running locally.
+      </p>
+    </header>
+
+    <section class="panel">
+      <h3>Head 1 — protected-group hate</h3>
+      <div id="model-loader"></div>
+      <h3 style="margin-top:.8rem">Head 2 — toxicity (loads on demand)</h3>
+      <div id="model-loader-2"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
+        Comment
+        <textarea id="text" rows="3" disabled>Go back to your own country, we don't want your kind here.</textarea>
+      </label>
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.5rem 0">
+        <button class="chip" type="button" data-set="Go back to your own country, we don't want your kind here.">hate + toxic</button>
+        <button class="chip" type="button" data-set="Shut up, nobody cares about your stupid opinion.">toxic, not hate</button>
+        <button class="chip" type="button" data-set="Your religion is a disease and the world would be better without it.">targeted hate</button>
+        <button class="chip" type="button" data-set="Thanks for the help, this genuinely made my day so much easier!">neither</button>
+      </div>
+      <button id="run" type="button" disabled>Compare the two heads</button>
+
+      <div class="readout" id="readout" hidden>
+        <span>agreement <b id="rAgree">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+      </div>
+      <div class="compare-grid" id="compare" hidden>
+        <div class="compare-col">
+          <h4>Hate head</h4>
+          <div class="verdict-row"><span class="verdict-label" id="hLabel">–</span></div>
+          <p class="muted" id="hSub" style="font-family:var(--font-mono);font-size:.8rem"></p>
+          <div class="bars" id="hBars"></div>
+        </div>
+        <div class="compare-col">
+          <h4>Toxicity head</h4>
+          <div class="verdict-row"><span class="verdict-label" id="tLabel">–</span></div>
+          <p class="muted" id="tSub" style="font-family:var(--font-mono);font-size:.8rem"></p>
+          <div class="bars" id="tBars"></div>
+        </div>
+      </div>
+      <p class="muted" id="insight" style="font-size:.85rem;margin-top:.6rem" hidden></p>
+    </section>
+
+    <p class="crumbs"><a href="../wild/">← Wild</a> · <a href="../">Back to twitter-roberta-hate →</a></p>
+
+    <script type="module">
+      import { HateEngine, HATE_CSS, prettyLabel, renderHateBars, verdict } from "../hate.js";
+      import { renderLabelBars, ToxicityEngine, verdict as toxVerdict }
+        from "/web-ai-showcase/models/toxicity-detection/toxicity.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = HATE_CSS + `
+        .compare-grid { display: grid; grid-template-columns: 1fr; gap: 1rem; margin-top: .8rem; }
+        @media (min-width: 620px) { .compare-grid { grid-template-columns: 1fr 1fr; } }
+        .compare-col { border: 1px solid var(--border); border-radius: 10px; padding: .7rem .8rem; background: var(--bg-raised); min-inline-size: 0; }
+        .compare-col h4 { margin: 0 0 .3rem; font-family: var(--font-display); }
+        .verdict-label { font-size: 1.3rem; }`;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const hate = new HateEngine();
+      const tox = new ToxicityEngine();
+      let hateReady = false;
+
+      for (const c of document.querySelectorAll(".chip")) {
+        c.addEventListener("click", () => { $("text").value = c.dataset.set; });
+      }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/twitter-roberta-large-hate-latest-ONNX", runtime: "transformers.js", dtype: "q8", sizeMB: 358, requiresWebGPU: false },
+        load: async (onProgress) => { await hate.load(onProgress); return hate; },
+        onReady: () => { hateReady = true; $("run").disabled = false; $("text").disabled = false; },
+      });
+      createModelLoader({
+        mount: $("model-loader-2"),
+        model: { modelId: "Xenova/toxic-bert", runtime: "transformers.js", dtype: "q8", sizeMB: 110, requiresWebGPU: false },
+        load: async (onProgress) => { await tox.load(onProgress); return tox; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        const text = $("text").value.trim();
+        if (!text || !hateReady) { $("runStatus").hidden = false; $("runStatus").textContent = "Type a comment first."; return; }
+        $("run").disabled = true; $("runStatus").hidden = false; $("runStatus").classList.remove("err");
+        $("runStatus").textContent = "Scoring both heads…";
+        const t0 = performance.now();
+        try {
+          const [h, x] = await Promise.all([hate.classify(text), tox.classify(text)]);
+          const ms = Math.round(performance.now() - t0);
+          // Hate head
+          const hv = verdict(h.hateScore, h.argmax.label, 0.5);
+          renderHateBars($("hBars"), h.labels.slice(0, 4));
+          $("hLabel").textContent = hv.flag ? "HATE" : "NOT HATE";
+          $("hLabel").className = "verdict-label " + (hv.flag ? "flag" : "allow");
+          $("hSub").textContent = hv.flag
+            ? `target ${prettyLabel(h.argmax.label)} · ${(h.hateScore * 100).toFixed(0)}%`
+            : `hate ${(h.hateScore * 100).toFixed(0)}%`;
+          // Toxicity head
+          const xv = toxVerdict(x.labels, 0.5);
+          renderLabelBars($("tBars"), x.labels.slice(0, 4), 0.5);
+          $("tLabel").textContent = xv.flag ? "TOXIC" : "CLEAN";
+          $("tLabel").className = "verdict-label " + (xv.flag ? "flag" : "allow");
+          $("tSub").textContent = xv.flag
+            ? xv.labelsHit.map((l) => l.label.replace(/_/g, " ")).join(", ")
+            : `top ${x.labels[0].label.replace(/_/g, " ")} ${(x.labels[0].score * 100).toFixed(0)}%`;
+          // Agreement + insight
+          const agree = hv.flag === xv.flag;
+          $("compare").hidden = false;
+          $("readout").hidden = false;
+          $("rAgree").textContent = agree ? "yes" : "no";
+          $("rMs").textContent = ms + " ms";
+          $("insight").hidden = false;
+          $("insight").textContent = agree
+            ? (hv.flag
+              ? "Both heads fire: this reads as targeted hate AND as toxic — the strongest signal to escalate."
+              : "Both heads clear it: no targeted hate and no toxicity.")
+            : (hv.flag
+              ? "Only the hate head fires: group-directed but calmly worded — a toxicity filter alone would miss it."
+              : "Only the toxicity head fires: nasty or insulting, but not aimed at a protected group — toxic ≠ hate.");
+          $("runStatus").textContent = "Done.";
+          $("runStatus").classList.add("ok");
+        } catch (err) { $("runStatus").textContent = "Failed: " + err.message; $("runStatus").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>
