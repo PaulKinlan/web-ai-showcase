@@ -40,7 +40,12 @@ short version for tools that look for `AGENTS.md`.
   **vilt** (no `vilt` class / no `visual-question-answering` pipeline / no ONNX), **kosmos-2** (no
   `kosmos` class in transformers.js; no browser ONNX), **mask2former** (no `Mask2Former...` class in
   transformers.js 3.7.5/4.2 — only the image processor; no browser ONNX), **internvl** (no
-  `internvl` class → `Unsupported model type: internvl`), **keyphrase-extraction** (no
+  `internvl` class → `Unsupported model type: internvl`), **question-generation** (no QG model has a
+  v3-loadable ONNX: the family is safetensors-only, the one merged-decoder export is a degenerate
+  quantized build that emits repeated-token garbage, and the genuine <hl> QG model uses the pre-v3
+  separate-decoder layout 3.7.5 can't load), **scibert / domain-MLM** (SciBERT scivocab ONNX is
+  feature-extraction only — no MLM head; BioBERT's head is broken near-uniform; use a working domain
+  MLM like Bio_ClinicalBERT instead, don't relabel), **keyphrase-extraction** (no
   token-classification keyphrase model has a browser ONNX — only seq2seq generators; don't mislabel
   a generator/NER as keyphrase spans), **electra** (ONNX exports are encoder-only; the
   replaced-token-detection discriminator head is absent), **blip** / **bark** (repos gated / no

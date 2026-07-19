@@ -141,7 +141,12 @@ unimplemented, no ONNX export anywhere), **kosmos-2** (no `kosmos` class in any 
 version; no browser ONNX — repos gated / safetensors-only), **mask2former** (no `Mask2Former...`
 class in transformers.js 3.7.5/4.2 — only the image processor; no browser ONNX), **internvl** (no
 `internvl` class → `Unsupported model type: internvl`; only third-party ONNX, upstream
-safetensors-only), **keyphrase-extraction** (no token-classification keyphrase model ships a
+safetensors-only), **question-generation** (no QG model has a v3-loadable ONNX: the family is
+safetensors-only, the one merged-decoder export is a degenerate quantized build that emits
+repeated-token garbage, and the genuine <hl> QG model uses the pre-v3 separate-decoder layout 3.7.5
+can't load), **scibert / domain-MLM** (SciBERT scivocab ONNX is feature-extraction only — no MLM
+head; BioBERT's head is broken near-uniform; use a working domain MLM like Bio_ClinicalBERT instead,
+don't relabel), **keyphrase-extraction** (no token-classification keyphrase model ships a
 browser-loadable ONNX — a 151-repo scan found only seq2seq generators, which can't produce per-token
 B/I/O spans; don't mislabel a generator or plain NER as keyphrase span extraction), **electra**
 (ONNX exports encoder-only; RTD discriminator head absent), **blip** / **bark** (gated / no usable
