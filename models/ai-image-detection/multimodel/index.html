@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Multi-model — detect then describe · Web AI Showcase</title>
+    <meta name="description" content="Chain two models: the AI-image detector flags provenance while an image-captioning model describes the picture, producing a richer intake card. Two models, in sequence, all in the browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🔬</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">AI-image detector</a></p>
+
+    <header>
+      <p class="eyebrow">use case · multi-model</p>
+      <h1>Multi-model: detect provenance, then describe</h1>
+      <p class="lede">
+        A moderation intake card needs two things: <em>what</em> is in the image and <em>where it might
+        have come from</em>. Here two models run in sequence — <strong>the AI-image detector</strong>
+        attaches a provenance flag, and <strong>ViT-GPT2 captioning</strong> writes a one-line description,
+        streaming token by token. Together they turn a bare upload into a reviewable card. Both models run
+        locally; nothing is uploaded.
+      </p>
+    </header>
+
+    <section class="panel">
+      <h3>Stage 1 — AI-image provenance detector</h3>
+      <div id="model-loader"></div>
+      <h3 style="margin-top:.8rem">Stage 2 — image captioner (loads on demand, ~250 MB)</h3>
+      <div id="model-loader-2"></div>
+
+      <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Choose an image" style="margin-top:.6rem">
+        <span id="dropText">Drop an image, or click to choose</span>
+        <input type="file" id="file" accept="image/*" hidden />
+      </div>
+      <div class="sample-strip" id="samples" aria-label="Sample images">
+        <img class="sample-thumb active" src="../sample-photo-cat.jpg" data-src="../sample-photo-cat.jpg" alt="A real photograph of two cats" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-photo-river.jpg" data-src="../sample-photo-river.jpg" alt="A real photograph of a riverside" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-synthetic.jpg" data-src="../sample-synthetic.jpg" alt="A procedurally-generated pattern" tabindex="0" role="button" />
+      </div>
+      <div class="preview-wrap"><img class="preview-img" id="preview" src="../sample-photo-cat.jpg" alt="Selected image" /></div>
+
+      <div class="thresh-wrap" style="margin:.6rem 0">
+        <label for="thresh">Flag threshold: <b id="threshVal">0.50</b> — mark "likely AI-generated" when ≥ this</label>
+        <input type="range" id="thresh" min="0.05" max="0.95" step="0.05" value="0.5" />
+      </div>
+      <button id="run" type="button" disabled>Build the intake card</button>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <div id="card" hidden style="margin-top:.6rem;border:1px solid var(--border);border-radius:8px;padding:.8rem;background:var(--bg-raised)">
+        <div class="verdict-row"><span class="verdict-label" id="provLabel">–</span><span class="verdict-sub" id="provSub"></span></div>
+        <p style="margin:.5rem 0 .1rem"><strong>Caption:</strong> <span id="caption">…</span></p>
+      </div>
+      <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>latency <b id="rMs">–</b></span></div>
+      <p class="caveat">The provenance flag is a signal, not a label of truth — it belongs on a review card
+        next to the caption, for a human to weigh, never as an automatic "AI" stamp on the content.</p>
+    </section>
+
+    <p class="crumbs"><a href="../wild/">← Wild</a> · <a href="../">Back to the detector →</a></p>
+
+    <script type="module">
+      import { AIDetectEngine, fileToDataURL, AIDETECT_CSS } from "../aidetect.js";
+      import { CaptionEngine } from "/web-ai-showcase/models/vit-gpt2-captioning/cap.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = AIDETECT_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const detect = new AIDetectEngine();
+      const cap = new CaptionEngine();
+      let currentImageURL = null;
+
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        const blob = await (await fetch(el.dataset.src)).blob();
+        currentImageURL = await fileToDataURL(new File([blob], "s", { type: blob.type }));
+        $("preview").src = el.dataset.src;
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } });
+      }
+      pickSample($("samples").firstElementChild);
+
+      const file = $("file"), drop = $("drop");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) {
+        for (const t of $("samples").children) t.classList.remove("active");
+        currentImageURL = await fileToDataURL(f); $("preview").src = currentImageURL; $("dropText").textContent = f.name;
+      }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
+
+      const thresh = $("thresh");
+      thresh.addEventListener("input", () => { $("threshVal").textContent = Number(thresh.value).toFixed(2); });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/SMOGY-Ai-images-detector-ONNX", runtime: "transformers.js", dtype: "q8", sizeMB: 89, requiresWebGPU: false },
+        load: async (onProgress) => { await detect.load(onProgress); return detect; },
+        onReady: () => { $("run").disabled = false; },
+      });
+      createModelLoader({
+        mount: $("model-loader-2"),
+        model: { modelId: "Xenova/vit-gpt2-image-captioning", runtime: "transformers.js", dtype: "q8", sizeMB: 250, requiresWebGPU: false },
+        load: async (onProgress) => { await cap.load(onProgress); return cap; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!currentImageURL) { $("runStatus").hidden = false; $("runStatus").textContent = "Pick an image first."; return; }
+        $("run").disabled = true; $("runStatus").hidden = false; $("runStatus").classList.remove("err");
+        $("runStatus").textContent = "Stage 1: checking provenance…";
+        const t = Number(thresh.value); const t0 = performance.now();
+        try {
+          const g = await detect.gate(currentImageURL, t);
+          $("card").hidden = false;
+          $("provLabel").textContent = g.flagged ? "LIKELY AI-GENERATED" : "LIKELY REAL";
+          $("provLabel").className = "verdict-label " + (g.flagged ? "ai" : "real");
+          $("provSub").textContent = `AI-generated ${(g.ai * 100).toFixed(1)}% ${g.flagged ? "≥" : "<"} ${t.toFixed(2)} — signal, not proof`;
+          $("caption").textContent = "…";
+          $("runStatus").textContent = "Stage 2: describing the image…";
+          let acc = "";
+          const r = await cap.caption(currentImageURL, 30, (tk) => {
+            if (tk.token) { acc += tk.token; $("caption").textContent = acc; }
+          });
+          $("caption").textContent = (r.caption || acc || "").trim() || "(no caption)";
+          $("runStatus").textContent = "Done — intake card built from two models."; $("runStatus").classList.add("ok");
+          $("readout").hidden = false; $("rBackend").textContent = g.device.toUpperCase();
+          $("rMs").textContent = Math.round(performance.now() - t0) + " ms";
+        } catch (err) { $("runStatus").textContent = "Failed: " + err.message; $("runStatus").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>

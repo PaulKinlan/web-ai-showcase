@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AI-generated image detector — a provenance signal in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Screen an image locally for whether it looks AI-generated or a real photograph: an AI-generated vs real probability and the confidence behind it. A Swin image classifier that runs entirely on your device — framed honestly as an imperfect signal, not proof of origin."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🔬</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">image-classification · vision · WASM · ~89 MB</p>
+      <h1>AI-generated image detector — real photo, or made by a model?</h1>
+      <p class="lede">
+        A Swin Transformer fine-tuned to sort images into <code>artificial</code> (AI-generated /
+        synthetic) and <code>human</code> (a real photograph). Drop an image and it returns a probability
+        for each. Treat the number as a <strong>signal for triage</strong> — a reason to look closer — not
+        proof of where an image came from. It has real blind spots, and this page shows them. Everything
+        happens on your device; the image is never uploaded.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/onnx-community/SMOGY-Ai-images-detector-ONNX" target="_blank" rel="noopener">onnx-community/SMOGY-Ai-images-detector-ONNX</a></td></tr>
+          <tr><th>Task / pipeline</th><td><code>image-classification</code> · single-label (softmax over 2 classes)</td></tr>
+          <tr><th>Labels</th><td><code>artificial</code> (AI-generated) / <code>human</code> (real photo)</td></tr>
+          <tr><th>Architecture</th><td>Swin Transformer (hierarchical vision transformer) fine-tuned for AI-image detection</td></tr>
+          <tr><th>Quantization</th><td>q8 (8-bit) ONNX</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (runs anywhere; no WebGPU needed)</td></tr>
+          <tr><th>Download</th><td>~89 MB, cached after first load</td></tr>
+          <tr><th>License</th><td>Apache-2.0 (ONNX conversion by onnx-community)</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers, FileReader — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+      <div class="caveat" id="glance-caveat">
+        <strong>Read this first.</strong> No AI-image detector is reliable. This one is a fine-tuned
+        classifier trained on a specific mix of real and generated images — it will mislabel photos it
+        finds "too clean" and miss generated images that look photographic. Never make an accusation or an
+        automated block on its output alone. The bundled samples are two real photographs and one
+        <em>procedurally-generated</em> pattern (computer graphics, not a diffusion model), chosen to show
+        both a true and a false-ish call.
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Pick or drop an image, set how much "AI-generated" probability should raise a flag,
+        and hit Analyse. The verdict is a policy on top of the model's score: flag for review when the
+        AI-generated probability is at or above your threshold.</p>
+
+      <div id="model-loader"></div>
+
+      <div class="field-row">
+        <div style="flex:1 1 260px">
+          <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image">
+            <span id="dropText">Drop an image here, or click to choose</span>
+            <input type="file" id="file" accept="image/*" hidden />
+          </div>
+          <div class="sample-strip" id="samples" aria-label="Sample images">
+            <img class="sample-thumb active" src="sample-photo-cat.jpg" data-src="sample-photo-cat.jpg" alt="A real photograph of two cats on a couch" tabindex="0" role="button" />
+            <img class="sample-thumb" src="sample-photo-river.jpg" data-src="sample-photo-river.jpg" alt="A real photograph of a riverside at golden hour" tabindex="0" role="button" />
+            <img class="sample-thumb" src="sample-synthetic.jpg" data-src="sample-synthetic.jpg" alt="A procedurally-generated interference pattern (computer graphics, not a photo)" tabindex="0" role="button" />
+          </div>
+          <div class="preview-wrap"><img class="preview-img" id="preview" src="sample-photo-cat.jpg" alt="Selected image preview" /></div>
+        </div>
+        <div style="flex:1 1 260px">
+          <div class="thresh-wrap">
+            <label for="thresh">Flag threshold: <b id="threshVal">0.50</b> — flag when AI-generated ≥ this</label>
+            <input type="range" id="thresh" min="0.05" max="0.95" step="0.05" value="0.5" />
+          </div>
+          <div style="margin:.5rem 0"><button id="run" type="button" disabled>Analyse image</button></div>
+          <p class="status" id="runStatus" role="status" aria-live="polite"></p>
+          <div class="verdict-row" id="verdictRow" hidden>
+            <span class="verdict-label" id="vLabel">–</span>
+            <span class="verdict-sub" id="vSub"></span>
+          </div>
+          <div class="meter-dual" id="meter" hidden>
+            <div class="meter-real" id="fillReal" style="inline-size:50%"></div>
+            <div class="meter-ai" id="fillAi" style="inline-size:50%"></div>
+          </div>
+          <div class="meter-labels" id="meterLabels" hidden><span>real photo</span><span>AI-generated</span></div>
+          <div class="bars" id="bars" aria-live="polite"></div>
+          <div class="readout" id="readout" hidden>
+            <span>backend <b id="rBackend">–</b></span>
+            <span>latency <b id="rMs">–</b></span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside — score vs. certainty</h3>
+      <p class="muted">
+        The model outputs two raw <strong>logits</strong>; a <strong>softmax</strong> turns them into two
+        probabilities that sum to 100%. A high number is <em>the model's</em> confidence, and that is not
+        the same as being <em>calibrated</em> — these detectors are notorious for being confidently wrong.
+        A 99% "AI-generated" score is a strong prompt to look closer, never a certificate. The
+        <strong>threshold</strong> is your policy: lower it to catch more suspected AI images (more real
+        photos wrongly flagged), raise it to only flag the blatant cases (more AI images slip through).
+        There is no universally right value — it depends on what a mistake costs you.
+      </p>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Analyse an image to see the raw numbers.</div>
+      <div id="insideWrap" hidden>
+        <table class="inside-table">
+          <thead><tr><th>Class</th><th>logit</th><th>softmax</th></tr></thead>
+          <tbody id="insideRows"></tbody>
+        </table>
+        <p class="muted" style="font-size:.82rem;margin-top:.6rem">AI-generated probability along the real→AI scale (needle):</p>
+        <div class="conf-meter" aria-hidden="true"><div class="conf-needle" id="confNeedle" style="left:0"></div></div>
+        <p class="caveat" style="margin-top:.6rem"><strong>Calibration caveat:</strong> softmax confidence is
+          not accuracy. Treat any single score as one weak piece of evidence — corroborate with metadata,
+          reverse image search, and provenance standards (C2PA) before you act.</p>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        As generated images flood feeds, marketplaces, and evidence, "was a human behind the camera?"
+        becomes a routine question. A fast, private, offline signal — running before an image is trusted,
+        published, or paid for — is a first triage filter: it decides <em>what to look at harder</em>, not
+        what is true. No API bill, no third party seeing the image, low enough latency to run inline.
+      </p>
+      <ul>
+        <li><strong>Moderation triage</strong> — auto-route "likely AI-generated" uploads to human review instead of blocking blindly.</li>
+        <li><strong>Marketplace &amp; stock screening</strong> — flag listings whose "real photo" claim is worth a second look.</li>
+        <li><strong>Newsroom &amp; OSINT intake</strong> — surface suspicious images in a batch so an analyst spends time where it matters.</li>
+        <li><strong>Private-by-default</strong> — screen sensitive imagery on-device, with no upload and no cloud detector.</li>
+      </ul>
+      <p class="muted" style="font-size:.9rem">All of these are <em>signal, not verdict</em> use cases. Anywhere
+        the cost of a wrong call is high (accusations, takedowns, legal), a probability from one model is
+        never enough on its own.</p>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Analyse one image and read the AI-generated / real probabilities plainly.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Provenance triage: score a batch at a threshold, sort the queue — signal, never an auto-block.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Break it on purpose: crop, recompress and add noise, and watch the "AI-generated" score swing.</p></a>
+        <a class="model-card" href="multimodel/"><h3>Multi-model</h3><p class="muted">Detect, then describe: pair the provenance flag with an image caption for a richer intake card.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>The convenience path is two lines with Transformers.js:</p>
+      <pre><code>import { pipeline } from "@huggingface/transformers";
+
+const detect = await pipeline("image-classification", "onnx-community/SMOGY-Ai-images-detector-ONNX");
+const out = await detect(imageURL, { top_k: 2 });
+// → [{ label: "human", score: 0.99 }, { label: "artificial", score: 0.01 }]</code></pre>
+      <p class="muted">
+        This page goes one level deeper for "See inside": instead of the pipeline it runs the model's
+        <code>processor</code> then <code>model()</code> in a single forward pass, so it can read the raw
+        two-value <code>logits</code> tensor and compute the softmax itself — then apply <em>your</em>
+        flag threshold. Same weights, same result. Inference runs in a Web Worker so the page never janks.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/onnx-community/SMOGY-Ai-images-detector-ONNX" target="_blank" rel="noopener">Model card — onnx-community/SMOGY-Ai-images-detector-ONNX</a></li>
+        <li><a href="https://huggingface.co/Smogy/SMOGY-Ai-images-detector" target="_blank" rel="noopener">Upstream weights — Smogy/SMOGY-Ai-images-detector</a></li>
+        <li><a href="https://arxiv.org/abs/2103.14030" target="_blank" rel="noopener">Paper — Swin Transformer (Liu et al., 2021)</a></li>
+        <li><a href="https://c2pa.org/" target="_blank" rel="noopener">C2PA — content provenance standards (the durable answer)</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { AIDetectEngine, fileToDataURL, renderVerdict, renderBars, escapeHTML, AIDETECT_CSS } from "./aidetect.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style"); style.textContent = AIDETECT_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new AIDetectEngine();
+      let currentImageURL = null;
+
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        const blob = await (await fetch(el.dataset.src)).blob();
+        currentImageURL = await fileToDataURL(new File([blob], "s", { type: blob.type }));
+        $("preview").src = el.dataset.src;
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } });
+      }
+      pickSample($("samples").firstElementChild);
+
+      const file = $("file"), drop = $("drop");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) {
+        for (const t of $("samples").children) t.classList.remove("active");
+        currentImageURL = await fileToDataURL(f); $("preview").src = currentImageURL; $("dropText").textContent = f.name;
+      }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
+
+      const thresh = $("thresh");
+      let lastResult = null;
+      thresh.addEventListener("input", () => {
+        $("threshVal").textContent = Number(thresh.value).toFixed(2);
+        if (lastResult) render(lastResult);
+      });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/SMOGY-Ai-images-detector-ONNX", runtime: "transformers.js", dtype: "q8", sizeMB: 89, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("run").disabled = false; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!currentImageURL) { $("runStatus").textContent = "Choose an image first."; return; }
+        $("run").disabled = true; $("runStatus").classList.remove("err"); $("runStatus").textContent = "Analysing…";
+        try {
+          lastResult = await engine.classify(currentImageURL);
+          render(lastResult);
+          $("readout").hidden = false; $("rBackend").textContent = lastResult.device.toUpperCase(); $("rMs").textContent = lastResult.ms + " ms";
+          $("runStatus").textContent = "Done."; $("runStatus").classList.add("ok");
+        } catch (err) { $("runStatus").textContent = "Analysis failed: " + err.message; $("runStatus").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+
+      function render(r) {
+        const t = Number(thresh.value);
+        $("verdictRow").hidden = false; $("meter").hidden = false; $("meterLabels").hidden = false;
+        renderVerdict({ label: $("vLabel"), sub: $("vSub"), fillReal: $("fillReal"), fillAi: $("fillAi") }, r, t);
+        renderBars($("bars"), r.classes);
+        $("insideEmpty").hidden = true; $("insideWrap").hidden = false;
+        $("insideRows").replaceChildren(...[...r.classes].sort((a, b) => b.prob - a.prob).map((c) => {
+          const tr = document.createElement("tr");
+          const nice = c.label === "artificial" ? "AI-generated" : c.label === "human" ? "real photo" : c.label;
+          tr.innerHTML = `<td>${escapeHTML(nice)}</td><td>${c.logit.toFixed(2)}</td><td>${(c.prob * 100).toFixed(2)}%</td>`;
+          return tr;
+        }));
+        $("confNeedle").style.left = `${Math.round(r.ai * 100)}%`;
+      }
+    </script>
+  </body>
+</html>
