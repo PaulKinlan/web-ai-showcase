@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>XLM-RoBERTa Practical — cross-lingual knowledge probe · Web AI Showcase</title>
+    <meta name="description" content="Ask the same fact in five languages at once and watch one model fill each blank — a cross-lingual knowledge probe that shows where XLM-RoBERTa's facts agree across languages. In your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🌍</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">XLM-RoBERTa</a></p>
+
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Practical: probe a fact across five languages</h1>
+      <p class="lede">
+        Because one model reads many languages, you can ask the <em>same</em> question in each and compare.
+        Pick a probe below and XLM-RoBERTa fills the blank in five parallel sentences at once — a quick way
+        to see where its knowledge is consistent across languages and where it drifts.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.2rem 0 .6rem" id="probes" role="group" aria-label="Choose a probe">
+        <button class="mask-chip" type="button" data-probe="capital" aria-pressed="true">Capital of France</button>
+        <button class="mask-chip" type="button" data-probe="sky">Colour of the sky</button>
+        <button class="mask-chip" type="button" data-probe="sunrise">Where the sun rises</button>
+        <button class="mask-chip" type="button" data-probe="water">What fish live in</button>
+      </div>
+
+      <div class="probe-grid two" id="grid" aria-live="polite"></div>
+      <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>latency <b id="rMs">–</b></span><span>languages <b id="rLangs">–</b></span></div>
+
+      <p class="muted" style="font-size:.85rem">
+        Each card is a real, separate forward pass over that language's sentence — the top prediction is
+        shown filled in, with the next two candidates as bars. Same weights, no language flag.
+      </p>
+    </section>
+
+    <p class="crumbs"><a href="../basics/">← Basics</a> · Next: <a href="../wild/">Wild →</a></p>
+
+    <script type="module">
+      import { XlmrFillMaskEngine, XLMR_CSS, renderPredictions, escapeHTML } from "../xlmr.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = XLMR_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new XlmrFillMaskEngine();
+      let loaded = false, current = "capital";
+
+      const PROBES = {
+        capital: [
+          ["🇬🇧", "English", "The capital of France is <mask>."],
+          ["🇫🇷", "Français", "La capitale de la France est <mask>."],
+          ["🇪🇸", "Español", "La capital de Francia es <mask>."],
+          ["🇩🇪", "Deutsch", "Die Hauptstadt von Frankreich ist <mask>."],
+          ["🇮🇹", "Italiano", "La capitale della Francia è <mask>."],
+        ],
+        sky: [
+          ["🇬🇧", "English", "On a clear day the sky is <mask>."],
+          ["🇫🇷", "Français", "Par temps clair, le ciel est <mask>."],
+          ["🇪🇸", "Español", "En un día despejado el cielo es <mask>."],
+          ["🇩🇪", "Deutsch", "An einem klaren Tag ist der Himmel <mask>."],
+          ["🇮🇹", "Italiano", "In una giornata serena il cielo è <mask>."],
+        ],
+        sunrise: [
+          ["🇬🇧", "English", "The sun rises in the <mask>."],
+          ["🇫🇷", "Français", "Le soleil se lève à l'<mask>."],
+          ["🇪🇸", "Español", "El sol sale por el <mask>."],
+          ["🇩🇪", "Deutsch", "Die Sonne geht im <mask> auf."],
+          ["🇮🇹", "Italiano", "Il sole sorge a <mask>."],
+        ],
+        water: [
+          ["🇬🇧", "English", "Fish live in the <mask>."],
+          ["🇫🇷", "Français", "Les poissons vivent dans l'<mask>."],
+          ["🇪🇸", "Español", "Los peces viven en el <mask>."],
+          ["🇩🇪", "Deutsch", "Fische leben im <mask>."],
+          ["🇮🇹", "Italiano", "I pesci vivono nell'<mask>."],
+        ],
+      };
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/xlm-roberta-base", runtime: "transformers.js", dtype: "q8", sizeMB: 280, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { loaded = true; run(); },
+      });
+
+      for (const b of document.querySelectorAll("#probes button")) {
+        b.addEventListener("click", () => {
+          current = b.dataset.probe;
+          for (const x of document.querySelectorAll("#probes button")) x.setAttribute("aria-pressed", String(x === b));
+          run();
+        });
+      }
+
+      async function run() {
+        if (!loaded) return;
+        const set = PROBES[current];
+        $("runStatus").hidden = false; $("runStatus").classList.remove("err"); $("runStatus").textContent = "Filling in five languages…";
+        try {
+          const r = await engine.fillMany(set.map((s) => s[2]), 3);
+          $("runStatus").hidden = true;
+          $("grid").replaceChildren(...r.results.map((res, i) => {
+            const [flag, lang, template] = set[i];
+            const card = document.createElement("div"); card.className = "probe-card";
+            const h = document.createElement("h4");
+            h.innerHTML = `<span class="flag">${flag}</span> ${escapeHTML(lang)}`;
+            const sent = document.createElement("p"); sent.className = "filled-sentence"; sent.style.fontSize = "1rem";
+            const top = res.masks[0]?.predictions[0]?.token ?? "?";
+            sent.innerHTML = escapeHTML(template).replace("&lt;mask&gt;", `<span class="slot">${escapeHTML(top)}</span>`);
+            const list = document.createElement("div"); list.className = "pred-list";
+            if (res.masks[0]) renderPredictions(list, res.masks[0].predictions, null);
+            card.append(h, sent, list);
+            return card;
+          }));
+          $("readout").hidden = false; $("rBackend").textContent = r.device.toUpperCase(); $("rMs").textContent = r.ms + " ms"; $("rLangs").textContent = set.length;
+        } catch (err) {
+          $("runStatus").hidden = false; $("runStatus").textContent = "Probe failed: " + err.message; $("runStatus").classList.add("err");
+        }
+      }
+    </script>
+  </body>
+</html>

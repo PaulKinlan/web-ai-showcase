@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>XLM-RoBERTa Multi-model — fill then detect the language · Web AI Showcase</title>
+    <meta name="description" content="Two models in a chain: XLM-RoBERTa fills a masked sentence, then a second XLM-RoBERTa classifier detects which of 20 languages the completed sentence is in. All in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🌍</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">XLM-RoBERTa</a></p>
+
+    <header>
+      <p class="eyebrow">use case · multi-model</p>
+      <h1>Multi-model: fill the mask, then name the language</h1>
+      <p class="lede">
+        A two-stage on-device pipeline. First XLM-RoBERTa fills your <code>&lt;mask&gt;</code>. Then a
+        second model — itself an XLM-RoBERTa, fine-tuned for language ID — reads the completed sentence and
+        tells you which of 20 languages it's in, with confidence. Same architecture, two jobs, chained
+        locally with nothing leaving the tab.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="load-h">
+      <h3 id="load-h" class="sr-only" style="position:absolute;left:-9999px">Models</h3>
+      <p class="muted" style="font-size:.85rem">This demo loads TWO ~280 MB models. The fill-mask model is
+        the same one the other demos use (cached if you've run them); the language detector is separate.</p>
+      <div style="display:grid;gap:.6rem">
+        <div><p class="hint-mask">1 · Fill-mask model</p><div id="loader-fill"></div></div>
+        <div><p class="hint-mask">2 · Language-ID model</p><div id="loader-lang"></div></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.2rem 0 .5rem" id="chips">
+        <button class="mask-chip" type="button" data-set="The capital of Italy is <mask>."><span class="flag">🇬🇧</span> English</button>
+        <button class="mask-chip" type="button" data-set="Mon animal préféré est le <mask>."><span class="flag">🇫🇷</span> Français</button>
+        <button class="mask-chip" type="button" data-set="Mi color favorito es el <mask>."><span class="flag">🇪🇸</span> Español</button>
+        <button class="mask-chip" type="button" data-set="Ich wohne in einer großen <mask>."><span class="flag">🇩🇪</span> Deutsch</button>
+        <button class="mask-chip" type="button" data-set="Tôi thích ăn <mask> vào buổi sáng."><span class="flag">🇻🇳</span> Tiếng Việt</button>
+      </div>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">
+        Sentence with a <code>&lt;mask&gt;</code>
+        <input id="text" class="mask-input" disabled value="The capital of Italy is <mask>." />
+      </label>
+      <div style="margin:.5rem 0"><button id="run" type="button" disabled>Fill &amp; detect language</button></div>
+
+      <div id="filled" class="filled-sentence" hidden></div>
+      <div id="langOut" hidden></div>
+      <div class="readout" id="readout" hidden><span>fill <b id="rFill">–</b></span><span>lang-id <b id="rLang">–</b></span><span>backend <b id="rBackend">–</b></span></div>
+
+      <p class="muted" style="font-size:.85rem">
+        The detector runs on the <em>filled-in</em> sentence, so the chain is honest end-to-end: the first
+        model's output is literally the second model's input.
+      </p>
+    </section>
+
+    <p class="crumbs"><a href="../wild/">← Wild</a> · <a href="../">Back to XLM-RoBERTa</a></p>
+
+    <script type="module">
+      import { XlmrFillMaskEngine, XLMR_CSS, MASK, renderPredictions, escapeHTML } from "../xlmr.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = XLMR_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+
+      // 20 languages the detector covers → display name + flag.
+      const LANGS = {
+        ar: ["Arabic", "🇸🇦"], bg: ["Bulgarian", "🇧🇬"], de: ["German", "🇩🇪"], el: ["Greek", "🇬🇷"],
+        en: ["English", "🇬🇧"], es: ["Spanish", "🇪🇸"], fr: ["French", "🇫🇷"], hi: ["Hindi", "🇮🇳"],
+        it: ["Italian", "🇮🇹"], ja: ["Japanese", "🇯🇵"], nl: ["Dutch", "🇳🇱"], pl: ["Polish", "🇵🇱"],
+        pt: ["Portuguese", "🇵🇹"], ru: ["Russian", "🇷🇺"], sw: ["Swahili", "🇰🇪"], th: ["Thai", "🇹🇭"],
+        tr: ["Turkish", "🇹🇷"], ur: ["Urdu", "🇵🇰"], vi: ["Vietnamese", "🇻🇳"], zh: ["Chinese", "🇨🇳"],
+      };
+
+      const fill = new XlmrFillMaskEngine();
+      const langWorker = new Worker("./langid-worker.js", { type: "module" });
+      const langPending = new Map(); let langId = 0; const langWaiters = [];
+      langWorker.addEventListener("message", (e) => {
+        const m = e.data;
+        if (m.type === "ready") { for (const w of langWaiters) w(); langWaiters.length = 0; }
+        else if (m.type === "langid") { langPending.get(m.id)?.(m); langPending.delete(m.id); }
+        else if (m.type === "error" && m.id != null) { langPending.get(m.id)?.(Promise.reject(new Error(m.message))); langPending.delete(m.id); }
+      });
+      function classifyLang(text) { const id = ++langId; return new Promise((res) => { langPending.set(id, res); langWorker.postMessage({ type: "classify", id, text }); }); }
+
+      let fillReady = false, langReady = false;
+      const maybeEnable = () => { if (fillReady && langReady) { $("text").disabled = false; $("run").disabled = false; } };
+
+      createModelLoader({
+        mount: $("loader-fill"),
+        model: { modelId: "Xenova/xlm-roberta-base", runtime: "transformers.js", dtype: "q8", sizeMB: 280, requiresWebGPU: false },
+        load: async (onProgress) => { await fill.load(onProgress); return fill; },
+        onReady: () => { fillReady = true; maybeEnable(); },
+      });
+      createModelLoader({
+        mount: $("loader-lang"),
+        model: { modelId: "onnx-community/xlm-roberta-base-language-detection-ONNX", runtime: "transformers.js", dtype: "q8", sizeMB: 279, requiresWebGPU: false },
+        load: (onProgress) => new Promise((resolve, reject) => {
+          langWaiters.push(resolve);
+          const onMsg = (e) => { if (e.data.type === "progress") onProgress(e.data.p); if (e.data.type === "error") { langWorker.removeEventListener("message", onMsg); reject(new Error(e.data.message)); } };
+          langWorker.addEventListener("message", onMsg);
+          langWorker.postMessage({ type: "load" });
+        }),
+        onReady: () => { langReady = true; maybeEnable(); },
+      });
+
+      for (const c of document.querySelectorAll(".mask-chip")) c.addEventListener("click", () => { $("text").value = c.dataset.set; });
+
+      $("run").addEventListener("click", async () => {
+        const text = $("text").value;
+        if (!text.includes(MASK)) { $("runStatus").hidden = false; $("runStatus").classList.add("err"); $("runStatus").textContent = "Add a <mask> token first."; return; }
+        $("run").disabled = true; $("runStatus").hidden = false; $("runStatus").classList.remove("err"); $("runStatus").textContent = "Filling the mask…";
+        try {
+          const r = await fill.fill(text, 5);
+          const top = r.masks[0].predictions[0].token;
+          const filledSentence = text.replaceAll(MASK, top);
+          $("filled").innerHTML = escapeHTML(text).replaceAll(escapeHTML(MASK), `<span class="slot">${escapeHTML(top)}</span>`);
+          $("filled").hidden = false;
+          $("runStatus").textContent = "Detecting the language…";
+          const lang = await classifyLang(filledSentence);
+          renderLang(lang, filledSentence);
+          $("readout").hidden = false; $("rFill").textContent = r.ms + " ms"; $("rLang").textContent = lang.ms + " ms"; $("rBackend").textContent = r.device.toUpperCase();
+          $("runStatus").hidden = true;
+        } catch (err) {
+          $("runStatus").hidden = false; $("runStatus").classList.add("err"); $("runStatus").textContent = "Failed: " + err.message;
+        } finally { $("run").disabled = false; }
+      });
+
+      function renderLang(lang, sentence) {
+        const wrap = $("langOut"); wrap.hidden = false; wrap.replaceChildren();
+        const p = document.createElement("p"); p.className = "hint-mask"; p.textContent = `Language of "${sentence}":`;
+        const top = lang.scores[0]; const meta = LANGS[top.label] || [top.label, "🏳️"];
+        const badge = document.createElement("p");
+        badge.innerHTML = `<span class="lang-badge"><span class="flag" style="font-size:1.1rem">${meta[1]}</span> <b>${escapeHTML(meta[0])}</b> · ${(top.score * 100).toFixed(1)}%</span>`;
+        const rest = document.createElement("div"); rest.className = "pred-list"; rest.style.marginTop = ".4rem";
+        for (const s of lang.scores.slice(0, 3)) {
+          const m = LANGS[s.label] || [s.label, "🏳️"];
+          const row = document.createElement("div"); row.className = "cand-row";
+          row.innerHTML = `<span class="cand-word">${m[1]} ${escapeHTML(m[0])}</span><span class="cand-bar"><span class="cand-fill" style="inline-size:${(s.score * 100).toFixed(1)}%"></span></span><span class="cand-num">${(s.score * 100).toFixed(1)}%</span>`;
+          rest.append(row);
+        }
+        wrap.append(p, badge, rest);
+      }
+    </script>
+  </body>
+</html>
