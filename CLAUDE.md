@@ -129,18 +129,19 @@ REAL build runs in the browser today — dynamic-import the exact CDN build and 
 returns, not just that an ONNX folder or weights exist. A family that cannot run gets
 `status:"blocked"` + a concrete `blockedReason` (evidence + what would unblock) so the routine stops
 reselecting it. **Known-blocked as of 2026-07-19 (re-check only on upstream change): pegasus**
-(transformers.js registers no `pegasus` model class in any version → `Unsupported model type:
-pegasus`), **gliner** (same failure — `Unsupported model type: gliner`; onnx-community ships an ONNX
-export but no transformers.js class/processor implements GLiNER's span/entity-prompt pipeline),
-**got-ocr2** (no `got_ocr2` class in 3.7.5/4.2; the `image-text-to-text` pipeline task doesn't exist
-in 3.7.5; stepfun-ai repos are safetensors-only, no ONNX), **git** (no `git` model class; no
-`Xenova/git-*` ONNX repo exists), **vilt** (no `vilt` class, `visual-question-answering` is not a
-supported pipeline task, `ViltFeatureExtractor` unimplemented, no ONNX export anywhere),
-**keyphrase-extraction** (no token-classification keyphrase model ships a browser-loadable ONNX — a
-151-repo scan found only seq2seq generators, which can't produce per-token B/I/O spans; don't
-mislabel a generator or plain NER as keyphrase span extraction), **electra** (ONNX exports
-encoder-only; RTD discriminator head absent), **blip** / **bark** (gated / no usable ONNX). Never
-mislabel a substitute as the blocked family.
+(transformers.js registers no `pegasus` model class in any version →
+`Unsupported model type:
+pegasus`), **gliner** (same failure — `Unsupported model type: gliner`;
+onnx-community ships an ONNX export but no transformers.js class/processor implements GLiNER's
+span/entity-prompt pipeline), **got-ocr2** (no `got_ocr2` class in 3.7.5/4.2; the
+`image-text-to-text` pipeline task doesn't exist in 3.7.5; stepfun-ai repos are safetensors-only, no
+ONNX), **git** (no `git` model class; no `Xenova/git-*` ONNX repo exists), **vilt** (no `vilt`
+class, `visual-question-answering` is not a supported pipeline task, `ViltFeatureExtractor`
+unimplemented, no ONNX export anywhere), **keyphrase-extraction** (no token-classification keyphrase
+model ships a browser-loadable ONNX — a 151-repo scan found only seq2seq generators, which can't
+produce per-token B/I/O spans; don't mislabel a generator or plain NER as keyphrase span
+extraction), **electra** (ONNX exports encoder-only; RTD discriminator head absent), **blip** /
+**bark** (gated / no usable ONNX). Never mislabel a substitute as the blocked family.
 
 **Version-pin escape hatch (isolated).** A model whose class exists only in a transformers.js newer
 than the shared 3.7.5 pin (e.g. SAM2 — `Sam2Model` lands in 4.2.0, absent from 3.7.5) may pin the
@@ -150,12 +151,11 @@ other pages. `lib/model-cache.js` is version-agnostic (scans Cache Storage by mo
 `@huggingface/transformers@4.2.0`; everything else stays 3.7.5. Verify the pin stays scoped to that
 worker.
 
-Cover the full capability range —
-classification, NER, embeddings/ reranking/search, summarisation/translation/generation, ASR, audio
-classification, TTS, image classification, zero-shot image, detection, segmentation, depth/normal,
-OCR/doc, captioning/VQA/VLM, background removal, pose/hand/face landmarks, browser-feasible
-generation, and LLM chat/tool/RAG via both Transformers.js and WebLLM — and add categories the
-inventory surfaces.
+Cover the full capability range — classification, NER, embeddings/ reranking/search,
+summarisation/translation/generation, ASR, audio classification, TTS, image classification,
+zero-shot image, detection, segmentation, depth/normal, OCR/doc, captioning/VQA/VLM, background
+removal, pose/hand/face landmarks, browser-feasible generation, and LLM chat/tool/RAG via both
+Transformers.js and WebLLM — and add categories the inventory surfaces.
 
 ### 10. Denominator discipline — never claim "complete" at a toy count
 
@@ -217,6 +217,60 @@ Model loading is a SHARED architecture. **Every page uses `lib/model-loader.js`
   with keyboard + SR semantics.
 - Re-test every built page across: **first visit · current cached · stale/update · partial/corrupt ·
   offline cached · eviction · unsupported device.**
+
+### 13. Durable demo compatibility contract — stable URLs · additive evolution · non-destructive
+
+Every **published** demo's identity is a durable compatibility contract. "Published" means it is
+live to users: it has a real route/URL and a catalogue entry (for this repo: a `built` demo, and any
+`blocked`/unsupported entry that is honestly recorded). A published demo's contract covers its
+**route/URL, its slug/ID, the model or platform feature it showcases, its core behavior, its
+controls, its use-case intent, and all inbound links.** Routine and agent waves MUST preserve these.
+
+- **Append-only identities.** Published slugs/IDs/routes are append-only. NEVER rename, repurpose,
+  replace, merge, or delete an existing published demo because a new wave has a different design
+  idea. (Catalogue entries that were never published — e.g. `pending` placeholders with no route —
+  are not under contract and may be repointed.)
+- **Additive evolution.** A newly discovered use case, interaction concept, model/feature
+  composition, presentation approach, or a substantially different demo is added as a NEW page with
+  a NEW stable slug + catalogue entry. Do NOT overwrite or repurpose an existing demo to make room.
+  Existing basic/practical/wild demos stay available after more ambitious ones are added.
+- **In-place fixes only when justified.** Change an existing published demo in place ONLY for a
+  demonstrated bug, accessibility/runtime/security issue, factual error, compatibility problem, or
+  clear quality improvement. Retain prior behavior/identity unless changing it is necessary; state
+  the reason + evidence in the commit message; regression-test the change. Default to the SMALLEST
+  patch — never regenerate a working page from scratch when a targeted edit suffices.
+- **Moves need a tested alias.** If a URL absolutely must move, keep the old route working via a
+  tested permanent redirect/alias recorded in the route manifest. Never silently break a route.
+- **Blocked stays recorded.** Unsupported/blocked entries remain honestly recorded (status
+  `blocked`), never deleted.
+- **Read before editing.** Before editing, read the existing implementation, its history/rationale,
+  and the route manifest, then make the smallest change that satisfies the goal.
+- **Removals/moves are exceptional.** Any removal, rename, route move, or identity change requires
+  an explicit reviewed **migration record** (`MIGRATIONS`/`migrations.json`) and must pass the route
+  regression gate. Stable does NOT mean frozen — improve existing demos when justified, and add new
+  demos/use cases freely; just never replace an old one merely to present a new idea.
+
+**Gate before every push:** run the route regression gate (`node scripts/check-routes.mjs`). It
+compares the previously published manifest against the working tree and fails on any missing
+published ID, deleted route, renamed/repurposed slug, changed published identity, or unexplained
+concept-count reduction — while allowing additive entries, honest `blocked` records, and in-place
+fixes. Exceptional removals/moves must be listed in the migration record with reason + evidence.
+
+**Contract mechanics (this repo).** The published manifest is emitted by
+`node scripts/route-manifest.mjs` (`--json` to print, `--write-baseline` to refresh
+`.route-manifest.baseline.json`): one `{id, route, identity: {hfId, task}, status, aliases[]}` entry
+per `built` or `blocked` model (`pending` placeholders are excluded — they were never published).
+The gate `node scripts/check-routes.mjs` derives the baseline from
+`git show origin/main:models.json` (falling back to `.route-manifest.baseline.json` offline) and
+fails on a lost published id, a `built` route whose `models/<slug>/index.html` is gone, a repurposed
+`{hfId, task}`, a deleted `blocked` record, or an unexplained `built`-count drop. Record every
+exceptional change in `migrations.json` (git-tracked array of
+`{id, action: "alias"|"move"|"remove"|"identity-change", from, to, reason,
+evidence, date}`); the
+gate consults it to permit the change. **Read before editing:** open the existing
+`models/<slug>/index.html`, read its git history/rationale, and check the route manifest before
+touching a built page; default to the smallest patch and never regenerate a working page from
+scratch when a targeted edit suffices. Every build wave runs the gate before pushing.
 
 > Canonical process: **`.agents/skills/web-ai-showcase/SKILL.md`** (inventory refresh, dedup,
 > license/ security review, build requirements, cache versioning/eviction, verification, coverage

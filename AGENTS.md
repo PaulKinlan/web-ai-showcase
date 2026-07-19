@@ -29,18 +29,19 @@ short version for tools that look for `AGENTS.md`.
 - **Don't re-attempt known-blocked builds.** Before selecting a family, verify a REAL runnable build
   exists (dynamic-import the exact CDN build; confirm inference returns) — not just that weights/an
   ONNX folder exist. If a family is not browser-runnable today, set the catalogue entry
-  `status:"blocked"` with a concrete `blockedReason` (evidence + what would unblock it) so the routine
-  stops reselecting an impossible build. **Current known-blocked (re-check only when upstream changes):
-  pegasus** (transformers.js registers no `pegasus` model class in any version — `Unsupported model
-  type: pegasus` even with a full ONNX folder), **gliner** (same — `Unsupported model type: gliner`;
-  ONNX export exists but no transformers.js GLiNER class/processor), **got-ocr2** (no `got_ocr2`
-  class; `image-text-to-text` pipeline absent in 3.7.5; stepfun-ai repos safetensors-only), **git**
-  (no `git` class; no `Xenova/git-*` ONNX repo), **vilt** (no `vilt` class / no
-  `visual-question-answering` pipeline / no ONNX), **keyphrase-extraction** (no token-classification
-  keyphrase model has a browser ONNX — only seq2seq generators; don't mislabel a generator/NER as
-  keyphrase spans), **electra** (ONNX exports are encoder-only; the replaced-token-detection
-  discriminator head is absent), **blip** / **bark** (repos gated / no usable ONNX). Never mislabel a
-  substitute as the blocked family.
+  `status:"blocked"` with a concrete `blockedReason` (evidence + what would unblock it) so the
+  routine stops reselecting an impossible build. **Current known-blocked (re-check only when
+  upstream changes): pegasus** (transformers.js registers no `pegasus` model class in any version —
+  `Unsupported model
+  type: pegasus` even with a full ONNX folder), **gliner** (same —
+  `Unsupported model type: gliner`; ONNX export exists but no transformers.js GLiNER
+  class/processor), **got-ocr2** (no `got_ocr2` class; `image-text-to-text` pipeline absent in
+  3.7.5; stepfun-ai repos safetensors-only), **git** (no `git` class; no `Xenova/git-*` ONNX repo),
+  **vilt** (no `vilt` class / no `visual-question-answering` pipeline / no ONNX),
+  **keyphrase-extraction** (no token-classification keyphrase model has a browser ONNX — only
+  seq2seq generators; don't mislabel a generator/NER as keyphrase spans), **electra** (ONNX exports
+  are encoder-only; the replaced-token-detection discriminator head is absent), **blip** / **bark**
+  (repos gated / no usable ONNX). Never mislabel a substitute as the blocked family.
 - **Version-pin escape hatch (isolated).** If a model's class exists only in a transformers.js newer
   than the shared 3.7.5 pin (e.g. SAM2's `Sam2Model` needs 4.2.0), pin the newer version LOCALLY in
   that one model's `worker.js` only — never bump shared `lib/webai.js`. `lib/model-cache.js` is
@@ -64,6 +65,38 @@ short version for tools that look for `AGENTS.md`.
   integrity before "ready"; failed init → retry/recovery, never fake output; per-model "clear cache"
   control. Re-test states: first visit / current cached / stale-update / partial-corrupt / offline
   cached / eviction / unsupported device. Do NOT hand-roll a bespoke Load button.
+- **Durable demo compatibility contract — stable URLs · additive evolution · non-destructive.**
+  Every **published** demo's identity is a durable compatibility contract. "Published" means it is
+  live to users: a real route/URL + a catalogue entry (here: a `built` demo, and any honestly
+  recorded `blocked` entry). The contract covers its **route/URL, slug/ID, the model/feature it
+  showcases, its core behavior, controls, use-case intent, and all inbound links** — waves MUST
+  preserve these.
+  - **Append-only identities.** Published slugs/routes are append-only. NEVER rename, repurpose,
+    replace, merge, or delete a published demo because a new wave has a different idea. (`pending`
+    placeholders were never published and may be repointed.)
+  - **Additive evolution.** A new use case / interaction / composition / presentation, or a
+    substantially different demo, is a NEW page with a NEW stable slug — never overwrite an existing
+    one to make room. Existing basic/practical/wild demos stay after ambitious ones are added.
+  - **In-place fixes only when justified** (demonstrated bug, a11y/runtime/security, factual error,
+    compatibility, clear quality win): retain prior identity unless change is necessary, state
+    reason + evidence in the commit, regression-test. Default to the SMALLEST patch — never
+    regenerate a working page from scratch when a targeted edit suffices.
+  - **Read before editing.** Read the existing `models/<slug>/index.html`, its git
+    history/rationale, and the route manifest before touching a built page, then make the smallest
+    change.
+  - **Moves need a tested alias**, recorded in the manifest — never silently break a route.
+    **Blocked stays recorded** (never deleted). **Removals/moves/identity-changes are exceptional**
+    — each needs a reviewed entry in `migrations.json`
+    (`{id, action: "alias"|"move"|"remove"|"identity-change", from, to, reason, evidence, date}`)
+    and must pass the gate. Stable ≠ frozen — improve and add freely; just never replace an old demo
+    merely to present a new idea.
+  - **Run the route regression gate before every push:** `node scripts/check-routes.mjs` (baseline =
+    `git show origin/main:models.json` → the published manifest, fallback
+    `.route-manifest.baseline.json`). It fails on a lost published id, a `built` route whose
+    `models/<slug>/index.html` is gone, a repurposed `{hfId, task}`, a deleted `blocked` record, or
+    an unexplained `built`-count drop — passing additive ids, honest new `blocked`, in-place fixes,
+    and anything in `migrations.json`. Refresh the manifest with `node scripts/route-manifest.mjs`
+    (`--json` / `--write-baseline`). Fold the gate into every build wave.
 - Verify with headless Chrome + `Read` the screenshot (no chrome-devtools-mcp in the routine).
 - Canonical process: **`.agents/skills/web-ai-showcase/SKILL.md`**.
 

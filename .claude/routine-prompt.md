@@ -67,13 +67,60 @@ wave** — it is never "done" until `built === eligible`.
    degrade honestly. Fix issues before committing.
 
 7. **Update the catalogue.** Set the model's `status` to `built` in `models.json` so it appears as
-   runnable on the index. Commit per model:
-   `git add models/<slug>/ models.json && git commit -m "add <name> model page + use cases" && git push`
-   (on race: `git pull --rebase && git push`).
+   runnable on the index. **Run the route regression gate before every push:**
+   `node scripts/check-routes.mjs` (must exit 0 — it enforces the durable-demo compatibility
+   contract; see below). Commit per model:
+   `git add models/<slug>/ models.json && git commit -m "add <name> model page + use cases" &&
+   node scripts/check-routes.mjs && git push`
+   (on race: `git pull --rebase && node scripts/check-routes.mjs && git push`).
 
 8. **Summary.** Report models discovered, the model built (SHA + page path), use-case pages,
    headless verification evidence, and any model that couldn't be made to run in-browser (say why;
    don't ship a fake demo).
+
+## Durable demo compatibility contract — stable URLs · additive evolution · non-destructive
+
+Every **published** demo's identity is a durable compatibility contract. "Published" means it is
+live to users: it has a real route/URL and a catalogue entry (for this repo: a `built` demo, and any
+`blocked`/unsupported entry that is honestly recorded). A published demo's contract covers its
+**route/URL, its slug/ID, the model or platform feature it showcases, its core behavior, its
+controls, its use-case intent, and all inbound links.** Routine and agent waves MUST preserve these.
+
+- **Append-only identities.** Published slugs/IDs/routes are append-only. NEVER rename, repurpose,
+  replace, merge, or delete an existing published demo because a new wave has a different design
+  idea. (Catalogue entries that were never published — e.g. `pending` placeholders with no route —
+  are not under contract and may be repointed.)
+- **Additive evolution.** A newly discovered use case, interaction concept, model/feature
+  composition, presentation approach, or a substantially different demo is added as a NEW page with
+  a NEW stable slug + catalogue entry. Do NOT overwrite or repurpose an existing demo to make room.
+  Existing basic/practical/wild demos stay available after more ambitious ones are added.
+- **In-place fixes only when justified.** Change an existing published demo in place ONLY for a
+  demonstrated bug, accessibility/runtime/security issue, factual error, compatibility problem, or
+  clear quality improvement. Retain prior behavior/identity unless changing it is necessary; state
+  the reason + evidence in the commit message; regression-test the change. Default to the SMALLEST
+  patch — never regenerate a working page from scratch when a targeted edit suffices.
+- **Moves need a tested alias.** If a URL absolutely must move, keep the old route working via a
+  tested permanent redirect/alias recorded in the route manifest. Never silently break a route.
+- **Blocked stays recorded.** Unsupported/blocked entries remain honestly recorded (status
+  `blocked`), never deleted.
+- **Read before editing.** Before editing a built page, read the existing
+  `models/<slug>/index.html`, its git history/rationale, and the route manifest, then make the
+  smallest change that satisfies the goal.
+- **Removals/moves are exceptional.** Any removal, rename, route move, or identity change requires
+  an explicit reviewed **migration record** (`migrations.json`) and must pass the route regression
+  gate. Stable does NOT mean frozen — improve existing demos when justified, and add new demos/use
+  cases freely; just never replace an old one merely to present a new idea.
+
+**Gate before every push:** run `node scripts/check-routes.mjs`. It compares the previously
+published manifest (`git show origin/main:models.json`, fallback `.route-manifest.baseline.json`)
+against the working tree and fails on any missing published ID, deleted `models/<slug>/index.html`
+route, renamed/repurposed slug, changed `{hfId, task}` identity, or unexplained `built`-count
+reduction — while allowing additive entries, honest `blocked` records, and in-place fixes.
+Emit/refresh the manifest with `node scripts/route-manifest.mjs` (`--json` / `--write-baseline`).
+Record exceptional changes in `migrations.json`
+(`{id, action: "alias"|"move"|"remove"|"identity-change", from, to,
+reason, evidence, date}`). Every
+build wave runs the gate before pushing.
 
 ## Completion discipline
 
@@ -99,3 +146,8 @@ offline / eviction / unsupported). See CLAUDE.md invariant 12 + the skill §4b.
   the sw.js header.
 - Stay within `models/<slug>/` and `models.json` per run (shared `lib/`, `public/`, `sw.js` are
   shared fixes only, done deliberately). One model per run is fine — depth over throughput.
+- **Never destructively replace a published demo.** Published `built`/`blocked` identities are
+  append-only: new ideas get a NEW slug, fixes are the smallest in-place patch (read the existing
+  page + its git history + the route manifest first — never regenerate a working page from scratch),
+  and any removal/move/identity-change needs a `migrations.json` record. Run
+  `node scripts/check-routes.mjs` before every push (see the durable demo compatibility contract).
