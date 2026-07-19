@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SmolVLM2 Wild — a moving scene, what changed? · Web AI Showcase</title>
+    <meta name="description" content="Sample frames from a live-animated scene and ask SmolVLM2 what happened over time — temporal reasoning across a sequence, entirely in the browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎞️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">SmolVLM2</a></p>
+
+    <header>
+      <p class="eyebrow">use case · wild</p>
+      <h1>Wild: a moving scene → what changed?</h1>
+      <p class="lede">
+        Here's the thing a single-image model simply can't do. We animate a little scene on a canvas,
+        sample a handful of frames from across it, and hand the whole sequence to SmolVLM2 at once —
+        then ask it what <em>happened</em>. Temporal reasoning over frames, no server, no video upload.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="vlm-grid" style="margin-top:.6rem">
+        <div class="vlm-img-col" style="flex:1 1 320px">
+          <canvas class="stage-canvas" id="stage" width="384" height="256" aria-label="Animated scene: a sun crossing the sky over a hill as birds appear"></canvas>
+          <div class="controls-row">
+            <button id="play" class="secondary" type="button">▶ Preview animation</button>
+            <label style="font-size:.8rem;color:var(--muted)">frames to sample
+              <input type="number" id="nFrames" value="4" min="2" max="6" style="inline-size:4rem" />
+            </label>
+            <button id="sample" type="button">Sample frames</button>
+          </div>
+          <p class="muted" style="font-size:.8rem;margin:.2rem 0">Sampled frames (in time order):</p>
+          <div class="frame-strip" id="frames"><span class="muted" style="font-size:.82rem">No frames sampled yet.</span></div>
+        </div>
+        <div class="vlm-out-col">
+          <label class="field-label">Ask about the sequence
+            <input type="text" id="prompt" value="These are frames from a short animation, in order. What changes from the first frame to the last?" />
+          </label>
+          <div class="chips" id="quick">
+            <button class="chip" type="button" data-p="These are frames from a short animation, in order. What changes from the first frame to the last?">What changed?</button>
+            <button class="chip" type="button" data-p="Describe what happens over this sequence of frames as a short story.">Narrate it</button>
+            <button class="chip" type="button" data-p="Does the number of birds change across these frames? What about the sun?">Count the birds</button>
+          </div>
+          <div class="controls-row">
+            <button id="run" type="button" disabled>Ask across frames</button>
+            <label style="font-size:.8rem;color:var(--muted)">max tokens <input type="number" id="maxTok" value="160" min="20" max="512" style="inline-size:5rem" /></label>
+          </div>
+          <div class="answer" id="answer" aria-live="polite"><span class="muted">Sample some frames, then ask. The answer streams here.</span></div>
+          <div class="readout" id="readout" hidden>
+            <span>backend <b id="rBackend">–</b></span>
+            <span>frames <b id="rFrames">–</b></span>
+            <span>tokens <b id="rTok">–</b></span>
+            <span>time <b id="rMs">–</b></span>
+          </div>
+        </div>
+      </div>
+      <p class="muted" style="font-size:.83rem">
+        The scene is drawn live on a <code>&lt;canvas&gt;</code> — every sampled frame is a real image
+        the model has never seen. Change the frame count, re-sample, and the model's answer changes with
+        the actual frames it's given.
+      </p>
+    </section>
+
+    <p class="crumbs"><a href="../practical/">← Practical</a> · <a href="../">SmolVLM2</a> · Next: <a href="../multi-model/">Multi-model →</a></p>
+
+    <script type="module">
+      import { SmolVLM2Engine, escapeHTML, SMOL2_CSS } from "../smolvlm2.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = SMOL2_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new SmolVLM2Engine();
+      const stage = $("stage");
+      const ctx = stage.getContext("2d");
+      const W = stage.width, H = stage.height;
+      let frames = []; // sampled frame data URLs
+
+      // Draw the scene at parameter t∈[0,1]: the sun crosses + descends and reddens, the sky warms,
+      // and one more bird appears at each quarter — so the sequence has clear, describable change.
+      function draw(t) {
+        // Sky: day-blue → sunset, interpolated top+bottom.
+        const topDay = [120, 180, 235], topDusk = [70, 60, 120];
+        const botDay = [200, 225, 245], botDusk = [240, 150, 90];
+        const lerp = (a, b) => Math.round(a + (b - a) * t);
+        const g = ctx.createLinearGradient(0, 0, 0, H);
+        g.addColorStop(0, `rgb(${lerp(topDay[0], topDusk[0])},${lerp(topDay[1], topDusk[1])},${lerp(topDay[2], topDusk[2])})`);
+        g.addColorStop(1, `rgb(${lerp(botDay[0], botDusk[0])},${lerp(botDay[1], botDusk[1])},${lerp(botDay[2], botDusk[2])})`);
+        ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+
+        // Sun: left→right, arcs down toward the horizon, yellow→red.
+        const sx = 40 + t * (W - 80);
+        const sy = 50 + Math.sin(t * Math.PI) * -10 + t * 90;
+        const sunG = ctx.createRadialGradient(sx, sy, 4, sx, sy, 26);
+        sunG.addColorStop(0, `rgb(255,${lerp(240, 140)},${lerp(120, 40)})`);
+        sunG.addColorStop(1, "rgba(255,200,120,0)");
+        ctx.fillStyle = sunG; ctx.beginPath(); ctx.arc(sx, sy, 26, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = `rgb(255,${lerp(230, 120)},${lerp(90, 30)})`;
+        ctx.beginPath(); ctx.arc(sx, sy, 16, 0, Math.PI * 2); ctx.fill();
+
+        // Rolling hill.
+        ctx.fillStyle = `rgb(${lerp(70, 45)},${lerp(140, 90)},${lerp(70, 55)})`;
+        ctx.beginPath();
+        ctx.moveTo(0, H);
+        ctx.quadraticCurveTo(W * 0.5, H - 90, W, H - 40);
+        ctx.lineTo(W, H); ctx.closePath(); ctx.fill();
+
+        // Birds: one per quarter of the timeline (0..4), simple V shapes.
+        const birds = Math.min(4, Math.floor(t * 4 + 0.001) + (t > 0 ? 1 : 0));
+        ctx.strokeStyle = "rgba(30,30,40,0.8)"; ctx.lineWidth = 2;
+        for (let i = 0; i < birds; i++) {
+          const bx = 60 + i * 62 + t * 20;
+          const by = 60 + (i % 2) * 26;
+          ctx.beginPath();
+          ctx.moveTo(bx - 8, by); ctx.lineTo(bx, by - 6); ctx.lineTo(bx + 8, by);
+          ctx.stroke();
+        }
+        return birds;
+      }
+      draw(0);
+
+      // Preview animation (rAF; respects reduced-motion by drawing endpoints only).
+      let playing = false;
+      $("play").addEventListener("click", () => {
+        if (playing) return;
+        const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+        if (reduced) { draw(1); setTimeout(() => draw(0), 900); return; }
+        playing = true; const t0 = performance.now(); const dur = 2600;
+        const step = (now) => {
+          const t = Math.min(1, (now - t0) / dur);
+          draw(t);
+          if (t < 1) requestAnimationFrame(step); else { playing = false; draw(0); }
+        };
+        requestAnimationFrame(step);
+      });
+
+      function renderFrameStrip() {
+        const wrap = $("frames"); wrap.replaceChildren();
+        if (!frames.length) { const s = document.createElement("span"); s.className = "muted"; s.style.fontSize = ".82rem"; s.textContent = "No frames sampled yet."; wrap.append(s); return; }
+        frames.forEach((u, i) => {
+          const d = document.createElement("div"); d.className = "frame-thumb";
+          const img = document.createElement("img"); img.src = u; img.alt = `Sampled frame ${i + 1}`;
+          const num = document.createElement("span"); num.className = "fnum"; num.textContent = i + 1;
+          d.append(img, num); wrap.append(d);
+        });
+      }
+
+      $("sample").addEventListener("click", () => {
+        const n = Math.max(2, Math.min(6, +$("nFrames").value || 4));
+        frames = [];
+        for (let i = 0; i < n; i++) {
+          draw(i / (n - 1));
+          frames.push(stage.toDataURL("image/jpeg", 0.85));
+        }
+        draw(0);
+        renderFrameStrip();
+        $("run").disabled = !(engineReady && frames.length > 0);
+        $("status").textContent = `Sampled ${n} frames.`;
+      });
+
+      let engineReady = false;
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "HuggingFaceTB/SmolVLM2-256M-Video-Instruct", runtime: "transformers.js", dtype: "q4f16", sizeMB: 250, requiresWebGPU: true },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: () => { engineReady = true; $("run").disabled = frames.length === 0; },
+      });
+      for (const c of $("quick").children) c.addEventListener("click", () => { $("prompt").value = c.dataset.p; });
+
+      $("run").addEventListener("click", async () => {
+        if (!frames.length) { $("status").textContent = "Sample some frames first."; return; }
+        const prompt = $("prompt").value.trim() || "What changes across these frames?";
+        const maxTokens = Math.max(20, Math.min(512, +$("maxTok").value || 160));
+        $("run").disabled = true; $("status").classList.remove("err"); $("status").textContent = "Reasoning across frames…";
+        $("answer").innerHTML = '<span class="caret">&nbsp;</span>';
+        let text = "";
+        try {
+          const res = await engine.generate(frames, prompt, {
+            maxTokens,
+            onToken: (tok) => { text += tok; $("answer").innerHTML = escapeHTML(text) + '<span class="caret">&nbsp;</span>'; },
+          });
+          $("answer").textContent = text || "(no text generated)";
+          $("readout").hidden = false;
+          $("rBackend").textContent = "WEBGPU"; $("rFrames").textContent = res.imageCount;
+          $("rTok").textContent = res.tokens; $("rMs").textContent = res.ms + " ms";
+          $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (err) {
+          $("answer").innerHTML = '<span class="muted">Generation failed.</span>';
+          $("status").textContent = "Generation failed: " + err.message; $("status").classList.add("err");
+        } finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>

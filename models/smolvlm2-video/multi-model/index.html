@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SmolVLM2 Multi-model — VLM reads frames, LLM narrates · Web AI Showcase</title>
+    <meta name="description" content="A two-model pipeline in the browser: SmolVLM2 captions each frame, then an on-device LLM (Qwen2.5-0.5B) weaves the captions into one flowing narration. Both run locally on WebGPU." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎞️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">SmolVLM2</a></p>
+
+    <header>
+      <p class="eyebrow">use case · multi-model</p>
+      <h1>Multi-model: SmolVLM2 reads, an LLM narrates</h1>
+      <p class="lede">
+        Two on-device models, one pipeline. <strong>SmolVLM2</strong> captions each frame; then a small
+        text LLM — <strong>Qwen2.5-0.5B</strong> — weaves those captions into a single flowing narration.
+        Vision → language → composition, all local, all on WebGPU, nothing uploaded.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="load-h">
+      <h3 id="load-h" class="visually-hidden" style="position:absolute;inset-inline-start:-9999px">Models</h3>
+      <div class="controls-row" style="align-items:stretch">
+        <div style="flex:1 1 260px;min-inline-size:0">
+          <p class="muted" style="font-size:.8rem;margin:0 0 .2rem">1 · Vision model (SmolVLM2)</p>
+          <div id="loader-vlm"></div>
+        </div>
+        <div style="flex:1 1 260px;min-inline-size:0">
+          <p class="muted" style="font-size:.8rem;margin:0 0 .2rem">2 · Narrator LLM (Qwen2.5-0.5B)</p>
+          <div id="loader-llm"></div>
+        </div>
+      </div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="vlm-grid" style="margin-top:.6rem">
+        <div class="vlm-img-col" style="flex:1 1 300px">
+          <p class="muted" style="font-size:.8rem;margin:.2rem 0 .3rem">Frames (in order):</p>
+          <div class="frame-strip" id="frames"></div>
+          <div class="controls-row">
+            <label class="chip" style="cursor:pointer">Add frame<input type="file" id="file" accept="image/*" hidden /></label>
+            <button id="reset" class="secondary" type="button">Reset to samples</button>
+          </div>
+          <label class="field-label" style="margin-top:.4rem">Narration tone
+            <select id="style">
+              <option value="a neutral, factual tone">Neutral / factual</option>
+              <option value="a warm, story-like tone">Warm / story-like</option>
+              <option value="a punchy, energetic tone">Punchy / energetic</option>
+            </select>
+          </label>
+          <div class="controls-row">
+            <button id="run" type="button" disabled>Caption + narrate</button>
+          </div>
+        </div>
+        <div class="vlm-out-col">
+          <h4 style="font-family:var(--font-body);font-size:.8rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:.2rem 0 .3rem">Stage 1 — per-frame captions (SmolVLM2)</h4>
+          <ol id="captions" style="margin:.2rem 0 .6rem;padding-inline-start:1.2rem;font-size:.86rem"><li class="muted" style="list-style:none;margin-inline-start:-1.2rem">Captions from each frame appear here.</li></ol>
+          <h4 style="font-family:var(--font-body);font-size:.8rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:.2rem 0 .3rem">Stage 2 — narration (Qwen2.5-0.5B)</h4>
+          <div class="answer" id="answer" aria-live="polite"><span class="muted">The narration streams here after the captions.</span></div>
+          <div class="readout" id="readout" hidden>
+            <span>vlm <b id="rVlm">–</b></span>
+            <span>llm <b id="rLlm">–</b></span>
+            <span>frames <b id="rFrames">–</b></span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section aria-labelledby="how-h">
+      <h2 id="how-h">How the pipeline is wired</h2>
+      <p class="muted">
+        Each model runs in its own Web Worker. SmolVLM2 is called once per frame for a one-sentence
+        caption; the captions become the LLM's prompt. The two stages are honest and inspectable — you
+        see the captions before the narration is composed from them.
+      </p>
+      <pre><code>// Stage 1 — SmolVLM2 captions each frame (vision → text)
+const captions = [];
+for (const frame of frames) {
+  captions.push(await vlm.generate([frame], "Describe this frame in one short sentence."));
+}
+// Stage 2 — the LLM composes them (text → text)
+await llm.narrate(captions, tone);   // Qwen2.5-0.5B-Instruct, streamed</code></pre>
+    </section>
+
+    <p class="crumbs"><a href="../wild/">← Wild</a> · <a href="../">Back to SmolVLM2</a></p>
+
+    <script type="module">
+      import { SmolVLM2Engine, fileToDataURL, urlToDataURL, escapeHTML, SMOL2_CSS } from "../smolvlm2.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = SMOL2_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+
+      // Narrator engine (compact worker handshake for the LLM stage).
+      class NarratorEngine {
+        constructor() {
+          this.worker = new Worker("/web-ai-showcase/models/smolvlm2-video/worker-llm.js", { type: "module" });
+          this.ready = false; this.onProgress = null; this._load = []; this._active = null; this._id = 0;
+          this.worker.addEventListener("message", (e) => this._msg(e.data));
+          this.worker.addEventListener("error", (e) => { const err = new Error(e.message || "LLM worker failed"); this._load.forEach((w) => w.reject(err)); this._load = []; this._active?.reject(err); this._active = null; });
+        }
+        _msg(m) {
+          if (m.type === "progress") this.onProgress?.(m.p);
+          else if (m.type === "ready") { this.ready = true; this._load.forEach((w) => w.resolve("webgpu")); this._load = []; }
+          else if (m.type === "prompt") { if (this._active?.id === m.id) this._active.onPrompt?.(m.template); }
+          else if (m.type === "token") { if (this._active?.id === m.id) this._active.onToken?.(m.token); }
+          else if (m.type === "done") { if (this._active?.id === m.id) { this._active.resolve({ ms: m.ms, tokens: m.tokens }); this._active = null; } }
+          else if (m.type === "error") { if (this._active?.id === m.id) { this._active.reject(new Error(m.message)); this._active = null; } else { this._load.forEach((w) => w.reject(new Error(m.message))); this._load = []; } }
+        }
+        load(onProgress) { if (onProgress) this.onProgress = onProgress; if (this.ready) return Promise.resolve("webgpu"); return new Promise((resolve, reject) => { this._load.push({ resolve, reject }); this.worker.postMessage({ type: "load" }); }); }
+        narrate(captions, style, { maxTokens = 200, onToken, onPrompt } = {}) { const id = ++this._id; return new Promise((resolve, reject) => { this._active = { id, onToken, onPrompt, resolve, reject }; this.worker.postMessage({ type: "narrate", id, captions, style, maxTokens }); }); }
+      }
+
+      const vlm = new SmolVLM2Engine();
+      const llm = new NarratorEngine();
+      let framesData = []; // { url, label }
+      const SAMPLES = [
+        { src: "../sample-river.jpg", label: "a riverside at golden hour" },
+        { src: "../sample-cats.jpg", label: "two cats on a couch" },
+        { src: "../sample-room.jpg", label: "a cozy bedroom" },
+      ];
+
+      function renderFrames() {
+        const wrap = $("frames"); wrap.replaceChildren();
+        framesData.forEach((f, i) => {
+          const d = document.createElement("div"); d.className = "frame-thumb";
+          const img = document.createElement("img"); img.src = f.url; img.alt = `Frame ${i + 1}: ${f.label}`;
+          const num = document.createElement("span"); num.className = "fnum"; num.textContent = i + 1;
+          const del = document.createElement("button"); del.className = "fdel"; del.type = "button";
+          del.setAttribute("aria-label", `Remove frame ${i + 1}`); del.textContent = "×";
+          del.addEventListener("click", () => { framesData.splice(i, 1); renderFrames(); });
+          d.append(img, num, del); wrap.append(d);
+        });
+        updateRun();
+      }
+      async function resetSamples() {
+        framesData = [];
+        for (const s of SAMPLES) framesData.push({ url: await urlToDataURL(s.src), label: s.label });
+        renderFrames();
+      }
+      resetSamples();
+      $("reset").addEventListener("click", resetSamples);
+      $("file").addEventListener("change", async (e) => { const f = e.target.files[0]; if (f) { framesData.push({ url: await fileToDataURL(f), label: f.name }); renderFrames(); } e.target.value = ""; });
+
+      let vlmReady = false, llmReady = false;
+      function updateRun() { $("run").disabled = !(vlmReady && llmReady && framesData.length > 0); }
+
+      createModelLoader({
+        mount: $("loader-vlm"),
+        model: { modelId: "HuggingFaceTB/SmolVLM2-256M-Video-Instruct", runtime: "transformers.js", dtype: "q4f16", sizeMB: 250, requiresWebGPU: true },
+        load: (onProgress) => vlm.load(onProgress),
+        onReady: () => { vlmReady = true; updateRun(); },
+      });
+      createModelLoader({
+        mount: $("loader-llm"),
+        model: { modelId: "onnx-community/Qwen2.5-0.5B-Instruct", runtime: "transformers.js", dtype: "q4f16", sizeMB: 500, requiresWebGPU: true },
+        load: (onProgress) => llm.load(onProgress),
+        onReady: () => { llmReady = true; updateRun(); },
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!framesData.length) { $("status").textContent = "Add at least one frame."; return; }
+        $("run").disabled = true; $("status").classList.remove("err");
+        const capList = $("captions"); capList.replaceChildren();
+        $("answer").innerHTML = '<span class="muted">Waiting for captions…</span>';
+        const captions = [];
+        try {
+          // Stage 1 — caption each frame with SmolVLM2.
+          $("status").textContent = "Stage 1: SmolVLM2 captioning each frame…";
+          const t0 = performance.now();
+          for (let i = 0; i < framesData.length; i++) {
+            let cap = "";
+            await vlm.generate([framesData[i].url], "Describe this frame in one short, factual sentence.", {
+              maxTokens: 48,
+              onToken: (tok) => { cap += tok; },
+            });
+            cap = cap.trim();
+            captions.push(cap);
+            const li = document.createElement("li"); li.textContent = cap; capList.append(li);
+          }
+          const vlmMs = Math.round(performance.now() - t0);
+
+          // Stage 2 — narrate with the LLM.
+          $("status").textContent = "Stage 2: LLM composing the narration…";
+          $("answer").innerHTML = '<span class="caret">&nbsp;</span>';
+          let narration = "";
+          const r = await llm.narrate(captions, $("style").value, {
+            maxTokens: 200,
+            onToken: (tok) => { narration += tok; $("answer").innerHTML = escapeHTML(narration) + '<span class="caret">&nbsp;</span>'; },
+          });
+          $("answer").textContent = narration.trim() || "(no narration generated)";
+          $("readout").hidden = false;
+          $("rVlm").textContent = vlmMs + " ms"; $("rLlm").textContent = r.ms + " ms"; $("rFrames").textContent = framesData.length;
+          $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (err) {
+          $("status").textContent = "Pipeline failed: " + err.message; $("status").classList.add("err");
+        } finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>

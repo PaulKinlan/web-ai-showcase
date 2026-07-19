@@ -1,0 +1,362 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SmolVLM2 — reason across images and video frames in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run SmolVLM2-256M locally on WebGPU: hand it several images or sampled video frames at once and ask what changed, how they compare, or what happened over time — streaming, token by token, entirely on your device."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎞️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">image-text-to-text · multi-image / video · WebGPU · ~250 MB</p>
+      <h1>SmolVLM2 — reason across frames, not just one picture</h1>
+      <p class="lede">
+        SmolVLM v1 talks to a single image. <strong>SmolVLM2</strong> takes <em>several</em> images —
+        or frames sampled from a video — in one turn, and reasons across them: what changed, how two
+        scenes compare, what happened over time. Same tiny 256M footprint, all streaming token by token
+        on your GPU, with nothing uploaded.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="glance">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/HuggingFaceTB/SmolVLM2-256M-Video-Instruct" target="_blank" rel="noopener">HuggingFaceTB/SmolVLM2-256M-Video-Instruct</a></td></tr>
+          <tr><th>Task</th><td><code>image-text-to-text</code> (multi-image / video → text generation)</td></tr>
+          <tr><th>Architecture</th><td><code>SmolVLMForConditionalGeneration</code> — SigLIP vision encoder + SmolLM2 decoder, trained for multi-image &amp; video frames</td></tr>
+          <tr><th>Params / dtype</th><td>256M · <code>q4f16</code> (4-bit weights, fp16 compute)</td></tr>
+          <tr><th>Backend</th><td>WebGPU (required — needs a GPU + <code>shader-f16</code>)</td></tr>
+          <tr><th>Download</th><td>~250 MB, cached after first load</td></tr>
+          <tr><th>License</th><td>Apache-2.0</td></tr>
+          <tr><th>Web APIs</th><td>WebGPU, Web Workers, FileReader, HTMLVideoElement + Canvas (frame sampling)</td></tr>
+        </tbody>
+      </table>
+      <p class="muted" style="font-size:.85rem;margin-top:.5rem">
+        Not the same demo as <a href="../smolvlm-vision-language/">SmolVLM (v1)</a>: v1 is a single-image
+        model (<code>idefics3</code>); SmolVLM2 (<code>smolvlm</code>) adds native multi-image and
+        video-frame understanding.
+      </p>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="vlm-grid" style="margin-top:.6rem">
+        <div class="vlm-img-col">
+          <h4 style="font-family:var(--font-body);font-size:.8rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:.2rem 0 .3rem">Frames the model will see</h4>
+          <div class="frame-strip" id="frames" aria-label="Selected frames"></div>
+
+          <p class="muted" style="font-size:.8rem;margin:.4rem 0 .2rem">Add a frame — click a sample, drop an image, or sample a video:</p>
+          <div class="sample-strip" id="samples">
+            <img class="sample-thumb" src="sample-river.jpg" data-src="sample-river.jpg" alt="A riverside at golden hour with a swan" tabindex="0" role="button" />
+            <img class="sample-thumb" src="sample-cats.jpg" data-src="sample-cats.jpg" alt="Two cats on a couch" tabindex="0" role="button" />
+            <img class="sample-thumb" src="sample-room.jpg" data-src="sample-room.jpg" alt="A cozy bedroom" tabindex="0" role="button" />
+          </div>
+          <div class="controls-row">
+            <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image to add a frame" style="flex:1 1 180px">
+              <span id="dropText">Drop / choose an image</span>
+              <input type="file" id="file" accept="image/*" hidden />
+            </div>
+            <label class="dropzone" for="videoFile" id="videoZone" style="flex:1 1 180px;cursor:pointer">
+              <span id="videoText">Sample frames from a video</span>
+              <input type="file" id="videoFile" accept="video/*" hidden />
+            </label>
+          </div>
+          <div class="controls-row">
+            <label style="font-size:.8rem;color:var(--muted)">frames per video
+              <input type="number" id="nFrames" value="4" min="2" max="8" style="inline-size:4rem" />
+            </label>
+            <button id="clearFrames" class="secondary" type="button">Clear frames</button>
+          </div>
+        </div>
+
+        <div class="vlm-out-col">
+          <label class="field-label">
+            Your question (asked over all the frames above)
+            <input type="text" id="prompt" value="What is different between these images?" />
+          </label>
+          <div class="chips" id="quick">
+            <button class="chip" type="button" data-p="What is different between these images?">What changed?</button>
+            <button class="chip" type="button" data-p="Describe each frame in one sentence.">Describe each frame</button>
+            <button class="chip" type="button" data-p="Tell the story of what happens across these frames, in order.">Tell the story</button>
+            <button class="chip" type="button" data-p="Which frame is the most visually striking, and why?">Which is best?</button>
+            <button class="chip" type="button" data-p="Are these the same place or different places? Explain.">Same place?</button>
+          </div>
+          <div class="controls-row">
+            <button id="run" type="button" disabled>Generate</button>
+            <label style="font-size:.8rem;color:var(--muted)">
+              max tokens <input type="number" id="maxTok" value="160" min="20" max="512" style="inline-size:5rem" />
+            </label>
+          </div>
+          <div class="answer" id="answer" aria-live="polite"><span class="muted">The model's answer will stream here.</span></div>
+          <div class="readout" id="readout" hidden>
+            <span>backend <b id="rBackend">–</b></span>
+            <span>frames <b id="rFrames">–</b></span>
+            <span>image tokens <b id="rImgTok">–</b></span>
+            <span>output tokens <b id="rTok">–</b></span>
+            <span>time <b id="rMs">–</b></span>
+            <span>tok/s <b id="rTps">–</b></span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside</h3>
+      <p class="muted">
+        A multi-frame VLM turns <em>each</em> image into hundreds of image tokens and interleaves them
+        with your words inside one chat template. Below is the <strong>exact prompt</strong> the model
+        receives (each <code>&lt;image&gt;</code> placeholder is expanded into patch tokens), the real
+        <strong>tensor shape</strong> going in (how many frames, at what resolution), and the live
+        <strong>token stream</strong> with the time each token arrived — so you can watch it read every
+        frame and reason across them.
+      </p>
+      <table class="glance" style="margin:.4rem 0">
+        <tbody>
+          <tr><th>frames in this turn</th><td id="iFrames">–</td></tr>
+          <tr><th>pixel_values shape</th><td id="iPixel">–</td></tr>
+          <tr><th>prompt tokens (text + image)</th><td id="iPromptTok">–</td></tr>
+        </tbody>
+      </table>
+      <h4 style="font-family:var(--font-body);font-size:.85rem;margin:.6rem 0 .2rem">Constructed chat template</h4>
+      <pre class="tmpl" id="tmpl"><span class="muted">Run a generation to see the templated prompt.</span></pre>
+      <h4 style="font-family:var(--font-body);font-size:.85rem;margin:.6rem 0 .2rem">Token stream (value · ms since start)</h4>
+      <div class="tok-stream" id="tokStream"><span class="muted" style="font-size:.8rem">Tokens appear here as they're generated.</span></div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        Single-image VLMs answer "what's in this picture?". A multi-frame VLM answers "what
+        <em>happened</em>?" — and it does it on-device, privately, for free. Once a model can hold
+        several frames in one context, a new class of browser features opens up:
+      </p>
+      <ul>
+        <li><strong>Video moment triage</strong> — sample frames from a clip and ask "did anything change?" without uploading the video or paying per call.</li>
+        <li><strong>Before/after checks</strong> — compare two product photos, two document scans, or two UI states and get a plain-language diff.</li>
+        <li><strong>Visual step-by-step help</strong> — feed a sequence of screenshots and ask "what did the user do between these steps?".</li>
+        <li><strong>Private camera copilots</strong> — hold the last few camera frames and answer "what just happened?" entirely on the device.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Describe one image — the plain "talk to a picture" loop, so you can see the model works.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Compare two images side by side — a before/after or A/B diff in plain language.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">A moving scene → what changed: sample a live-animated sequence and ask the model what happened over time.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">SmolVLM2 reads the frames → an on-device LLM narrates them into one flowing story.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>
+        SmolVLM2 uses the vision-to-text model classes. You build a chat message whose content mixes
+        <em>multiple</em> image placeholders and text, template it, run the processor over the array of
+        images, then generate — streaming tokens as they come:
+      </p>
+      <pre><code>import { AutoProcessor, AutoModelForVision2Seq, load_image, TextStreamer }
+  from "@huggingface/transformers";
+
+const processor = await AutoProcessor.from_pretrained("HuggingFaceTB/SmolVLM2-256M-Video-Instruct");
+const model = await AutoModelForVision2Seq.from_pretrained(
+  "HuggingFaceTB/SmolVLM2-256M-Video-Instruct",
+  { dtype: "q4f16", device: "webgpu" },   // WebGPU required
+);
+
+const images = await Promise.all(frameURLs.map(load_image));      // several frames
+const content = images.map(() => ({ type: "image" }));            // one placeholder per frame
+content.push({ type: "text", text: "What changed between these frames?" });
+const messages = [{ role: "user", content }];
+
+const text = processor.apply_chat_template(messages, { add_generation_prompt: true });
+const inputs = await processor(text, images, { do_image_splitting: false });
+// inputs.pixel_values.dims === [1, numFrames, 3, H, W]  ← the frames, batched
+
+const streamer = new TextStreamer(processor.tokenizer,
+  { skip_prompt: true, skip_special_tokens: true, callback_function: (t) => append(t) });
+await model.generate({ ...inputs, max_new_tokens: 160, streamer });</code></pre>
+      <p class="muted">This page runs exactly that, in a Web Worker, and gates on a real WebGPU adapter first — if none exists it shows a labelled needs-WebGPU state instead of a fake answer.</p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/HuggingFaceTB/SmolVLM2-256M-Video-Instruct" target="_blank" rel="noopener">Model card — SmolVLM2-256M-Video-Instruct</a></li>
+        <li><a href="https://huggingface.co/blog/smolvlm2" target="_blank" rel="noopener">HF blog — SmolVLM2: bringing video understanding to every device</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+        <li><a href="../smolvlm-vision-language/">SmolVLM v1 (single-image) — the sibling demo</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a> on WebGPU.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <style>
+      .glance { inline-size:100%; border-collapse:collapse; font-size:.85rem; }
+      .glance th, .glance td { text-align:left; padding:.3rem .5rem; border-bottom:1px solid var(--border); vertical-align:top; }
+      .glance th { color:var(--muted); font-weight:600; inline-size:11rem; }
+      .glance td { font-family:var(--font-mono); word-break:break-word; }
+    </style>
+
+    <script type="module">
+      import { SmolVLM2Engine, fileToDataURL, urlToDataURL, sampleVideoFrames, escapeHTML, SMOL2_CSS }
+        from "./smolvlm2.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = SMOL2_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new SmolVLM2Engine();
+
+      // Frame model: an ordered list of { url (data URL), label }.
+      const framesData = [];
+      function renderFrames() {
+        const wrap = $("frames");
+        wrap.replaceChildren();
+        if (framesData.length === 0) {
+          const p = document.createElement("span");
+          p.className = "muted"; p.style.fontSize = ".82rem";
+          p.textContent = "No frames yet — add at least one below.";
+          wrap.append(p);
+        }
+        framesData.forEach((f, i) => {
+          const d = document.createElement("div");
+          d.className = "frame-thumb";
+          const img = document.createElement("img");
+          img.src = f.url; img.alt = `Frame ${i + 1}: ${f.label}`;
+          const num = document.createElement("span");
+          num.className = "fnum"; num.textContent = i + 1;
+          const del = document.createElement("button");
+          del.className = "fdel"; del.type = "button";
+          del.setAttribute("aria-label", `Remove frame ${i + 1}`);
+          del.textContent = "×";
+          del.addEventListener("click", () => { framesData.splice(i, 1); renderFrames(); });
+          d.append(img, num, del);
+          wrap.append(d);
+        });
+        $("run").disabled = !(engineReady && framesData.length > 0);
+      }
+      function addFrame(url, label) { framesData.push({ url, label }); renderFrames(); }
+
+      // Sample thumbnails add a frame (they don't replace — this is multi-frame).
+      for (const thumb of $("samples").children) {
+        const add = async () => addFrame(await urlToDataURL(thumb.dataset.src), thumb.alt || "sample");
+        thumb.addEventListener("click", add);
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); add(); } });
+      }
+
+      // Image upload / drop.
+      const file = $("file"), drop = $("drop");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function addImageFile(f) { addFrame(await fileToDataURL(f), f.name); }
+      file.addEventListener("change", () => file.files[0] && addImageFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) addImageFile(f); });
+
+      // Video → sampled frames.
+      const videoFile = $("videoFile");
+      videoFile.addEventListener("change", async () => {
+        const f = videoFile.files[0];
+        if (!f) return;
+        const n = Math.max(2, Math.min(8, +$("nFrames").value || 4));
+        $("status").classList.remove("err");
+        $("status").textContent = `Sampling ${n} frames from ${f.name}…`;
+        try {
+          const urls = await sampleVideoFrames(f, n);
+          urls.forEach((u, i) => addFrame(u, `${f.name} · frame ${i + 1}`));
+          $("status").textContent = `Added ${urls.length} frames from ${f.name}.`;
+        } catch (err) {
+          $("status").textContent = "Couldn't sample that video: " + err.message;
+          $("status").classList.add("err");
+        }
+        videoFile.value = "";
+      });
+
+      $("clearFrames").addEventListener("click", () => { framesData.length = 0; renderFrames(); });
+      for (const c of $("quick").children) c.addEventListener("click", () => { $("prompt").value = c.dataset.p; });
+
+      // Seed with two contrasting frames so the multi-frame idea is obvious on first load.
+      (async () => {
+        addFrame(await urlToDataURL("sample-river.jpg"), "a riverside at golden hour");
+        addFrame(await urlToDataURL("sample-room.jpg"), "a cozy bedroom");
+      })();
+
+      // Shared auto-init model loader — auto-inits an already-cached current model with no button,
+      // gates on a real WebGPU adapter (honest needs-WebGPU when none), surfaces
+      // Download/Re-download/Update + clear-cache, and never fakes output.
+      let engineReady = false;
+      createModelLoader({
+        mount: $("model-loader"),
+        model: {
+          modelId: "HuggingFaceTB/SmolVLM2-256M-Video-Instruct",
+          runtime: "transformers.js",
+          dtype: "q4f16",
+          sizeMB: 250,
+          requiresWebGPU: true,
+        },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: () => { engineReady = true; renderFrames(); },
+      });
+
+      // Generate (streaming, multi-frame).
+      $("run").addEventListener("click", async () => {
+        if (framesData.length === 0) { $("status").textContent = "Add at least one frame first."; return; }
+        const prompt = $("prompt").value.trim() || "What is happening in these frames?";
+        const maxTokens = Math.max(20, Math.min(512, +$("maxTok").value || 160));
+        $("run").disabled = true; $("status").classList.remove("err"); $("status").textContent = "Generating…";
+        $("answer").innerHTML = '<span class="caret">&nbsp;</span>';
+        $("tokStream").replaceChildren();
+        let text = "";
+        try {
+          const res = await engine.generate(framesData.map((f) => f.url), prompt, {
+            maxTokens,
+            onPrompt: (tmpl) => { $("tmpl").textContent = tmpl; },
+            onShape: (s) => {
+              $("iFrames").textContent = framesData.length;
+              $("iPixel").textContent = s.pixelValues ? `[${s.pixelValues.join(" × ")}]` : "–";
+              $("iPromptTok").textContent = s.promptTokens ?? "–";
+            },
+            onToken: (tok, t) => {
+              text += tok;
+              $("answer").innerHTML = escapeHTML(text) + '<span class="caret">&nbsp;</span>';
+              const s = document.createElement("span"); s.className = "tok";
+              s.innerHTML = escapeHTML(tok) + `<b>${Math.round(t)}</b>`;
+              $("tokStream").append(s);
+            },
+          });
+          $("answer").textContent = text || "(no text generated)";
+          $("readout").hidden = false;
+          $("rBackend").textContent = "WEBGPU";
+          $("rFrames").textContent = res.imageCount;
+          $("rImgTok").textContent = res.promptTokens ?? "–";
+          $("rTok").textContent = res.tokens;
+          $("rMs").textContent = res.ms + " ms";
+          $("rTps").textContent = (res.tokens / (res.ms / 1000)).toFixed(1);
+          $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (err) {
+          $("answer").innerHTML = '<span class="muted">Generation failed.</span>';
+          $("status").textContent = "Generation failed: " + err.message; $("status").classList.add("err");
+        } finally {
+          $("run").disabled = false;
+        }
+      });
+
+      renderFrames();
+    </script>
+  </body>
+</html>
