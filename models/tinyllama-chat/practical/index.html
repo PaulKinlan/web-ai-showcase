@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TinyLlama Practical — build an on-device assistant with the Zephyr template · Web AI Showcase</title>
+    <meta name="description" content="Configure a task-specific on-device assistant by editing TinyLlama's system prompt, and see the exact Zephyr chat template the model actually receives before it answers." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🦙</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">TinyLlama 1.1B</a></p>
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Practical: build an assistant, see the template</h1>
+      <p class="lede">
+        The workhorse pattern of shipped LLM features: a fixed <strong>system prompt</strong> turns a
+        general model into a task-specific assistant. TinyLlama wraps your messages in the
+        <strong>Zephyr chat template</strong> — <code>&lt;|system|&gt;</code>, <code>&lt;|user|&gt;</code>,
+        <code>&lt;|assistant|&gt;</code> blocks. Pick a role below, tweak it, and watch the exact string
+        the model receives, then run it fully on-device.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="chips" id="presets" style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.6rem 0 .4rem">
+        <button class="chip" type="button" data-sys="You are a friendly support agent for a coffee subscription service called BeanBox. Answer only about orders, deliveries, and plans. Keep replies under three sentences and never invent policies." data-user="My delivery hasn't arrived and it's been a week.">Support agent</button>
+        <button class="chip" type="button" data-sys="You are a strict SQL tutor. When the user describes data, reply with ONLY a single SQL query in a code block and one short sentence explaining it." data-user="Get the 5 most recent orders for customer 42.">SQL tutor</button>
+        <button class="chip" type="button" data-sys="You are a terse commit-message writer. Given a change description, reply with a single conventional-commit line (type: summary), nothing else." data-user="fixed the login button not working on mobile safari">Commit writer</button>
+        <button class="chip" type="button" data-sys="You are a patient English-to-French translator. Reply with only the French translation, no notes." data-user="Where is the nearest train station?">Translator</button>
+      </div>
+
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:1rem;margin-top:.4rem">
+        <div>
+          <label style="font-size:.82rem;color:var(--muted)">System prompt (the assistant's role)
+            <textarea id="system" rows="4" style="inline-size:100%;margin-block-start:.2rem">You are a friendly support agent for a coffee subscription service called BeanBox. Answer only about orders, deliveries, and plans. Keep replies under three sentences and never invent policies.</textarea>
+          </label>
+          <label style="font-size:.82rem;color:var(--muted);display:block;margin-block-start:.5rem">User message
+            <textarea id="input" rows="3" style="inline-size:100%;margin-block-start:.2rem" disabled>My delivery hasn't arrived and it's been a week.</textarea>
+          </label>
+          <button id="run" type="button" disabled style="margin-block-start:.4rem">Run</button>
+          <button id="stop" type="button" class="secondary" hidden>Stop</button>
+        </div>
+        <div>
+          <p style="font-size:.82rem;color:var(--muted);margin:0 0 .2rem">Assistant reply</p>
+          <div class="answer" id="answer" style="min-block-size:5rem;padding:.7rem;border:1px solid var(--border);border-radius:8px;background:var(--bg-raised);white-space:pre-wrap;line-height:1.6"><span class="muted">The reply streams here.</span></div>
+          <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>tokens <b id="rTok">–</b></span><span>tok/s <b id="rTps">–</b></span></div>
+        </div>
+      </div>
+
+      <h4 style="font-family:var(--font-body);font-size:.85rem;margin:.9rem 0 .2rem">Exact Zephyr template sent to the model</h4>
+      <pre class="tmpl" id="tmpl"><span class="muted">Run once to see the templated prompt TinyLlama receives.</span></pre>
+    </section>
+
+    <p class="crumbs"><a href="../basics/">← Basics</a> · <a href="../">TinyLlama 1.1B</a> · Next: <a href="../wild/">Wild →</a></p>
+
+    <script type="module">
+      import { TinyLlamaEngine, escapeHTML, TINYLLAMA_CSS } from "../tinyllama.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = TINYLLAMA_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new TinyLlamaEngine();
+      let loaded = false, backend = "–", generating = false;
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/TinyLlama-1.1B-Chat-v1.0", runtime: "transformers.js", dtype: "q4f16", sizeMB: 600, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: (device) => { loaded = true; backend = String(device || "wasm").toUpperCase(); $("input").disabled = false; $("run").disabled = false; },
+      });
+      for (const c of $("presets").children) c.addEventListener("click", () => { $("system").value = c.dataset.sys; $("input").value = c.dataset.user; });
+
+      async function run() {
+        if (!loaded || generating) return;
+        const sys = $("system").value.trim(); const user = $("input").value.trim();
+        if (!user) { $("status").textContent = "Type a user message first."; $("status").className = "status err"; return; }
+        generating = true; $("run").disabled = true; $("stop").hidden = false;
+        $("status").classList.remove("err"); $("status").textContent = "Generating…";
+        $("answer").innerHTML = '<span class="caret"></span>'; let acc = "";
+        try {
+          const res = await engine.chat(
+            [{ role: "system", content: sys || "You are a helpful assistant." }, { role: "user", content: user }],
+            {
+              maxTokens: 220, temperature: 0.5, topP: 0.9, doSample: true,
+              onPrompt: (tpl) => { $("tmpl").textContent = tpl; },
+              onToken: (t) => { acc += t; $("answer").innerHTML = escapeHTML(acc) + '<span class="caret"></span>'; },
+            },
+          );
+          $("answer").textContent = (res.text && res.text.trim()) ? res.text : (acc || "(no output)");
+          if (res.device) backend = String(res.device).toUpperCase();
+          $("readout").hidden = false; $("rBackend").textContent = backend; $("rTok").textContent = res.tokens; $("rTps").textContent = res.ms ? (res.tokens / (res.ms / 1000)).toFixed(1) : "–";
+          $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (err) { $("answer").textContent = acc || "(failed)"; $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { generating = false; $("run").disabled = false; $("stop").hidden = true; }
+      }
+      $("run").addEventListener("click", run);
+      $("stop").addEventListener("click", () => engine.stop());
+    </script>
+  </body>
+</html>
