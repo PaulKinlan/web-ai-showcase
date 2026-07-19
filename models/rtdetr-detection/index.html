@@ -1,0 +1,407 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>RT-DETR — real-time, NMS-free object detection in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run Baidu's RT-DETR locally: a real-time DETR that emits one clean box per object with no non-maximum-suppression pass. Detect a still image or run a live webcam loop, filter by score, see the raw boxes, and race it against classic DETR — all on-device, no server."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>⚡</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">object-detection · vision · WASM · ~22 MB</p>
+      <h1>RT-DETR — real-time detection with no NMS clean-up</h1>
+      <p class="lede">
+        RT-DETR is DETR made fast enough for live video. It keeps the transformer, set-prediction idea —
+        one forward pass, no anchor boxes — but redesigns the encoder and query selection so it emits
+        <strong>one clean box per object directly, with no non-maximum-suppression pass</strong>. Same 80
+        COCO classes as classic DETR, a tenth of the model size, and quick enough to run your webcam. All
+        on your device.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/onnx-community/rtdetr_r18vd" target="_blank" rel="noopener">onnx-community/rtdetr_r18vd</a> (ONNX of <a href="https://huggingface.co/PekingU/rtdetr_r18vd" target="_blank" rel="noopener">PekingU/rtdetr_r18vd</a>)</td></tr>
+          <tr><th>Task / pipeline</th><td><code>object-detection</code></td></tr>
+          <tr><th>Architecture</th><td>ResNet-18 backbone + efficient hybrid encoder + IoU-aware query selection — an end-to-end, <strong>NMS-free</strong> real-time DETR</td></tr>
+          <tr><th>Classes</th><td>80 COCO categories (person, car, dog, chair, bottle…)</td></tr>
+          <tr><th>Quantization</th><td>q8 (8-bit) ONNX</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (runs anywhere; no WebGPU needed)</td></tr>
+          <tr><th>Download</th><td>~22 MB, cached after first load</td></tr>
+          <tr><th>License</th><td>Apache-2.0 (Baidu RT-DETR)</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers, Canvas, getUserMedia, FileReader — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Pick or drop an image and hit Detect — or start the webcam and watch it box the world
+        in real time. RT-DETR runs once at a low floor; the score slider then filters the boxes live without
+        re-running the model.</p>
+
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image">
+        <span id="dropText">Drop an image here, or click to choose</span>
+        <input type="file" id="file" accept="image/*" hidden />
+      </div>
+      <div class="sample-strip" id="samples" aria-label="Sample images">
+        <img class="sample-thumb active" src="sample-cats.jpg" data-src="sample-cats.jpg" alt="Two cats sleeping on a pink couch" tabindex="0" role="button" />
+        <img class="sample-thumb" src="sample-room.jpg" data-src="sample-room.jpg" alt="A cozy sunlit bedroom with a bookshelf" tabindex="0" role="button" />
+        <img class="sample-thumb" src="sample-river.jpg" data-src="sample-river.jpg" alt="A riverside at golden hour with a swan" tabindex="0" role="button" />
+      </div>
+
+      <div style="margin:.6rem 0;display:flex;gap:.4rem;flex-wrap:wrap">
+        <button id="run" type="button" disabled>Detect objects</button>
+        <button id="startCam" type="button" class="secondary" disabled>Start webcam (live)</button>
+        <button id="stopCam" type="button" class="secondary" hidden>Stop webcam</button>
+      </div>
+
+      <div id="camFallback" class="fallback" hidden>
+        <strong>No webcam available here.</strong>
+        <p class="muted" style="margin:.3rem 0">This device or context didn't grant camera access. The
+          model still works on stills — pick a sample above and Detect.</p>
+      </div>
+
+      <div class="slider-row">
+        <label for="thresh">Score threshold</label>
+        <input type="range" id="thresh" min="0.05" max="0.95" step="0.05" value="0.5" />
+        <output id="threshOut" for="thresh">0.50</output>
+      </div>
+
+      <video id="cam" playsinline muted style="position:absolute;opacity:0;pointer-events:none;inline-size:1px;block-size:1px"></video>
+      <div class="canvas-wrap">
+        <canvas id="stage" class="stage-canvas" aria-label="Detection result: image with labelled boxes"></canvas>
+      </div>
+      <div class="count-chips" id="countChips" aria-live="polite"></div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+        <span>fps <b id="rFps">–</b></span>
+        <span>objects shown <b id="rN">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside</h3>
+      <p class="muted">
+        RT-DETR's decoder emits a fixed set of predictions each pass — one per query — and, unlike anchor
+        detectors, it does <strong>not</strong> run a non-maximum-suppression pass to merge overlapping
+        boxes. The list below is what the model returned directly: label, softmax confidence, and box as
+        <code>x, y, width, height</code> in the image's own pixels, filtered only by your score slider.
+      </p>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Run detection to see the raw boxes.</div>
+      <div id="insideWrap" hidden>
+        <div class="readout">
+          <span>total above floor <b id="iTotal">–</b></span>
+          <span>shown at threshold <b id="iShown">–</b></span>
+          <span>distinct classes <b id="iClasses">–</b></span>
+        </div>
+        <table class="inside-table">
+          <thead><tr><th>#</th><th>label</th><th>score</th><th>x</th><th>y</th><th>w</th><th>h</th></tr></thead>
+          <tbody id="insideRows"></tbody>
+        </table>
+      </div>
+
+      <hr style="border:0;border-top:1px solid var(--border);margin:1.2rem 0" />
+      <h4 style="margin:.2rem 0">Speed contrast — RT-DETR vs classic DETR</h4>
+      <p class="muted">
+        Both find the same objects; the difference is speed and cleanliness. RT-DETR (ResNet-18, ~22 MB,
+        NMS-free) is built for real time; the original <a href="/web-ai-showcase/models/detr-object-detection/">DETR</a>
+        (ResNet-50, ~160 MB) is the accurate-but-heavy baseline. Run both on the current image and compare
+        the real latencies measured on <em>your</em> device. Loading DETR downloads ~160 MB the first time.
+      </p>
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;align-items:center;margin:.4rem 0">
+        <button id="raceRun" type="button" class="secondary" disabled>Race RT-DETR vs DETR on this image</button>
+        <span class="status" id="raceStatus" role="status" aria-live="polite"></span>
+      </div>
+      <div id="raceWrap" hidden style="overflow-x:auto"></div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        Detection you can run every frame changes what you can build. RT-DETR turns "what's in this video,
+        right now?" into a local function call — private, offline, free per call — without the accuracy
+        tax of the tiny anchor detectors or the latency of a full DETR.
+      </p>
+      <ul>
+        <li><strong>Real-time counting</strong> — count people at a door, cars at a junction, or stock on a shelf from a live feed, nothing uploaded.</li>
+        <li><strong>Cleaner outputs, less glue</strong> — NMS-free means no suppression thresholds to tune; one box per object out of the box.</li>
+        <li><strong>Camera-aware UX at frame rate</strong> — react to what the webcam sees (a person? a phone? a cup?) fast enough to feel live.</li>
+        <li><strong>Edge &amp; offline</strong> — a ~22 MB detector that ships with your web app and runs on modest hardware.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">One image, labelled boxes, a threshold slider — feel real-time detection first-hand.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Live occupancy counter — track a chosen class over time with a running count and peak.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Full-frame webcam detector at the fastest loop your device sustains, with a still fallback.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">RT-DETR boxes → tap one → SlimSAM returns its exact pixel mask.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>Detection is a one-liner with Transformers.js — RT-DETR uses the same <code>object-detection</code> pipeline as DETR:</p>
+      <pre><code>import { pipeline } from "@huggingface/transformers";
+
+const detect = await pipeline(
+  "object-detection",
+  "onnx-community/rtdetr_r18vd",
+  { dtype: "q8" },        // ~22 MB, cached after first load
+);
+
+const output = await detect(imageURL, { threshold: 0.5, percentage: false });
+// → [{ label: "cat", score: 0.97, box: { xmin, ymin, xmax, ymax } }, …]
+//   NMS-free: the boxes are already de-duplicated — no suppression pass needed.
+//   percentage:false gives pixel coordinates; true gives 0–1 fractions</code></pre>
+      <p class="muted">
+        This page runs the model once at a low floor threshold (0.05) inside a Web Worker, caches every box,
+        and filters the cached list as you drag the slider — so the slider is instant and never re-runs
+        inference. The webcam loop grabs a frame, detects it, and only schedules the next after the last
+        finishes, so it never piles up work or blocks the page.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/onnx-community/rtdetr_r18vd" target="_blank" rel="noopener">Model card — onnx-community/rtdetr_r18vd (ONNX)</a></li>
+        <li><a href="https://huggingface.co/PekingU/rtdetr_r18vd" target="_blank" rel="noopener">Original RT-DETR r18vd weights &amp; card (PekingU)</a></li>
+        <li><a href="https://arxiv.org/abs/2304.08069" target="_blank" rel="noopener">Paper — DETRs Beat YOLOs on Real-time Object Detection (Zhao et al., 2023)</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { RtDetrEngine, fileToDataURL, drawDetections, countByLabel, colorForLabel, escapeHTML, DETR_CSS }
+        from "./rtdetr.js";
+      import { DetrEngine } from "/web-ai-showcase/models/detr-object-detection/detr.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = DETR_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new RtDetrEngine();
+      let currentImageURL = null;
+      let currentImg = null;      // decoded HTMLImageElement / canvas for drawing
+      let allDetections = [];     // everything above the floor, cached
+      let lastMs = 0;
+      let device = "wasm";
+
+      // --- image selection ---
+      function decode(url) {
+        return new Promise((resolve, reject) => {
+          const im = new Image();
+          im.onload = () => resolve(im);
+          im.onerror = () => reject(new Error("Could not decode image"));
+          im.src = url;
+        });
+      }
+      async function useURL(url) {
+        stopCam();
+        currentImageURL = url;
+        currentImg = await decode(url);
+        allDetections = [];
+        $("insideWrap").hidden = true;
+        $("insideEmpty").hidden = false;
+        $("countChips").replaceChildren();
+        $("readout").hidden = true;
+        const c = $("stage");
+        c.width = currentImg.naturalWidth; c.height = currentImg.naturalHeight;
+        c.getContext("2d").drawImage(currentImg, 0, 0);
+      }
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        const blob = await (await fetch(el.dataset.src)).blob();
+        await useURL(await fileToDataURL(new File([blob], "sample", { type: blob.type })));
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => {
+          if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); }
+        });
+      }
+      pickSample($("samples").firstElementChild);
+
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) {
+        for (const t of $("samples").children) t.classList.remove("active");
+        await useURL(await fileToDataURL(f));
+        $("dropText").textContent = f.name;
+      }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
+
+      // --- load model (shared auto-init architecture) ---
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/rtdetr_r18vd", runtime: "transformers.js", dtype: "q8", sizeMB: 22, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: (dev) => {
+          device = dev; $("run").disabled = false; $("raceRun").disabled = false;
+          if (navigator.mediaDevices?.getUserMedia) $("startCam").disabled = false;
+          $("rBackend").textContent = dev.toUpperCase();
+        },
+      });
+
+      // --- detect a still ---
+      $("run").addEventListener("click", async () => {
+        if (!currentImageURL) { $("status").textContent = "Pick an image first."; return; }
+        $("run").disabled = true; $("status").classList.remove("err"); $("status").textContent = "Detecting…";
+        try {
+          const r = await engine.detect(currentImageURL);
+          allDetections = r.detections;
+          lastMs = r.ms;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rFps").textContent = "–";
+          render();
+          $("status").textContent = `Found ${allDetections.length} candidate boxes above the floor.`;
+          $("status").classList.add("ok");
+        } catch (err) {
+          $("status").textContent = "Detection failed: " + err.message;
+          $("status").classList.add("err");
+        } finally { $("run").disabled = false; }
+      });
+
+      // --- threshold slider filters the cached detections, no re-run ---
+      const thresh = $("thresh");
+      thresh.addEventListener("input", () => { $("threshOut").textContent = (+thresh.value).toFixed(2); if (allDetections.length) render(); });
+
+      function render() {
+        const t = +thresh.value;
+        const shown = allDetections.filter((d) => d.score >= t);
+        drawDetections($("stage"), currentImg, shown);
+        $("countChips").replaceChildren(...countByLabel(shown).map(({ label, count }) => {
+          const el = document.createElement("span");
+          el.className = "count-chip";
+          el.innerHTML = `<span class="swatch" style="background:${colorForLabel(label)}"></span>${escapeHTML(label)} <b>×${count}</b>`;
+          return el;
+        }));
+        $("readout").hidden = false;
+        $("rMs").textContent = lastMs + " ms";
+        $("rN").textContent = shown.length;
+        renderInside(shown);
+      }
+
+      function renderInside(shown) {
+        $("insideEmpty").hidden = true;
+        $("insideWrap").hidden = false;
+        $("iTotal").textContent = allDetections.length;
+        $("iShown").textContent = shown.length;
+        $("iClasses").textContent = new Set(shown.map((d) => d.label)).size;
+        const rows = [...shown].sort((a, b) => b.score - a.score).map((d, i) => {
+          const { xmin, ymin, xmax, ymax } = d.box;
+          const tr = document.createElement("tr");
+          tr.innerHTML = `<td>${i + 1}</td><td>${escapeHTML(d.label)}</td><td>${(d.score * 100).toFixed(1)}%</td>
+            <td>${Math.round(xmin)}</td><td>${Math.round(ymin)}</td>
+            <td>${Math.round(xmax - xmin)}</td><td>${Math.round(ymax - ymin)}</td>`;
+          return tr;
+        });
+        $("insideRows").replaceChildren(...rows);
+      }
+
+      // --- live webcam loop (RT-DETR's raison d'être) ---
+      let stream = null, running = false, busy = false, lastT = 0;
+      const frameCanvas = document.createElement("canvas");
+      $("startCam").addEventListener("click", async () => {
+        if (!engine.ready) return;
+        try { stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } }); }
+        catch (err) { $("camFallback").hidden = false; $("status").textContent = "Camera unavailable — use a sample image instead."; $("status").classList.add("err"); return; }
+        const cam = $("cam"); cam.srcObject = stream; await cam.play();
+        for (const t of $("samples").children) t.classList.remove("active");
+        $("startCam").hidden = true; $("stopCam").hidden = false; running = true; lastT = 0; loop();
+      });
+      $("stopCam").addEventListener("click", stopCam);
+      function stopCam() {
+        running = false; stream?.getTracks().forEach((t) => t.stop()); stream = null;
+        $("stopCam").hidden = true; $("startCam").hidden = false;
+      }
+      async function loop() {
+        if (!running || busy) return; busy = true;
+        const cam = $("cam");
+        if (cam.videoWidth) {
+          frameCanvas.width = cam.videoWidth; frameCanvas.height = cam.videoHeight;
+          frameCanvas.getContext("2d").drawImage(cam, 0, 0);
+          currentImg = frameCanvas;
+          const url = frameCanvas.toDataURL("image/jpeg", 0.85);
+          const now = performance.now();
+          try {
+            const r = await engine.detect(url);
+            allDetections = r.detections; lastMs = r.ms;
+            $("rBackend").textContent = r.device.toUpperCase();
+            $("rFps").textContent = lastT ? (1000 / (now - lastT)).toFixed(1) : "–";
+            render();
+          } catch (e) { $("status").textContent = "Frame failed: " + e.message; }
+          lastT = now;
+        }
+        busy = false; if (running) setTimeout(loop, 0);
+      }
+      addEventListener("pagehide", stopCam);
+
+      // --- speed contrast: RT-DETR vs DETR on the current image ---
+      let detr = null;
+      $("raceRun").addEventListener("click", async () => {
+        if (!currentImageURL) { $("raceStatus").textContent = "Pick an image first."; return; }
+        $("raceRun").disabled = true;
+        $("raceStatus").classList.remove("err");
+        try {
+          if (!detr) {
+            detr = new DetrEngine();
+            $("raceStatus").textContent = "Loading DETR (first time downloads ~160 MB)…";
+            await detr.load();
+          }
+          $("raceStatus").textContent = "Racing both on this image…";
+          // Warm each once, then time a fresh pass so the download isn't counted.
+          await Promise.all([engine.detect(currentImageURL), detr.detect(currentImageURL)]);
+          const rt = await engine.detect(currentImageURL);
+          const dt = await detr.detect(currentImageURL);
+          renderRace(rt, dt);
+          $("raceStatus").textContent = "";
+        } catch (err) {
+          $("raceStatus").textContent = "Race failed: " + err.message;
+          $("raceStatus").classList.add("err");
+        } finally { $("raceRun").disabled = false; }
+      });
+      function renderRace(rt, dt) {
+        const speedup = (dt.ms / Math.max(rt.ms, 1)).toFixed(1);
+        $("raceWrap").innerHTML = `
+          <table class="inside-table">
+            <thead><tr><th>model</th><th>backbone</th><th>size</th><th>NMS</th><th>latency (this image)</th><th>boxes ≥ 0.5</th></tr></thead>
+            <tbody>
+              <tr><td><b>RT-DETR</b></td><td>ResNet-18</td><td>~22 MB</td><td>none (NMS-free)</td><td><b>${rt.ms} ms</b></td><td>${rt.detections.filter((d) => d.score >= 0.5).length}</td></tr>
+              <tr><td>DETR</td><td>ResNet-50</td><td>~160 MB</td><td>none (set prediction)</td><td>${dt.ms} ms</td><td>${dt.detections.filter((d) => d.score >= 0.5).length}</td></tr>
+            </tbody>
+          </table>
+          <p class="muted" style="font-size:.76rem;margin-top:.4rem">On this image and device, RT-DETR ran ~${speedup}× faster than DETR at a fraction of the download. Absolute numbers vary per device and image; the point is the gap — RT-DETR is built to run every frame.</p>`;
+        $("raceWrap").hidden = false;
+      }
+    </script>
+  </body>
+</html>
