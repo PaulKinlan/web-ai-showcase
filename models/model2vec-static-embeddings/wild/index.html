@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Wild — live similarity on every keystroke · Web AI Showcase</title>
+    <meta name="description" content="Re-embed and re-rank on every single keystroke — no debounce. Because Model2Vec embedding is microsecond-scale, semantic matching can be truly real-time in the browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>⚡</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Model2Vec</a></p>
+
+    <header>
+      <p class="eyebrow">use case · wild</p>
+      <h1>Live semantic matching — no debounce</h1>
+      <p class="lede">
+        Normally you <em>debounce</em> an embedding search: wait until the user stops typing, because
+        running a model per keystroke would jank. Model2Vec is fast enough — a couple of milliseconds per
+        short query, off the main thread — that you don't have to. Type in the box and the candidate list
+        below re-ranks by meaning on <strong>every keystroke</strong>, with the live embed time shown. Try
+        typing "a small feline" and watch "kitten" climb.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
+        Type a query (matches update live)
+        <input id="query" type="text" placeholder="start typing…" autocomplete="off" disabled />
+      </label>
+      <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>last embed <b id="rMs">–</b></span><span>keystrokes <b id="rK">0</b></span></div>
+      <h3>Candidates, re-ranked live</h3>
+      <div id="results" aria-live="off"></div>
+      <p class="muted" style="font-size:.8rem;margin-top:.6rem">The candidate list is embedded once; each
+        keystroke only embeds your (short) query and recomputes cosine — that is the microsecond part.</p>
+    </section>
+
+    <p class="crumbs"><a href="../practical/">← Practical</a> · <a href="../multi-model/">Multi-model: prefilter → rerank →</a></p>
+
+    <script type="module">
+      import { M2VEngine, cosine, renderResults, M2V_CSS } from "../m2v.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = M2V_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new M2VEngine();
+
+      const CANDIDATES = [
+        "a kitten sleeping in the sun", "an office quarterly earnings call", "a mountain hiking trail at dawn",
+        "a recipe for fresh basil pasta", "a puppy chasing its tail", "the stock market closing bell",
+        "a quiet library reading room", "a rocket launching into orbit", "a jazz band playing late at night",
+        "a cat curled up on a warm windowsill",
+      ];
+      let candVecs = null;
+
+      async function rankLive() {
+        const q = $("query").value.trim();
+        if (!candVecs) return;
+        if (!q) { renderResults($("results"), CANDIDATES.map((text) => ({ text, score: 0 }))); return; }
+        const r = await engine.embed([q]);
+        const qv = r.embeddings[0];
+        const ranked = CANDIDATES.map((text, i) => ({ text, score: cosine(candVecs[i], qv) })).sort((a, b) => b.score - a.score);
+        renderResults($("results"), ranked, { query: q });
+        $("readout").hidden = false;
+        $("rBackend").textContent = r.device.toUpperCase();
+        $("rMs").textContent = r.ms.toFixed(2) + " ms";
+        $("rK").textContent = String((+$("rK").textContent || 0) + 1);
+      }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "minishlab/potion-base-8M", runtime: "onnxruntime-web", dtype: "fp32", sizeMB: 30, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: async () => {
+          const r = await engine.embed(CANDIDATES);
+          candVecs = r.embeddings;
+          renderResults($("results"), CANDIDATES.map((text) => ({ text, score: 0 })));
+          $("query").disabled = false;
+          $("query").focus();
+        },
+      });
+
+      // No debounce — embedding is microsecond-scale, so we run on every input event. A tiny in-flight
+      // guard coalesces bursts so we never queue work faster than the worker replies.
+      let running = false, pending = false;
+      async function onInput() {
+        if (running) { pending = true; return; }
+        running = true;
+        try { await rankLive(); } catch (err) { $("results").textContent = "Error: " + err.message; }
+        running = false;
+        if (pending) { pending = false; onInput(); }
+      }
+      $("query").addEventListener("input", onInput);
+    </script>
+  </body>
+</html>

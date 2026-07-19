@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Multi-model — fast prefilter, then rerank · Web AI Showcase</title>
+    <meta name="description" content="The retrieve-and-rerank pattern: Model2Vec embeds the whole corpus in microseconds to build a shortlist, then a slower, more accurate cross-encoder reranks only the top few. Two models, both in the browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>⚡</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Model2Vec</a></p>
+
+    <header>
+      <p class="eyebrow">use case · multi-model</p>
+      <h1>Multi-model: Model2Vec prefilter → cross-encoder rerank</h1>
+      <p class="lede">
+        The standard production shape for good, fast search. <strong>Stage 1</strong> — Model2Vec embeds
+        the entire corpus in microseconds and takes the top few by cosine (a cheap, wide net).
+        <strong>Stage 2</strong> — a small but accurate cross-encoder (Jina reranker) reads each shortlisted
+        item <em>together with</em> the query and reorders them. You get the speed of static embeddings and
+        the precision of a cross-encoder, spending the slow model on only a handful of candidates. Both run
+        locally.
+      </p>
+    </header>
+
+    <section class="panel">
+      <h3>Stage 1 — Model2Vec prefilter</h3>
+      <div id="model-loader"></div>
+      <h3 style="margin-top:.8rem">Stage 2 — Jina cross-encoder reranker (loads on demand)</h3>
+      <div id="model-loader-2"></div>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
+        Corpus (one item per line)
+        <textarea id="corpus" rows="9">The mitochondria is the powerhouse of the cell.
+Photosynthesis converts sunlight into chemical energy in plants.
+Cellular respiration releases energy stored in glucose.
+The central bank raised interest rates to curb inflation.
+Stocks rallied after the earnings report beat expectations.
+Preheat the oven to 200C before baking the sourdough.
+The midfielder scored a stunning goal in stoppage time.
+Quantum computers use qubits that can be both 0 and 1.
+The new GPU doubles memory bandwidth over the last generation.
+The hikers reached the summit just before sunrise.</textarea>
+      </label>
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.5rem">
+        Query
+        <input id="query" type="text" value="how do cells produce energy" />
+      </label>
+      <label style="display:flex;gap:.4rem;align-items:center;font-size:.82rem;margin-top:.5rem">
+        Shortlist size (K)
+        <input id="k" type="number" min="2" max="8" value="4" style="inline-size:5rem" />
+      </label>
+      <div style="margin:.6rem 0;display:flex;gap:.4rem;flex-wrap:wrap">
+        <button id="run" type="button" disabled>Prefilter, then rerank</button>
+      </div>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+      <div class="readout" id="readout" hidden><span>prefilter <b id="rIdx">–</b></span><span>rerank <b id="rRr">–</b></span></div>
+
+      <div class="grid-2">
+        <div>
+          <h3>Stage 1 — Model2Vec shortlist (cosine)</h3>
+          <div id="pre" aria-live="polite"></div>
+        </div>
+        <div>
+          <h3>Stage 2 — reranked (cross-encoder)</h3>
+          <div id="post" aria-live="polite"></div>
+        </div>
+      </div>
+    </section>
+
+    <p class="crumbs"><a href="../wild/">← Wild</a> · <a href="../">Back to Model2Vec →</a></p>
+
+    <script type="module">
+      import { M2VEngine, cosine, parseLines, renderResults, M2V_CSS } from "../m2v.js";
+      import { RerankEngine } from "/web-ai-showcase/models/jina-reranker/rerank.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = M2V_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const m2v = new M2VEngine();
+      const reranker = new RerankEngine();
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "minishlab/potion-base-8M", runtime: "onnxruntime-web", dtype: "fp32", sizeMB: 30, requiresWebGPU: false },
+        load: async (onProgress) => { await m2v.load(onProgress); return m2v; },
+        onReady: () => { $("run").disabled = false; },
+      });
+      createModelLoader({
+        mount: $("model-loader-2"),
+        model: { modelId: "jinaai/jina-reranker-v1-tiny-en", runtime: "transformers.js", dtype: "q8", sizeMB: 33, requiresWebGPU: false },
+        load: async (onProgress) => { await reranker.load(onProgress); return reranker; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        const texts = parseLines($("corpus").value);
+        const q = $("query").value.trim();
+        const K = Math.max(2, Math.min(8, +$("k").value || 4));
+        if (texts.length < 2 || !q) { $("status").hidden = false; $("status").textContent = "Need a corpus and a query."; $("status").classList.add("err"); return; }
+        $("run").disabled = true; $("status").hidden = false; $("status").classList.remove("err"); $("status").textContent = "Stage 1: embedding + shortlisting…";
+        try {
+          const idx = await m2v.embed(texts);
+          const qr = await m2v.embed([q]);
+          const qv = qr.embeddings[0];
+          const scored = texts.map((text, i) => ({ text, score: cosine(idx.embeddings[i], qv) })).sort((a, b) => b.score - a.score);
+          const shortlist = scored.slice(0, K);
+          renderResults($("pre"), shortlist, { query: q });
+
+          $("status").textContent = "Stage 2: reranking the shortlist…";
+          const rr = await reranker.rerank(q, shortlist.map((s) => s.text));
+          const reranked = rr.ranked.map((r) => ({ text: r.passage, score: r.prob }));
+          renderResults($("post"), reranked, { query: q });
+
+          $("readout").hidden = false;
+          $("rIdx").textContent = (idx.ms + qr.ms).toFixed(2) + " ms";
+          $("rRr").textContent = rr.ms + " ms";
+          $("status").textContent = "Done — wide-and-fast, then narrow-and-accurate."; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>

@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Model2Vec (potion-base-8M) — static embeddings with no transformer · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Model2Vec turns text into vectors with a distilled lookup table — no attention, no forward pass, just gather-and-average. Microsecond-scale embeddings on a plain CPU in your browser. Watch the static-lookup mechanism and feel the speed."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>⚡</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">feature-extraction · text · WASM · ~30 MB</p>
+      <h1>Model2Vec — embeddings with <em>no transformer</em> at inference</h1>
+      <p class="lede">
+        Most text embedders run a neural network for every sentence. Model2Vec does not. It is a
+        <strong>distilled lookup table</strong>: each token has one precomputed vector, and to embed a
+        sentence you just <strong>gather those vectors and average them</strong>. No attention, no layers,
+        no forward pass — so it does a tiny fraction of the work of an encoder like MiniLM (often
+        <strong>10–100× faster</strong>), and the model itself costs almost nothing; the little wall-clock
+        you see is mostly tokenization. Type below and watch meaning become geometry, instantly. Nothing
+        leaves your device.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="sim-matrix" style="border:none">
+        <tbody style="font-family:var(--font-body)">
+          <tr><th style="text-align:left">Model</th><td><a href="https://huggingface.co/minishlab/potion-base-8M" target="_blank" rel="noopener">minishlab/potion-base-8M</a></td></tr>
+          <tr><th style="text-align:left">Task / pipeline</th><td><code>feature-extraction</code> (static token embeddings)</td></tr>
+          <tr><th style="text-align:left">Architecture</th><td>Model2Vec <code>StaticModel</code> — token→vector lookup table + <strong>mean pooling</strong> (a torch EmbeddingBag), then PCA to 256-d and L2-normalize. <strong>No attention, no transformer forward pass.</strong></td></tr>
+          <tr><th style="text-align:left">Output</th><td>256-dimensional unit vector per text</td></tr>
+          <tr><th style="text-align:left">Runtime</th><td>ONNX Runtime Web (the official <code>onnx/model.onnx</code>) + the Transformers.js tokenizer, in a Web Worker</td></tr>
+          <tr><th style="text-align:left">Precision</th><td>fp32 ONNX (the table is tiny — quantization buys little)</td></tr>
+          <tr><th style="text-align:left">Backend</th><td>WebAssembly (runs anywhere; no WebGPU needed)</td></tr>
+          <tr><th style="text-align:left">Download</th><td>~30 MB (mostly the embedding table), cached after first load</td></tr>
+          <tr><th style="text-align:left">License</th><td>MIT</td></tr>
+          <tr><th style="text-align:left">Web APIs</th><td>WebAssembly, Web Workers, Cache Storage — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Put one sentence per line, then embed. The matrix shows the cosine similarity between
+        every pair (1.00 = identical direction). Watch the timing readout — this is the whole point.</p>
+
+      <div id="model-loader"></div>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
+        Sentences (one per line)
+        <textarea id="sentences" rows="7">A cat sleeps on the warm windowsill.
+A kitten naps in the sunshine.
+The stock market fell sharply today.
+Shares tumbled in afternoon trading.
+I love hiking in the mountains.
+My favourite pasta recipe uses fresh basil.</textarea>
+      </label>
+      <div style="margin:.5rem 0;display:flex;gap:.4rem;flex-wrap:wrap">
+        <button id="run" type="button" disabled>Embed &amp; compare</button>
+        <button id="reset" type="button" class="secondary">Reset examples</button>
+      </div>
+      <p class="status" id="rowStatus" role="status" aria-live="polite" hidden></p>
+
+      <div class="grid-2">
+        <div>
+          <h3 style="margin-top:.4rem">Cosine similarity matrix</h3>
+          <div class="matrix-scroll" id="matrix" aria-live="polite"></div>
+        </div>
+        <div>
+          <h3 style="margin-top:.4rem">Speed</h3>
+          <div class="speed-card">
+            <div><div class="big-num" id="perSent">–</div><div class="muted" style="font-size:.72rem">µs / sentence</div></div>
+            <div><div class="big-num" id="perSec">–</div><div class="muted" style="font-size:.72rem">sentences / sec</div></div>
+          </div>
+          <p class="muted" style="font-size:.82rem;margin-top:.5rem">There is no network to run per sentence —
+            just a table lookup and an average — so the model itself costs next to nothing. On a large batch
+            the per-sentence cost drops toward the microscopic gather-and-average; on tiny batches the
+            wall-clock you see is mostly tokenization overhead.</p>
+        </div>
+      </div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>batch latency <b id="rMs">–</b></span>
+        <span>sentences <b id="rN">–</b></span>
+        <span>dims <b id="rDim">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside — the static lookup, step by step</h3>
+      <p class="muted">
+        Pick a sentence to see exactly what happens: it is split into tokens, <em>each token is replaced by
+        its one fixed vector from the table</em> (that is the entire "model"), and those vectors are
+        averaged into the 256-number sentence vector. There is no attention between tokens and no layer to
+        run — which is why swapping to a bigger corpus barely changes the speed.
+      </p>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Embed some sentences to inspect one.</div>
+      <div id="insideWrap" hidden>
+        <label style="font-size:.82rem;display:flex;gap:.4rem;align-items:center;flex-wrap:wrap">
+          Inspect sentence
+          <select id="pick"></select>
+        </label>
+        <p class="muted" style="font-size:.8rem;margin:.5rem 0 .1rem">Tokens (each is one row of the lookup table):</p>
+        <div class="tok-chips" id="tokChips"></div>
+        <p class="muted" style="font-size:.8rem;margin:.4rem 0 .1rem"><span class="tok-arrow">gather + average →</span> 256-d sentence vector (first 96 dims; blue = positive, orange = negative):</p>
+        <div class="vec-strip" id="vecStrip"></div>
+        <div class="readout"><span>tokens <b id="iTok">–</b></span><span>dimensions <b>256</b></span><span>‖v‖ <b>1.000</b> (unit)</span></div>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        Embeddings power search, dedup, clustering, recommendations, and retrieval for LLMs. The usual cost
+        is running a transformer per item — fine for a few sentences, painful for millions or on a phone.
+        Model2Vec collapses that to a lookup, so you can embed a huge corpus, or re-embed on every
+        keystroke, on hardware that could never run an attention model at that rate. It trades a little
+        quality for a <em>lot</em> of speed and a tiny footprint.
+      </p>
+      <ul>
+        <li><strong>Edge &amp; on-device search</strong> — index and query a large corpus in the browser with no server and no GPU.</li>
+        <li><strong>Real-time, as-you-type</strong> — re-rank suggestions on every keystroke because embedding is effectively free.</li>
+        <li><strong>Cheap prefilter</strong> — shortlist with Model2Vec, then spend a slow, accurate cross-encoder only on the top few.</li>
+        <li><strong>Huge-batch pipelines</strong> — deduplicate or cluster millions of short texts where a transformer would be too slow.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Two sentences, one cosine number — and the microsecond timing behind it.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Semantic search over a large pasted corpus, ranked by meaning — where speed is the feature.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Live similarity as you type: re-embed on every keystroke, no debounce needed.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">Model2Vec prefilter → a slower cross-encoder reranks only the shortlist.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>Model2Vec's ONNX is a torch <code>EmbeddingBag</code> (mean) — it needs <code>input_ids</code> and
+        <code>offsets</code>, so we run it directly with ONNX Runtime Web and tokenize with Transformers.js:</p>
+      <pre><code>import * as ort from "onnxruntime-web";
+import { AutoTokenizer } from "@huggingface/transformers";
+
+const tok = await AutoTokenizer.from_pretrained("minishlab/potion-base-8M");
+const session = await ort.InferenceSession.create(onnxBytes); // onnx/model.onnx
+
+// Bag every token of every sentence; offsets mark where each sentence starts.
+const ids = [], offsets = [];
+for (const text of texts) {
+  offsets.push(ids.length);
+  for (const id of tok(text, { add_special_tokens: false }).input_ids.data) ids.push(BigInt(id));
+}
+const out = await session.run({
+  input_ids: new ort.Tensor("int64", BigInt64Array.from(ids), [ids.length]),
+  offsets:   new ort.Tensor("int64", BigInt64Array.from(offsets.map(BigInt)), [offsets.length]),
+});
+// out.embeddings → [batch, 256], already L2-normalized → cosine is a dot product.</code></pre>
+      <p class="muted">
+        No <code>pipeline()</code> forward pass, no attention. The "model" is the embedding table baked into
+        that ONNX; inference is a gather and a mean. It runs in a Web Worker, and the ONNX is stored via the
+        Cache API so it auto-initialises offline on return visits.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/minishlab/potion-base-8M" target="_blank" rel="noopener">Model card — minishlab/potion-base-8M</a></li>
+        <li><a href="https://github.com/MinishLab/model2vec" target="_blank" rel="noopener">Model2Vec — method &amp; library (MinishLab)</a></li>
+        <li><a href="https://minishlab.github.io/" target="_blank" rel="noopener">Model2Vec blog — how the distillation works</a></li>
+        <li><a href="https://onnxruntime.ai/docs/tutorials/web/" target="_blank" rel="noopener">ONNX Runtime Web documentation</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation (tokenizer)</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://onnxruntime.ai/docs/tutorials/web/" target="_blank" rel="noopener">ONNX Runtime Web</a> +
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { M2VEngine, simMatrix, parseLines, renderMatrix, M2V_CSS } from "./m2v.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = M2V_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new M2VEngine();
+      const DEFAULT = $("sentences").value;
+      let last = null; // { texts, embeddings, dim, tokens, tokenCounts }
+
+      $("reset").addEventListener("click", () => { $("sentences").value = DEFAULT; });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: {
+          modelId: "minishlab/potion-base-8M",
+          runtime: "onnxruntime-web",
+          dtype: "fp32",
+          sizeMB: 30,
+          requiresWebGPU: false,
+        },
+        load: async (onProgress) => {
+          await engine.load(onProgress);
+          return engine;
+        },
+        onReady: () => {
+          $("run").disabled = false;
+        },
+      });
+
+      $("run").addEventListener("click", run);
+      async function run() {
+        const texts = parseLines($("sentences").value);
+        if (texts.length < 2) {
+          $("rowStatus").hidden = false;
+          $("rowStatus").textContent = "Give at least two distinct sentences.";
+          $("rowStatus").classList.add("err");
+          return;
+        }
+        $("rowStatus").hidden = false;
+        $("rowStatus").classList.remove("err");
+        $("rowStatus").textContent = "Embedding…";
+        $("run").disabled = true;
+        try {
+          const r = await engine.embed(texts, { withTokens: true });
+          last = r;
+          renderMatrix($("matrix"), simMatrix(r.embeddings), r.texts);
+          const perSent = (r.ms * 1000) / r.texts.length; // µs per sentence
+          $("perSent").textContent = perSent < 1 ? perSent.toFixed(2) : Math.round(perSent);
+          $("perSec").textContent = Math.round(r.texts.length / (r.ms / 1000)).toLocaleString();
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = r.ms.toFixed(2) + " ms";
+          $("rN").textContent = r.texts.length;
+          $("rDim").textContent = r.dim;
+          fillInside(r);
+          $("rowStatus").textContent = "Done.";
+          $("rowStatus").classList.add("ok");
+        } catch (err) {
+          $("rowStatus").textContent = "Embedding failed: " + err.message;
+          $("rowStatus").classList.add("err");
+        } finally {
+          $("run").disabled = false;
+        }
+      }
+
+      function fillInside(r) {
+        $("insideEmpty").hidden = true;
+        $("insideWrap").hidden = false;
+        $("pick").replaceChildren(...r.texts.map((t, i) => {
+          const o = document.createElement("option");
+          o.value = String(i);
+          o.textContent = `S${i + 1} — ${t.length > 40 ? t.slice(0, 39) + "…" : t}`;
+          return o;
+        }));
+        showVector(0);
+      }
+      $("pick").addEventListener("change", (e) => showVector(+e.target.value));
+      function showVector(i) {
+        if (!last) return;
+        const v = last.embeddings[i];
+        const toks = last.tokens?.[i] || [];
+        $("iTok").textContent = last.tokenCounts?.[i] ?? toks.length;
+        $("tokChips").replaceChildren(...toks.map((t) => {
+          const s = document.createElement("span");
+          s.className = "tok-chip";
+          s.textContent = t.trim() === "" ? "␣" : t;
+          return s;
+        }));
+        const maxAbs = Math.max(...v.map(Math.abs)) || 1;
+        $("vecStrip").replaceChildren(...v.slice(0, 96).map((val) => {
+          const cell = document.createElement("span");
+          cell.className = "vec-cell";
+          const t = Math.abs(val) / maxAbs;
+          const hue = val >= 0 ? "var(--accent)" : "var(--warn)";
+          cell.style.background = `color-mix(in srgb, ${hue} ${(t * 100).toFixed(0)}%, var(--bg-raised))`;
+          cell.title = val.toFixed(4);
+          return cell;
+        }));
+      }
+    </script>
+  </body>
+</html>
