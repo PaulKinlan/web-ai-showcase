@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CLAP Basics — labels you invent · Web AI Showcase</title>
+    <meta name="description" content="Two hands-on basics for zero-shot audio: classify a sound against labels you just made up, then watch how re-wording a single label changes its score. All local, in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🏷</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">CLAP</a></p>
+
+    <header>
+      <p class="eyebrow">use case · basics</p>
+      <h1>Basics: classification without classes</h1>
+      <p class="lede">
+        A normal classifier answers one fixed question. CLAP answers a question you write at runtime.
+        Two small experiments to feel what that means — and where it bends.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="d1-h">
+      <h3 id="d1-h">1 · Make up the classes, then classify</h3>
+      <p class="muted">
+        Pick a sound. The labels below aren't from any dataset — edit them, delete them, invent your
+        own ("a robot having a bad day" is allowed). CLAP scores whatever you give it.
+      </p>
+
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="sample-row" id="samples" aria-label="Sample sounds" role="group">
+        <button class="chip" type="button" data-src="../sample-birds.wav" aria-pressed="true">🐦 Bird chirps</button>
+        <button class="chip" type="button" data-src="../sample-drums.wav" aria-pressed="false">🥁 Drum beat</button>
+        <button class="chip" type="button" data-src="../sample-rain.wav" aria-pressed="false">🌧 Rain</button>
+        <button class="chip" type="button" data-src="../sample-siren.wav" aria-pressed="false">🚨 Siren</button>
+        <button class="chip" type="button" data-src="../sample-ticking.wav" aria-pressed="false">🕰 Ticking</button>
+        <button class="chip" type="button" data-src="../sample-tone.wav" aria-pressed="false">🎵 Tone</button>
+      </div>
+      <div class="audio-row"><audio id="player" controls preload="metadata"></audio></div>
+
+      <div id="labels"></div>
+      <div style="margin:.6rem 0"><button id="run" type="button" disabled>Classify with my labels</button></div>
+      <div class="scores" id="scores" aria-label="Label scores" aria-live="polite"></div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span><span>latency <b id="rMs">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="d2-h">
+      <h3 id="d2-h">2 · Wording is the model's whole world</h3>
+      <p class="muted">
+        Zero-shot scores ride on how you phrase the label. Below, the <em>same clip</em> is scored
+        twice against the same three distractors — once with each of your two phrasings. Try
+        "rain" vs "heavy rain hitting a roof" on the rain clip, or "beeping" vs "an emergency
+        siren wailing" on the siren.
+      </p>
+      <div class="field-row">
+        <label for="phraseA">Phrasing A</label>
+        <input type="text" id="phraseA" value="rain" size="28" />
+      </div>
+      <div class="field-row">
+        <label for="phraseB">Phrasing B</label>
+        <input type="text" id="phraseB" value="heavy rain hitting a roof" size="28" />
+      </div>
+      <p class="muted" style="font-size:.8rem">Distractors (fixed for both runs): "human speech" · "music" · "silence"</p>
+      <div style="margin:.6rem 0"><button id="runAB" type="button" disabled>Score both phrasings on this clip</button></div>
+      <div id="abOut" hidden>
+        <div class="ab-grid">
+          <div>
+            <h4 class="muted" style="margin:.2rem 0" id="abAName">A</h4>
+            <div class="scores" id="scoresA" aria-labelledby="abAName" aria-live="polite"></div>
+          </div>
+          <div>
+            <h4 class="muted" style="margin:.2rem 0" id="abBName">B</h4>
+            <div class="scores" id="scoresB" aria-labelledby="abBName" aria-live="polite"></div>
+          </div>
+        </div>
+        <p id="abVerdict" class="status" role="status" aria-live="polite"></p>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h3>What you just learned</h3>
+      <ul class="muted">
+        <li><strong>No training loop.</strong> Adding a class costs one sentence, not a dataset.</li>
+        <li><strong>Scores are relative.</strong> The softmax is over <em>your</em> label set — remove the winner and the runner-up inherits its share.</li>
+        <li><strong>Phrasing = prompt engineering.</strong> Specific, sound-like descriptions usually beat single words. That's the trade for skipping training.</li>
+      </ul>
+    </section>
+
+    <p class="crumbs"><a href="../">← CLAP</a> · Next: <a href="../practical/">Practical →</a></p>
+
+    <script type="module">
+      import { ClapEngine, createLabelEditor, renderScoreBars, urlToMono48k, CLAP_CSS } from "../clap.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style");
+      style.textContent = CLAP_CSS + `.ab-grid{display:grid;grid-template-columns:1fr 1fr;gap:1rem}
+        @media (max-width:640px){.ab-grid{grid-template-columns:1fr}}`;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new ClapEngine();
+      let pcm = null, ready = false;
+      const DISTRACTORS = ["human speech", "music", "silence"];
+
+      const editor = createLabelEditor($("labels"), [
+        "birds singing in a forest", "a drum machine", "an old clock", "a storm outside",
+      ]);
+
+      function setStatus(msg, cls) {
+        $("status").textContent = msg;
+        $("status").classList.remove("err", "ok");
+        if (cls) $("status").classList.add(cls);
+      }
+
+      async function pickSample(btn) {
+        for (const b of $("samples").children) b.setAttribute("aria-pressed", String(b === btn));
+        setStatus("Decoding sample…");
+        try {
+          const { pcm: p } = await urlToMono48k(btn.dataset.src);
+          pcm = p;
+          $("player").src = btn.dataset.src;
+          $("scores").replaceChildren();
+          $("abOut").hidden = true;
+          setStatus("Ready.");
+          $("run").disabled = $("runAB").disabled = !ready;
+        } catch (e) {
+          setStatus("Could not decode the sample: " + e.message, "err");
+        }
+      }
+      for (const btn of $("samples").children) btn.addEventListener("click", () => pickSample(btn));
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/clap-htsat-unfused", runtime: "transformers.js", dtype: "q8", sizeMB: 163, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: () => { ready = true; $("run").disabled = $("runAB").disabled = !pcm; },
+      });
+      pickSample($("samples").firstElementChild);
+
+      $("run").addEventListener("click", async () => {
+        const labels = editor.labels;
+        if (labels.length < 2) { setStatus("Give me at least two labels.", "err"); return; }
+        $("run").disabled = true;
+        setStatus("Scoring your labels…");
+        try {
+          const r = await engine.classify(pcm, labels, { spectrogram: false });
+          renderScoreBars($("scores"), r.results, 10);
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = r.ms + " ms";
+          $("readout").hidden = false;
+          setStatus(`Best match: ${r.results[0].label}.`, "ok");
+        } catch (e) {
+          setStatus("Failed: " + e.message, "err");
+        } finally {
+          $("run").disabled = false;
+        }
+      });
+
+      $("runAB").addEventListener("click", async () => {
+        const a = $("phraseA").value.trim(), b = $("phraseB").value.trim();
+        if (!a || !b) { setStatus("Fill in both phrasings.", "err"); return; }
+        $("runAB").disabled = true;
+        setStatus("Scoring phrasing A, then B — same clip, same distractors…");
+        try {
+          const rA = await engine.classify(pcm, [a, ...DISTRACTORS], { spectrogram: false });
+          const rB = await engine.classify(pcm, [b, ...DISTRACTORS], { spectrogram: false });
+          $("abAName").textContent = `A · "${a}"`;
+          $("abBName").textContent = `B · "${b}"`;
+          renderScoreBars($("scoresA"), rA.results, 4);
+          renderScoreBars($("scoresB"), rB.results, 4);
+          const sA = rA.results.find((x) => x.label === a).score;
+          const sB = rB.results.find((x) => x.label === b).score;
+          $("abOut").hidden = false;
+          $("abVerdict").textContent = sA === sB
+            ? "Dead heat — try more contrast between the phrasings."
+            : `"${sB > sA ? b : a}" fits this clip better: ${(Math.max(sA, sB) * 100).toFixed(1)}% vs ${(Math.min(sA, sB) * 100).toFixed(1)}%. Same sound, different words, different score — that's the lever.`;
+          $("abVerdict").classList.add("ok");
+          setStatus("Done.", "ok");
+        } catch (e) {
+          setStatus("Failed: " + e.message, "err");
+        } finally {
+          $("runAB").disabled = false;
+        }
+      });
+    </script>
+  </body>
+</html>

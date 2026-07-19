@@ -1,0 +1,358 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CLAP — zero-shot audio classification in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run LAION's CLAP locally: describe sounds in your own words and the model tells you which description matches the audio — no fixed class list, no server. See the spectrogram, embeddings, cosines and logits behind every score."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>👂</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">zero-shot-audio-classification · audio + text · WASM / WebGPU · ~163 MB</p>
+      <h1>CLAP — describe a sound in words, and the model finds it</h1>
+      <p class="lede">
+        CLAP is CLIP for your ears. It embeds <strong>audio</strong> and <strong>text</strong> into the
+        same 512-dimensional space, so "which of these sentences describes this sound?" becomes a
+        similarity lookup — with sentences <em>you</em> type, invented on the spot. No fixed class
+        list, no retraining, and here: no server. Every score on this page is computed locally in your
+        browser.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/laion/clap-htsat-unfused" target="_blank" rel="noopener">laion/clap-htsat-unfused</a> (ONNX build: <a href="https://huggingface.co/Xenova/clap-htsat-unfused" target="_blank" rel="noopener">Xenova/clap-htsat-unfused</a>)</td></tr>
+          <tr><th>Task / pipeline</th><td><code>zero-shot-audio-classification</code></td></tr>
+          <tr><th>Architecture</th><td>Two towers, contrastively trained: HTSAT (a Swin-style transformer reading a 64-band log-mel spectrogram) for audio + RoBERTa for text, each projected to a shared 512-d space</td></tr>
+          <tr><th>Training data</th><td>LAION-Audio-630K — 633,526 audio–text pairs</td></tr>
+          <tr><th>Input</th><td>48 kHz mono audio, up to 10 s per window (shorter clips are repeat-padded) · any text labels</td></tr>
+          <tr><th>Output</th><td>One L2-normalised 512-d embedding per clip and per sentence; cosine × learned scale = logit; softmax over labels = score</td></tr>
+          <tr><th>Quantization</th><td>q8 (8-bit) ONNX, combined text+audio graph</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (runs anywhere; WebGPU used when a real adapter exists)</td></tr>
+          <tr><th>Download</th><td>~163 MB once, then cached</td></tr>
+          <tr><th>License</th><td>Apache-2.0</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers, Web Audio, MediaRecorder, Canvas — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">
+        Pick a sound, then edit the candidate labels — they're plain sentences, so add anything:
+        "a kettle boiling", "my cat complaining", "lo-fi hip hop". Hit Classify and CLAP scores every
+        label against the audio.
+      </p>
+
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an audio file">
+        <span id="dropText">Drop an audio file here, or click to choose</span>
+        <input type="file" id="file" accept="audio/*" hidden />
+      </div>
+
+      <div class="sample-row" id="samples" aria-label="Sample sounds" role="group">
+        <button class="chip" type="button" data-src="sample-siren.wav" aria-pressed="true">🚨 Siren</button>
+        <button class="chip" type="button" data-src="sample-birds.wav" aria-pressed="false">🐦 Bird chirps</button>
+        <button class="chip" type="button" data-src="sample-rain.wav" aria-pressed="false">🌧 Rain</button>
+        <button class="chip" type="button" data-src="sample-drums.wav" aria-pressed="false">🥁 Drum beat</button>
+        <button class="chip" type="button" data-src="sample-ticking.wav" aria-pressed="false">🕰 Ticking clock</button>
+        <button class="chip" type="button" data-src="sample-tone.wav" aria-pressed="false">🎵 440 Hz tone</button>
+      </div>
+
+      <div class="field-row">
+        <button id="recBtn" type="button" class="secondary">● Record from mic</button>
+        <span id="recState" class="muted" aria-live="polite"></span>
+      </div>
+      <div class="audio-row"><audio id="player" controls preload="metadata"></audio></div>
+      <div class="wave-wrap"><canvas id="wave" class="wave" aria-label="Waveform of the selected audio"></canvas></div>
+
+      <h4 style="margin:.8rem 0 .2rem">Candidate labels — yours to edit</h4>
+      <div id="labels"></div>
+
+      <div class="field-row">
+        <label for="template">Prompt template</label>
+        <input type="text" id="template" value="This is a sound of {}." size="30" />
+        <span class="muted" style="font-size:.78rem">each label replaces the <code>{}</code></span>
+      </div>
+
+      <div style="margin:.6rem 0"><button id="run" type="button" disabled>Classify sound</button></div>
+
+      <div class="scores" id="scores" aria-label="Label scores" aria-live="polite"></div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+        <span>clip length <b id="rDur">–</b></span>
+        <span>labels <b id="rN">–</b></span>
+        <span>top <b id="rTop">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside</h3>
+      <p class="muted">
+        Three real intermediate products of the run. <strong>1 — the spectrogram:</strong> CLAP's audio
+        tower never hears a waveform; it reads this 64-band log-mel image (time →, low frequency at the
+        bottom, brightness = energy). <strong>2 — the embeddings:</strong> the clip and every label
+        sentence become 512-d vectors in one shared space, drawn here as heat strips (warm = positive,
+        blue = negative). Similar strips ⇒ similar meaning. <strong>3 — the arithmetic:</strong> each
+        score is just cosine(audio, text) × a learned scale, softmaxed across your labels — the full
+        table below, nothing hidden.
+      </p>
+      <canvas id="spec" class="spec-canvas" tabindex="0" aria-label="64-band log-mel spectrogram of the selected audio: time on the x-axis, frequency low-to-high on the y-axis, brightness is energy"></canvas>
+      <p class="muted" style="font-size:.78rem;margin-top:.3rem">← earlier · time · later → · ↓ low frequency · high frequency ↑</p>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem;margin-top:.5rem">Classify a clip to see its embedding, each label's embedding, and the raw numbers.</div>
+      <div id="insideWrap" hidden>
+        <h4 style="margin:.8rem 0 .2rem">The clip in embedding space</h4>
+        <div class="embed-row top">
+          <span class="embed-label">🔊 this audio clip</span>
+          <canvas class="embed-strip" id="audioStrip" aria-label="Heat-strip visualization of the 512-dimensional audio embedding"></canvas>
+          <span class="embed-cos">cos</span>
+        </div>
+        <div id="textStrips"></div>
+        <h4 style="margin:.8rem 0 .2rem">Cosine → logit → probability</h4>
+        <table class="inside-table">
+          <thead><tr><th>sentence scored</th><th>cosine</th><th>logit</th><th>probability</th></tr></thead>
+          <tbody id="insideRows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        Classic audio classifiers ship a frozen menu — AudioSet's 527 classes, or whatever you had
+        labelled data for. CLAP removes the menu: any sound concept you can phrase, you can detect,
+        rank, or search for — and running it in the browser means the microphone never leaves the
+        device and there is no per-call bill.
+      </p>
+      <ul>
+        <li><strong>Detectors without datasets</strong> — "glass breaking", "a forklift reversing", "my machine's bearing squealing": one sentence replaces a labelled training set and a fine-tuning run.</li>
+        <li><strong>Semantic audio search</strong> — embed a sound library once, then find clips by description ("upbeat drums", "rain on a window") — a text-to-audio search engine with no backend.</li>
+        <li><strong>Personalisable accessibility alerts</strong> — users type the sound they need flagged, in their own words, private by construction.</li>
+        <li><strong>Tagging &amp; moderation at zero marginal cost</strong> — auto-tag podcasts, field recordings or user uploads with a vocabulary you can change at any moment.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Feel what zero-shot means: invent labels for a sound, then watch how the wording of a label changes its score.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">A text-to-audio search engine plus an auto-tagger over a clip library — embed once, query in plain language.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Type any phrase and turn your mic into a detector for it, live — plus a two-label tug-of-war over what CLAP hears.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>One pipeline call with Transformers.js — feed 48 kHz mono audio and your labels:</p>
+      <pre><code>import { pipeline } from "@huggingface/transformers";
+
+const classifier = await pipeline(
+  "zero-shot-audio-classification",
+  "Xenova/clap-htsat-unfused",
+  { dtype: "q8" },                    // ~163 MB once, then cached
+);
+
+const scores = await classifier(audio, [
+  "an emergency siren",
+  "birds chirping",
+  "heavy rain",
+], { hypothesis_template: "This is a sound of {}." });
+// audio = Float32Array @ 48 kHz mono (decode with the Web Audio API)
+// → [{ label: "an emergency siren", score: 0.94 }, … ]</code></pre>
+      <p class="muted">
+        Under the hood each label becomes a sentence via the template, RoBERTa embeds the sentences,
+        HTSAT embeds the audio, and the softmaxed scaled cosines are your scores. This page calls
+        <code>ClapModel</code> directly — the exact same mechanism — so it can also hand you the
+        embeddings, cosines and logits it visualizes, and reuse the embeddings for search. Everything
+        runs in a Web Worker, so the page never janks.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/laion/clap-htsat-unfused" target="_blank" rel="noopener">Model card — laion/clap-htsat-unfused</a></li>
+        <li><a href="https://huggingface.co/Xenova/clap-htsat-unfused" target="_blank" rel="noopener">ONNX build — Xenova/clap-htsat-unfused</a></li>
+        <li><a href="https://arxiv.org/abs/2211.06687" target="_blank" rel="noopener">Paper — Large-scale Contrastive Language-Audio Pretraining (Wu et al., ICASSP 2023)</a></li>
+        <li><a href="https://github.com/LAION-AI/CLAP" target="_blank" rel="noopener">LAION-CLAP — code &amp; LAION-Audio-630K</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import {
+        ClapEngine, blobToMono48k, urlToMono48k, MicRecorder, createLabelEditor,
+        drawWaveform, drawSpectrogram, drawEmbeddingStrip, renderScoreBars, escapeHTML, CLAP_CSS,
+      } from "./clap.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = CLAP_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new ClapEngine();
+      let pcm = null;
+      let ready = false;
+
+      const editor = createLabelEditor($("labels"), [
+        "an emergency siren", "birds chirping", "heavy rain", "a drum beat",
+        "a ticking clock", "a musical tone", "human speech", "silence",
+      ]);
+
+      function setStatus(msg, cls) {
+        $("status").textContent = msg;
+        $("status").classList.remove("err", "ok");
+        if (cls) $("status").classList.add(cls);
+      }
+
+      async function useAudio(pcmData, url) {
+        pcm = pcmData;
+        $("scores").replaceChildren();
+        $("readout").hidden = true;
+        $("insideWrap").hidden = true;
+        $("insideEmpty").hidden = false;
+        drawWaveform($("wave"), pcm);
+        if (url) $("player").src = url;
+        $("run").disabled = !ready;
+      }
+
+      async function pickSample(btn) {
+        for (const b of $("samples").children) b.setAttribute("aria-pressed", String(b === btn));
+        setStatus("Decoding sample…");
+        try {
+          const { pcm: p } = await urlToMono48k(btn.dataset.src);
+          await useAudio(p, btn.dataset.src);
+          setStatus("Sample ready — hit Classify.");
+        } catch (e) {
+          setStatus("Could not decode the sample: " + e.message, "err");
+        }
+      }
+      for (const btn of $("samples").children) {
+        btn.addEventListener("click", () => pickSample(btn));
+      }
+
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) {
+        for (const b of $("samples").children) b.setAttribute("aria-pressed", "false");
+        $("dropText").textContent = f.name;
+        setStatus("Decoding " + f.name + "…");
+        try {
+          const { pcm: p } = await blobToMono48k(f);
+          await useAudio(p, URL.createObjectURL(f));
+          setStatus("Audio ready — hit Classify.");
+        } catch (e) {
+          setStatus("Could not decode that file: " + e.message, "err");
+        }
+      }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f) loadFile(f); });
+
+      const rec = new MicRecorder();
+      let recording = false;
+      if (!MicRecorder.supported()) { $("recBtn").disabled = true; $("recState").textContent = "No microphone API here."; }
+      $("recBtn").addEventListener("click", async () => {
+        if (!recording) {
+          try {
+            await rec.start();
+            recording = true;
+            $("recBtn").textContent = "■ Stop recording";
+            $("recState").innerHTML = '<span class="rec-dot"></span>Recording…';
+          } catch (e) {
+            $("recState").textContent = "Mic blocked: " + e.message;
+          }
+        } else {
+          const { blob, url } = await rec.stop();
+          recording = false;
+          $("recBtn").textContent = "● Record from mic";
+          $("recState").textContent = "Recorded.";
+          setStatus("Decoding recording…");
+          const { pcm: p } = await blobToMono48k(blob);
+          await useAudio(p, url);
+          setStatus("Recording ready — hit Classify.");
+        }
+      });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/clap-htsat-unfused", runtime: "transformers.js", dtype: "q8", sizeMB: 163, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: () => { ready = true; $("run").disabled = !pcm; },
+      });
+
+      pickSample($("samples").firstElementChild);
+
+      $("run").addEventListener("click", async () => {
+        if (!pcm) { setStatus("Pick or record some audio first."); return; }
+        const labels = editor.labels;
+        if (labels.length < 2) { setStatus("Add at least two labels to compare.", "err"); return; }
+        $("run").disabled = true;
+        setStatus("Listening…");
+        try {
+          const r = await engine.classify(pcm, labels, { template: $("template").value || undefined });
+          renderScoreBars($("scores"), r.results, 10);
+          drawSpectrogram($("spec"), r.spectrogram);
+          drawEmbeddingStrip($("audioStrip"), r.audioEmbed);
+          const order = r.results.map((res) => labels.indexOf(res.label));
+          $("textStrips").replaceChildren(...r.results.map((res, rank) => {
+            const row = document.createElement("div");
+            row.className = "embed-row" + (rank === 0 ? " top" : "");
+            const lab = document.createElement("span");
+            lab.className = "embed-label";
+            lab.textContent = "🏷 " + res.label;
+            const canvas = document.createElement("canvas");
+            canvas.className = "embed-strip";
+            canvas.setAttribute("aria-label", `512-dimensional text embedding for label: ${res.label}`);
+            const cos = document.createElement("span");
+            cos.className = "embed-cos";
+            cos.textContent = res.cosine.toFixed(3);
+            row.append(lab, canvas, cos);
+            drawEmbeddingStrip(canvas, r.textEmbeds[order[rank]]);
+            return row;
+          }));
+          $("insideRows").replaceChildren(...r.results.map((res) => {
+            const tr = document.createElement("tr");
+            tr.innerHTML = `<td>${escapeHTML(res.sentence)}</td><td>${res.cosine.toFixed(4)}</td>` +
+              `<td>${res.logit.toFixed(2)}</td><td>${(res.score * 100).toFixed(2)}%</td>`;
+            return tr;
+          }));
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = r.ms + " ms";
+          $("rDur").textContent = r.durationS.toFixed(1) + " s";
+          $("rN").textContent = labels.length;
+          $("rTop").textContent = `${r.results[0].label} (${(r.results[0].score * 100).toFixed(0)}%)`;
+          $("readout").hidden = false;
+          $("insideEmpty").hidden = true;
+          $("insideWrap").hidden = false;
+          setStatus(`Best match: ${r.results[0].label}.`, "ok");
+        } catch (e) {
+          setStatus("Classification failed: " + e.message, "err");
+        } finally {
+          $("run").disabled = false;
+        }
+      });
+    </script>
+  </body>
+</html>
