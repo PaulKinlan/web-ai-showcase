@@ -36,9 +36,15 @@ short version for tools that look for `AGENTS.md`.
   ONNX export exists but no transformers.js GLiNER class/processor), **got-ocr2** (no `got_ocr2`
   class; `image-text-to-text` pipeline absent in 3.7.5; stepfun-ai repos safetensors-only), **git**
   (no `git` class; no `Xenova/git-*` ONNX repo), **vilt** (no `vilt` class / no
-  `visual-question-answering` pipeline / no ONNX), **electra** (ONNX exports are encoder-only; the
-  replaced-token-detection discriminator head is absent), **blip** / **bark** (repos gated / no usable
-  ONNX). Never mislabel a substitute as the blocked family.
+  `visual-question-answering` pipeline / no ONNX), **keyphrase-extraction** (no token-classification
+  keyphrase model has a browser ONNX — only seq2seq generators; don't mislabel a generator/NER as
+  keyphrase spans), **electra** (ONNX exports are encoder-only; the replaced-token-detection
+  discriminator head is absent), **blip** / **bark** (repos gated / no usable ONNX). Never mislabel a
+  substitute as the blocked family.
+- **Version-pin escape hatch (isolated).** If a model's class exists only in a transformers.js newer
+  than the shared 3.7.5 pin (e.g. SAM2's `Sam2Model` needs 4.2.0), pin the newer version LOCALLY in
+  that one model's `worker.js` only — never bump shared `lib/webai.js`. `lib/model-cache.js` is
+  version-agnostic so auto-init still works. Precedent: `models/sam2-segmentation/worker.js`.
 - **Denominator discipline — report TWO metrics.** PRIMARY: the evidence-backed eligible catalogue
   (`inventory/summary.json` + `models.json`) — built / eligible + built / catalogued (+ pending);
   this is a refining LOWER BOUND (grows with scan depth — state the depth), keep the catalogue +

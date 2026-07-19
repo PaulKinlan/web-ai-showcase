@@ -52,9 +52,14 @@ of every model you can genuinely run in a browser — not a token set. Read `CLA
   (same — `Unsupported model type: gliner`; ONNX exists but no transformers.js GLiNER class),
   **got-ocr2** (no `got_ocr2` class; no `image-text-to-text` pipeline in 3.7.5; safetensors-only),
   **git** (no `git` class; no `Xenova/git-*` ONNX), **vilt** (no `vilt` class / no
-  `visual-question-answering` pipeline / no ONNX), **electra** (ONNX is encoder-only; no RTD
-  discriminator head), **blip** / **bark** (gated / no usable ONNX). Never mislabel a substitute as
-  the blocked family.
+  `visual-question-answering` pipeline / no ONNX), **keyphrase-extraction** (no token-classification
+  keyphrase ONNX — only seq2seq generators), **electra** (ONNX is encoder-only; no RTD discriminator
+  head), **blip** / **bark** (gated / no usable ONNX). Never mislabel a substitute as the blocked
+  family.
+- **Version-pin escape hatch:** a model needing a transformers.js class newer than the shared 3.7.5
+  (e.g. SAM2 needs 4.2.0) may pin the newer version LOCALLY in its own `worker.js` only — never bump
+  shared `lib/webai.js`. model-cache is version-agnostic so auto-init still works. Precedent:
+  `models/sam2-segmentation/worker.js`.
 - Only load weights from the canonical HF repo (or MLC/MediaPipe official). No arbitrary remote
   code.
 - Note device/browser requirements (WebGPU-only, RAM, secure context) in the page's at-a-glance.

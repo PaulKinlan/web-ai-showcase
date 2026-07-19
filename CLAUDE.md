@@ -135,9 +135,20 @@ export but no transformers.js class/processor implements GLiNER's span/entity-pr
 **got-ocr2** (no `got_ocr2` class in 3.7.5/4.2; the `image-text-to-text` pipeline task doesn't exist
 in 3.7.5; stepfun-ai repos are safetensors-only, no ONNX), **git** (no `git` model class; no
 `Xenova/git-*` ONNX repo exists), **vilt** (no `vilt` class, `visual-question-answering` is not a
-supported pipeline task, `ViltFeatureExtractor` unimplemented, no ONNX export anywhere), **electra**
-(ONNX exports encoder-only; RTD discriminator head absent), **blip** / **bark** (gated / no usable
-ONNX). Never mislabel a substitute as the blocked family.
+supported pipeline task, `ViltFeatureExtractor` unimplemented, no ONNX export anywhere),
+**keyphrase-extraction** (no token-classification keyphrase model ships a browser-loadable ONNX — a
+151-repo scan found only seq2seq generators, which can't produce per-token B/I/O spans; don't
+mislabel a generator or plain NER as keyphrase span extraction), **electra** (ONNX exports
+encoder-only; RTD discriminator head absent), **blip** / **bark** (gated / no usable ONNX). Never
+mislabel a substitute as the blocked family.
+
+**Version-pin escape hatch (isolated).** A model whose class exists only in a transformers.js newer
+than the shared 3.7.5 pin (e.g. SAM2 — `Sam2Model` lands in 4.2.0, absent from 3.7.5) may pin the
+newer version LOCALLY in that one model's `worker.js` import — never bump shared `lib/webai.js` or
+other pages. `lib/model-cache.js` is version-agnostic (scans Cache Storage by modelId), so
+`createModelLoader` auto-init still works. Precedent: `models/sam2-segmentation/worker.js` pins
+`@huggingface/transformers@4.2.0`; everything else stays 3.7.5. Verify the pin stays scoped to that
+worker.
 
 Cover the full capability range —
 classification, NER, embeddings/ reranking/search, summarisation/translation/generation, ASR, audio
