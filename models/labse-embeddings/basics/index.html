@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LaBSE — Basics: is this a translation? · Web AI Showcase</title>
+    <meta name="description" content="Give one sentence and its versions in several languages: LaBSE scores each as a cross-lingual cosine similarity, so you can see a translation score near 1.0 and an unrelated line score low — locally in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🪢</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">LaBSE</a></p>
+
+    <header>
+      <p class="eyebrow">Basics · feature-extraction · WASM</p>
+      <h1>Is this a translation? One cross-lingual number</h1>
+      <p class="lede">
+        The fundamental capability: type a source sentence and a few candidate lines in any languages. LaBSE
+        embeds all of them into one 768-d space and scores each candidate against the source by cosine
+        similarity. A real translation scores near <strong>1.0</strong>; something unrelated stays low — even
+        though the two sentences may not share a single character.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Try it</h3>
+      <div id="model-loader"></div>
+
+      <label style="display:flex;flex-direction:column;gap:.3rem;font-size:.82rem;margin-top:.4rem">
+        Source sentence
+        <input id="src" type="text" value="I will call you tomorrow afternoon." disabled />
+      </label>
+      <label style="display:flex;flex-direction:column;gap:.3rem;font-size:.82rem;margin-top:.5rem">
+        Candidate lines (one per line — real translations and a distractor or two)
+        <textarea id="cands" rows="6" disabled>Je t'appellerai demain après-midi.
+Te llamaré mañana por la tarde.
+明日の午後に電話します。
+Ich rufe dich morgen Nachmittag an.
+The invoice is overdue by thirty days.</textarea>
+      </label>
+
+      <div style="margin:.6rem 0;display:flex;gap:.4rem;flex-wrap:wrap;align-items:center">
+        <button id="run" type="button" disabled>Score candidates</button>
+        <span class="status" id="status" role="status" aria-live="polite"></span>
+      </div>
+
+      <div class="sent-list" id="ranked" aria-live="polite"></div>
+      <p class="muted" style="font-size:.76rem;margin-top:.4rem">Green badge = a hit in a different language from
+        the source. The distractor should sink to the bottom with a much lower score.</p>
+
+      <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>latency <b id="rMs">–</b></span><span>dims <b>768</b></span></div>
+    </section>
+
+    <p class="crumbs" style="margin-top:1.5rem"><a href="../practical/">Next: Practical — mine a whole parallel corpus →</a></p>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via 🤗 Transformers.js.
+      <a href="../">← Back to LaBSE</a>
+    </footer>
+
+    <script type="module">
+      import { LabseEngine, cosine, parseLines, guessLang, renderRanked, LABSE_CSS } from "../labse.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = LABSE_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new LabseEngine();
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/LaBSE", runtime: "transformers.js", dtype: "q8", sizeMB: 490, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("src").disabled = false; $("cands").disabled = false; $("run").disabled = false; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        const src = $("src").value.trim();
+        const cands = parseLines($("cands").value);
+        if (!src || cands.length < 1) { $("status").textContent = "Give a source and at least one candidate."; return; }
+        $("run").disabled = true; $("status").classList.remove("err"); $("status").textContent = "Embedding…";
+        try {
+          const srcLang = guessLang(src);
+          const [sr, cr] = await Promise.all([engine.embed([src]), engine.embed(cands)]);
+          const sv = sr.embeddings[0];
+          const hits = cr.texts.map((text, i) => {
+            const l = guessLang(text);
+            return { text, score: cosine(sv, cr.embeddings[i]), tag: `${l.flag} ${l.name}`, langCode: l.code };
+          }).sort((a, b) => b.score - a.score);
+          renderRanked($("ranked"), hits, { queryLang: srcLang.code });
+          $("readout").hidden = false;
+          $("rBackend").textContent = cr.device.toUpperCase();
+          $("rMs").textContent = (sr.ms + cr.ms) + " ms";
+          $("status").textContent = "";
+        } catch (err) { $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>
