@@ -1,0 +1,321 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>YOLO-World — real-time open-vocabulary detection in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run YOLO-World locally in your browser: type ANY class names you like — 'forklift', 'traffic cone', 'swan' — and a CLIP text encoder plus a YOLOv8-World-v2 graph box them in real time. Open-vocabulary detection with no fixed 80-class list, and much faster than Grounding DINO."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🌐</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">zero-shot-object-detection · vision-language · WASM · ~176 MB</p>
+      <h1>YOLO-World — open-vocabulary detection, in real time</h1>
+      <p class="lede">
+        A normal detector only knows the classes it was trained on — YOLOv10 boxes 80 fixed COCO
+        categories and nothing else. <strong>YOLO-World</strong> detects <em>anything you can name</em>.
+        Type your own class list — <code>forklift</code>, <code>traffic cone</code>, <code>swan</code> —
+        and a CLIP text encoder turns those words into vectors that steer a fast YOLOv8 head. No fixed
+        vocabulary, no retraining, all on your device. It is far quicker than the phrase-grounding
+        <a href="../grounding-dino/">Grounding DINO</a>, so it is the open-vocab detector you can actually
+        run on a live camera.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Detector</th><td><a href="https://huggingface.co/Instemic/yolo-world-onnx" target="_blank" rel="noopener">Instemic/yolo-world-onnx</a> · <code>yolov8s-worldv2.onnx</code> (dynamic <code>txt_feats</code>)</td></tr>
+          <tr><th>Text encoder</th><td><a href="https://huggingface.co/Xenova/clip-vit-base-patch32" target="_blank" rel="noopener">Xenova/clip-vit-base-patch32</a> — CLIP ViT-B/32 text tower, 512-dim (Transformers.js)</td></tr>
+          <tr><th>Task</th><td><code>zero-shot-object-detection</code> — open-vocabulary (you supply the classes)</td></tr>
+          <tr><th>Runtime</th><td>onnxruntime-web 1.21 for the detector (no <code>yolo-world</code> class in transformers.js) + transformers.js 3.7.5 for CLIP text</td></tr>
+          <tr><th>How it works</th><td>CLIP text-embeds your class names → <code>txt_feats [1,N,512]</code> → the YOLO graph returns per-class boxes. Vocabulary is re-encoded at runtime.</td></tr>
+          <tr><th>Output tensor</th><td><code>[1, 4+N, 8400]</code> — 4 box regressors + N class probabilities per anchor; sigmoid baked in, then per-class NMS</td></tr>
+          <tr><th>Quantization</th><td>Detector fp32 ONNX (48.8 MB) · CLIP text fp16 (127 MB)</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (runs anywhere; no WebGPU needed)</td></tr>
+          <tr><th>Download</th><td>~176 MB total, cached after first load</td></tr>
+          <tr><th>License</th><td>Detector AGPL-3.0 (Ultralytics YOLOv8-World) · CLIP MIT — weights loaded from the canonical HF repos, unmodified</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers, OffscreenCanvas, Canvas — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Edit the class list (these words are the whole vocabulary), pick or drop an image, and
+        hit Detect. The classes are re-encoded only when you change them; the score slider filters the
+        cached boxes live without re-running the model.</p>
+
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <label class="hint" for="classEditor" id="classLabel">Classes to detect (type any words)</label>
+      <div id="classEditor"></div>
+      <div class="preset-row" aria-label="Class-list presets">
+        <button class="preset-btn" type="button" data-preset="cat,sofa,book,potted plant,remote">Living room</button>
+        <button class="preset-btn" type="button" data-preset="person,bicycle,car,traffic light,backpack,dog">Street</button>
+        <button class="preset-btn" type="button" data-preset="swan,duck,boat,tree,river">Nature</button>
+        <button class="preset-btn" type="button" data-preset="forklift,pallet,hard hat,safety cone,cardboard box">Warehouse (rare)</button>
+      </div>
+
+      <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image">
+        <span id="dropText">Drop an image here, or click to choose</span>
+        <input type="file" id="file" accept="image/*" hidden />
+      </div>
+      <div class="sample-strip" id="samples" aria-label="Sample images">
+        <img class="sample-thumb active" src="sample-cats.jpg" data-src="sample-cats.jpg" alt="Two cats on a couch with a remote and books" tabindex="0" role="button" />
+        <img class="sample-thumb" src="sample-room.jpg" data-src="sample-room.jpg" alt="A cozy sunlit bedroom with a bookshelf" tabindex="0" role="button" />
+        <img class="sample-thumb" src="sample-river.jpg" data-src="sample-river.jpg" alt="A riverside at golden hour with a swan" tabindex="0" role="button" />
+      </div>
+
+      <div style="margin:.6rem 0">
+        <button id="run" type="button" disabled>Detect objects</button>
+      </div>
+
+      <div class="slider-row">
+        <label for="thresh">Score threshold</label>
+        <input type="range" id="thresh" min="0.1" max="0.9" step="0.05" value="0.3" />
+        <output id="threshOut" for="thresh">0.30</output>
+      </div>
+
+      <div class="canvas-wrap">
+        <canvas id="stage" class="stage-canvas" aria-label="Detection result: image with labelled boxes"></canvas>
+      </div>
+      <div class="count-chips" id="countChips" aria-live="polite"></div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>text encode <b id="rText">–</b></span>
+        <span>detect <b id="rDet">–</b></span>
+        <span>objects shown <b id="rN">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside — how words become classes</h3>
+      <p class="muted">
+        This is what "open-vocabulary" actually means. Your class words go through a CLIP text encoder
+        into 512-dim vectors; the detector treats those vectors as the class list, so its output tensor
+        grows a channel per word you typed — <code>[1, 4+N, 8400]</code> for N classes. Every surviving
+        box below is a real anchor from that tensor: the class it matched (the argmax over your N words),
+        its probability, and the box in the image's own pixels. Change a word and the whole class space
+        shifts — no retraining.
+      </p>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Run detection to see the per-box class and score.</div>
+      <div id="insideWrap" hidden>
+        <div class="readout">
+          <span>classes encoded <b id="iClassN">–</b></span>
+          <span>boxes shown <b id="iShown">–</b></span>
+          <span>distinct classes hit <b id="iClasses">–</b></span>
+        </div>
+        <table class="inside-table">
+          <thead><tr><th>#</th><th>class</th><th>score</th><th>x</th><th>y</th><th>w</th><th>h</th></tr></thead>
+          <tbody id="insideRows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        Fixed-class detectors force a choice you make once, at training time. Open-vocab detection moves
+        that choice to <em>runtime</em>: the same tiny model detects "shopping cart" today and "fire
+        extinguisher" tomorrow, just by changing a string. And unlike Grounding DINO — which grounds a
+        whole caption and takes seconds per image — YOLO-World runs a single fast YOLO head, so it is
+        practical on a live camera on-device.
+      </p>
+      <ul>
+        <li><strong>Detect what you care about, not what a dataset chose</strong> — inventory, safety-gear, or niche-object detection with a class list you edit in a text box.</li>
+        <li><strong>No labelling, no retraining</strong> — ship a detector for a new object by typing its name; nothing uploaded, no vision API bill.</li>
+        <li><strong>Fast enough for video</strong> — one YOLO forward pass per frame after the classes are encoded once, so it keeps up where phrase-grounding can't.</li>
+        <li><strong>Prompt-tunable precision</strong> — narrow "dog" to "golden retriever" or broaden to "animal" and watch the boxes follow the words.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Type a class list, detect, and feel open-vocab first-hand — swap a word, watch the boxes change.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Custom-class inventory counter — tally whatever objects you name from a photo, on-device.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Rare-class hunt — detect objects no COCO model knows, and A/B two phrasings of the same thing.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">YOLO-World finds it → crop → a ViT classifier names it more finely.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>Two on-device models compose. CLIP text-embeds your class names; the YOLO graph takes those
+        embeddings as a dynamic input and returns per-class boxes:</p>
+      <pre><code>import { AutoTokenizer, CLIPTextModelWithProjection } from "@huggingface/transformers";
+import * as ort from "onnxruntime-web";
+
+// 1) class names → L2-normalized CLIP ViT-B/32 text embeddings  [N, 512]
+const tok  = await AutoTokenizer.from_pretrained("Xenova/clip-vit-base-patch32");
+const clip = await CLIPTextModelWithProjection.from_pretrained("Xenova/clip-vit-base-patch32", { dtype: "fp16" });
+const { text_embeds } = await clip(tok(["forklift", "pallet", "hard hat"], { padding: true }));
+
+// 2) image + txt_feats → per-class boxes (48.8 MB YOLOv8-World-v2 ONNX)
+const out = (await session.run({ images, txt_feats })).output0; // [1, 4+N, 8400]
+// channels 0-3 = box cx,cy,w,h; channels 4..4+N = class probabilities (sigmoid baked in) → NMS</code></pre>
+      <p class="muted">
+        Both models run inside a Web Worker (CLIP text encode + letterbox + <code>session.run</code> +
+        decode + NMS), off the main thread. The class embeddings are cached, so dragging the score slider
+        or re-detecting the same classes never re-encodes text; the detector weights are fetched through
+        Cache Storage, so a returning visit auto-initialises with no re-download.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/Instemic/yolo-world-onnx" target="_blank" rel="noopener">Detector — Instemic/yolo-world-onnx (dynamic txt_feats ONNX export)</a></li>
+        <li><a href="https://huggingface.co/Xenova/clip-vit-base-patch32" target="_blank" rel="noopener">Text encoder — Xenova/clip-vit-base-patch32 (CLIP ViT-B/32)</a></li>
+        <li><a href="https://arxiv.org/abs/2401.17270" target="_blank" rel="noopener">Paper — YOLO-World: Real-Time Open-Vocabulary Object Detection (Cheng et al., 2024, arXiv:2401.17270)</a></li>
+        <li><a href="https://docs.ultralytics.com/models/yolo-world/" target="_blank" rel="noopener">Ultralytics YOLO-World docs</a></li>
+        <li><a href="https://onnxruntime.ai/docs/tutorials/web/" target="_blank" rel="noopener">ONNX Runtime Web documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://onnxruntime.ai/docs/tutorials/web/" target="_blank" rel="noopener">ONNX Runtime Web</a> +
+      <a href="https://huggingface.co/docs/transformers.js" target="_blank" rel="noopener">Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { YoloWorldEngine, drawDetections, countByLabel, colorForLabel, escapeHTML, createClassEditor, YW_CSS } from "./yolo-world.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = YW_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new YoloWorldEngine();
+      let currentImg = null;
+      let allDetections = [];
+      let lastText = 0, lastDet = 0;
+
+      const editor = createClassEditor($("classEditor"), ["cat", "sofa", "book", "potted plant", "remote"], () => {});
+      $("classEditor").setAttribute("aria-labelledby", "classLabel");
+      for (const b of document.querySelectorAll(".preset-btn")) {
+        b.addEventListener("click", () => editor.set(b.dataset.preset.split(",")));
+      }
+
+      function decodeImg(url) {
+        return new Promise((resolve, reject) => {
+          const im = new Image();
+          im.onload = () => resolve(im);
+          im.onerror = () => reject(new Error("Could not decode image"));
+          im.src = url;
+        });
+      }
+      async function useURL(url) {
+        currentImg = await decodeImg(url);
+        allDetections = [];
+        $("insideWrap").hidden = true;
+        $("insideEmpty").hidden = false;
+        $("countChips").replaceChildren();
+        $("readout").hidden = true;
+        const c = $("stage");
+        c.width = currentImg.naturalWidth; c.height = currentImg.naturalHeight;
+        c.getContext("2d").drawImage(currentImg, 0, 0);
+      }
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        await useURL(el.dataset.src);
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => {
+          if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); }
+        });
+      }
+      pickSample($("samples").firstElementChild);
+
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) {
+        for (const t of $("samples").children) t.classList.remove("active");
+        await useURL(URL.createObjectURL(f));
+        $("dropText").textContent = f.name;
+      }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Instemic/yolo-world-onnx", runtime: "onnxruntime-web + transformers.js", dtype: "fp32+fp16", sizeMB: 176, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress, (stage) => { $("status").textContent = `Loading ${stage}…`; }),
+        onReady: () => { $("run").disabled = false; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!currentImg) { $("status").textContent = "Pick an image first."; return; }
+        const classes = editor.get();
+        if (!classes.length) { $("status").textContent = "Add at least one class to detect."; $("status").classList.add("err"); return; }
+        $("run").disabled = true; $("status").classList.remove("err", "ok"); $("status").textContent = "Detecting…";
+        try {
+          const bmp = await createImageBitmap(currentImg);
+          const r = await engine.detect(bmp, classes);
+          allDetections = r.detections;
+          lastText = r.textMs; lastDet = r.detMs;
+          $("rBackend").textContent = r.device.toUpperCase();
+          render();
+          $("status").textContent = `Found ${allDetections.length} box(es) across ${classes.length} class(es).`;
+          $("status").classList.add("ok");
+        } catch (err) {
+          $("status").textContent = "Detection failed: " + err.message;
+          $("status").classList.add("err");
+        } finally { $("run").disabled = false; }
+      });
+
+      const thresh = $("thresh");
+      thresh.addEventListener("input", () => { $("threshOut").textContent = (+thresh.value).toFixed(2); if (allDetections.length) render(); });
+
+      function render() {
+        const t = +thresh.value;
+        const shown = allDetections.filter((d) => d.score >= t);
+        drawDetections($("stage"), currentImg, shown);
+        $("countChips").replaceChildren(...countByLabel(shown).map(({ label, count }) => {
+          const el = document.createElement("span");
+          el.className = "count-chip";
+          el.innerHTML = `<span class="swatch" style="background:${colorForLabel(label)}"></span>${escapeHTML(label)} <b>×${count}</b>`;
+          return el;
+        }));
+        $("readout").hidden = false;
+        $("rText").textContent = lastText + " ms";
+        $("rDet").textContent = lastDet + " ms";
+        $("rN").textContent = shown.length;
+        renderInside(shown);
+      }
+
+      function renderInside(shown) {
+        $("insideEmpty").hidden = true;
+        $("insideWrap").hidden = false;
+        $("iClassN").textContent = editor.get().length;
+        $("iShown").textContent = shown.length;
+        $("iClasses").textContent = new Set(shown.map((d) => d.label)).size;
+        const rows = [...shown].sort((a, b) => b.score - a.score).map((d, i) => {
+          const { xmin, ymin, xmax, ymax } = d.box;
+          const tr = document.createElement("tr");
+          tr.innerHTML = `<td>${i + 1}</td><td>${escapeHTML(d.label)}</td><td>${(d.score * 100).toFixed(1)}%</td>
+            <td>${Math.round(xmin)}</td><td>${Math.round(ymin)}</td>
+            <td>${Math.round(xmax - xmin)}</td><td>${Math.round(ymax - ymin)}</td>`;
+          return tr;
+        });
+        $("insideRows").replaceChildren(...rows);
+      }
+    </script>
+  </body>
+</html>

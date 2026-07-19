@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>YOLO-World Basics — type the classes, get the boxes · Web AI Showcase</title>
+    <meta name="description" content="Feel open-vocabulary detection first-hand: type any class names, detect, then swap a word and watch the boxes change — no fixed class list, all in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🌐</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">YOLO-World</a></p>
+
+    <header>
+      <p class="eyebrow">use case · basics</p>
+      <h1>Basics: type the classes, get the boxes</h1>
+      <p class="lede">
+        The whole idea of open-vocab detection in one screen. The class list <em>is</em> the vocabulary —
+        edit it, detect, and swap a word to watch the boxes follow your language. There is no fixed
+        80-class list here; the words you type are the only classes the model looks for.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <label class="hint" for="classEditor" id="classLabel">Classes to detect</label>
+      <div id="classEditor"></div>
+
+      <div class="sample-strip" id="samples" aria-label="Sample images" style="margin-top:.6rem">
+        <img class="sample-thumb active" src="../sample-cats.jpg" data-src="../sample-cats.jpg" alt="Two cats on a couch with a remote and books" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-room.jpg" data-src="../sample-room.jpg" alt="A cozy sunlit bedroom with a bookshelf" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-river.jpg" data-src="../sample-river.jpg" alt="A riverside at golden hour with a swan" tabindex="0" role="button" />
+      </div>
+      <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image">
+        <span id="dropText">Drop an image here, or click to choose</span>
+        <input type="file" id="file" accept="image/*" hidden />
+      </div>
+
+      <div style="margin:.6rem 0"><button id="run" type="button" disabled>Detect objects</button></div>
+
+      <div class="slider-row">
+        <label for="thresh">Score threshold</label>
+        <input type="range" id="thresh" min="0.1" max="0.9" step="0.05" value="0.3" />
+        <output id="threshOut" for="thresh">0.30</output>
+      </div>
+
+      <div class="canvas-wrap">
+        <canvas id="stage" class="stage-canvas" aria-label="Detection result: image with labelled boxes"></canvas>
+      </div>
+      <div class="count-chips" id="countChips" aria-live="polite"></div>
+      <div class="readout" id="readout" hidden><span>text encode <b id="rText">–</b></span><span>detect <b id="rDet">–</b></span><span>backend <b id="rBackend">–</b></span></div>
+    </section>
+
+    <section aria-labelledby="try-h">
+      <h2 id="try-h">Try this</h2>
+      <ul>
+        <li>On the cats photo, start with <code>cat, remote</code>, detect, then add <code>book</code> and detect again — a new box class appears with no reload.</li>
+        <li>Replace <code>cat</code> with <code>kitten</code> or <code>pet</code>: the same animals still box, because CLIP understands the words are related.</li>
+        <li>Type something that isn't there (<code>elephant</code>) — you get no boxes, honestly. Open-vocab doesn't mean hallucinating.</li>
+      </ul>
+    </section>
+
+    <p class="crumbs"><a href="../practical/">Practical: custom inventory →</a></p>
+
+    <script type="module">
+      import { YoloWorldEngine, drawDetections, countByLabel, colorForLabel, escapeHTML, createClassEditor, YW_CSS } from "../yolo-world.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = YW_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new YoloWorldEngine();
+      let currentImg = null, allDetections = [], lastText = 0, lastDet = 0;
+      const editor = createClassEditor($("classEditor"), ["cat", "remote"], () => {});
+      $("classEditor").setAttribute("aria-labelledby", "classLabel");
+
+      function decodeImg(url) { return new Promise((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = () => rej(new Error("decode failed")); im.src = url; }); }
+      async function useURL(url) {
+        currentImg = await decodeImg(url); allDetections = [];
+        $("countChips").replaceChildren(); $("readout").hidden = true;
+        const c = $("stage"); c.width = currentImg.naturalWidth; c.height = currentImg.naturalHeight; c.getContext("2d").drawImage(currentImg, 0, 0);
+      }
+      async function pickSample(el) { for (const t of $("samples").children) t.classList.toggle("active", t === el); await useURL(el.dataset.src); }
+      for (const thumb of $("samples").children) { thumb.addEventListener("click", () => pickSample(thumb)); thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } }); }
+      pickSample($("samples").firstElementChild);
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) { for (const t of $("samples").children) t.classList.remove("active"); await useURL(URL.createObjectURL(f)); $("dropText").textContent = f.name; }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Instemic/yolo-world-onnx", runtime: "onnxruntime-web + transformers.js", dtype: "fp32+fp16", sizeMB: 176, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress, (stage) => { $("status").textContent = `Loading ${stage}…`; }),
+        onReady: () => { $("run").disabled = false; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!currentImg) { $("status").textContent = "Pick an image first."; return; }
+        const classes = editor.get();
+        if (!classes.length) { $("status").textContent = "Add at least one class."; $("status").classList.add("err"); return; }
+        $("run").disabled = true; $("status").classList.remove("err", "ok"); $("status").textContent = "Detecting…";
+        try {
+          const bmp = await createImageBitmap(currentImg);
+          const r = await engine.detect(bmp, classes);
+          allDetections = r.detections; lastText = r.textMs; lastDet = r.detMs;
+          $("rBackend").textContent = r.device.toUpperCase(); render();
+          $("status").textContent = `Found ${allDetections.length} box(es) for ${classes.length} class(es).`; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Detection failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+      const thresh = $("thresh");
+      thresh.addEventListener("input", () => { $("threshOut").textContent = (+thresh.value).toFixed(2); if (allDetections.length) render(); });
+      function render() {
+        const t = +thresh.value; const shown = allDetections.filter((d) => d.score >= t);
+        drawDetections($("stage"), currentImg, shown);
+        $("countChips").replaceChildren(...countByLabel(shown).map(({ label, count }) => { const el = document.createElement("span"); el.className = "count-chip"; el.innerHTML = `<span class="swatch" style="background:${colorForLabel(label)}"></span>${escapeHTML(label)} <b>×${count}</b>`; return el; }));
+        $("readout").hidden = false; $("rText").textContent = lastText + " ms"; $("rDet").textContent = lastDet + " ms";
+      }
+    </script>
+  </body>
+</html>
