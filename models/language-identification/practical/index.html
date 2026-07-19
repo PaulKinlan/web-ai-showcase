@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Language ID Practical — route messages by language · Web AI Showcase</title>
+    <meta name="description" content="Detect the language of each incoming message and route it to the right per-language workflow — a support-desk triage running entirely in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🗣️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Language ID</a></p>
+
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Practical: route messages to the right queue</h1>
+      <p class="lede">
+        Language identification is the triage step before everything else. Here a batch of incoming support
+        messages is detected line-by-line and routed to a per-language queue — exactly what you'd do to hand a
+        ticket to the right team, translator, or moderation model. Paste your own messages (one per line).
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <label for="messages" style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.4rem">
+        Incoming messages (one per line)
+        <textarea id="messages" rows="8" disabled style="font:inherit;padding:.5rem;border:1px solid var(--border);border-radius:6px;background:var(--bg-raised);color:var(--color)">My order never arrived and I would like a refund please.
+Bonjour, je n'arrive pas à me connecter à mon compte.
+Mein Paket ist beschädigt angekommen, was soll ich tun?
+El pago fue rechazado tres veces, ¿pueden ayudarme?
+配送予定日を過ぎても商品が届いていません。
+Ho bisogno di cambiare l'indirizzo di spedizione del mio ordine.</textarea>
+      </label>
+      <div style="margin:.5rem 0"><button id="run" type="button" disabled>Detect &amp; route</button></div>
+
+      <div id="routed" aria-live="polite"></div>
+      <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>messages <b id="rN">–</b></span><span>total <b id="rMs">–</b></span></div>
+    </section>
+
+    <p class="muted" style="font-size:.85rem">
+      Each message lands in a queue for its detected language; low-confidence ones are flagged for a human. In a
+      real desk, the queue is where you'd attach the right translator or auto-responder — and because detection
+      runs on-device, no customer text leaves the browser to get there.
+    </p>
+
+    <p class="crumbs"><a href="../basics/">← Basics</a> · <a href="../">Back to Language ID</a> · Next: <a href="../wild/">Wild →</a></p>
+
+    <script type="module">
+      import { LangIdEngine, langName, langFlag, escapeHTML, LANGID_CSS } from "../langid.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style");
+      style.textContent = LANGID_CSS + `
+        .q-group { border: 1px solid var(--border); border-radius: 8px; background: var(--bg-raised); padding: .5rem .7rem; margin-bottom: .5rem; }
+        .q-head { font-family: var(--font-mono); font-size: .82rem; color: var(--muted); margin-bottom: .35rem; }
+        .q-head b { color: var(--color); }
+        .q-msg { font-size: .86rem; padding: .2rem 0; border-top: 1px dashed var(--border); }
+        .q-msg:first-of-type { border-top: 0; }
+        .q-msg .q-conf { font-family: var(--font-mono); font-size: .72rem; color: var(--muted); margin-inline-start: .4rem; }
+        .q-msg.unsure { color: var(--muted); }`;
+      document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new LangIdEngine();
+      let loaded = false;
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/xlm-roberta-base-language-detection-ONNX", runtime: "transformers.js", dtype: "q8", sizeMB: 270, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("messages").disabled = false; $("run").disabled = false; loaded = true; run(); },
+      });
+
+      $("run").addEventListener("click", run);
+      async function run() {
+        if (!loaded) return;
+        const lines = [...new Set($("messages").value.split(/\n/).map((s) => s.trim()).filter(Boolean))];
+        if (!lines.length) return;
+        $("run").disabled = true;
+        $("runStatus").hidden = false; $("runStatus").classList.remove("err"); $("runStatus").textContent = "Detecting…";
+        const t0 = performance.now();
+        try {
+          const groups = new Map();
+          let device = "wasm";
+          for (const line of lines) {
+            const r = await engine.detect(line);
+            device = r.device;
+            const top = r.scores[0];
+            const key = top.score < 0.5 ? "?" : top.label;
+            if (!groups.has(key)) groups.set(key, []);
+            groups.get(key).push({ text: line, label: top.label, score: top.score });
+          }
+          const order = [...groups.keys()].sort((a, b) => groups.get(b).length - groups.get(a).length);
+          $("routed").innerHTML = order.map((key) => {
+            const items = groups.get(key);
+            const title = key === "?" ? "🏳️ Uncertain — needs a human" : `${langFlag(key)} ${langName(key)} queue`;
+            return `<div class="q-group"><div class="q-head"><b>${title}</b> · ${items.length} message(s)</div>` +
+              items.map((m) => `<div class="q-msg ${m.score < 0.5 ? "unsure" : ""}">${escapeHTML(m.text)}` +
+                `<span class="q-conf">${m.label} ${(m.score * 100).toFixed(0)}%</span></div>`).join("") + `</div>`;
+          }).join("");
+          $("readout").hidden = false; $("rBackend").textContent = device.toUpperCase(); $("rN").textContent = lines.length; $("rMs").textContent = Math.round(performance.now() - t0) + " ms";
+          $("runStatus").hidden = true;
+        } catch (err) { $("runStatus").hidden = false; $("runStatus").textContent = "Failed: " + err.message; $("runStatus").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      }
+    </script>
+  </body>
+</html>
