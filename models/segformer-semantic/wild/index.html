@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SegFormer Wild — photo to colour-blocked map · Web AI Showcase</title>
+    <meta name="description" content="Turn any photo into a flat, colour-blocked 'map' poster: SegFormer labels every pixel and this page paints it as pure blocks of colour you can download as a PNG. In your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎨</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">SegFormer-B0</a></p>
+
+    <header>
+      <p class="eyebrow">use case · wild</p>
+      <h1>Wild: turn a photo into a map</h1>
+      <p class="lede">
+        Strip a photo down to its bones. SegFormer decides what every pixel <em>is</em>, and this page
+        throws away the texture and keeps only the class — painting the scene as flat blocks of colour,
+        like a hand-drawn map or a mid-century poster. Download the result as a PNG.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image">
+        <span id="dropText">Drop a photo, or click to choose</span>
+        <input type="file" id="file" accept="image/*" hidden />
+      </div>
+      <div class="sample-strip" id="samples">
+        <img class="sample-thumb active" src="../sample-river.jpg" data-src="../sample-river.jpg" alt="A riverside landscape" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-room.jpg" data-src="../sample-room.jpg" alt="A cozy bedroom" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-cats.jpg" data-src="../sample-cats.jpg" alt="Two cats on a couch" tabindex="0" role="button" />
+      </div>
+
+      <div style="margin:.6rem 0;display:flex;gap:.6rem;flex-wrap:wrap">
+        <button id="run" type="button" disabled>Make the map</button>
+        <button id="download" type="button" class="secondary" disabled>Download PNG</button>
+      </div>
+
+      <div class="canvas-grid">
+        <div class="canvas-card">
+          <h4>Original</h4>
+          <canvas class="viz-canvas" id="orig" aria-label="Original photo"></canvas>
+        </div>
+        <div class="canvas-card">
+          <h4>Colour-blocked map</h4>
+          <canvas class="viz-canvas" id="map" aria-label="The photo rendered as flat blocks of colour, one per scene class"></canvas>
+        </div>
+      </div>
+
+      <p class="muted" style="font-size:.8rem;margin:.5rem 0 .2rem;text-transform:uppercase;letter-spacing:.05em">Legend</p>
+      <div class="legend" id="legend" role="list" aria-label="Scene classes and their colours"><span class="muted" style="font-size:.82rem">Make a map to see the legend.</span></div>
+      <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>latency <b id="rMs">–</b></span><span>classes <b id="rClasses">–</b></span></div>
+
+      <p class="muted" style="font-size:.85rem">
+        The map is the model's raw argmax label output, nothing more — the colours are the only thing this
+        page adds. Runs in a Web Worker; nothing is uploaded.
+      </p>
+    </section>
+
+    <p class="crumbs"><a href="../practical/">← Practical</a> · <a href="../">SegFormer-B0</a> · <a href="../multi-model/">Multi-model →</a></p>
+
+    <script type="module">
+      import { SegformerEngine, fileToDataURL, urlToDataURL, loadImage, paintPhoto, paintMapOnly, escapeHTML, SEGFORMER_CSS } from "../segformer.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = SEGFORMER_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new SegformerEngine();
+      let currentImageURL = null, currentImg = null, lastResult = null;
+      const rgb = (c) => `rgb(${c.r},${c.g},${c.b})`;
+
+      async function useURL(url, preview) {
+        currentImageURL = url; currentImg = await loadImage(preview || url); lastResult = null;
+        $("readout").hidden = true; $("download").disabled = true;
+        $("legend").replaceChildren(Object.assign(document.createElement("span"), { className: "muted", textContent: "Make a map to see the legend.", style: "font-size:.82rem" }));
+        paintPhoto($("orig"), currentImg); paintPhoto($("map"), currentImg);
+      }
+      async function pickSample(el) { for (const t of $("samples").children) t.classList.toggle("active", t === el); await useURL(await urlToDataURL(el.dataset.src), el.dataset.src); }
+      for (const thumb of $("samples").children) { thumb.addEventListener("click", () => pickSample(thumb)); thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } }); }
+      pickSample($("samples").firstElementChild);
+
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) { for (const t of $("samples").children) t.classList.remove("active"); const u = await fileToDataURL(f); await useURL(u, u); $("dropText").textContent = f.name; }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/segformer-b0-finetuned-ade-512-512", runtime: "transformers.js", dtype: "q8", sizeMB: 15, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: () => { $("run").disabled = false; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!currentImageURL) { $("status").textContent = "Pick a photo first."; return; }
+        $("run").disabled = true; $("status").classList.remove("err", "ok"); $("status").textContent = "Building the map…";
+        try {
+          const r = await engine.segment(currentImageURL); lastResult = r;
+          paintMapOnly($("map"), r.overlay, r.width, r.height, currentImg.naturalWidth, currentImg.naturalHeight);
+          $("legend").replaceChildren(...r.classes.map((c) => { const el = document.createElement("span"); el.className = "legend-item"; el.setAttribute("role", "listitem"); el.innerHTML = `<span class="swatch" style="background:${rgb(c)}"></span>${escapeHTML(c.label)} <b>${(c.coverage * 100).toFixed(1)}%</b>`; return el; }));
+          $("rBackend").textContent = r.device.toUpperCase(); $("rMs").textContent = r.ms + " ms"; $("rClasses").textContent = r.classCount;
+          $("readout").hidden = false; $("download").disabled = false;
+          $("status").textContent = "Map ready."; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Segmentation failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+
+      $("download").addEventListener("click", () => {
+        const a = document.createElement("a"); a.download = "segformer-map.png"; a.href = $("map").toDataURL("image/png"); a.click();
+      });
+
+      if (new URLSearchParams(location.search).has("auto")) {
+        (async () => { await pickSample($("samples").firstElementChild); const t0 = Date.now(); let cl = false; while ($("run").disabled && Date.now() - t0 < 130000) { if (!cl) { const b = $("model-loader").querySelector(".loader-actions button"); if (b && /download/i.test(b.textContent)) { b.click(); cl = true; } } await new Promise((r) => setTimeout(r, 200)); } if (!$("run").disabled) $("run").click(); })();
+      }
+    </script>
+  </body>
+</html>

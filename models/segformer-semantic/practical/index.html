@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SegFormer Practical — sky replacement · Web AI Showcase</title>
+    <meta name="description" content="Scene understanding put to work: SegFormer finds every 'sky' pixel, then you drop in a new sky — sunset, storm, night — entirely on-device. Pick any other class to replace too." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🌅</text></svg>" />
+    <style>
+      .target-row { display:flex; flex-wrap:wrap; gap:.6rem; align-items:center; margin:.6rem 0; }
+      .target-row select { font: inherit; padding:.3rem .5rem; border-radius:8px; border:1px solid var(--border-strong); background:var(--bg-raised); color:var(--color); }
+      .sky-swatches { display:flex; gap:.5rem; flex-wrap:wrap; align-items:center; margin:.4rem 0; }
+      .sky-swatch { inline-size:52px; block-size:34px; border-radius:6px; border:2px solid var(--border); cursor:pointer; padding:0; }
+      .sky-swatch[aria-pressed=true] { border-color:var(--accent); box-shadow:0 0 0 2px var(--accent); }
+      .sky-swatch:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+    </style>
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">SegFormer-B0</a></p>
+
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Practical: sky replacement</h1>
+      <p class="lede">
+        Semantic classes are directly useful: if you know which pixels are "sky," you can replace them.
+        SegFormer labels the whole scene, then this page cuts out one class — sky by default — and drops
+        a new backdrop behind everything else. Pick any class to replace, and any sky to drop in. All
+        on-device.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image">
+        <span id="dropText">Drop a landscape photo, or click to choose</span>
+        <input type="file" id="file" accept="image/*" hidden />
+      </div>
+      <div class="sample-strip" id="samples">
+        <img class="sample-thumb active" src="../sample-river.jpg" data-src="../sample-river.jpg" alt="A riverside landscape with sky" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-room.jpg" data-src="../sample-room.jpg" alt="A cozy bedroom" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-cats.jpg" data-src="../sample-cats.jpg" alt="Two cats on a couch" tabindex="0" role="button" />
+      </div>
+
+      <div style="margin:.6rem 0"><button id="run" type="button" disabled>Segment &amp; replace</button></div>
+
+      <div class="target-row">
+        <label for="target">Replace this class:</label>
+        <select id="target" disabled><option value="">— segment first —</option></select>
+        <span class="muted" id="cov" style="font-size:.82rem"></span>
+      </div>
+      <p class="muted" style="font-size:.8rem;margin:.2rem 0 0;text-transform:uppercase;letter-spacing:.05em">New backdrop</p>
+      <div class="sky-swatches" id="skies" role="group" aria-label="New sky presets"></div>
+
+      <div class="canvas-grid">
+        <div class="canvas-card">
+          <h4>Original</h4>
+          <canvas class="viz-canvas" id="orig" aria-label="Original photo"></canvas>
+        </div>
+        <div class="canvas-card">
+          <h4>Class replaced</h4>
+          <canvas class="viz-canvas" id="out" aria-label="Photo with the selected class replaced by a new backdrop"></canvas>
+        </div>
+      </div>
+      <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>latency <b id="rMs">–</b></span><span>replaced <b id="rReplaced">–</b></span></div>
+
+      <p class="muted" style="font-size:.85rem">
+        The replacement is a pure canvas composite over the class map SegFormer produced — the model runs
+        once, then swapping class or sky is instant. Nothing is uploaded.
+      </p>
+    </section>
+
+    <p class="crumbs"><a href="../basics/">← Basics</a> · <a href="../">SegFormer-B0</a> · <a href="../wild/">Wild →</a></p>
+
+    <script type="module">
+      import { SegformerEngine, fileToDataURL, urlToDataURL, loadImage, paintPhoto, composeClassReplace, escapeHTML, SEGFORMER_CSS } from "../segformer.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = SEGFORMER_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new SegformerEngine();
+      let currentImageURL = null, currentImg = null, lastResult = null;
+
+      // Gradient sky presets, drawn onto an offscreen canvas at compose time.
+      const SKIES = {
+        sunset: ["#ff9d5c", "#ff5e78", "#7a3b9d"],
+        "clear blue": ["#8ecbff", "#3a86ff", "#1b5fd0"],
+        storm: ["#8a97a6", "#5a6b7b", "#33414d"],
+        night: ["#12203f", "#1b2a52", "#0a1226"],
+      };
+      let skyName = "sunset";
+      function skyCanvas(w, h) {
+        const c = document.createElement("canvas"); c.width = w; c.height = h;
+        const ctx = c.getContext("2d"); const stops = SKIES[skyName];
+        const g = ctx.createLinearGradient(0, 0, 0, h);
+        stops.forEach((s, i) => g.addColorStop(i / (stops.length - 1), s));
+        ctx.fillStyle = g; ctx.fillRect(0, 0, w, h); return c;
+      }
+      function skyThumb(name) {
+        const c = document.createElement("canvas"); c.width = 52; c.height = 34;
+        const ctx = c.getContext("2d"); const stops = SKIES[name];
+        const g = ctx.createLinearGradient(0, 0, 0, 34); stops.forEach((s, i) => g.addColorStop(i / (stops.length - 1), s));
+        ctx.fillStyle = g; ctx.fillRect(0, 0, 52, 34); return c.toDataURL();
+      }
+      $("skies").replaceChildren(...Object.keys(SKIES).map((name) => {
+        const b = document.createElement("button"); b.type = "button"; b.className = "sky-swatch"; b.title = name;
+        b.setAttribute("aria-label", name + " sky"); b.setAttribute("aria-pressed", String(name === skyName));
+        b.style.backgroundImage = `url(${skyThumb(name)})`; b.style.backgroundSize = "cover";
+        b.addEventListener("click", () => { skyName = name; for (const s of $("skies").children) s.setAttribute("aria-pressed", String(s === b)); if (lastResult) compose(); });
+        return b;
+      }));
+
+      async function useURL(url, preview) {
+        currentImageURL = url; currentImg = await loadImage(preview || url); lastResult = null;
+        $("readout").hidden = true; $("target").disabled = true; $("cov").textContent = "";
+        $("target").replaceChildren(Object.assign(document.createElement("option"), { value: "", textContent: "— segment first —" }));
+        paintPhoto($("orig"), currentImg); paintPhoto($("out"), currentImg);
+      }
+      async function pickSample(el) { for (const t of $("samples").children) t.classList.toggle("active", t === el); await useURL(await urlToDataURL(el.dataset.src), el.dataset.src); }
+      for (const thumb of $("samples").children) { thumb.addEventListener("click", () => pickSample(thumb)); thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } }); }
+      pickSample($("samples").firstElementChild);
+
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) { for (const t of $("samples").children) t.classList.remove("active"); const u = await fileToDataURL(f); await useURL(u, u); $("dropText").textContent = f.name; }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/segformer-b0-finetuned-ade-512-512", runtime: "transformers.js", dtype: "q8", sizeMB: 15, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: () => { $("run").disabled = false; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!currentImageURL) { $("status").textContent = "Pick a photo first."; return; }
+        $("run").disabled = true; $("status").classList.remove("err", "ok"); $("status").textContent = "Segmenting…";
+        try {
+          const r = await engine.segment(currentImageURL); lastResult = r;
+          $("rBackend").textContent = r.device.toUpperCase(); $("rMs").textContent = r.ms + " ms";
+          buildTargets(r.classes); compose(); $("readout").hidden = false;
+          $("status").textContent = "Done — pick a class and a sky."; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Segmentation failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+
+      function buildTargets(classes) {
+        const sel = $("target"); const prev = sel.value;
+        const labels = classes.map((c) => c.label);
+        sel.replaceChildren(...classes.map((c) => { const o = document.createElement("option"); o.value = c.label; o.textContent = `${c.label} (${(c.coverage * 100).toFixed(1)}%)`; return o; }));
+        const sky = labels.find((l) => /sky/i.test(l));
+        sel.value = labels.includes(prev) ? prev : (sky || labels[0] || "");
+        sel.disabled = false;
+      }
+      $("target").addEventListener("change", () => { if (lastResult) compose(); });
+
+      function compose() {
+        const label = $("target").value; if (!label) return;
+        const cls = lastResult.classes.find((c) => c.label === label); if (!cls) return;
+        const w = currentImg.naturalWidth, h = currentImg.naturalHeight;
+        composeClassReplace($("out"), currentImg, lastResult.overlay, lastResult.width, lastResult.height, [cls.r, cls.g, cls.b], skyCanvas(w, h));
+        $("cov").textContent = `${(cls.coverage * 100).toFixed(1)}% of the frame`;
+        $("rReplaced").textContent = `${escapeHTML(label)} · ${(cls.coverage * 100).toFixed(1)}%`;
+      }
+
+      if (new URLSearchParams(location.search).has("auto")) {
+        (async () => { await pickSample($("samples").firstElementChild); const t0 = Date.now(); let cl = false; while ($("run").disabled && Date.now() - t0 < 130000) { if (!cl) { const b = $("model-loader").querySelector(".loader-actions button"); if (b && /download/i.test(b.textContent)) { b.click(); cl = true; } } await new Promise((r) => setTimeout(r, 200)); } if (!$("run").disabled) $("run").click(); })();
+      }
+    </script>
+  </body>
+</html>

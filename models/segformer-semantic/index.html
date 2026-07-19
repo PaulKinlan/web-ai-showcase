@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SegFormer-B0 — label every pixel of a scene in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run SegFormer-B0 (ADE20K) locally in your browser: it labels every pixel of a photo with one of 150 scene classes — sky, road, person, building, tree — and paints a colour-coded semantic map with a class legend and per-class coverage. No server, real per-pixel inference you can see inside."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🗺️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">image-segmentation · vision · WASM · ~15 MB</p>
+      <h1>SegFormer-B0 — give every pixel a name</h1>
+      <p class="lede">
+        This is <em>dense semantic segmentation</em>: not "cut out the subject" and not "mask the thing
+        I clicked" — every single pixel is classified into one of 150 everyday scene categories from
+        ADE20K (sky, road, person, building, tree, wall, floor, car…). Drop a photo and watch it become
+        a colour-blocked map of what's where, entirely on your device.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/Xenova/segformer-b0-finetuned-ade-512-512" target="_blank" rel="noopener">Xenova/segformer-b0-finetuned-ade-512-512</a></td></tr>
+          <tr><th>Task / pipeline</th><td><code>image-segmentation</code> (semantic subtask — a full label map)</td></tr>
+          <tr><th>Architecture</th><td>SegFormer: a hierarchical transformer encoder (MiT-B0) + a lightweight all-MLP decode head</td></tr>
+          <tr><th>Classes</th><td>150 ADE20K scene categories (wall, floor, sky, tree, person, car, road…)</td></tr>
+          <tr><th>Quantization</th><td>q8 (8-bit) ONNX</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (runs anywhere; no WebGPU needed)</td></tr>
+          <tr><th>Download</th><td>~15 MB, cached after first load</td></tr>
+          <tr><th>License</th><td>NVIDIA Source Code License (research; non-commercial)</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers, Canvas, FileReader — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Pick or drop a photo and hit Segment. Every pixel gets a class; the map is drawn over your photo. Slide the opacity to fade between the photo and the pure colour map.</p>
+
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image">
+        <span id="dropText">Drop a photo here, or click to choose</span>
+        <input type="file" id="file" accept="image/*" hidden />
+      </div>
+      <div class="sample-strip" id="samples" aria-label="Sample images">
+        <img class="sample-thumb active" src="sample-river.jpg" data-src="sample-river.jpg" alt="A riverside landscape at golden hour with sky, water and trees" tabindex="0" role="button" />
+        <img class="sample-thumb" src="sample-room.jpg" data-src="sample-room.jpg" alt="A cozy bedroom interior with wall, floor and furniture" tabindex="0" role="button" />
+        <img class="sample-thumb" src="sample-cats.jpg" data-src="sample-cats.jpg" alt="Two cats on a couch by a wall" tabindex="0" role="button" />
+      </div>
+
+      <div style="margin:.6rem 0">
+        <button id="run" type="button" disabled>Segment scene</button>
+      </div>
+
+      <div class="slider-row">
+        <label for="opacity">Map opacity</label>
+        <input type="range" id="opacity" min="0" max="1" step="0.05" value="0.6" />
+        <output id="opacityOut" for="opacity">60%</output>
+      </div>
+
+      <div class="canvas-wrap">
+        <canvas id="stage" class="stage-canvas" aria-label="Semantic segmentation result: photo with a colour-coded class map painted over it"></canvas>
+      </div>
+
+      <p class="muted" style="font-size:.8rem;margin:.5rem 0 .2rem;text-transform:uppercase;letter-spacing:.05em">Class legend</p>
+      <div class="legend" id="legend" role="list" aria-label="Scene classes and their colours"><span class="muted" style="font-size:.82rem">Run segmentation to label the scene.</span></div>
+
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+        <span>classes found <b id="rClasses">–</b></span>
+        <span>map resolution <b id="rDims">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside</h3>
+      <p class="muted">
+        SegFormer outputs a score for every one of the 150 classes at every pixel, then takes the
+        <strong>argmax</strong> — the winning class per pixel — to make the label map. On the left is
+        that label map on its own (the raw model output, no photo). On the right, the class distribution:
+        how much of the frame each class claimed. That coverage vector is a compact "what kind of scene
+        is this?" signature you can feed to other logic.
+      </p>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Run segmentation to see the label map and class distribution.</div>
+      <div id="insideWrap" hidden>
+        <div class="canvas-grid">
+          <div class="canvas-card">
+            <h4>Argmax label map (raw output)</h4>
+            <canvas class="viz-canvas" id="mapOnly" aria-label="Colour-blocked map of the winning class at every pixel"></canvas>
+          </div>
+          <div class="canvas-card">
+            <h4>Per-class coverage</h4>
+            <div class="cov-list" id="covList"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        A per-pixel scene map is the raw material for a surprising number of features — and having it run
+        locally means you can label a photo, or a video frame, without an upload or an API bill.
+      </p>
+      <ul>
+        <li><strong>Sky &amp; background replacement</strong> — select every "sky" pixel and swap it, or blur everything that isn't "person," on-device.</li>
+        <li><strong>Scene understanding</strong> — the coverage vector ("60% building, 20% road, 10% sky") tells an app what kind of place a photo shows, for tagging, search, or routing.</li>
+        <li><strong>Mapping &amp; mobility</strong> — separate road from sidewalk from vegetation in street imagery for accessibility routing, surveys, or driving assist prototypes.</li>
+        <li><strong>Photo &amp; video editing</strong> — apply an effect to only the "grass," relight only the "wall," or grade the "sky" — region-aware edits without manual masking.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Segment a scene and read the colour map and legend — see semantic segmentation plainly.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Sky replacement — select the "sky" class and drop in a new sky, on-device.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Turn any photo into a flat colour-blocked "map" poster you can download.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">SegFormer scene classes + Depth Anything → a map coloured by class and shaded by distance.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>Semantic segmentation is a one-liner with Transformers.js. The pipeline returns one entry per class present, each with a full-resolution mask:</p>
+      <pre><code>import { pipeline } from "@huggingface/transformers";
+
+const segment = await pipeline(
+  "image-segmentation",
+  "Xenova/segformer-b0-finetuned-ade-512-512",
+); // downloads + caches ~15 MB once
+
+const output = await segment(imageURL);
+// → [{ score: null, label: "sky",   mask: RawImage },
+//    { score: null, label: "tree",  mask: RawImage },
+//    { score: null, label: "road",  mask: RawImage }, … ]
+//   each mask is 0/255 for that class; together they tile the whole image</code></pre>
+      <p class="muted">
+        This page runs that in a Web Worker, then folds the per-class masks into a single colour-coded
+        overlay and a per-class pixel count — so the map, legend, and coverage bars are all just views of
+        the one label map the model produced. Nothing is uploaded.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/Xenova/segformer-b0-finetuned-ade-512-512" target="_blank" rel="noopener">Model card — Xenova/segformer-b0-finetuned-ade-512-512</a></li>
+        <li><a href="https://huggingface.co/nvidia/segformer-b0-finetuned-ade-512-512" target="_blank" rel="noopener">Original weights — nvidia/segformer-b0-finetuned-ade-512-512</a></li>
+        <li><a href="https://arxiv.org/abs/2105.15203" target="_blank" rel="noopener">Paper — SegFormer (Xie et al., 2021, arXiv:2105.15203)</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { SegformerEngine, fileToDataURL, urlToDataURL, loadImage, paintPhoto, paintSemanticMap, paintMapOnly, escapeHTML, SEGFORMER_CSS }
+        from "./segformer.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = SEGFORMER_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new SegformerEngine();
+      let currentImageURL = null, currentImg = null, lastResult = null;
+
+      const rgb = (c) => `rgb(${c.r},${c.g},${c.b})`;
+
+      async function useURL(url, srcForPreview) {
+        currentImageURL = url;
+        currentImg = await loadImage(srcForPreview || url);
+        lastResult = null;
+        $("insideWrap").hidden = true;
+        $("insideEmpty").hidden = false;
+        $("readout").hidden = true;
+        $("legend").replaceChildren(Object.assign(document.createElement("span"), { className: "muted", textContent: "Run segmentation to label the scene.", style: "font-size:.82rem" }));
+        paintPhoto($("stage"), currentImg);
+      }
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        await useURL(await urlToDataURL(el.dataset.src), el.dataset.src);
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } });
+      }
+      pickSample($("samples").firstElementChild);
+
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) { for (const t of $("samples").children) t.classList.remove("active"); const u = await fileToDataURL(f); await useURL(u, u); $("dropText").textContent = f.name; }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/segformer-b0-finetuned-ade-512-512", runtime: "transformers.js", dtype: "q8", sizeMB: 15, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: () => { $("run").disabled = false; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!currentImageURL) { $("status").textContent = "Pick a photo first."; return; }
+        $("run").disabled = true; $("status").classList.remove("err", "ok"); $("status").textContent = "Segmenting every pixel…";
+        try {
+          const r = await engine.segment(currentImageURL);
+          lastResult = r;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = r.ms + " ms";
+          $("rClasses").textContent = r.classCount;
+          $("rDims").textContent = `${r.width} × ${r.height}`;
+          renderMap();
+          renderLegend(r.classes);
+          renderInside(r);
+          $("readout").hidden = false;
+          $("status").textContent = `Labelled ${r.width * r.height} pixels across ${r.classCount} classes.`;
+          $("status").classList.add("ok");
+        } catch (err) {
+          $("status").textContent = "Segmentation failed: " + err.message;
+          $("status").classList.add("err");
+        } finally { $("run").disabled = false; }
+      });
+
+      const opacity = $("opacity");
+      opacity.addEventListener("input", () => { $("opacityOut").textContent = Math.round(opacity.value * 100) + "%"; if (lastResult) renderMap(); });
+
+      function renderMap() {
+        paintSemanticMap($("stage"), currentImg, lastResult.overlay, lastResult.width, lastResult.height, +opacity.value);
+      }
+      function renderLegend(classes) {
+        $("legend").replaceChildren(...classes.map((c) => {
+          const el = document.createElement("span");
+          el.className = "legend-item"; el.setAttribute("role", "listitem");
+          el.innerHTML = `<span class="swatch" style="background:${rgb(c)}"></span>${escapeHTML(c.label)} <b>${(c.coverage * 100).toFixed(1)}%</b>`;
+          return el;
+        }));
+      }
+      function renderInside(r) {
+        $("insideEmpty").hidden = true; $("insideWrap").hidden = false;
+        paintMapOnly($("mapOnly"), r.overlay, r.width, r.height, r.width, r.height);
+        const max = Math.max(...r.classes.map((c) => c.coverage), 0.0001);
+        $("covList").replaceChildren(...r.classes.map((c) => {
+          const row = document.createElement("div"); row.className = "cov-row";
+          row.innerHTML = `<span class="name"><span class="swatch" style="background:${rgb(c)}"></span>${escapeHTML(c.label)}</span>` +
+            `<span class="bar"><span style="inline-size:${(c.coverage / max * 100).toFixed(1)}%;background:${rgb(c)}"></span></span>` +
+            `<span class="pct">${(c.coverage * 100).toFixed(1)}%</span>`;
+          return row;
+        }));
+      }
+
+      // Headless / deep-link auto-run: ?auto picks a sample, kicks the loader (Download on first visit;
+      // cached auto-inits with no button), waits for ready, and segments — for verification.
+      if (new URLSearchParams(location.search).has("auto")) {
+        (async () => {
+          await pickSample($("samples").firstElementChild);
+          const t0 = Date.now();
+          let clicked = false;
+          while ($("run").disabled && Date.now() - t0 < 130000) {
+            if (!clicked) {
+              const b = $("model-loader").querySelector(".loader-actions button");
+              if (b && /download/i.test(b.textContent)) { b.click(); clicked = true; }
+            }
+            await new Promise((r) => setTimeout(r, 200));
+          }
+          if (!$("run").disabled) $("run").click();
+        })();
+      }
+    </script>
+  </body>
+</html>
