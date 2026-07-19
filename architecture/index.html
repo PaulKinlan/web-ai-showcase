@@ -1,0 +1,574 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Behind the scenes — the Web AI Showcase reference architecture</title>
+    <meta
+      name="description"
+      content="How every demo here runs a model entirely in your browser: static GitHub Pages hosting, dedicated module workers, a typed message protocol, the caching and resumable-download lifecycle, isolation-header limits, and the performance budgets that keep it responsive."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🧠</text></svg>"
+    />
+    <style>
+      /* Page-local layout only — all colour/spacing comes from public/styles.css tokens. */
+      .toc {
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: var(--bg-raised);
+        padding: 1rem 1.2rem;
+        margin: 1.4rem 0;
+      }
+      .toc h2 {
+        border: 0;
+        margin: 0 0 0.4rem;
+        font-size: 1rem;
+      }
+      .toc ol {
+        margin: 0;
+        padding-inline-start: 1.2rem;
+        columns: 2;
+        column-gap: 2rem;
+        font-size: 0.9rem;
+      }
+      @media (max-width: 640px) {
+        .toc ol {
+          columns: 1;
+        }
+      }
+      .toc li {
+        break-inside: avoid;
+        margin: 0.15rem 0;
+      }
+      section > h2 {
+        scroll-margin-top: 1rem;
+      }
+      /* Reference-spec definition lists (hosting facts, protocol messages, …). */
+      .spec {
+        display: grid;
+        grid-template-columns: max-content 1fr;
+        gap: 0.35rem 1rem;
+        margin: 0.8rem 0;
+        font-size: 0.9rem;
+      }
+      .spec dt {
+        font-family: var(--font-mono);
+        font-size: 0.78rem;
+        color: var(--muted);
+      }
+      .spec dd {
+        margin: 0;
+      }
+      @media (max-width: 560px) {
+        .spec {
+          grid-template-columns: 1fr;
+          gap: 0.1rem 0;
+        }
+        .spec dd {
+          margin: 0 0 0.5rem;
+        }
+      }
+      /* Callouts — grounded notes + honest caveats. Colour via tokens; icon is decorative text. */
+      .note {
+        border: 1px solid var(--border);
+        border-inline-start: 3px solid var(--accent);
+        border-radius: 8px;
+        background: var(--bg-secondary);
+        padding: 0.7rem 0.9rem;
+        margin: 1rem 0;
+        font-size: 0.92rem;
+      }
+      .note.warn {
+        border-inline-start-color: var(--warn);
+      }
+      .note.good {
+        border-inline-start-color: var(--good);
+      }
+      .note strong {
+        font-family: var(--font-body);
+      }
+      /* Copy-enabled code blocks (progressive enhancement). */
+      .codewrap {
+        position: relative;
+      }
+      .codewrap > .copy {
+        position: absolute;
+        top: 0.4rem;
+        inset-inline-end: 0.4rem;
+        font-size: 0.7rem;
+        padding: 0.2rem 0.5rem;
+        opacity: 0;
+        transition: opacity 0.15s;
+      }
+      .codewrap:hover > .copy,
+      .codewrap > .copy:focus-visible {
+        opacity: 1;
+      }
+      .dataflow {
+        font-family: var(--font-mono);
+        font-size: 0.8rem;
+        line-height: 1.9;
+        white-space: pre;
+        overflow-x: auto;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--bg-secondary);
+        padding: 0.9rem;
+        margin: 1rem 0;
+      }
+      .budget {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.88rem;
+        margin: 0.8rem 0;
+      }
+      .budget th,
+      .budget td {
+        text-align: start;
+        padding: 0.4rem 0.6rem;
+        border-bottom: 1px solid var(--border);
+        vertical-align: top;
+      }
+      .budget th {
+        font-family: var(--font-mono);
+        font-size: 0.72rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--muted);
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .codewrap > .copy {
+          transition: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">behind the scenes</p>
+      <h1>The reference architecture</h1>
+      <p class="lede">
+        Every demo in this showcase runs its model <em>entirely in your browser</em> — no server, no
+        API key, no upload. This page is the honest engineering story of how that works: where it's
+        hosted, how the inference stays off the main thread, how model weights are cached and
+        (re)downloaded, what the platform won't let a static site do, and the budgets that keep it
+        all responsive. Every claim here is grounded in the real repository behaviour and the
+        download-resume research — no invented APIs.
+      </p>
+    </header>
+
+    <nav class="toc" aria-label="On this page">
+      <h2>On this page</h2>
+      <ol>
+        <li><a href="#hosting">Hosting: static GitHub Pages</a></li>
+        <li><a href="#workers">Worker topology</a></li>
+        <li><a href="#dataflow">Data flow: main ↔ worker ↔ model</a></li>
+        <li><a href="#caching">Caching &amp; resumable downloads</a></li>
+        <li><a href="#isolation">Isolation-header limits</a></li>
+        <li><a href="#media">Audio / video / image pipelines</a></li>
+        <li><a href="#privacy">Security &amp; privacy</a></li>
+        <li><a href="#budgets">Performance budgets</a></li>
+      </ol>
+    </nav>
+
+    <main>
+      <section id="hosting">
+        <h2>Hosting: a static site on GitHub Pages</h2>
+        <p>
+          The whole showcase is static files — HTML, CSS, JS, JSON, and a service worker — served
+          from GitHub Pages under a project path. There is no application server: the catalogue is a
+          <code>models.json</code> the page fetches, and each model lives at its own stable route
+          under <code>models/&lt;slug&gt;/</code>. Weights are pulled at runtime from the Hugging
+          Face CDN (cross-origin) and cached on-device; nothing round-trips through a backend.
+        </p>
+        <dl class="spec">
+          <dt>origin</dt>
+          <dd><code>https://paulkinlan.github.io</code> (a <code>*.github.io</code> project site)</dd>
+          <dt>base path</dt>
+          <dd><code>/web-ai-showcase/</code> — absolute in-app URLs are written against it</dd>
+          <dt>app shell</dt>
+          <dd>cached by <code>sw.js</code> for offline; model blobs are <em>not</em> re-stored (see caching)</dd>
+          <dt>weights host</dt>
+          <dd><code>huggingface.co/.../resolve/…</code> → Xet CDN, fetched cross-origin with CORS</dd>
+        </dl>
+        <p>
+          Static hosting is the point, not a limitation to route around: it's free, it's CDN-backed,
+          it has no secrets to leak, and it forces the honest constraint that <em>all</em>
+          intelligence ships to the client. The trade-offs it does impose — no custom response
+          headers, best-effort storage — are called out explicitly below.
+        </p>
+      </section>
+
+      <section id="workers">
+        <h2>Worker topology: dedicated module workers, a typed protocol, transferables</h2>
+        <p>
+          Inference never runs on the main thread. Each model page owns a <strong>dedicated module
+          worker</strong> and talks to it over a small, typed message protocol. Model classes and
+          the ONNX runtime are <code>import()</code>-ed <em>inside</em> the worker, so parsing and
+          executing multi-hundred-megabyte graphs can't jank the UI thread.
+        </p>
+        <div class="codewrap">
+          <pre><code>// front-end helper (e.g. models/yolos-detection/yolos.js, models/sam2-segmentation/sam2.js)
+this.worker = new Worker(WORKER_URL, { type: "module" });
+this.worker.addEventListener("message", (e) =&gt; this._onMessage(e.data));
+this.worker.addEventListener("error", (e) =&gt; showOnPage(e.message)); // errors surface on the page
+</code></pre>
+        </div>
+        <p>
+          The message contract is a small tagged union — every message is <code>{ type, id, … }</code>.
+          <code>type</code> names the operation; <code>id</code> correlates each response with the
+          request that triggered it, so a stale reply from a superseded request can be dropped
+          instead of racing the UI. That correlation id <em>is</em> the cancellation and backpressure
+          mechanism: the worker processes messages serially (natural backpressure), the UI ignores
+          any result whose <code>id</code> is no longer current, and a hard cancel is a
+          <code>worker.terminate()</code> + fresh worker. Weight caching is versioned separately, by
+          the model's Hugging Face repo revision (commit sha) — see caching.
+        </p>
+        <div class="codewrap">
+          <pre><code>// worker.js — the dispatch half of the protocol (from models/sam2-segmentation/worker.js)
+self.addEventListener("message", async (e) =&gt; {
+  const { type } = e.data;
+  try {
+    if (type === "load") await ensureLoaded();
+    else if (type === "embed") await embed(e.data.id, e.data.image);
+    else if (type === "segment") await segment(e.data.id, e.data.points, e.data.box);
+  } catch (err) {
+    post({ type: "error", id: e.data?.id, message: String(err?.message ?? err) });
+  }
+});
+
+// worker → main messages: { type: "progress" | "ready" | "embedded" | "result" | "error", id, … }
+function post(msg, transfer) {
+  self.postMessage(msg, transfer || []); // Transferables move buffers zero-copy
+}</code></pre>
+        </div>
+        <p>
+          Large binary results are <strong>transferred, not copied</strong>. A segmentation worker
+          hands its mask planes back as detached <code>ArrayBuffer</code>s in the transfer list, so a
+          multi-megapixel mask crosses the thread boundary with no serialization cost:
+        </p>
+        <div class="codewrap">
+          <pre><code>post(
+  { type: "result", id, width, height, masks: planes, scores, ms },
+  planes.map((p) =&gt; p.buffer), // transfer list — ownership moves to the main thread
+);</code></pre>
+        </div>
+        <div class="note good">
+          <strong>Why it's a module worker.</strong> <code>{ type: "module" }</code> lets the worker
+          use <code>import</code> for the Transformers.js / ONNX-Runtime-Web build (and lets one
+          model pin a newer library version locally without touching shared code). Everything the
+          model needs is inside the worker; the page keeps only the thin control UI.
+        </div>
+      </section>
+
+      <section id="dataflow">
+        <h2>Data flow: main ↔ worker ↔ model</h2>
+        <p>
+          The main thread is a controller and a renderer; the worker is where the model lives. Input
+          crosses in (an image as a data URL / <code>ImageBitmap</code>, or text), inference runs in
+          the worker, and results — tokens, boxes, masks, embeddings — cross back out, with progress
+          streamed the whole time so the UI is never a frozen spinner.
+        </p>
+        <div class="dataflow" role="img" aria-label="Data flow from the main thread to the worker to the model and back">
+main thread                    dedicated module worker            model runtime
+───────────                    ───────────────────────            ─────────────
+user action ──postMessage────▶ onmessage {type:"run", id, input}
+  (image / text / prompt)        │
+                                 ├─ import() Transformers.js / ORT-Web
+                                 ├─ pipeline()/Model.from_pretrained ──▶ WebGPU or WASM
+  progress bar ◀──{progress}──── │   progress_callback                    (executes the graph)
+                                 ├─ run inference ──────────────────────▶ tensors out
+  render result ◀──{result}───── post(msg, [buffers])  ◀──────────────────┘
+  (canvas / DOM)                 (Transferables: zero-copy)</div>
+        <p>
+          Loading is mediated by the shared, accessible loader in
+          <code>lib/model-loader.js</code> (backed by <code>lib/model-cache.js</code>): a valid,
+          current on-device model <em>auto-initialises</em> — returning visitors never click
+          "Load" — while a genuinely absent model, a partially-evicted one, or a newer available
+          revision each get an honest, labelled action. Progress is announced through a
+          <code>role="status" aria-live</code> region, and a failed load offers Retry, never a faked
+          result.
+        </p>
+      </section>
+
+      <section id="caching">
+        <h2>Caching &amp; the resumable-download lifecycle</h2>
+        <p>
+          Model weights are the expensive part — tens to hundreds of megabytes — so cache ownership
+          is deliberate. Transformers.js keeps its <em>own</em> Cache Storage bucket
+          (<code>transformers-cache</code>) and writes every model file there, including fetches the
+          service worker never sees (first visit before control, hard reloads). The service worker
+          therefore serves model files by matching <em>across all caches</em> and never stores a
+          second copy — double-storing gigabyte blobs is exactly what pushes an origin into quota
+          eviction.
+        </p>
+        <div class="codewrap">
+          <pre><code>// sw.js — serve model blobs cache-first across ALL caches; never double-store
+if (MODEL_HOSTS.includes(url.hostname)) {
+  e.respondWith(caches.match(req).then((hit) =&gt; hit || fetch(req)));
+  return; // the library owns transformers-cache; we only cache the small app shell
+}</code></pre>
+        </div>
+        <p>
+          Versioning is by Hugging Face repo revision: <code>lib/model-cache.js</code> records which
+          files a successful load cached plus the repo's commit sha, then on revisit compares
+          recorded files against what's still cached (missing ⇒ evicted ⇒ <em>partial</em>) and the
+          recorded revision against the live one (newer ⇒ optional <em>update</em>). Offline, the
+          cached copy is treated as current so offline use keeps working.
+        </p>
+
+        <h3>Resumable downloads — validated for this exact deployment</h3>
+        <p>
+          For the large models, restarting a failed download from zero is painful, so the reference
+          design is a <strong>real HTTP-Range resume</strong>. The download-resume research confirmed
+          every prerequisite holds cross-origin from a <code>*.github.io</code> page against the HF
+          CDN, on files from 23&nbsp;MB to 786&nbsp;MB:
+        </p>
+        <ul>
+          <li>
+            Always fetch the <code>…/resolve/main/…</code> URL. It 302-redirects to the Xet CDN and
+            the browser <strong>re-sends your <code>Range</code> header through the redirect</strong>;
+            the final response is <code>206 Partial Content</code>, <code>type:"cors"</code> (not
+            opaque), so JS can read the body, <code>Content-Range</code>, and the strong
+            <code>ETag</code>.
+          </li>
+          <li>
+            The <code>ETag</code> is <strong>strong</strong> (a content hash), so
+            <code>If-Range: &lt;etag&gt;</code> conditional resume works. A changed file answers
+            <code>200</code> (full body) instead of <code>206</code> — the built-in "restart cleanly"
+            signal.
+          </li>
+          <li>
+            Size and integrity are CORS-exposed: <code>X-Linked-Size</code> (total bytes) and
+            <code>X-Linked-ETag</code> (the git-LFS <strong>sha256</strong> of the whole file), so the
+            assembled blob can be integrity-checked, not just length-checked.
+          </li>
+          <li>
+            No <code>Content-Encoding</code> on the binary payload — byte offsets map 1:1 to file
+            bytes, so offset math is safe.
+          </li>
+        </ul>
+        <div class="codewrap">
+          <pre><code>// Resumable model download — the researched lifecycle (reference implementation).
+async function downloadResumable(resolveUrl, store /* IndexedDB */) {
+  let { receivedBytes = 0, etag, total } = (await store.get(resolveUrl)) ?? {};
+  while (total == null || receivedBytes &lt; total) {
+    const res = await fetch(resolveUrl, {
+      headers: { Range: `bytes=${receivedBytes}-`, ...(etag ? { "If-Range": etag } : {}) },
+    });
+    if (res.status === 200) { receivedBytes = 0; }        // file changed → honest restart
+    total ??= Number(res.headers.get("content-range")?.split("/")[1] ?? res.headers.get("x-linked-size"));
+    etag = res.headers.get("etag") ?? etag;
+    for await (const chunk of res.body) {                 // append + persist the partial
+      await store.appendChunk(resolveUrl, chunk, (receivedBytes += chunk.byteLength));
+    }
+  }
+  // Completion gate: verify sha256(blob) === X-Linked-ETag before marking "ready".
+  if (await sha256Hex(await store.assemble(resolveUrl)) !== expectedSha) throw new Error("integrity mismatch → discard + restart");
+}</code></pre>
+        </div>
+        <div class="note warn">
+          <strong>Honest caveats.</strong> A <code>*.github.io</code> origin gets <em>best-effort</em>
+          storage: IndexedDB / Cache Storage partials can be evicted between sessions unless
+          <code>navigator.storage.persist()</code> is granted (not guaranteed here). So resume must
+          re-validate the partial with <code>If-Range</code> and be ready to fall back to a clean
+          restart, and it must verify the sha256 on completion before trusting the file. The Cache
+          API alone does <em>not</em> make a stored <code>206</code> resumable — you own the
+          offset/validator bookkeeping in IndexedDB. Transformers.js today re-downloads whole files
+          via the Cache API on failure; the Range/If-Range/sha256 lifecycle above is the researched
+          upgrade path, not a claim that the library already resumes.
+        </div>
+      </section>
+
+      <section id="isolation">
+        <h2>Isolation-header limits on GitHub Pages</h2>
+        <p>
+          A static host can't set arbitrary response headers, and GitHub Pages won't send
+          <code>Cross-Origin-Opener-Policy</code> / <code>Cross-Origin-Embedder-Policy</code>. Those
+          two headers are the switch for <strong>cross-origin isolation</strong>, and without them
+          <code>self.crossOriginIsolated</code> is <code>false</code>.
+        </p>
+        <div class="codewrap">
+          <pre><code>// On GitHub Pages this is false — no COOP/COEP means no cross-origin isolation.
+if (!self.crossOriginIsolated) {
+  // SharedArrayBuffer is unavailable / non-shareable → multi-threaded WASM can't spin up a thread pool.
+  // The non-isolated path (single-thread WASM, or WebGPU) is the DEFAULT here, by design.
+}</code></pre>
+        </div>
+        <p>
+          The practical consequence: <strong>multi-threaded</strong> WebAssembly (ONNX Runtime Web's
+          threaded backend) relies on <code>SharedArrayBuffer</code>, which requires cross-origin
+          isolation. On this deployment that isn't available, so the <em>non-isolated fallback is the
+          default</em>: models run on <strong>single-threaded WASM</strong> or, when a real adapter
+          exists, on <strong>WebGPU</strong> — which is the fast path anyway and needs no SAB. Every
+          page probes for an actual WebGPU adapter (mere <code>"gpu" in navigator</code> is not
+          enough) and falls back to WASM honestly, labelling WebGPU-only models as such rather than
+          faking a result.
+        </p>
+        <div class="note">
+          <strong>If you fork this to a host that can set headers</strong> (Netlify, Cloudflare
+          Pages, a Worker), sending <code>COOP: same-origin</code> + <code>COEP: require-corp</code>
+          (or <code>credentialless</code>) turns on isolation and unlocks threaded WASM — at the cost
+          of every cross-origin subresource needing CORP/CORS. On GitHub Pages that door is closed,
+          so the architecture is built to be fast <em>without</em> it.
+        </div>
+      </section>
+
+      <section id="media">
+        <h2>Audio, video, and image pipelines</h2>
+        <p>
+          Media decode and pixel work also belong off the main thread, and the platform provides the
+          transferable primitives to keep them there.
+        </p>
+        <dl class="spec">
+          <dt>images</dt>
+          <dd>
+            Decode to an <code>ImageBitmap</code> (transferable) and hand it straight into the
+            worker; render results — overlays, masks — onto an <code>OffscreenCanvas</code> so
+            drawing doesn't compete with the UI. Masks come back as transferred
+            <code>ArrayBuffer</code>s and paint via <code>putImageData</code>.
+          </dd>
+          <dt>audio</dt>
+          <dd>
+            Capture and resample on an <code>AudioWorklet</code> (its own real-time thread), buffer
+            the Float32 PCM the model expects (e.g. 16&nbsp;kHz mono for Whisper), and post it to the
+            inference worker — never block the audio render quantum with model work.
+          </dd>
+          <dt>video</dt>
+          <dd>
+            Pull frames as <code>ImageBitmap</code>s (or <code>VideoFrame</code>s) and run the
+            per-frame model in the worker, reusing cached per-image state where the model allows it
+            (e.g. SAM's image embedding is computed once, then every prompt is cheap).
+          </dd>
+        </dl>
+        <p>
+          The unifying rule: get pixels and samples into a <em>transferable</em> as early as
+          possible, do the heavy work in a worker, and transfer results back — copies and
+          main-thread decodes are the things that jank.
+        </p>
+      </section>
+
+      <section id="privacy">
+        <h2>Security &amp; privacy: everything stays on your device</h2>
+        <p>
+          Because there is no backend, there is nowhere for your data to go. Images you drop, audio
+          you record, and text you type are processed <strong>entirely in your browser</strong>;
+          they are never uploaded, and there are no API keys because there is no API to call. The
+          only network traffic is fetching the <em>model weights</em> from the Hugging Face CDN
+          (and the library JS from jsDelivr) the first time — after which the model is cached and the
+          demo works offline.
+        </p>
+        <ul>
+          <li><strong>No uploads, no telemetry of your inputs</strong> — inference is local, full stop.</li>
+          <li>
+            <strong>Only canonical weights are loaded</strong> — from the model's official HF repo
+            (or MLC / MediaPipe), never arbitrary remote code; <code>env.allowLocalModels</code> is
+            off so the library can't be pointed at a surprise path.
+          </li>
+          <li>
+            <strong>Secure context</strong> — the site is HTTPS, which WebGPU, service workers, and
+            <code>SharedArrayBuffer</code> (where available) all require anyway.
+          </li>
+          <li>
+            <strong>Integrity on completion</strong> — the resumable-download design verifies the
+            assembled weights' sha256 against the server's <code>X-Linked-ETag</code> before a model
+            is marked ready.
+          </li>
+        </ul>
+      </section>
+
+      <section id="budgets">
+        <h2>Performance budgets</h2>
+        <p>
+          Responsiveness is a budget, not an afterthought. Two numbers frame everything: at 60&nbsp;fps
+          a frame is ~16&nbsp;ms, so main-thread work should stay under roughly <strong>8&nbsp;ms
+          per frame</strong> to leave the browser headroom for style, layout, paint, and input; and
+          any single task over <strong>50&nbsp;ms</strong> is a "long task" that directly hurts
+          Interaction to Next Paint (INP). The whole architecture exists to keep the main thread
+          inside those budgets.
+        </p>
+        <table class="budget">
+          <thead>
+            <tr><th>Budget</th><th>Target</th><th>How the architecture holds it</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Main-thread frame slice</td>
+              <td>≤ ~8&nbsp;ms</td>
+              <td>Model execution is in a worker; the main thread only routes messages and paints.</td>
+            </tr>
+            <tr>
+              <td>Long-task ceiling (INP)</td>
+              <td>&lt; 50&nbsp;ms per task</td>
+              <td>Any main-thread post-processing loop yields with <code>scheduler.yield()</code>.</td>
+            </tr>
+            <tr>
+              <td>Off-main-thread by default</td>
+              <td>100% of inference</td>
+              <td>Dedicated module worker per page; transferables for large buffers.</td>
+            </tr>
+            <tr>
+              <td>Offscreen render cost</td>
+              <td>near-zero when hidden</td>
+              <td><code>content-visibility:auto</code> + <code>contain-intrinsic-size</code> on the catalogue grid.</td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          When post-processing genuinely has to touch the main thread — decoding a mask into pixels,
+          building thousands of DOM nodes — it's sliced so it can't become a long task. Yield on a
+          ~50&nbsp;ms deadline, with a <code>setTimeout</code> fallback where
+          <code>scheduler.yield()</code> isn't supported (it's unavailable in Safari):
+        </p>
+        <div class="codewrap">
+          <pre><code>let deadline = performance.now() + 50; // 50 ms = the long-task boundary
+for (const item of items) {
+  processItem(item);
+  if (performance.now() &gt;= deadline) {
+    if ("scheduler" in globalThis &amp;&amp; "yield" in scheduler) await scheduler.yield();
+    else await new Promise((r) =&gt; setTimeout(r, 0)); // fallback: Safari has no scheduler.yield
+    deadline = performance.now() + 50;
+  }
+}</code></pre>
+        </div>
+        <p class="muted" style="font-size: 0.85rem">
+          Budgets and techniques follow the project's <code>modern-web-guidance</code> references:
+          <code>performance</code>, <code>break-up-long-tasks</code>,
+          <code>defer-rendering-heavy-content</code>, and <code>deliver-optimized-decorative-images</code>.
+        </p>
+      </section>
+    </main>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>.
+      Back to <a href="/web-ai-showcase/">the showcase →</a>. Source on
+      <a href="https://github.com/PaulKinlan/web-ai-showcase" target="_blank" rel="noopener">GitHub</a>.
+    </footer>
+
+    <script type="module">
+      // Progressive enhancement: a copy button on every code block. No dependency; INP-friendly.
+      for (const pre of document.querySelectorAll(".codewrap > pre")) {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "copy secondary";
+        btn.textContent = "Copy";
+        btn.setAttribute("aria-label", "Copy code to clipboard");
+        btn.addEventListener("click", async () => {
+          try {
+            await navigator.clipboard.writeText(pre.innerText);
+            btn.textContent = "Copied";
+            setTimeout(() => (btn.textContent = "Copy"), 1500);
+          } catch {
+            btn.textContent = "Press ⌘/Ctrl+C";
+          }
+        });
+        pre.parentElement.append(btn);
+      }
+    </script>
+  </body>
+</html>
