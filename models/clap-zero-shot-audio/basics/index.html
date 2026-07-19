@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CLAP Basics — name a sound by your own labels · Web AI Showcase</title>
+    <meta name="description" content="The fundamental CLAP move: pick a sound, type any labels you like, and watch it score how well each matches — plus the log-mel spectrogram it reads. In your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎧</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">CLAP</a></p>
+
+    <header>
+      <p class="eyebrow">use case · basics</p>
+      <h1>Basics: name a sound by your own labels</h1>
+      <p class="lede">
+        Zero-shot audio classification in its simplest form. Give CLAP a clip and a list of labels you
+        invent, and it scores how well each one matches what it hears. Change the words, change the
+        answer — no retraining.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an audio file">
+        <span id="dropText">Drop an audio file, or click to choose</span>
+        <input type="file" id="file" accept="audio/*" hidden />
+      </div>
+      <div class="sample-row" id="samples" aria-label="Sample sounds" role="group">
+        <button class="chip" type="button" data-src="../sample-tone.wav" aria-pressed="true">🎸 Musical tone</button>
+        <button class="chip" type="button" data-src="../sample-rain.wav" aria-pressed="false">🌧 Rain</button>
+        <button class="chip" type="button" data-src="../sample-siren.wav" aria-pressed="false">🚨 Siren</button>
+        <button class="chip" type="button" data-src="../sample-alarm.wav" aria-pressed="false">⏰ Alarm</button>
+      </div>
+      <div class="wave-wrap"><canvas id="wave" class="wave" aria-label="Waveform of the selected audio"></canvas></div>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">
+        Candidate labels (comma-separated)
+        <textarea id="labels" rows="3">a musical instrument, rain falling, a siren, an alarm beeping, a dog barking, applause</textarea>
+      </label>
+      <div style="margin:.6rem 0"><button id="run" type="button" disabled>Classify sound</button></div>
+
+      <div class="bars" id="bars" aria-live="polite"></div>
+      <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>latency <b id="rMs">–</b></span><span>top <b id="rTop">–</b></span></div>
+    </section>
+
+    <p class="crumbs"><a href="../">← Back to CLAP</a> · Next: <a href="../practical/">Practical →</a></p>
+
+    <script type="module">
+      import { ClapEngine, blobToMono48k, urlToMono48k, parseLabels, drawWaveform, renderBars, CLAP_CSS } from "../clap.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = CLAP_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new ClapEngine();
+      let pcm = null, ready = false;
+
+      function useAudio(p) { pcm = p; $("bars").replaceChildren(); $("readout").hidden = true; drawWaveform($("wave"), pcm); $("run").disabled = !ready; }
+      async function pickSample(btn) {
+        for (const b of $("samples").children) b.setAttribute("aria-pressed", String(b === btn));
+        $("status").textContent = "Decoding sample…";
+        try { const { pcm: p } = await urlToMono48k(btn.dataset.src); useAudio(p); $("status").textContent = "Ready — hit Classify."; }
+        catch (e) { $("status").textContent = "Decode failed: " + e.message; $("status").classList.add("err"); }
+      }
+      for (const b of $("samples").children) b.addEventListener("click", () => pickSample(b));
+
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover","dragenter"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave","drop"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) { for (const b of $("samples").children) b.setAttribute("aria-pressed","false"); $("dropText").textContent = f.name; $("status").textContent="Decoding…"; try { const {pcm:p} = await blobToMono48k(f); useAudio(p); $("status").textContent="Ready — hit Classify."; } catch(e){ $("status").textContent="Decode failed: "+e.message; $("status").classList.add("err"); } }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", e => { const f = e.dataTransfer?.files?.[0]; if (f) loadFile(f); });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/clap-htsat-unfused", runtime: "transformers.js", dtype: "q8", sizeMB: 160, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: () => { ready = true; $("run").disabled = !pcm; },
+      });
+      pickSample($("samples").firstElementChild);
+
+      $("run").addEventListener("click", async () => {
+        const labels = parseLabels($("labels").value);
+        if (!pcm) return;
+        if (labels.length < 2) { $("status").textContent = "Give at least two labels."; $("status").classList.add("err"); return; }
+        $("run").disabled = true; $("status").classList.remove("err","ok"); $("status").textContent = "Listening…";
+        try {
+          const r = await engine.classify(pcm, labels);
+          const items = r.labels.map((label, i) => ({ label, prob: r.probs[i], cosine: r.cosines[i] }));
+          renderBars($("bars"), items, { showCosine: true });
+          const top = [...items].sort((a,b)=>b.prob-a.prob)[0];
+          $("rBackend").textContent = r.device.toUpperCase(); $("rMs").textContent = r.ms + " ms";
+          $("rTop").textContent = top.label; $("readout").hidden = false;
+          $("status").textContent = `Top guess: ${top.label}.`; $("status").classList.add("ok");
+        } catch (e) { $("status").textContent = "Failed: " + e.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>
