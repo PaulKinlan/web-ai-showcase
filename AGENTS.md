@@ -26,12 +26,13 @@ short version for tools that look for `AGENTS.md`.
   build wave; work against the real browser-runnable universe (Transformers.js/ONNX, WebLLM/MLC,
   MediaPipe) with family dedup; gated/too-large = blocked but still counted. Evidence in
   `inventory/`.
-- **Denominator discipline.** The coverage denominator is distinct ARCHITECTURE FAMILIES
-  (`node scripts/coverage.mjs`), NOT raw repos — the raw HF browser-runnable count is unbounded and
-  grows with scan depth, so it's evidence (`inventory/`) not a baseline. Report built
-  architecture-families / taxonomy total + pending families. NEVER say "all/complete/done" — new
-  architectures keep surfacing and get added to the taxonomy. Continue selecting pending families
-  (and per-task representatives), wave after wave.
+- **Denominator discipline — report TWO metrics.** PRIMARY: the evidence-backed eligible catalogue
+  (`inventory/summary.json` + `models.json`) — built / eligible + built / catalogued (+ pending);
+  this is a refining LOWER BOUND (grows with scan depth — state the depth), keep the catalogue +
+  summary reconciled. SECONDARY: architecture-family coverage (`node scripts/coverage.mjs`), a
+  "kinds of model" view only — a high families ratio does NOT imply comprehensive catalogue
+  coverage. NEVER say "all/complete/done" by either metric. Continue selecting pending eligible
+  models + missing architecture families, wave after wave.
 - **More than a toy per model:** download/progress/cache controls, model-specific params + full
   a11y, inspectable tokens/tensors/timings/memory/backend/quant, capability+fallback diagnostics,
   and an expanding use-case matrix (multiple basics/practical/wild + credible multi-model) — all

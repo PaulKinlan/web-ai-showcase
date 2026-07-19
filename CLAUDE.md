@@ -131,17 +131,29 @@ inventory surfaces.
 
 ### 10. Denominator discipline — never claim "complete" at a toy count
 
-**The coverage denominator is distinct ARCHITECTURE FAMILIES, not raw repos.** The raw
-browser-runnable HF universe does NOT converge — the deduped "eligible family" count grows with scan
-depth (635 @ `--pages 8` → 754 @ 10 → 1288 @ 20 → 2355 @ 40 …) because the long tail of
-transformers.js/ONNX re-exports and fine-tunes is effectively unbounded. So raw repo/family counts
-are evidence of the universe (kept in `inventory/`), NOT a valid coverage baseline. Measure coverage
-with `node scripts/coverage.mjs` against the **bounded, curated architecture-family taxonomy** (the
-~60+ canonical _kinds_ of model — BERT, ViT, Whisper, Wav2Vec2, Llama, Qwen, T5, DETR, SAM, CLIP,
-MusicGen, MediaPipe, …). Report **built architecture-families / taxonomy total** + the pending
-families. **Never say "all" / "complete" / "done"** — new architectures keep surfacing and get ADDED
-to the taxonomy; the mission is to have a representative demo for every capability task AND every
-architecture family, which is a moving target. Blocked/device-only families stay counted.
+Report **TWO denominators**, both honestly:
+
+1. **PRIMARY — the evidence-backed eligible catalogue.** `node scripts/inventory.mjs` scans the real
+   browser-runnable HF universe and records `inventory/summary.json` (eligible families) + merges
+   representatives into `models.json` (`built` / `pending`). Report **built / eligible** and **built
+   / catalogued (+ pending)**. IMPORTANT: this denominator is a **refining LOWER BOUND, not a fixed
+   number** — the deduped eligible-family count grows with scan depth (635 @ `--pages 8` → 754 @ 10
+   → 1288 @ 20 → 2355 @ 40 …) because the transformers.js/ONNX long tail is effectively unbounded.
+   Always state the scan depth and treat it as a lower bound; keep `models.json` (catalogue) and
+   `inventory/summary.json` (eligible universe) reconciled + consistent (same scan depth), and note
+   that the catalogue is a growing subset of the scanned eligible universe. Blocked/device-only stay
+   counted; "coming soon" is pending.
+
+2. **SECONDARY — architecture-family coverage.** `node scripts/coverage.mjs` reports built vs a
+   bounded curated taxonomy of ~60+ canonical _kinds_ of model (BERT, ViT, Whisper, Llama, DETR,
+   SAM, CLIP, MusicGen, MediaPipe, …). This is a useful "have we covered the distinct kinds" view —
+   a SECONDARY metric only. **A high architecture-family ratio (e.g. 40/63) does NOT imply
+   comprehensive catalogue coverage** and must never be presented as such.
+
+**Never say "all" / "complete" / "done"** by either metric — the eligible universe is
+unbounded/growing and new architectures keep surfacing. The mission (a representative demo for every
+capability task and every architecture family, while chipping into the eligible catalogue) is a
+moving frontier.
 
 ### 11. More than a toy per model
 
