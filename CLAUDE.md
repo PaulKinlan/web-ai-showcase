@@ -131,10 +131,17 @@ inventory surfaces.
 
 ### 10. Denominator discipline — never claim "complete" at a toy count
 
-Report **built / eligible / pending / blocked** against the exact `inventory/summary.json`
-denominator. **Never say "all" / "complete" / "done" unless `built === eligible`.** Blocked and
-device-only stay in the denominator; never shrink it because a model is hard. "Coming soon" cards
-are pending, not done.
+**The coverage denominator is distinct ARCHITECTURE FAMILIES, not raw repos.** The raw
+browser-runnable HF universe does NOT converge — the deduped "eligible family" count grows with scan
+depth (635 @ `--pages 8` → 754 @ 10 → 1288 @ 20 → 2355 @ 40 …) because the long tail of
+transformers.js/ONNX re-exports and fine-tunes is effectively unbounded. So raw repo/family counts
+are evidence of the universe (kept in `inventory/`), NOT a valid coverage baseline. Measure coverage
+with `node scripts/coverage.mjs` against the **bounded, curated architecture-family taxonomy** (the
+~60+ canonical _kinds_ of model — BERT, ViT, Whisper, Wav2Vec2, Llama, Qwen, T5, DETR, SAM, CLIP,
+MusicGen, MediaPipe, …). Report **built architecture-families / taxonomy total** + the pending
+families. **Never say "all" / "complete" / "done"** — new architectures keep surfacing and get ADDED
+to the taxonomy; the mission is to have a representative demo for every capability task AND every
+architecture family, which is a moving target. Blocked/device-only families stay counted.
 
 ### 11. More than a toy per model
 
