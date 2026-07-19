@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Facial expression — Reaction capture · Web AI Showcase</title>
+    <meta name="description" content="A reaction-capture widget: show someone a piece of content, capture a short burst of camera frames, and read their dominant on-device reaction — face-as-feedback instead of a star rating. Nothing uploaded." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🙂</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Facial expression</a></p>
+
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Reaction capture: face-as-feedback</h1>
+      <p class="lede">
+        Instead of asking "rate this 1–5", capture how someone actually <em>reacts</em>. Show a piece of
+        content, record a short burst of camera frames, and read the dominant emotion across the burst —
+        a private, client-side reaction signal. <strong>No video is uploaded or stored.</strong>
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="content-h">
+      <h3 id="content-h">1 · The content they react to</h3>
+      <div class="react-card" id="reactCard" aria-live="polite"></div>
+      <div class="field-row"><button id="nextContent" type="button" class="secondary">Show another</button></div>
+    </section>
+
+    <section class="panel" aria-labelledby="cap-h">
+      <h3 id="cap-h">2 · Capture the reaction</h3>
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="stage-grid">
+        <div class="stage-col">
+          <div class="preview-wrap">
+            <video id="cam" class="cam-video" playsinline muted hidden aria-label="Live camera preview (mirrored)"></video>
+            <img class="preview-img" id="preview" src="../sample-smile.jpg" alt="Reaction source face" />
+          </div>
+          <p class="privacy-note">🔒 <span>Frames are read locally and never uploaded or stored.</span></p>
+          <div class="field-row">
+            <button id="camBtn" type="button" class="secondary">📷 Use camera</button>
+            <button id="burstBtn" type="button" disabled>● Record reaction (2.5s)</button>
+          </div>
+          <p class="muted" style="font-size:.82rem">No camera? Pick a sample face to use as a single captured reaction.</p>
+          <div class="sample-strip" id="samples" aria-label="Sample reaction faces (synthetic)">
+            <img class="sample-thumb active" src="../sample-smile.jpg" data-src="../sample-smile.jpg" alt="Synthetic face, broad smile" tabindex="0" role="button" />
+            <img class="sample-thumb" src="../sample-soft.jpg" data-src="../sample-soft.jpg" alt="Synthetic face, faint smile" tabindex="0" role="button" />
+            <img class="sample-thumb" src="../sample-shades.jpg" data-src="../sample-shades.jpg" alt="Synthetic face, neutral, sunglasses" tabindex="0" role="button" />
+            <img class="sample-thumb" src="../sample-serious.jpg" data-src="../sample-serious.jpg" alt="Synthetic face, serious, glasses" tabindex="0" role="button" />
+          </div>
+          <div class="field-row"><button id="readSample" type="button" disabled>Read this reaction</button></div>
+        </div>
+        <div class="stage-col">
+          <h4 style="margin:.2rem 0">Dominant reaction</h4>
+          <div class="big-verdict" id="verdict" hidden><span class="ev-emoji" id="vEmoji" aria-hidden="true"></span><span id="vText"></span></div>
+          <div class="emo-bars" id="bars" aria-live="polite" aria-label="Aggregated emotion scores"></div>
+          <h4 style="margin:.8rem 0 .2rem" id="tlH" hidden>Frame-by-frame</h4>
+          <div class="frame-timeline" id="timeline" aria-hidden="true"></div>
+          <div class="readout" id="readout" hidden><span>frames <b id="rFrames">–</b></span><span>backend <b id="rBackend">–</b></span><span>avg latency <b id="rMs">–</b></span></div>
+        </div>
+      </div>
+    </section>
+
+    <p class="crumbs"><a href="../basics/">← Basics</a> · <a href="../">Back to Facial expression</a> · Next: <a href="../wild/">Wild →</a></p>
+
+    <style>
+      .react-card { border:1px solid var(--border); border-radius:var(--radius); background:var(--bg-raised);
+        padding:1.2rem; font-size:1.15rem; line-height:1.5; min-block-size:4rem; }
+      .frame-timeline { display:flex; gap:.3rem; flex-wrap:wrap; margin:.3rem 0; }
+      .frame-chip { font-size:1.3rem; line-height:1; padding:.25rem; border:1px solid var(--border);
+        border-radius:6px; background:var(--bg-raised); }
+    </style>
+
+    <script type="module">
+      import { FaceEngine, Webcam, fileToDataURL, renderEmotionBars, emotionEmoji, FACE_CSS } from "../face.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = FACE_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new FaceEngine();
+      const cam = new Webcam($("cam"));
+      let ready = false, sampleURL = null;
+
+      const CONTENT = [
+        "😂 A dog wearing sunglasses just photobombed a wedding.",
+        "😲 Plot twist: the butler was a golden retriever all along.",
+        "😐 Terms and conditions, section 14, subsection (b), paragraph 7…",
+        "😢 The last leaf finally fell from the little tree by the window.",
+        "😄 You just hit a 100-day streak. Confetti time!",
+        "😠 Your download stalled at 99% for the third time.",
+      ];
+      let ci = 0;
+      function showContent() { $("reactCard").textContent = CONTENT[ci % CONTENT.length]; ci++; }
+      $("nextContent").addEventListener("click", showContent);
+      showContent();
+
+      function setStatus(m, cls) { $("status").textContent = m || ""; $("status").classList.remove("err","ok"); if (cls) $("status").classList.add(cls); }
+
+      // samples act as a no-camera single reaction
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        const blob = await (await fetch(el.dataset.src)).blob();
+        sampleURL = await fileToDataURL(new File([blob], "s", { type: blob.type }));
+        $("preview").src = el.dataset.src;
+        $("readSample").disabled = !ready;
+      }
+      for (const thumb of $("samples").children) { thumb.addEventListener("click", () => pickSample(thumb)); thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } }); }
+
+      if (!Webcam.supported()) { $("camBtn").disabled = true; $("camBtn").textContent = "No camera API here"; }
+      $("camBtn").addEventListener("click", async () => {
+        if (cam.running()) { cam.stop(); $("cam").hidden = true; $("preview").hidden = false; $("burstBtn").disabled = true; $("camBtn").textContent = "📷 Use camera"; return; }
+        try { setStatus("Starting camera…"); await cam.start(); $("cam").hidden = false; $("preview").hidden = true; $("burstBtn").disabled = !ready; $("camBtn").textContent = "■ Stop camera"; setStatus("Camera on — react to the content, then record. Nothing uploaded.", "ok"); }
+        catch (e) { setStatus("Camera unavailable: " + e.message, "err"); }
+      });
+
+      function aggregate(results) {
+        // sum probabilities across frames, per label
+        const sums = new Map();
+        for (const r of results) for (const c of r.all) sums.set(c.label, (sums.get(c.label) || 0) + c.prob);
+        const n = results.length;
+        return [...sums.entries()].map(([label, s]) => ({ label, prob: s / n })).sort((a, b) => b.prob - a.prob);
+      }
+      function showAggregate(results) {
+        const agg = aggregate(results);
+        renderEmotionBars($("bars"), agg);
+        const top = agg[0];
+        $("verdict").hidden = false; $("vEmoji").textContent = emotionEmoji(top.label); $("vText").textContent = `${top.label} · ${(top.prob*100).toFixed(0)}%`;
+        $("tlH").hidden = results.length < 2;
+        $("timeline").replaceChildren(...results.map(r => { const s = document.createElement("span"); s.className = "frame-chip"; s.title = r.all[0].label; s.textContent = emotionEmoji(r.all[0].label); return s; }));
+        $("readout").hidden = false; $("rFrames").textContent = results.length; $("rBackend").textContent = results[0].device.toUpperCase();
+        $("rMs").textContent = Math.round(results.reduce((a, r) => a + r.ms, 0) / results.length) + " ms";
+      }
+
+      $("burstBtn").addEventListener("click", async () => {
+        $("burstBtn").disabled = true; setStatus("Recording reaction…");
+        try {
+          const results = [];
+          const FRAMES = 5, GAP = 500;
+          for (let i = 0; i < FRAMES; i++) {
+            const url = cam.grab();
+            if (url) results.push(await engine.classify(url));
+            if (i < FRAMES - 1) await new Promise(r => setTimeout(r, GAP));
+          }
+          if (!results.length) { setStatus("Camera not ready.", "err"); return; }
+          showAggregate(results);
+          setStatus(`Dominant reaction: ${aggregate(results)[0].label}.`, "ok");
+        } catch (e) { setStatus("Capture failed: " + e.message, "err"); }
+        finally { $("burstBtn").disabled = !cam.running(); }
+      });
+
+      $("readSample").addEventListener("click", async () => {
+        if (!sampleURL) return;
+        $("readSample").disabled = true; setStatus("Reading reaction…");
+        try { showAggregate([await engine.classify(sampleURL)]); setStatus(`Reaction: ${$("vText").textContent}.`, "ok"); }
+        catch (e) { setStatus("Read failed: " + e.message, "err"); }
+        finally { $("readSample").disabled = false; }
+      });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/facial_emotions_image_detection", runtime: "transformers.js", dtype: "q8", sizeMB: 88, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: () => { ready = true; $("burstBtn").disabled = !cam.running(); $("readSample").disabled = !sampleURL; },
+      });
+      pickSample($("samples").firstElementChild);
+    </script>
+  </body>
+</html>

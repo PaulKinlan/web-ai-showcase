@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Facial expression — Detect then read (multi-model) · Web AI Showcase</title>
+    <meta name="description" content="A two-model pipeline: MediaPipe FaceDetector finds the face and crops to it, then the emotion ViT reads the expression on the tight crop — more robust than classifying the whole frame. All on-device." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🙂</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Facial expression</a></p>
+
+    <header>
+      <p class="eyebrow">use case · multi-model</p>
+      <h1>Detect the face, then read it</h1>
+      <p class="lede">
+        Two models in a row. First <strong>MediaPipe FaceDetector</strong> (BlazeFace, ~230&nbsp;KB) finds
+        the face and crops to it; then the <strong>emotion ViT</strong> reads the expression on that tight
+        crop. Isolating the face first makes the read more robust than throwing a whole busy frame at the
+        classifier — and it all runs on-device.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="detStatus" role="status" aria-live="polite"></p>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="stage-grid">
+        <div class="stage-col">
+          <h4 style="margin:.2rem 0">Source + detected face</h4>
+          <div class="preview-wrap"><canvas id="srcCanvas" class="preview-img" aria-label="Source image with the detected face box"></canvas></div>
+          <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop a photo with a face">
+            <span id="dropText">Drop a photo, or click to choose</span>
+            <input type="file" id="file" accept="image/*" hidden />
+          </div>
+          <div class="sample-strip" id="samples" aria-label="Sample faces (synthetic)">
+            <img class="sample-thumb active" src="../sample-smile.jpg" data-src="../sample-smile.jpg" alt="Synthetic face, broad smile" tabindex="0" role="button" />
+            <img class="sample-thumb" src="../sample-soft.jpg" data-src="../sample-soft.jpg" alt="Synthetic face, faint smile" tabindex="0" role="button" />
+            <img class="sample-thumb" src="../sample-shades.jpg" data-src="../sample-shades.jpg" alt="Synthetic face, neutral, sunglasses" tabindex="0" role="button" />
+            <img class="sample-thumb" src="../sample-serious.jpg" data-src="../sample-serious.jpg" alt="Synthetic face, serious, glasses" tabindex="0" role="button" />
+          </div>
+          <div class="field-row"><button id="run" type="button" disabled>Detect &amp; read</button></div>
+        </div>
+        <div class="stage-col">
+          <h4 style="margin:.2rem 0">Cropped face → emotion</h4>
+          <div class="crop-wrap"><canvas id="cropCanvas" class="crop-canvas" aria-label="Cropped detected face passed to the emotion model"></canvas></div>
+          <div class="big-verdict" id="verdict" hidden><span class="ev-emoji" id="vEmoji" aria-hidden="true"></span><span id="vText"></span></div>
+          <div class="emo-bars" id="bars" aria-live="polite" aria-label="Emotion scores for the cropped face"></div>
+          <div class="readout" id="readout" hidden><span>faces <b id="rFaces">–</b></span><span>detect <b id="rDet">–</b></span><span>emotion <b id="rEmo">–</b></span></div>
+        </div>
+      </div>
+    </section>
+
+    <p class="crumbs"><a href="../wild/">← Wild</a> · <a href="../">Back to Facial expression</a></p>
+
+    <style>
+      .crop-wrap { inline-size:160px; aspect-ratio:1/1; border:1px solid var(--border); border-radius:var(--radius);
+        overflow:hidden; background:var(--bg-raised); }
+      .crop-canvas { inline-size:100%; block-size:100%; object-fit:cover; display:block; }
+      #srcCanvas { object-fit:contain; background:var(--bg-raised); }
+    </style>
+
+    <script type="module">
+      import { FaceEngine, fileToDataURL, renderEmotionBars, emotionEmoji, FACE_CSS } from "../face.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      import { createVisionTask } from "/web-ai-showcase/lib/mediapipe.js";
+      import { FaceDetectorTask, MODEL_URL, detScore } from "/web-ai-showcase/models/face-detector/facedet.js";
+      const style = document.createElement("style"); style.textContent = FACE_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new FaceEngine();
+      let ready = false, detector = null, currentImg = null;
+
+      function setStatus(m, cls) { $("status").textContent = m || ""; $("status").classList.remove("err","ok"); if (cls) $("status").classList.add(cls); }
+
+      function drawSource(img, box) {
+        const c = $("srcCanvas"); c.width = img.naturalWidth; c.height = img.naturalHeight;
+        const ctx = c.getContext("2d"); ctx.drawImage(img, 0, 0);
+        if (box) { ctx.strokeStyle = "#1a7a3a"; ctx.lineWidth = Math.max(3, img.naturalWidth / 120); ctx.strokeRect(box.x, box.y, box.w, box.h); }
+      }
+      async function loadImg(src) {
+        const img = new Image(); img.crossOrigin = "anonymous"; img.src = src;
+        await img.decode(); currentImg = img; drawSource(img, null); $("run").disabled = !ready;
+      }
+      async function pickSample(el) { for (const t of $("samples").children) t.classList.toggle("active", t === el); await loadImg(el.dataset.src); }
+      for (const thumb of $("samples").children) { thumb.addEventListener("click", () => pickSample(thumb)); thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } }); }
+
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover","dragenter"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave","drop"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function handleFile(f) { for (const t of $("samples").children) t.classList.remove("active"); $("dropText").textContent = f.name; await loadImg(await fileToDataURL(f)); }
+      file.addEventListener("change", () => file.files[0] && handleFile(file.files[0]));
+      drop.addEventListener("drop", e => { const f = e.dataTransfer?.files?.[0]; if (f && f.type.startsWith("image/")) handleFile(f); });
+
+      // load MediaPipe FaceDetector (separate small model)
+      (async () => {
+        $("detStatus").textContent = "Loading FaceDetector (BlazeFace, ~230 KB)…";
+        try {
+          const task = await createVisionTask({ taskClass: "FaceDetector", modelUrl: MODEL_URL, options: { runningMode: "IMAGE" } });
+          detector = new FaceDetectorTask(task);
+          $("detStatus").textContent = `FaceDetector ready (${detector.delegate}).`; $("detStatus").classList.add("ok");
+        } catch (e) { $("detStatus").textContent = "FaceDetector failed: " + e.message; $("detStatus").classList.add("err"); }
+      })();
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/facial_emotions_image_detection", runtime: "transformers.js", dtype: "q8", sizeMB: 88, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: () => { ready = true; $("run").disabled = !currentImg; },
+      });
+      pickSample($("samples").firstElementChild);
+
+      $("run").addEventListener("click", async () => {
+        if (!currentImg) { setStatus("Choose a photo first.", "err"); return; }
+        if (!detector) { setStatus("FaceDetector not ready yet.", "err"); return; }
+        $("run").disabled = true; setStatus("Detecting face…");
+        try {
+          const t0 = performance.now();
+          const { detections } = await detector.detectImage(currentImg);
+          const dMs = Math.round(performance.now() - t0);
+          $("rFaces").textContent = detections.length; $("rDet").textContent = dMs + " ms"; $("readout").hidden = false;
+          if (!detections.length) { drawSource(currentImg, null); setStatus("No face detected — try another photo. (Emotion read skipped.)", "err"); $("run").disabled = false; return; }
+          // pick the highest-confidence face, pad the box, crop
+          const best = detections.sort((a, b) => detScore(b) - detScore(a))[0];
+          const bb = best.boundingBox;
+          const pad = 0.25;
+          const x = Math.max(0, bb.originX - bb.width * pad), y = Math.max(0, bb.originY - bb.height * pad);
+          const w = Math.min(currentImg.naturalWidth - x, bb.width * (1 + 2 * pad));
+          const h = Math.min(currentImg.naturalHeight - y, bb.height * (1 + 2 * pad));
+          drawSource(currentImg, { x, y, w, h });
+          const crop = $("cropCanvas"); crop.width = 224; crop.height = 224;
+          crop.getContext("2d").drawImage(currentImg, x, y, w, h, 0, 0, 224, 224);
+          const cropURL = crop.toDataURL("image/jpeg", 0.92);
+          setStatus("Reading expression on the crop…");
+          const r = await engine.classify(cropURL);
+          renderEmotionBars($("bars"), r.all.map(t => ({ label: t.label, prob: t.prob })));
+          const top = r.all[0];
+          $("verdict").hidden = false; $("vEmoji").textContent = emotionEmoji(top.label); $("vText").textContent = `${top.label} · ${(top.prob*100).toFixed(0)}%`;
+          $("rEmo").textContent = r.ms + " ms";
+          setStatus(`Detected ${detections.length} face(s); top read on the crop: ${top.label}.`, "ok");
+        } catch (e) { setStatus("Pipeline failed: " + e.message, "err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>
