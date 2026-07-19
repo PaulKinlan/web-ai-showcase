@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>GTE-large — Practical: high-quality search &amp; near-duplicate detection · Web AI Showcase</title>
+    <meta name="description" content="Two things every product needs, both client-side with GTE-large's 1024-d vectors: rank a corpus by meaning for a query, and flag near-duplicate entries above a similarity threshold. Paste your own text and run it locally." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🧲</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">GTE-large</a></p>
+
+    <header>
+      <p class="eyebrow">Practical · feature-extraction · WASM</p>
+      <h1>Quality search &amp; near-duplicate detection</h1>
+      <p class="lede">
+        Two jobs a real product ships, both running on GTE-large's 1024-d vectors, entirely in your browser.
+        <strong>Semantic search</strong> ranks a corpus by meaning for a query. <strong>Near-duplicate
+        detection</strong> flags entries that say the same thing in different words — the kind of dedup where
+        a bigger, sharper embedder earns its download. Paste your own lines and try both.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="corpus-h">
+      <h3 id="corpus-h">Your corpus</h3>
+      <div id="model-loader"></div>
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
+        One entry per line
+        <textarea id="corpus" rows="9" disabled>To reset your password, click "Forgot password" on the sign-in screen.
+Locked out? Use the account-recovery link to regain access.
+Our refund policy allows returns within 30 days of delivery.
+You can get your money back for a month after you buy.
+Enable two-factor authentication in Security settings.
+The invoice is generated automatically after each payment.
+A receipt is emailed to you once the transaction completes.
+The Great Barrier Reef is the largest coral reef system on Earth.</textarea>
+      </label>
+      <div style="display:flex;gap:.4rem;flex-wrap:wrap;margin:.4rem 0">
+        <button id="embed" type="button" disabled>Embed corpus</button>
+        <span class="status" id="embStatus" role="status" aria-live="polite"></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="search-h">
+      <h3 id="search-h">1 · Semantic search</h3>
+      <p class="muted">Rank every line by cosine similarity to your query — meaning, not keyword overlap.</p>
+      <div style="display:flex;gap:.4rem;flex-wrap:wrap;align-items:center">
+        <input id="query" type="text" value="How do I recover access to my locked account?" style="flex:1;min-inline-size:16rem" disabled />
+        <button id="search" type="button" disabled>Search</button>
+      </div>
+      <div class="sent-list" id="ranked" aria-live="polite"></div>
+    </section>
+
+    <section class="panel" aria-labelledby="dedup-h">
+      <h3 id="dedup-h">2 · Near-duplicate detection</h3>
+      <p class="muted">Every pair of lines is scored; pairs above the threshold are flagged as likely
+        duplicates. Slide the threshold to trade recall for precision.</p>
+      <div style="display:flex;gap:.6rem;flex-wrap:wrap;align-items:center;margin:.3rem 0">
+        <label style="font-size:.82rem;display:flex;align-items:center;gap:.4rem">
+          Threshold <input type="range" id="thresh" min="0.7" max="0.98" step="0.01" value="0.85" />
+          <span id="threshVal" style="font-family:var(--font-mono)">0.85</span>
+        </label>
+        <button id="dedup" type="button" disabled>Find near-duplicates</button>
+      </div>
+      <div id="dupWrap" class="sent-list" aria-live="polite"></div>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via 🤗 Transformers.js.
+      <a href="../">← Back to GTE-large</a>
+    </footer>
+
+    <script type="module">
+      import { GteLargeEngine, cosine, parseLines, renderRanked, GTEL_CSS } from "../gtelarge.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = GTEL_CSS + `.dup-pair { border:1px solid var(--border); border-radius:8px; background:var(--bg-raised); padding:.5rem .7rem; }
+        .dup-score { font-family:var(--font-mono); color:var(--accent); font-weight:600; }`;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new GteLargeEngine();
+      let corpusVecs = null; // { texts, embeddings }
+
+      $("thresh").addEventListener("input", () => { $("threshVal").textContent = $("thresh").value; });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/gte-large", runtime: "transformers.js", dtype: "q8", sizeMB: 337, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { for (const id of ["corpus", "embed", "query", "search", "dedup"]) $(id).disabled = false; },
+      });
+
+      $("embed").addEventListener("click", async () => {
+        const texts = parseLines($("corpus").value);
+        if (texts.length < 2) { $("embStatus").textContent = "Give at least two lines."; $("embStatus").classList.add("err"); return; }
+        $("embed").disabled = true; $("embStatus").classList.remove("err"); $("embStatus").textContent = "Embedding…";
+        try {
+          const r = await engine.embed(texts);
+          corpusVecs = { texts: r.texts, embeddings: r.embeddings };
+          $("embStatus").textContent = `Embedded ${r.texts.length} lines (${r.dim}-d, ${r.ms} ms). Now search or find duplicates.`;
+        } catch (err) { $("embStatus").textContent = "Failed: " + err.message; $("embStatus").classList.add("err"); }
+        finally { $("embed").disabled = false; }
+      });
+
+      $("search").addEventListener("click", async () => {
+        if (!corpusVecs) { $("embStatus").textContent = "Embed the corpus first."; $("embStatus").classList.add("err"); return; }
+        const q = $("query").value.trim();
+        if (!q) return;
+        $("search").disabled = true;
+        try {
+          const qr = await engine.embed([q]);
+          const qv = qr.embeddings[0];
+          const hits = corpusVecs.texts.map((text, i) => ({ text, score: cosine(qv, corpusVecs.embeddings[i]) }))
+            .sort((a, b) => b.score - a.score);
+          renderRanked($("ranked"), hits);
+        } catch (err) { $("ranked").textContent = "Search failed: " + err.message; }
+        finally { $("search").disabled = false; }
+      });
+      $("query").addEventListener("keydown", (e) => { if (e.key === "Enter") $("search").click(); });
+
+      $("dedup").addEventListener("click", () => {
+        if (!corpusVecs) { $("embStatus").textContent = "Embed the corpus first."; $("embStatus").classList.add("err"); return; }
+        const th = +$("thresh").value;
+        const { texts, embeddings } = corpusVecs;
+        const pairs = [];
+        for (let i = 0; i < texts.length; i++) {
+          for (let j = i + 1; j < texts.length; j++) {
+            const s = cosine(embeddings[i], embeddings[j]);
+            if (s >= th) pairs.push({ i, j, s });
+          }
+        }
+        pairs.sort((a, b) => b.s - a.s);
+        if (pairs.length === 0) {
+          $("dupWrap").innerHTML = `<p class="muted">No pairs at or above ${th.toFixed(2)}. Lower the threshold to catch looser duplicates.</p>`;
+          return;
+        }
+        $("dupWrap").replaceChildren(...pairs.map((p) => {
+          const div = document.createElement("div");
+          div.className = "dup-pair";
+          div.innerHTML = `<span class="dup-score">${p.s.toFixed(3)}</span> — likely duplicates:<br>“${escapeHTML(texts[p.i])}”<br>“${escapeHTML(texts[p.j])}”`;
+          return div;
+        }));
+      });
+      function escapeHTML(s) { return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
+    </script>
+  </body>
+</html>

@@ -1,0 +1,389 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>GTE-large — a top-tier 1024-d retrieval embedder in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="GTE-large turns a sentence into a 1024-number vector — a bigger, higher-MTEB embedder than GTE-small. Build a live cosine matrix, run semantic search, and watch GTE-large pull apart hard near-synonym pairs the small model blurs — weighed against its ~337 MB download and slower latency. Real embeddings, no server."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🧲</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">feature-extraction · text · WASM · ~337 MB</p>
+      <h1>GTE-large — the big embedder, 1024 numbers per sentence</h1>
+      <p class="lede">
+        GTE-large is the heavyweight sibling of <a href="/web-ai-showcase/models/gte-embeddings/">GTE-small</a>:
+        the same recipe — multi-stage contrastive training, mean pooling, and <strong>no instruction
+        prefix</strong> — but a BERT-large backbone (~335M parameters) that emits a
+        <strong>1024-dimensional</strong> sentence vector instead of 384. Those extra parameters and
+        dimensions buy a higher <a href="https://huggingface.co/spaces/mteb/leaderboard" target="_blank" rel="noopener">MTEB</a>
+        retrieval score and sharper separation on hard, near-synonymous pairs — the price is a much bigger
+        download (~337 MB) and slower per-embedding latency. Type a few lines to build a live similarity
+        matrix, search by meaning, and watch GTE-large and GTE-small score the SAME pairs side by side.
+        Nothing leaves your device.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/Xenova/gte-large" target="_blank" rel="noopener">Xenova/gte-large</a> (ONNX of <a href="https://huggingface.co/thenlper/gte-large" target="_blank" rel="noopener">thenlper/gte-large</a>)</td></tr>
+          <tr><th>Task / pipeline</th><td><code>feature-extraction</code></td></tr>
+          <tr><th>Architecture</th><td>BERT-large encoder (~335M params) → <strong>1024-dimensional</strong> sentence embedding</td></tr>
+          <tr><th>Pooling</th><td>mask-aware <strong>mean pooling</strong>, then <strong>L2-normalize</strong> — and <strong>no instruction prefix</strong> (embed query and document identically)</td></tr>
+          <tr><th>vs GTE-small</th><td>~10× the parameters, 2.7× the dimensions, higher MTEB — at ~10× the download and slower latency</td></tr>
+          <tr><th>Quantization</th><td>q8 (8-bit) ONNX</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (runs anywhere; no WebGPU needed)</td></tr>
+          <tr><th>Download</th><td>~337 MB, cached after first load — a real commitment, so we only fetch it when you ask</td></tr>
+          <tr><th>License</th><td>MIT (thenlper GTE)</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers, Cache Storage — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Put one sentence per line, then embed. The matrix shows the cosine similarity between
+        every pair (1.00 = identical direction). The scatter is a 2D PCA projection of the 1024-d vectors —
+        a flattened map where near = similar. Then type a query below to rank the lines by meaning. Because
+        this model is ~337 MB, it only downloads when you click.</p>
+
+      <div id="model-loader"></div>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
+        Sentences (one per line)
+        <textarea id="sentences" rows="7">How do I reset my account password?
+The login page keeps rejecting my credentials.
+Our refund policy allows returns within 30 days.
+Money back is available for a month after purchase.
+The Eiffel Tower is a landmark in Paris.
+I planted tomatoes and basil in the garden this spring.</textarea>
+      </label>
+      <div style="margin:.5rem 0;display:flex;gap:.4rem;flex-wrap:wrap">
+        <button id="run" type="button" disabled>Embed &amp; compare</button>
+        <button id="reset" type="button" class="secondary">Reset examples</button>
+      </div>
+      <p class="status" id="rowStatus" role="status" aria-live="polite" hidden></p>
+
+      <div class="grid-2">
+        <div>
+          <h3 style="margin-top:.4rem">Cosine similarity matrix</h3>
+          <div class="matrix-scroll" id="matrix" aria-live="polite"></div>
+        </div>
+        <div>
+          <h3 style="margin-top:.4rem">2D map (PCA)</h3>
+          <div id="projection" aria-live="polite"></div>
+          <p class="muted" id="explained" style="font-size:.78rem;font-family:var(--font-mono)"></p>
+        </div>
+      </div>
+
+      <div style="margin-top:1rem">
+        <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;max-inline-size:34rem">
+          Semantic search — rank the lines above by meaning
+          <span style="display:flex;gap:.4rem;flex-wrap:wrap">
+            <input id="query" type="text" value="I can't sign in" style="flex:1;min-inline-size:12rem" disabled />
+            <button id="search" type="button" disabled>Search</button>
+          </span>
+        </label>
+        <div class="sent-list" id="ranked" aria-live="polite"></div>
+      </div>
+
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+        <span>sentences <b id="rN">–</b></span>
+        <span>dims <b id="rDim">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside — the 1024-d vector, and what the extra size buys</h3>
+      <p class="muted">
+        The encoder emits one 1024-number vector <em>per token</em>. To get a single vector per sentence GTE
+        <strong>mean-pools</strong> those token vectors (mask-aware) and <strong>L2-normalizes</strong>, so
+        every sentence becomes a unit-length arrow and cosine similarity is a plain dot product. Pick a
+        sentence to see its real vector and its pre-normalization magnitude — 1024 numbers, not 384.
+      </p>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Embed some sentences above to inspect a vector.</div>
+      <div id="insideWrap" hidden>
+        <label style="font-size:.82rem;display:flex;gap:.4rem;align-items:center;flex-wrap:wrap">
+          Inspect sentence
+          <select id="pick"></select>
+        </label>
+        <div class="readout">
+          <span>dimensions <b>1024</b></span>
+          <span>pre-norm ‖v‖ <b id="iNorm">–</b></span>
+          <span>post-norm ‖v‖ <b>1.000</b></span>
+        </div>
+        <p class="muted" style="font-size:.78rem;margin:.3rem 0">First 128 of 1024 dimensions (blue = positive, orange = negative, brighter = larger magnitude):</p>
+        <div class="vec-strip" id="vecStrip"></div>
+        <p class="muted" style="font-size:.78rem;font-family:var(--font-mono);margin-top:.5rem;word-break:break-all" id="vecHead"></p>
+      </div>
+
+      <hr style="border:0;border-top:1px solid var(--border);margin:1.2rem 0" />
+      <h4 style="margin:.2rem 0">GTE-large vs GTE-small — quality against size &amp; latency</h4>
+      <p class="muted">
+        Same recipe, different scale. On easy pairs both models agree. The difference shows on
+        <strong>hard, near-synonymous</strong> pairs, where the 1024-d model separates "same meaning" from
+        "merely related" more decisively. The catch is the tab bill: GTE-large is ~10× the download and
+        noticeably slower per embedding. This loads GTE-small (~34 MB) on demand, embeds each pair below
+        with both models, and shows the real cosines, the same-vs-unrelated GAP, and each model's latency.
+      </p>
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;align-items:center;margin:.4rem 0">
+        <button id="cmpRun" type="button" class="secondary" disabled>Compare large vs small</button>
+        <span class="status" id="cmpStatus" role="status" aria-live="polite"></span>
+      </div>
+      <div id="cmpWrap" hidden style="overflow-x:auto"></div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        Embeddings are the quiet workhorse behind search, recommendations, deduplication, clustering, and
+        retrieval-augmented generation. GTE-large's pitch is <strong>quality</strong>: when a mis-ranked
+        result is expensive — legal search, support deflection, dedup at scale — the bigger model's sharper
+        separation earns its download. And it still runs entirely client-side, so the text never leaves the
+        device. The honest tradeoff: reach for GTE-small when latency and download budget matter, GTE-large
+        when ranking accuracy does.
+      </p>
+      <ul>
+        <li><strong>High-stakes semantic search</strong> — rank a corpus by meaning where a wrong top hit costs you, entirely client-side.</li>
+        <li><strong>Near-duplicate detection</strong> — catch "same thing, different words" pairs the small model scores as merely related.</li>
+        <li><strong>Quality-first RAG retrieval</strong> — fetch the right snippet to feed a local LLM when precision beats speed.</li>
+        <li><strong>Pick-your-tier embedding</strong> — ship small for the edge, large for the server-grade result, same API and pooling.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Do two lines mean the same thing? One cosine number from GTE-large — and the same pair scored by GTE-small.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">High-quality semantic search plus near-duplicate detection over your own corpus.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Cluster a mixed bag by meaning, and hunt hard pairs where GTE-large sees a distinction GTE-small misses.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">GTE-large retrieves a shortlist by meaning, then a cross-encoder reranker re-scores the top hits.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>Feature-extraction plus the pooling discipline is the whole recipe — same as GTE-small, just a bigger model and 1024-d output, and still no prefix:</p>
+      <pre><code>import { pipeline } from "@huggingface/transformers";
+
+const extract = await pipeline(
+  "feature-extraction",
+  "Xenova/gte-large",
+); // downloads + caches ~337 MB once
+
+// GTE uses MEAN pooling and needs NO instruction prefix — embed query and doc identically:
+const out = await extract(["how do I sign in?", "the login page rejects my password"], {
+  pooling: "mean",
+  normalize: true,
+});
+const [q, d] = out.tolist();     // each is a 1024-number unit vector
+
+// unit-length vectors → cosine similarity is just the dot product:
+const sim = q.reduce((s, x, i) =&gt; s + x * d[i], 0); // high — same meaning</code></pre>
+      <p class="muted">
+        This page asks the worker for the <em>un</em>-normalized pooled vectors so "See inside" can show the
+        real pre-normalization magnitude, then normalizes them in JS. Inference runs in a Web Worker, so the
+        matrix, projection and comparison never jank the page.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/Xenova/gte-large" target="_blank" rel="noopener">Model card — Xenova/gte-large (ONNX)</a></li>
+        <li><a href="https://huggingface.co/thenlper/gte-large" target="_blank" rel="noopener">Original GTE-large weights &amp; card (thenlper)</a></li>
+        <li><a href="https://arxiv.org/abs/2308.03281" target="_blank" rel="noopener">Paper — Towards General Text Embeddings with Multi-stage Contrastive Learning (Li et al., 2023)</a></li>
+        <li><a href="https://huggingface.co/spaces/mteb/leaderboard" target="_blank" rel="noopener">MTEB leaderboard — how embedders are benchmarked</a></li>
+        <li><a href="/web-ai-showcase/models/gte-embeddings/">GTE-small on this showcase — the 384-d sibling</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import {
+        GteLargeEngine, GteSmallEngine, MODEL_META, cosine, simMatrix, pca2d, parseLines,
+        renderMatrix, renderProjection, renderRanked, GTEL_CSS,
+      } from "./gtelarge.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = GTEL_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new GteLargeEngine();
+      const DEFAULT = $("sentences").value;
+      let last = null; // { texts, embeddings, norms, dim }
+
+      $("reset").addEventListener("click", () => { $("sentences").value = DEFAULT; });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/gte-large", runtime: "transformers.js", dtype: "q8", sizeMB: 337, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => {
+          $("run").disabled = false;
+          $("query").disabled = false;
+          $("search").disabled = false;
+          $("cmpRun").disabled = false;
+        },
+      });
+
+      $("run").addEventListener("click", run);
+      async function run() {
+        const texts = parseLines($("sentences").value);
+        if (texts.length < 2) {
+          $("rowStatus").hidden = false;
+          $("rowStatus").textContent = "Give at least two distinct sentences.";
+          $("rowStatus").classList.add("err");
+          return;
+        }
+        $("rowStatus").hidden = false;
+        $("rowStatus").classList.remove("err");
+        $("rowStatus").textContent = "Embedding…";
+        $("run").disabled = true;
+        try {
+          const r = await engine.embed(texts);
+          last = r;
+          renderMatrix($("matrix"), simMatrix(r.embeddings), r.texts);
+          const { points, explained } = pca2d(r.embeddings);
+          renderProjection($("projection"), points, r.texts);
+          $("explained").textContent = `PC1+PC2 explain ${(explained * 100).toFixed(0)}% of the variance`;
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = r.ms + " ms";
+          $("rN").textContent = r.texts.length;
+          $("rDim").textContent = r.dim;
+          fillInside(r);
+          $("rowStatus").textContent = "Done.";
+          $("rowStatus").classList.add("ok");
+        } catch (err) {
+          $("rowStatus").textContent = "Embedding failed: " + err.message;
+          $("rowStatus").classList.add("err");
+        } finally {
+          $("run").disabled = false;
+        }
+      }
+
+      $("search").addEventListener("click", search);
+      $("query").addEventListener("keydown", (e) => { if (e.key === "Enter") search(); });
+      async function search() {
+        const q = $("query").value.trim();
+        const texts = parseLines($("sentences").value);
+        if (!q || texts.length < 1) return;
+        $("search").disabled = true;
+        try {
+          const [qr, dr] = await Promise.all([engine.embed([q]), engine.embed(texts)]);
+          const qv = qr.embeddings[0];
+          const hits = dr.texts
+            .map((text, i) => ({ text, score: cosine(qv, dr.embeddings[i]) }))
+            .sort((a, b) => b.score - a.score);
+          renderRanked($("ranked"), hits);
+        } catch (err) {
+          $("ranked").textContent = "Search failed: " + err.message;
+        } finally {
+          $("search").disabled = false;
+        }
+      }
+
+      function fillInside(r) {
+        $("insideEmpty").hidden = true;
+        $("insideWrap").hidden = false;
+        $("pick").replaceChildren(...r.texts.map((t, i) => {
+          const o = document.createElement("option");
+          o.value = String(i);
+          o.textContent = `S${i + 1} — ${t.length > 40 ? t.slice(0, 39) + "…" : t}`;
+          return o;
+        }));
+        showVector(0);
+      }
+      $("pick").addEventListener("change", (e) => showVector(+e.target.value));
+      function showVector(i) {
+        if (!last) return;
+        const v = last.embeddings[i];
+        $("iNorm").textContent = last.norms[i].toFixed(3);
+        const maxAbs = Math.max(...v.map(Math.abs)) || 1;
+        $("vecStrip").replaceChildren(...v.slice(0, 128).map((val) => {
+          const cell = document.createElement("span");
+          cell.className = "vec-cell";
+          const t = Math.abs(val) / maxAbs;
+          const hue = val >= 0 ? "var(--accent)" : "var(--warn)";
+          cell.style.background = `color-mix(in srgb, ${hue} ${(t * 100).toFixed(0)}%, var(--bg-raised))`;
+          cell.title = val.toFixed(4);
+          return cell;
+        }));
+        $("vecHead").textContent = "[" + v.slice(0, 8).map((x) => x.toFixed(4)).join(", ") + ", … ] (1024-d unit vector)";
+      }
+
+      // ---- Large vs small comparison on the same pairs ----
+      const CMP_PAIRS = [
+        ["The bank raised interest rates this quarter.", "The central bank lifted its benchmark rate.", "same meaning (should be HIGH)"],
+        ["The defendant was acquitted of all charges.", "The court found the defendant not guilty.", "same meaning (should be HIGH)"],
+        ["I need to cancel my subscription.", "How do I stop being billed every month?", "same meaning (should be HIGH)"],
+        ["The river bank was covered in wildflowers.", "The bank approved the mortgage application.", "unrelated — 'bank' polysemy (should be LOW)"],
+      ];
+      let smallEngine = null;
+      $("cmpRun").addEventListener("click", async () => {
+        $("cmpRun").disabled = true;
+        $("cmpStatus").classList.remove("err");
+        $("cmpStatus").textContent = "Loading GTE-small (first time downloads ~34 MB)…";
+        try {
+          if (!smallEngine) {
+            smallEngine = new GteSmallEngine();
+            await smallEngine.load();
+          }
+          $("cmpStatus").textContent = "Embedding pairs with both models…";
+          const flat = CMP_PAIRS.flatMap((p) => [p[0], p[1]]);
+          const [lg, sm] = await Promise.all([engine.embed(flat), smallEngine.embed(flat)]);
+          const rows = CMP_PAIRS.map((pair, i) => {
+            const a = 2 * i, c = 2 * i + 1;
+            return {
+              pair,
+              large: cosine(lg.embeddings[a], lg.embeddings[c]),
+              small: cosine(sm.embeddings[a], sm.embeddings[c]),
+            };
+          });
+          renderCmp(rows, { largeMs: lg.ms, smallMs: sm.ms });
+          $("cmpStatus").textContent = "";
+        } catch (err) {
+          $("cmpStatus").textContent = "Comparison failed: " + err.message;
+          $("cmpStatus").classList.add("err");
+        } finally {
+          $("cmpRun").disabled = false;
+        }
+      });
+
+      function renderCmp(rows, timing) {
+        const head = `<thead><tr><th>Sentence pair</th>
+          <th>${MODEL_META.gteLarge.label}</th><th>${MODEL_META.gteSmall.label}</th><th>large − small</th></tr></thead>`;
+        const body = rows.map((r) => {
+          const diff = r.large - r.small;
+          const cls = r.pair[2].includes("HIGH") ? (diff >= 0 ? "gap-pos" : "gap-neg") : (diff <= 0 ? "gap-pos" : "gap-neg");
+          return `<tr>
+            <td class="cmp-pair">“${r.pair[0]}”<br>“${r.pair[1]}”<br><span class="muted" style="font-size:.72rem">${r.pair[2]}</span></td>
+            <td>${r.large.toFixed(3)}</td><td>${r.small.toFixed(3)}</td>
+            <td class="${cls}">${diff >= 0 ? "+" : ""}${diff.toFixed(3)}</td>
+          </tr>`;
+        }).join("");
+        $("cmpWrap").innerHTML = `<table class="cmp-table">${head}<tbody>${body}</tbody></table>
+          <p class="muted" style="font-size:.76rem;margin-top:.4rem">Each model has its own cosine scale, so read the shape, not the absolute number: on "same meaning" pairs a stronger embedder scores HIGHER; on the polysemy trap it should score LOWER. Latency this run — GTE-large <b>${timing.largeMs} ms</b> vs GTE-small <b>${timing.smallMs} ms</b> for ${CMP_PAIRS.length * 2} sentences. That gap, and the ~337 MB vs ~34 MB download, is the tradeoff you're buying.</p>`;
+        $("cmpWrap").hidden = false;
+      }
+    </script>
+  </body>
+</html>

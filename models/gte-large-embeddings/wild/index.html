@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>GTE-large — Wild: cluster by meaning &amp; hunt hard pairs · Web AI Showcase</title>
+    <meta name="description" content="Drop a jumbled list of sentences and let GTE-large's 1024-d vectors sort them into meaning-based clusters with spherical k-means — colored on a live PCA map. Then hunt 'hard pairs' where the large model sees a distinction the small model blurs. All in the browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🧲</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">GTE-large</a></p>
+
+    <header>
+      <p class="eyebrow">Wild · feature-extraction · WASM</p>
+      <h1>Cluster by meaning, and hunt hard pairs</h1>
+      <p class="lede">
+        No labels, no training. Embed a jumbled list and let <strong>spherical k-means</strong> group the
+        1024-d vectors into topics, colored on a live 2D map. Then flip to the <strong>hard-pairs</strong>
+        hunt: curated sentence pairs designed to fool a small embedder — where GTE-large's extra capacity
+        pulls "genuinely the same" apart from "sounds similar but isn't". Everything runs locally.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="cl-h">
+      <h3 id="cl-h">Unsupervised clustering</h3>
+      <div id="model-loader"></div>
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
+        Sentences (one per line) — a deliberately mixed bag
+        <textarea id="items" rows="10" disabled>The striker scored a hat-trick in the second half.
+The goalkeeper saved three penalties in the shootout.
+Investors worried as the stock index fell sharply.
+The central bank signalled another rate hike.
+Add two cups of flour and a pinch of salt to the bowl.
+Simmer the sauce for twenty minutes, stirring often.
+The telescope captured a distant spiral galaxy.
+Astronomers detected water vapour on a far-off exoplanet.
+Parliament debated the new immigration bill for hours.
+The senator proposed an amendment to the tax code.</textarea>
+      </label>
+      <div style="display:flex;gap:.6rem;flex-wrap:wrap;align-items:center;margin:.4rem 0">
+        <label style="font-size:.82rem;display:flex;align-items:center;gap:.4rem">
+          Clusters k <input type="range" id="k" min="2" max="6" step="1" value="5" />
+          <span id="kVal" style="font-family:var(--font-mono)">5</span>
+        </label>
+        <button id="cluster" type="button" disabled>Cluster</button>
+        <span class="status" id="clStatus" role="status" aria-live="polite"></span>
+      </div>
+      <div class="grid-2">
+        <div id="projection" aria-live="polite"></div>
+        <div id="groups" aria-live="polite"></div>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="hard-h">
+      <h3 id="hard-h">Hard-pairs hunt — large vs small</h3>
+      <p class="muted">Each pair is either a true match dressed up in different words, or a decoy that merely
+        shares surface features. A strong embedder scores the true matches higher than the decoys. We embed
+        every pair with both models and show the cosines; the gap column is where the bigger model tends to
+        earn its keep.</p>
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;align-items:center;margin:.3rem 0">
+        <button id="hard" type="button" class="secondary" disabled>Run the hard pairs</button>
+        <span class="status" id="hardStatus" role="status" aria-live="polite"></span>
+      </div>
+      <div id="hardWrap" hidden style="overflow-x:auto"></div>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via 🤗 Transformers.js.
+      <a href="../">← Back to GTE-large</a>
+    </footer>
+
+    <script type="module">
+      import { GteLargeEngine, GteSmallEngine, cosine, kmeans, pca2d, parseLines, renderProjection, GTEL_CSS } from "../gtelarge.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = GTEL_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const large = new GteLargeEngine();
+      let small = null;
+      const PALETTE = ["var(--accent)", "var(--good)", "var(--bad)", "var(--warn)", "#0e7490", "#9333ea"];
+
+      $("k").addEventListener("input", () => { $("kVal").textContent = $("k").value; });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/gte-large", runtime: "transformers.js", dtype: "q8", sizeMB: 337, requiresWebGPU: false },
+        load: async (onProgress) => { await large.load(onProgress); return large; },
+        onReady: () => { $("items").disabled = false; $("cluster").disabled = false; $("hard").disabled = false; },
+      });
+
+      $("cluster").addEventListener("click", async () => {
+        const texts = parseLines($("items").value);
+        if (texts.length < 3) { $("clStatus").textContent = "Give at least three lines."; $("clStatus").classList.add("err"); return; }
+        $("cluster").disabled = true; $("clStatus").classList.remove("err"); $("clStatus").textContent = "Embedding + clustering…";
+        try {
+          const r = await large.embed(texts);
+          const k = Math.min(+$("k").value, texts.length);
+          const { assign, iters } = kmeans(r.embeddings, k);
+          const { points, explained } = pca2d(r.embeddings);
+          renderProjection($("projection"), points, r.texts, { groups: assign });
+          const groups = Array.from({ length: k }, () => []);
+          assign.forEach((c, i) => groups[c].push(r.texts[i]));
+          $("groups").replaceChildren(...groups.map((members, c) => {
+            if (members.length === 0) return document.createComment("empty");
+            const div = document.createElement("div");
+            div.className = "cluster-group";
+            const h = document.createElement("h4");
+            h.innerHTML = `<span class="swatch" style="background:${PALETTE[c % PALETTE.length]}"></span>Cluster ${c + 1}`;
+            const ul = document.createElement("ul");
+            for (const m of members) { const li = document.createElement("li"); li.textContent = m; ul.append(li); }
+            div.append(h, ul);
+            return div;
+          }).filter((n) => n.nodeType === 1));
+          $("clStatus").textContent = `${texts.length} sentences → ${k} clusters in ${iters} iterations (PC1+PC2 explain ${(explained * 100).toFixed(0)}% of variance, ${r.ms} ms).`;
+          $("clStatus").classList.add("ok");
+        } catch (err) { $("clStatus").textContent = "Failed: " + err.message; $("clStatus").classList.add("err"); }
+        finally { $("cluster").disabled = false; }
+      });
+
+      const HARD = [
+        ["A pediatrician treats sick children.", "A children's doctor cares for young patients.", true],
+        ["A pediatrician treats sick children.", "A podiatrist treats problems with the feet.", false],
+        ["The startup burned through its runway.", "The company ran out of cash before profitability.", true],
+        ["The startup burned through its runway.", "The plane sped down the runway before takeoff.", false],
+        ["She let the cat out of the bag.", "She accidentally revealed the secret.", true],
+        ["She let the cat out of the bag.", "She released the cat from its carrier.", false],
+      ];
+      $("hard").addEventListener("click", async () => {
+        $("hard").disabled = true; $("hardStatus").classList.remove("err"); $("hardStatus").textContent = "Loading GTE-small (~34 MB) + embedding pairs…";
+        try {
+          if (!small) { small = new GteSmallEngine(); await small.load(); }
+          const flat = HARD.flatMap((p) => [p[0], p[1]]);
+          const [lg, sm] = await Promise.all([large.embed(flat), small.embed(flat)]);
+          const rows = HARD.map((p, i) => ({ a: p[0], b: p[1], match: p[2], large: cosine(lg.embeddings[2 * i], lg.embeddings[2 * i + 1]), small: cosine(sm.embeddings[2 * i], sm.embeddings[2 * i + 1]) }));
+          const body = rows.map((r) => {
+            const gap = r.large - r.small;
+            const cls = r.match ? (gap >= 0 ? "gap-pos" : "gap-neg") : (gap <= 0 ? "gap-pos" : "gap-neg");
+            return `<tr>
+              <td class="cmp-pair">“${r.a}”<br>“${r.b}”<br><span class="muted" style="font-size:.72rem">${r.match ? "TRUE match (want HIGH)" : "decoy (want LOW)"}</span></td>
+              <td>${r.large.toFixed(3)}</td><td>${r.small.toFixed(3)}</td><td class="${cls}">${gap >= 0 ? "+" : ""}${gap.toFixed(3)}</td>
+            </tr>`;
+          }).join("");
+          $("hardWrap").innerHTML = `<table class="cmp-table"><thead><tr><th>Pair</th><th>GTE-large</th><th>GTE-small</th><th>large − small</th></tr></thead><tbody>${body}</tbody></table>
+            <p class="muted" style="font-size:.76rem;margin-top:.4rem">The tell is the SPREAD between each true match and its decoy. A sharper embedder keeps true matches well above their look-alike decoys; watch how GTE-large widens that margin.</p>`;
+          $("hardWrap").hidden = false;
+          $("hardStatus").textContent = "";
+        } catch (err) { $("hardStatus").textContent = "Failed: " + err.message; $("hardStatus").classList.add("err"); }
+        finally { $("hard").disabled = false; }
+      });
+    </script>
+  </body>
+</html>
