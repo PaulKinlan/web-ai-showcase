@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Grammar correction — Practical: proofread a message · Web AI Showcase</title>
+    <meta name="description" content="A private, offline proofreader: paste a whole message and get each line corrected with a word-level diff and an edit count, running entirely in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>✍️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Grammar correction</a></p>
+
+    <header>
+      <p class="eyebrow">Practical · text2text-generation · WASM</p>
+      <h1>Proofread a whole message</h1>
+      <p class="lede">
+        A shippable feature: paste a draft — an email, a support reply, a form — and the model corrects it
+        <strong>line by line</strong>, showing a diff and an edit count for each. It all runs on-device, so
+        it is safe for text you would never paste into a cloud tool. Copy the clean version when you're done.
+      </p>
+    </header>
+
+    <div id="model-loader"></div>
+
+    <section class="panel" aria-labelledby="draft-h">
+      <h3 id="draft-h">Your draft (one sentence or line at a time)</h3>
+      <p class="muted">Each non-empty line is corrected independently. Keep the sample, or paste your own.</p>
+      <textarea id="draft" rows="6" disabled>hi team just wanted to let you no that the report is not yet finish
+me and sarah has reviewed the numbers and their looks good
+we should of sent it earlier but their was a issue with the data
+please to let me know if you has any question</textarea>
+      <div style="margin:.6rem 0;display:flex;gap:.4rem;flex-wrap:wrap;align-items:center">
+        <button id="run" type="button" disabled>Proofread all lines</button>
+        <button id="copy" type="button" class="secondary" disabled>Copy corrected</button>
+        <span class="status" id="status" role="status" aria-live="polite"></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="out-h" id="outPanel" hidden>
+      <h3 id="out-h">Corrected, line by line</h3>
+      <div id="lines"></div>
+      <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>lines <b id="rN">–</b></span><span>total edits <b id="rEdits">–</b></span><span>time <b id="rMs">–</b></span></div>
+    </section>
+
+    <p class="crumbs" style="margin-top:1.5rem"><a href="../wild/">Next: Wild — truly mangled text →</a></p>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via 🤗 Transformers.js.
+      <a href="../">← Back to Grammar correction</a>
+    </footer>
+
+    <script type="module">
+      import { GecEngine, diffWords, diffStats, renderDiff, escapeHTML, GEC_CSS } from "../gec.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = GEC_CSS + `
+        .line-card { border:1px solid var(--border); border-radius:8px; background:var(--bg-raised); padding:.6rem .8rem; margin:.5rem 0; }
+        .line-card .orig { font-family:var(--font-mono); font-size:.78rem; color:var(--muted); }
+        .line-card .badge { font-family:var(--font-mono); font-size:.72rem; color:var(--muted); float:inline-end; }
+        .line-card .clean { margin-top:.3rem; }`;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new GecEngine();
+      let correctedText = "";
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/grammar-synthesis-small", runtime: "transformers.js", dtype: "q8", sizeMB: 95, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("draft").disabled = false; $("run").disabled = false; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        const lines = $("draft").value.split(/\n/).map((s) => s.trim()).filter(Boolean);
+        if (!lines.length) { $("status").textContent = "Paste some text first."; return; }
+        $("run").disabled = true; $("copy").disabled = true; $("status").classList.remove("err");
+        $("outPanel").hidden = false; $("lines").replaceChildren();
+        const t0 = performance.now();
+        let totalEdits = 0; const cleaned = []; let device = "wasm";
+        try {
+          for (let i = 0; i < lines.length; i++) {
+            $("status").textContent = `Correcting line ${i + 1} of ${lines.length}…`;
+            const r = await engine.correct(lines[i]);
+            device = r.device;
+            const ops = diffWords(r.input, r.output); const ds = diffStats(ops);
+            totalEdits += ds.changes; cleaned.push(r.output);
+            const card = document.createElement("div"); card.className = "line-card";
+            card.innerHTML = `<span class="badge">${ds.changes} edit(s)</span>
+              <div class="orig">was: ${escapeHTML(r.input)}</div>
+              <div class="clean diff-box" style="padding:.5rem .6rem"></div>`;
+            $("lines").append(card);
+            renderDiff(card.querySelector(".clean"), ops);
+          }
+          correctedText = cleaned.join("\n");
+          $("readout").hidden = false; $("rBackend").textContent = device.toUpperCase();
+          $("rN").textContent = lines.length; $("rEdits").textContent = totalEdits;
+          $("rMs").textContent = ((performance.now() - t0) / 1000).toFixed(2) + " s";
+          $("status").textContent = "Done."; $("status").classList.add("ok"); $("copy").disabled = false;
+        } catch (err) { $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+
+      $("copy").addEventListener("click", async () => {
+        try { await navigator.clipboard.writeText(correctedText); $("status").textContent = "Copied corrected text to clipboard."; }
+        catch { $("status").textContent = "Clipboard blocked — select the text manually."; }
+      });
+    </script>
+  </body>
+</html>
