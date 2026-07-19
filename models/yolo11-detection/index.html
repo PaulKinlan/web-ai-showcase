@@ -1,0 +1,317 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>YOLO11 — dense-head detection with live NMS in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run YOLO11, Ultralytics' newest detector, locally in your browser via raw ONNX Runtime Web. Unlike YOLOv10 it keeps the classic dense head: one pass returns 8400 overlapping candidates that you dedupe with Non-Max-Suppression. Slide the IoU threshold and watch NMS collapse the duplicates live."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎯</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">object-detection · vision · WASM · ~10 MB</p>
+      <h1>YOLO11 — the newest YOLO, and the NMS is back</h1>
+      <p class="lede">
+        YOLO11 is Ultralytics' latest detector — more accurate than YOLOv10 at the same tiny size. But it
+        makes the opposite design choice: where <a href="../yolov10-detection/">YOLOv10</a> trains an
+        <strong>NMS-free</strong> head that hands back tidy, deduplicated boxes, YOLO11 keeps the classic
+        <strong>dense head</strong> — one forward pass returns <strong>8400 overlapping candidate boxes</strong>
+        that you must clean up yourself with <strong>Non-Max-Suppression</strong>. Drop an image, then slide the
+        IoU threshold and watch NMS collapse the duplicate flood in real time, entirely on your device.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/webnn/yolo11n" target="_blank" rel="noopener">webnn/yolo11n</a> (nano)</td></tr>
+          <tr><th>Task</th><td><code>object-detection</code> — run via raw ONNX Runtime Web (see note below)</td></tr>
+          <tr><th>Runtime</th><td>onnxruntime-web 1.21 (transformers.js has no <code>yolo11</code> class)</td></tr>
+          <tr><th>Architecture</th><td>YOLO11-nano · C3k2 / C2PSA backbone · classic dense detection head (needs NMS)</td></tr>
+          <tr><th>Output tensor</th><td><code>[1, 84, 8400]</code> — 8400 anchors × (4 box coords + 80 class scores), NOT deduplicated</td></tr>
+          <tr><th>Classes</th><td>80 COCO categories (person, car, dog, chair, bottle…)</td></tr>
+          <tr><th>Post-process</th><td>argmax the 80 class scores per anchor → threshold → <strong>Non-Max-Suppression</strong></td></tr>
+          <tr><th>Quantization</th><td>fp32 ONNX (opset 19)</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (runs anywhere; no WebGPU needed)</td></tr>
+          <tr><th>Download</th><td>~10 MB, cached after first load</td></tr>
+          <tr><th>License</th><td>AGPL-3.0 (Ultralytics YOLO11) — weights loaded from the canonical HF repo, unmodified</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers, OffscreenCanvas, Canvas — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Pick or drop an image and hit Detect. YOLO11 runs once at a low floor; the two sliders
+        then filter the cached candidates and re-run NMS live — no re-inference. Score decides how sure a box
+        must be; <strong>IoU</strong> decides how aggressively NMS merges overlapping boxes.</p>
+
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image">
+        <span id="dropText">Drop an image here, or click to choose</span>
+        <input type="file" id="file" accept="image/*" hidden />
+      </div>
+      <div class="sample-strip" id="samples" aria-label="Sample images">
+        <img class="sample-thumb active" src="sample-cats.jpg" data-src="sample-cats.jpg" alt="Two cats sleeping on a pink couch" tabindex="0" role="button" />
+        <img class="sample-thumb" src="sample-room.jpg" data-src="sample-room.jpg" alt="A cozy sunlit bedroom with a bookshelf" tabindex="0" role="button" />
+        <img class="sample-thumb" src="sample-street.jpg" data-src="sample-street.jpg" alt="A riverside at golden hour with a swan" tabindex="0" role="button" />
+      </div>
+
+      <div style="margin:.6rem 0">
+        <button id="run" type="button" disabled>Detect objects</button>
+      </div>
+
+      <div class="slider-row">
+        <label for="thresh">Score threshold</label>
+        <input type="range" id="thresh" min="0.05" max="0.95" step="0.05" value="0.35" />
+        <output id="threshOut" for="thresh">0.35</output>
+      </div>
+      <div class="slider-row">
+        <label for="iou">NMS IoU threshold</label>
+        <input type="range" id="iou" min="0.1" max="0.9" step="0.05" value="0.45" />
+        <output id="iouOut" for="iou">0.45</output>
+      </div>
+      <label style="display:flex;align-items:center;gap:.5rem;font-size:.85rem;margin:.3rem 0">
+        <input type="checkbox" id="showGhost" /> Show the duplicate candidates NMS suppressed (faint dashed boxes)
+      </label>
+
+      <div class="canvas-wrap">
+        <canvas id="stage" class="stage-canvas" aria-label="Detection result: image with labelled boxes"></canvas>
+      </div>
+      <div class="count-chips" id="countChips" aria-live="polite"></div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+        <span>candidates <b id="rCand">–</b></span>
+        <span>after NMS <b id="rN">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside — the NMS step YOLOv10 removed</h3>
+      <p class="muted">
+        This is the whole point of YOLO11 vs YOLOv10. YOLO11's dense head emits a fixed
+        <code>[1, 84, 8400]</code> tensor: 8400 candidate boxes, most of them near-duplicates of the same
+        object. First we <strong>argmax</strong> the 80 class scores at each anchor to get its best label and
+        confidence; then we drop everything below the score floor; then <strong>Non-Max-Suppression</strong>
+        walks the survivors from most to least confident, throwing away any box that overlaps an
+        already-kept box of the same class by more than the IoU threshold. Watch the numbers move as you drag
+        the sliders — every step runs on the cached candidates, no re-inference.
+      </p>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Run detection to see the NMS pipeline.</div>
+      <div id="insideWrap" hidden>
+        <div class="nms-stat">
+          <span class="nms-pill">8400 anchors → above floor <b id="pFloor">–</b></span>
+          <span class="nms-pill">above score → <b id="pScore">–</b></span>
+          <span class="nms-pill">NMS suppressed <b id="pSupp">–</b></span>
+          <span class="nms-pill">kept → <b id="pKept">–</b></span>
+        </div>
+        <table class="inside-table">
+          <thead><tr><th>#</th><th>label</th><th>score</th><th>x</th><th>y</th><th>w</th><th>h</th></tr></thead>
+          <tbody id="insideRows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        YOLO11 is the current default when people say "just use YOLO" — it's the accuracy sweet spot at the
+        nano size, and it runs at ~10 MB entirely in a page. Understanding that it needs NMS (and YOLOv10
+        doesn't) is the difference between a detector that works and one that draws three boxes around every
+        object. Here you can feel both halves — the raw model output and the classical clean-up — with nothing
+        uploaded.
+      </p>
+      <ul>
+        <li><strong>Accuracy at the edge</strong> — YOLO11-nano beats YOLOv10-nano on COCO at a similar size, so an on-device detector is a little sharper for free.</li>
+        <li><strong>Counting &amp; inventory</strong> — tally people in a queue, cars in a lot, or items on a shelf from a photo, with the NMS knob tuned to your scene.</li>
+        <li><strong>Live camera</strong> — one clean forward pass per frame plus a fast client-side NMS keeps a webcam detector responsive on modest hardware.</li>
+        <li><strong>Teaching the pipeline</strong> — the IoU slider makes NMS legible: crank it up and duplicates reappear, crank it down and distinct objects get merged.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">One image, two sliders — watch score + NMS turn 8400 raw candidates into clean boxes.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Inventory counter — tally objects by class from a photo, on-device, with a tuned NMS.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Live webcam detector — real-time boxes with a per-frame latency and FPS readout.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">YOLO11 boxes → crop one → a ViT classifier names it more finely.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>Because transformers.js has no <code>yolo11</code> class, we run the ONNX graph directly and
+        hand-write the three steps a pipeline would normally own — letterbox in, decode the dense head out,
+        and dedupe with NMS:</p>
+      <pre><code>import * as ort from "onnxruntime-web";
+
+const session = await ort.InferenceSession.create(modelBytes); // ~10 MB fp32 ONNX
+// preprocess: resize longest edge → 640, pad to 640×640, /255 → Float32 [1,3,640,640]
+const { output0 } = await session.run({ images: input });
+// output0.dims === [1, 84, 8400]  (channel-major: value(c, a) = data[c*8400 + a])
+// per anchor a: cx,cy,w,h = data[0..3][a];  classScores = data[4..83][a]
+//   → argmax the 80 class scores, threshold, then run Non-Max-Suppression (IoU) to dedupe</code></pre>
+      <p class="muted">
+        This page runs the model once at a low floor (0.05) inside a Web Worker — letterboxing on an
+        OffscreenCanvas and decoding the head there — then caches every candidate and re-runs the client-side
+        NMS as you drag the sliders, so both knobs are instant and never re-run inference. The ONNX weights are
+        fetched through Cache Storage, so a returning visit auto-initialises with no re-download.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/webnn/yolo11n" target="_blank" rel="noopener">Model — webnn/yolo11n (ONNX export)</a></li>
+        <li><a href="https://docs.ultralytics.com/models/yolo11/" target="_blank" rel="noopener">Ultralytics YOLO11 documentation</a></li>
+        <li><a href="https://github.com/ultralytics/ultralytics" target="_blank" rel="noopener">ultralytics/ultralytics (source + AGPL-3.0 license)</a></li>
+        <li><a href="../yolov10-detection/">Contrast: YOLOv10 (NMS-free) in this showcase</a></li>
+        <li><a href="https://onnxruntime.ai/docs/tutorials/web/" target="_blank" rel="noopener">ONNX Runtime Web documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://onnxruntime.ai/docs/tutorials/web/" target="_blank" rel="noopener">ONNX Runtime Web</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { Yolo11Engine, filterAndNms, nms, drawDetections, countByLabel, colorForLabel, escapeHTML, YOLO11_CSS } from "./yolo11.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = YOLO11_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new Yolo11Engine();
+      let currentImg = null;      // decoded HTMLImageElement for drawing
+      let rawDetections = [];     // all candidates above the floor, cached (pre-NMS)
+      let lastMs = 0;
+
+      function decode(url) {
+        return new Promise((resolve, reject) => {
+          const im = new Image();
+          im.onload = () => resolve(im);
+          im.onerror = () => reject(new Error("Could not decode image"));
+          im.src = url;
+        });
+      }
+      async function useURL(url) {
+        currentImg = await decode(url);
+        rawDetections = [];
+        $("insideWrap").hidden = true;
+        $("insideEmpty").hidden = false;
+        $("countChips").replaceChildren();
+        $("readout").hidden = true;
+        const c = $("stage");
+        c.width = currentImg.naturalWidth; c.height = currentImg.naturalHeight;
+        c.getContext("2d").drawImage(currentImg, 0, 0);
+      }
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        await useURL(el.dataset.src);
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => {
+          if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); }
+        });
+      }
+      pickSample($("samples").firstElementChild);
+
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) {
+        for (const t of $("samples").children) t.classList.remove("active");
+        await useURL(URL.createObjectURL(f));
+        $("dropText").textContent = f.name;
+      }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "webnn/yolo11n", runtime: "onnxruntime-web", dtype: "fp32", sizeMB: 10, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: () => { $("run").disabled = false; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!currentImg) { $("status").textContent = "Pick an image first."; return; }
+        $("run").disabled = true; $("status").classList.remove("err"); $("status").textContent = "Detecting…";
+        try {
+          const bmp = await createImageBitmap(currentImg);
+          const r = await engine.detect(bmp);
+          rawDetections = r.rawDetections;
+          lastMs = r.ms;
+          $("rBackend").textContent = r.device.toUpperCase();
+          render();
+          $("status").textContent = `${rawDetections.length} raw candidates above the floor — NMS deduped them below.`;
+          $("status").classList.add("ok");
+        } catch (err) {
+          $("status").textContent = "Detection failed: " + err.message;
+          $("status").classList.add("err");
+        } finally { $("run").disabled = false; }
+      });
+
+      const thresh = $("thresh"), iouEl = $("iou"), ghost = $("showGhost");
+      thresh.addEventListener("input", () => { $("threshOut").textContent = (+thresh.value).toFixed(2); if (rawDetections.length) render(); });
+      iouEl.addEventListener("input", () => { $("iouOut").textContent = (+iouEl.value).toFixed(2); if (rawDetections.length) render(); });
+      ghost.addEventListener("change", () => { if (rawDetections.length) render(); });
+
+      function render() {
+        const sc = +thresh.value, io = +iouEl.value;
+        const above = rawDetections.filter((d) => d.score >= sc);
+        const { kept, suppressed } = nms(above, io);
+        const keptSet = new Set(kept);
+        const ghostBoxes = ghost.checked ? above.filter((d) => !keptSet.has(d)) : [];
+        drawDetections($("stage"), currentImg, kept, { ghost: ghostBoxes });
+        $("countChips").replaceChildren(...countByLabel(kept).map(({ label, count }) => {
+          const el = document.createElement("span");
+          el.className = "count-chip";
+          el.innerHTML = `<span class="swatch" style="background:${colorForLabel(label)}"></span>${escapeHTML(label)} <b>×${count}</b>`;
+          return el;
+        }));
+        $("readout").hidden = false;
+        $("rMs").textContent = lastMs + " ms";
+        $("rCand").textContent = rawDetections.length;
+        $("rN").textContent = kept.length;
+        renderInside(above.length, suppressed, kept);
+      }
+
+      function renderInside(aboveScore, suppressed, kept) {
+        $("insideEmpty").hidden = true;
+        $("insideWrap").hidden = false;
+        $("pFloor").textContent = rawDetections.length;
+        $("pScore").textContent = aboveScore;
+        $("pSupp").textContent = suppressed;
+        $("pKept").textContent = kept.length;
+        const rows = [...kept].sort((a, b) => b.score - a.score).map((d, i) => {
+          const { xmin, ymin, xmax, ymax } = d.box;
+          const tr = document.createElement("tr");
+          tr.innerHTML = `<td>${i + 1}</td><td>${escapeHTML(d.label)}</td><td>${(d.score * 100).toFixed(1)}%</td>
+            <td>${Math.round(xmin)}</td><td>${Math.round(ymin)}</td>
+            <td>${Math.round(xmax - xmin)}</td><td>${Math.round(ymax - ymin)}</td>`;
+          return tr;
+        });
+        $("insideRows").replaceChildren(...rows);
+      }
+    </script>
+  </body>
+</html>

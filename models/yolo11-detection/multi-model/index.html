@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>YOLO11 Multi-model — detect then classify the crop · Web AI Showcase</title>
+    <meta name="description" content="Chain two on-device models: YOLO11 finds and boxes objects (with NMS), then a ViT classifier names a chosen crop more finely — COCO 'dog' becomes ImageNet 'golden retriever'. All in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎯</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">YOLO11</a></p>
+
+    <header>
+      <p class="eyebrow">use case · multi-model</p>
+      <h1>Multi-model: detect, crop, then classify finely</h1>
+      <p class="lede">
+        YOLO11 is great at <em>where</em> and roughly <em>what</em> — 80 COCO classes, after NMS. Pair it with
+        a ViT image classifier and you get <em>fine</em> what: YOLO11 boxes a "dog", you click the box, and a
+        second model names the breed from 1,000 ImageNet classes. Two models, chained locally.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div style="display:grid;gap:.6rem">
+        <div><p class="hint">1 · Detector (YOLO11, ~10 MB)</p><div id="loader-yolo"></div></div>
+        <div><p class="hint">2 · Classifier (ViT, ~88 MB)</p><div id="loader-vit"></div></div>
+      </div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image">
+        <span id="dropText">Drop an image, or click to choose</span>
+        <input type="file" id="file" accept="image/*" hidden />
+      </div>
+      <div class="sample-strip" id="samples">
+        <img class="sample-thumb active" src="../sample-cats.jpg" data-src="../sample-cats.jpg" alt="Two cats on a couch" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-room.jpg" data-src="../sample-room.jpg" alt="A cozy bedroom" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-street.jpg" data-src="../sample-street.jpg" alt="A riverside at golden hour" tabindex="0" role="button" />
+      </div>
+
+      <div style="margin:.6rem 0"><button id="run" type="button" disabled>Detect objects</button></div>
+
+      <div class="canvas-wrap">
+        <canvas id="stage" class="stage-canvas" aria-label="Detection result: image with labelled boxes"></canvas>
+      </div>
+
+      <p class="hint" id="pickHint" hidden>Pick a detected object to classify its crop:</p>
+      <div class="obj-list" id="objList"></div>
+
+      <div class="crop-out" id="cropOut" hidden>
+        <canvas id="cropCanvas" aria-label="Cropped object sent to the classifier"></canvas>
+        <div style="flex:1 1 220px">
+          <p class="hint" id="cropLabel"></p>
+          <div class="pred-list" id="fineList"></div>
+        </div>
+      </div>
+
+      <div class="readout" id="readout" hidden><span>detect <b id="rDet">–</b></span><span>classify <b id="rClf">–</b></span><span>backend <b id="rBackend">–</b></span></div>
+    </section>
+
+    <p class="crumbs"><a href="../wild/">← Wild</a> · <a href="../">Back to YOLO11</a></p>
+
+    <script type="module">
+      import { Yolo11Engine, nms, drawDetections, colorForLabel, escapeHTML, YOLO11_CSS } from "../yolo11.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = YOLO11_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const yolo = new Yolo11Engine();
+
+      // ViT classifier worker (second model).
+      const vit = new Worker("./vit-worker.js", { type: "module" });
+      const vitPending = new Map(); let vitId = 0; const vitWaiters = [];
+      vit.addEventListener("message", (e) => {
+        const m = e.data;
+        if (m.type === "ready") { for (const w of vitWaiters) w(); vitWaiters.length = 0; }
+        else if (m.type === "classified") { vitPending.get(m.id)?.resolve(m); vitPending.delete(m.id); }
+        else if (m.type === "error" && m.id != null) { vitPending.get(m.id)?.reject(new Error(m.message)); vitPending.delete(m.id); }
+      });
+      function classifyCrop(dataUrl) { const id = ++vitId; return new Promise((resolve, reject) => { vitPending.set(id, { resolve, reject }); vit.postMessage({ type: "classify", id, dataUrl, topk: 5 }); }); }
+
+      let currentImg = null, detections = [], yoloReady = false, vitReady = false, lastDet = 0;
+
+      function decode(url) { return new Promise((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = () => rej(new Error("decode failed")); im.src = url; }); }
+      async function useURL(url) {
+        currentImg = await decode(url); detections = [];
+        $("objList").replaceChildren(); $("pickHint").hidden = true; $("cropOut").hidden = true; $("readout").hidden = true;
+        const c = $("stage"); c.width = currentImg.naturalWidth; c.height = currentImg.naturalHeight; c.getContext("2d").drawImage(currentImg, 0, 0);
+      }
+      async function pickSample(el) { for (const t of $("samples").children) t.classList.toggle("active", t === el); await useURL(el.dataset.src); }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } });
+      }
+      pickSample($("samples").firstElementChild);
+
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) { for (const t of $("samples").children) t.classList.remove("active"); await useURL(URL.createObjectURL(f)); $("dropText").textContent = f.name; }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
+
+      const maybeEnable = () => { if (yoloReady && vitReady) $("run").disabled = false; };
+      createModelLoader({
+        mount: $("loader-yolo"),
+        model: { modelId: "webnn/yolo11n", runtime: "onnxruntime-web", dtype: "fp32", sizeMB: 10, requiresWebGPU: false },
+        load: (onProgress) => yolo.load(onProgress),
+        onReady: () => { yoloReady = true; maybeEnable(); },
+      });
+      createModelLoader({
+        mount: $("loader-vit"),
+        model: { modelId: "Xenova/vit-base-patch16-224", runtime: "transformers.js", dtype: "q8", sizeMB: 88, requiresWebGPU: false },
+        load: (onProgress) => new Promise((resolve, reject) => {
+          vitWaiters.push(resolve);
+          const onMsg = (e) => { if (e.data.type === "progress") onProgress(e.data.p); if (e.data.type === "error") { vit.removeEventListener("message", onMsg); reject(new Error(e.data.message)); } };
+          vit.addEventListener("message", onMsg);
+          vit.postMessage({ type: "load" });
+        }),
+        onReady: () => { vitReady = true; maybeEnable(); },
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!currentImg) { $("status").textContent = "Pick an image first."; return; }
+        $("run").disabled = true; $("status").classList.remove("err"); $("status").textContent = "Detecting…";
+        try {
+          const bmp = await createImageBitmap(currentImg);
+          const r = await yolo.detect(bmp); detections = nms(r.rawDetections.filter((d) => d.score >= 0.35), 0.45).kept; lastDet = r.ms;
+          $("rBackend").textContent = r.device.toUpperCase();
+          drawDetections($("stage"), currentImg, detections);
+          renderObjList();
+          $("status").textContent = `Found ${detections.length} objects. Pick one to classify.`;
+          $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Detection failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+
+      function renderObjList() {
+        $("pickHint").hidden = detections.length === 0;
+        $("objList").replaceChildren(...detections.map((d, i) => {
+          const b = document.createElement("button"); b.type = "button"; b.className = "obj-btn"; b.setAttribute("aria-pressed", "false");
+          b.innerHTML = `<span class="swatch" style="background:${colorForLabel(d.label)}"></span>${escapeHTML(d.label)}<span class="sc">${(d.score * 100).toFixed(0)}%</span>`;
+          b.addEventListener("click", () => classifyIndex(i, b));
+          return b;
+        }));
+      }
+
+      async function classifyIndex(i, btn) {
+        for (const x of $("objList").children) x.setAttribute("aria-pressed", "false");
+        btn.setAttribute("aria-pressed", "true");
+        const d = detections[i];
+        drawDetections($("stage"), currentImg, detections, { highlightIndex: i });
+        const { xmin, ymin, xmax, ymax } = d.box;
+        const cw = Math.max(1, Math.round(xmax - xmin)), ch = Math.max(1, Math.round(ymax - ymin));
+        const crop = $("cropCanvas"); crop.width = cw; crop.height = ch;
+        crop.getContext("2d").drawImage(currentImg, xmin, ymin, cw, ch, 0, 0, cw, ch);
+        $("cropOut").hidden = false;
+        $("cropLabel").textContent = `YOLO11 says "${d.label}" — asking ViT for a finer label…`;
+        $("fineList").replaceChildren();
+        try {
+          const dataUrl = crop.toDataURL("image/png");
+          const r = await classifyCrop(dataUrl);
+          $("cropLabel").innerHTML = `YOLO11: <b>${escapeHTML(d.label)}</b> → ViT top guess: <b>${escapeHTML(r.preds[0].label)}</b>`;
+          const maxP = Math.max(1e-6, ...r.preds.map((p) => p.score));
+          $("fineList").replaceChildren(...r.preds.map((p) => {
+            const row = document.createElement("div"); row.className = "pred-row2";
+            row.innerHTML = `<span class="w">${escapeHTML(p.label)}</span><span class="w" style="text-align:end;color:var(--muted)">${(p.score * 100).toFixed(1)}%</span><span class="barw"><span class="barf" style="inline-size:${(p.score / maxP) * 100}%"></span></span>`;
+            return row;
+          }));
+          $("readout").hidden = false; $("rDet").textContent = lastDet + " ms"; $("rClf").textContent = r.ms + " ms";
+        } catch (err) { $("cropLabel").textContent = "Classification failed: " + err.message; }
+      }
+    </script>
+  </body>
+</html>
