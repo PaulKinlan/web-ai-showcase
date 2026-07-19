@@ -1,0 +1,314 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>wav2vec2 (CTC) — character-level speech-to-text in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run facebook's wav2vec2 locally in your browser: a CTC speech model that labels every ~20ms frame with a character, then collapses the frames into text. A different architecture from Whisper — no decoder, no hallucination. WebAssembly, nothing uploaded."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🔤</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">automatic-speech-recognition · audio · WASM (WebGPU when available) · ~95 MB</p>
+      <h1>wav2vec2 — speech to text, one character per frame</h1>
+      <p class="lede">
+        wav2vec2 is a <strong>different kind</strong> of speech model. Whisper, Moonshine and
+        Distil-Whisper are seq2seq — a decoder <em>generates</em> text token by token (and can hallucinate).
+        wav2vec2 is a <strong>CTC</strong> model: it labels every ~20 ms frame of audio with a single
+        character (or a blank), then collapses that per-frame strip into words. No decoder, no
+        autoregression, no invented words. Pick a clip and watch the collapse happen.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="seg-table" style="inline-size:100%;border-collapse:collapse">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/Xenova/wav2vec2-base-960h" target="_blank" rel="noopener">Xenova/wav2vec2-base-960h</a> <span class="muted">(facebook/wav2vec2-base-960h, English)</span></td></tr>
+          <tr><th>Task / pipeline</th><td><code>automatic-speech-recognition</code> — but loaded as <code>AutoModelForCTC</code> so we can see the frames</td></tr>
+          <tr><th>Architecture</th><td><strong>CTC</strong> (Connectionist Temporal Classification): a 12-layer transformer encoder over raw audio → per-frame logits across a <strong>32-symbol</strong> vocab (blank + "|" word boundary + 26 letters + apostrophe). ~94M params. No decoder.</td></tr>
+          <tr><th>Quantization</th><td>q8 (8-bit) ONNX — <code>onnx/model_quantized.onnx</code></td></tr>
+          <tr><th>Backend</th><td>WebAssembly (WebGPU when a real adapter is present), honest fallback</td></tr>
+          <tr><th>Download</th><td>~95 MB (single encoder model), cached after first load</td></tr>
+          <tr><th>License</th><td>Apache-2.0 (facebook wav2vec2)</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly / WebGPU, Web Workers, Web Audio (decode + resample), MediaRecorder (mic)</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">
+        Choose audio — record from your mic, upload a file, or pick a sample. The page decodes it to
+        16 kHz mono, draws the waveform, and runs the CTC model in a Web Worker. wav2vec2 is trained on
+        clean read speech, so it does best on <strong>clear speech</strong> (the JFK sample is ideal).
+      </p>
+
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+
+      <div class="audio-row">
+        <button id="rec" type="button" class="secondary" disabled>● Record</button>
+        <button id="upload" type="button" class="secondary" disabled>Upload audio</button>
+        <input type="file" id="file" accept="audio/*" hidden />
+        <span class="muted" style="font-size:.82rem">or a sample:</span>
+        <span class="sample-row" id="samples">
+          <button class="chip" type="button" data-src="jfk.wav" data-label="JFK — inaugural (11s)">JFK inaugural</button>
+          <button class="chip" type="button" data-src="ted.wav" data-label="TED talk clip (12s)">TED clip</button>
+        </span>
+      </div>
+
+      <div id="micFallback" class="fallback" hidden>
+        <strong>No microphone available here.</strong>
+        <p class="muted" style="margin:.3rem 0">
+          This context didn't grant mic access (common in headless / embedded views). wav2vec2 still
+          works — use a <em>sample</em> above or <em>Upload audio</em>. For live recording, open this in a
+          normal browser tab and allow the microphone when prompted.
+        </p>
+      </div>
+
+      <div class="audio-row">
+        <audio id="player" controls preload="metadata"></audio>
+        <span class="muted" id="clipLabel" style="font-size:.82rem">JFK — inaugural (11s)</span>
+      </div>
+      <div class="wave-wrap"><canvas id="wave" class="wave" aria-label="Audio waveform"></canvas></div>
+
+      <button id="run" type="button" disabled>Transcribe</button>
+
+      <h3>Transcript</h3>
+      <div class="transcript" id="transcript" aria-live="polite">Transcribe a clip to see the text here.</div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>audio <b id="rDur">–</b></span>
+        <span>process <b id="rMs">–</b></span>
+        <span>frames <b id="rFrames">–</b></span>
+        <span>emitted chars <b id="rChars">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside — the CTC collapse</h3>
+      <p class="muted">
+        This is what makes wav2vec2 different. Below is the model's <strong>raw per-frame argmax</strong>:
+        one cell per ~20 ms frame, showing the single character it thinks is most likely there. Most
+        frames are <em>blank</em> (·) — the model saying "nothing new here". Where a sound lands you get a
+        run of the same letter. The transcript is produced by two mechanical rules, no decoder involved:
+        <strong>(1) merge consecutive duplicates, (2) drop the blanks</strong>. Watch a run like
+        <code>·· AA ·· SS S ·· KK</code> collapse to <code>ASK</code>.
+      </p>
+      <div class="ctc-legend">
+        <span><span class="ctc-swatch" style="background:var(--accent)"></span> emitted character</span>
+        <span><span class="ctc-swatch" style="background:color-mix(in srgb,var(--accent) 18%,transparent)"></span> ␣ word boundary</span>
+        <span><span class="ctc-swatch" style="background:var(--border)"></span> · blank frame</span>
+      </div>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Transcribe a clip to see its per-frame argmax and the collapse.</div>
+      <div id="insideWrap" hidden>
+        <p class="muted" style="font-size:.8rem;margin:.6rem 0 .2rem">Raw per-frame argmax (<span id="frameCount">–</span> frames · ~<span id="frameDur">–</span> ms each):</p>
+        <div class="ctc-strip" id="strip" role="img" aria-label="Per-frame character predictions"></div>
+        <p class="muted" style="font-size:.8rem;margin:.8rem 0 .2rem">↓ merge duplicates, drop blanks ↓</p>
+        <div class="ctc-collapsed" id="collapsed" aria-live="polite"></div>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        Because CTC labels frames instead of generating tokens, it has properties Whisper doesn't. It
+        can't hallucinate a plausible-but-unspoken sentence when the audio is silent or noisy — worst case
+        it emits blanks. And because every character is pinned to a frame, you get <strong>timing for
+        free</strong>: exactly where in the audio each word (and letter) was said. That's the basis for
+        forced alignment, karaoke, and pronunciation feedback.
+      </p>
+      <ul>
+        <li><strong>Forced alignment</strong> — line up a known transcript to audio at the word/character level, from the frame positions.</li>
+        <li><strong>Pronunciation &amp; reading feedback</strong> — compare what was said, frame by frame, against the target words.</li>
+        <li><strong>Hallucination-free captions</strong> — for compliance/medical contexts where an invented word is worse than a blank.</li>
+        <li><strong>Phoneme/character research</strong> — inspect the raw acoustic posteriors, not just a cleaned string.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">One clip in, a transcript out — and the per-frame strip that produced it.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Forced alignment: real per-word timings, straight from the CTC frames.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Scrub the frames: hover the timeline and read the model's raw acoustic guess.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">Transcribe with CTC → an on-device LLM cleans up punctuation &amp; casing.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>
+        The one-liner is the ASR pipeline — but to <em>see</em> the frames we load the model directly and
+        do the CTC collapse ourselves (which is exactly what the pipeline does internally):
+      </p>
+      <pre><code>import { AutoProcessor, AutoModelForCTC } from "@huggingface/transformers";
+
+const processor = await AutoProcessor.from_pretrained("Xenova/wav2vec2-base-960h");
+const model = await AutoModelForCTC.from_pretrained(
+  "Xenova/wav2vec2-base-960h",
+  { device: "wasm", dtype: "q8" },
+);
+
+// audio = 16 kHz mono Float32Array
+const inputs = await processor(audio);
+const { logits } = await model(inputs); // shape [1, frames, 32]
+
+// greedy CTC decode: argmax per frame, merge duplicates, drop the blank (id 0)
+const ids = argmaxPerFrame(logits);     // e.g. [0,0,7,7,0,12,...]
+const text = collapse(ids);             // "THE ..." — no decoder involved</code></pre>
+      <p class="muted">
+        Inference runs in a Web Worker so the UI never janks. The worker returns the raw per-frame argmax
+        and real per-word timings (from the frame each character was emitted at) — nothing is faked or
+        pre-computed.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/Xenova/wav2vec2-base-960h" target="_blank" rel="noopener">Model card — Xenova/wav2vec2-base-960h</a></li>
+        <li><a href="https://huggingface.co/facebook/wav2vec2-base-960h" target="_blank" rel="noopener">Original — facebook/wav2vec2-base-960h</a></li>
+        <li><a href="https://arxiv.org/abs/2006.11477" target="_blank" rel="noopener">Paper — "wav2vec 2.0: A Framework for Self-Supervised Learning of Speech Representations" (2020)</a></li>
+        <li><a href="https://www.cs.toronto.edu/~graves/icml_2006.pdf" target="_blank" rel="noopener">CTC — Graves et al., 2006</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import {
+        Wav2VecEngine, urlToMono16k, MicRecorder, blobToMono16k,
+        drawWaveform, fmtTime, renderStrip, WAV2VEC_CSS,
+      } from "./wav2vec2.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = WAV2VEC_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new Wav2VecEngine();
+      let pcm = null, audioDur = 0;
+
+      async function useAudio(url, label, { revoke = false } = {}) {
+        $("player").src = url;
+        $("clipLabel").textContent = label;
+        $("transcript").textContent = "Transcribe a clip to see the text here.";
+        $("readout").hidden = true; $("insideWrap").hidden = true; $("insideEmpty").hidden = false;
+        try {
+          const decoded = await urlToMono16k(url);
+          pcm = decoded.pcm; audioDur = decoded.duration;
+          drawWaveform($("wave"), pcm, 0);
+          $("run").disabled = !engine.ready;
+        } catch (err) {
+          $("status").hidden = false;
+          $("status").textContent = "Couldn't decode that audio: " + err.message;
+          $("status").classList.add("err");
+          pcm = null;
+        }
+        if (revoke) $("player").addEventListener("emptied", () => URL.revokeObjectURL(url), { once: true });
+      }
+
+      for (const chip of $("samples").children) {
+        chip.addEventListener("click", () => useAudio(chip.dataset.src, chip.dataset.label));
+      }
+      useAudio("jfk.wav", "JFK — inaugural (11s)");
+
+      $("upload").addEventListener("click", () => $("file").click());
+      $("file").addEventListener("change", async () => {
+        const f = $("file").files[0];
+        if (f) await useAudio(URL.createObjectURL(f), f.name, { revoke: true });
+      });
+
+      const mic = new MicRecorder();
+      let recording = false;
+      if (!MicRecorder.supported()) $("micFallback").hidden = false;
+      $("rec").addEventListener("click", async () => {
+        if (!recording) {
+          try {
+            await mic.start();
+          } catch {
+            $("micFallback").hidden = false;
+            $("status").hidden = false;
+            $("status").textContent = "Microphone unavailable — use a sample or upload.";
+            $("status").classList.add("err");
+            return;
+          }
+          recording = true;
+          $("rec").innerHTML = '<span class="rec-dot"></span>Stop';
+          $("rec").classList.remove("secondary");
+          $("status").hidden = false; $("status").classList.remove("err");
+          $("status").textContent = "Recording… click Stop when done.";
+        } else {
+          recording = false;
+          $("rec").textContent = "● Record";
+          $("rec").classList.add("secondary");
+          const { url } = await mic.stop();
+          await useAudio(url, "Your recording", { revoke: true });
+          $("status").textContent = "Recorded. Hit Transcribe.";
+        }
+      });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: {
+          modelId: "Xenova/wav2vec2-base-960h",
+          runtime: "transformers.js",
+          dtype: "q8",
+          sizeMB: 95,
+          requiresWebGPU: false,
+        },
+        load: async (onProgress) => {
+          const device = await engine.load((p) => onProgress(p));
+          return { device };
+        },
+        onReady: () => {
+          $("rec").disabled = false; $("upload").disabled = false;
+          $("run").disabled = !pcm;
+        },
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!pcm) { $("status").hidden = false; $("status").textContent = "Pick or record some audio first."; return; }
+        $("run").disabled = true; $("status").hidden = false; $("status").classList.remove("err", "ok");
+        $("status").textContent = "Running the CTC model…";
+        try {
+          const r = await engine.transcribe(pcm, audioDur);
+          $("transcript").textContent = r.text || "(no speech detected)";
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rDur").textContent = fmtTime(r.audioSec);
+          $("rMs").textContent = (r.ms / 1000).toFixed(2) + " s";
+          $("rFrames").textContent = r.frames;
+          $("rChars").textContent = r.emitted;
+          $("insideEmpty").hidden = true; $("insideWrap").hidden = false;
+          $("frameCount").textContent = r.frames;
+          $("frameDur").textContent = r.frameMs ? r.frameMs.toFixed(0) : "20";
+          renderStrip($("strip"), r.strip);
+          $("collapsed").textContent = r.text || "(no speech detected)";
+          $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (err) {
+          $("status").textContent = "Transcription failed: " + err.message;
+          $("status").classList.add("err");
+        } finally {
+          $("run").disabled = false;
+        }
+      });
+
+      addEventListener("resize", () => pcm && drawWaveform($("wave"), pcm, 0));
+    </script>
+  </body>
+</html>
