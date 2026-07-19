@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>DINOv2 Multi-model — image vectors beside text vectors · Web AI Showcase</title>
+    <meta name="description" content="Two modalities, one idea: DINOv2 turns images into 384-d vectors and MiniLM turns their captions into 384-d vectors, each with its own similarity matrix — see 'meaning is geometry' hold in pictures and in words. Both models run in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🦕</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">DINOv2-small</a></p>
+
+    <header>
+      <p class="eyebrow">use case · multi-model</p>
+      <h1>Multi-model: image vectors beside text vectors</h1>
+      <p class="lede">
+        Embeddings are the same idea in every modality — turn a thing into a vector, and similarity becomes a
+        distance. Here two models make that concrete, both running locally. <strong>DINOv2</strong> embeds a
+        set of images; <strong>MiniLM</strong> embeds their captions. Two separate spaces, two similarity
+        matrices — and the same groupings emerge in pixels and in words.
+      </p>
+    </header>
+
+    <section class="panel">
+      <h3>Load both models</h3>
+      <p class="muted" style="font-size:.85rem">Image side — DINOv2-small (~24 MB):</p>
+      <div id="loader-vis"></div>
+      <p class="muted" style="font-size:.85rem;margin-top:.6rem">Text side — all-MiniLM-L6-v2 (~25 MB):</p>
+      <div id="loader-txt"></div>
+    </section>
+
+    <section class="panel">
+      <p class="muted" style="font-size:.85rem">Each row is one item: an image and a caption describing it.
+        Edit the captions if you like, then run both models.</p>
+      <div id="pairs"></div>
+      <button id="run" type="button" disabled style="margin-top:.6rem">Embed images &amp; captions</button>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+    </section>
+
+    <section class="panel" id="resultPanel" hidden>
+      <div class="grid-2">
+        <div>
+          <h3 style="margin-top:.2rem">Image similarity (DINOv2)</h3>
+          <div class="matrix-scroll" id="imgMatrix" aria-live="polite"></div>
+        </div>
+        <div>
+          <h3 style="margin-top:.2rem">Caption similarity (MiniLM)</h3>
+          <div class="matrix-scroll" id="txtMatrix" aria-live="polite"></div>
+        </div>
+      </div>
+      <div class="readout">
+        <span>image backend <b id="iBackend">–</b></span><span>image time <b id="iMs">–</b></span>
+        <span>text backend <b id="tBackend">–</b></span><span>text time <b id="tMs">–</b></span>
+      </div>
+      <p class="muted" style="font-size:.82rem;margin-top:.5rem">The two matrices are computed in totally
+        separate embedding spaces — DINOv2 never sees the text, MiniLM never sees the pixels — yet the block
+        structure (the two cats together, the two cars together) lines up. That shared geometry is what makes
+        cross-modal systems like CLIP possible.</p>
+    </section>
+
+    <p class="crumbs"><a href="../wild/">← Wild</a> · <a href="../">Back to DINOv2-small</a> · <a href="/web-ai-showcase/models/minilm-embeddings/">The MiniLM model →</a></p>
+
+    <script type="module">
+      import { VisionEngine, simMatrix as imgSimMatrix, renderImageMatrix, VISION_CSS } from "../vision.js";
+      import { EmbedEngine, simMatrix as txtSimMatrix, renderMatrix, EMBED_CSS } from "/web-ai-showcase/models/minilm-embeddings/embed.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = VISION_CSS + EMBED_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const vis = new VisionEngine();
+      const txt = new EmbedEngine();
+      let visReady = false, txtReady = false;
+      const maybeEnable = () => { if (visReady && txtReady) $("run").disabled = false; };
+
+      const DATA = [
+        { src: "../samples/cat-1.jpg", name: "cat A", caption: "an orange cat's face looking at the camera" },
+        { src: "../samples/cat-2.jpg", name: "cat B", caption: "a grey cat's face on a pale background" },
+        { src: "../samples/car-1.jpg", name: "car A", caption: "a red car parked on a road" },
+        { src: "../samples/car-2.jpg", name: "car B", caption: "a blue car on a street" },
+        { src: "../samples/mountain-1.jpg", name: "mountain", caption: "snowy mountains under a blue sky" },
+        { src: "../samples/flower-1.jpg", name: "flower", caption: "a pink flower with a yellow centre" },
+      ];
+
+      $("pairs").innerHTML = `<div class="sent-list">${DATA.map((d, i) => `<div class="result-row"><div style="display:flex;gap:.6rem;align-items:center"><img src="${d.src}" class="mx-thumb" alt="${d.name}" /><input type="text" id="cap${i}" value="${d.caption}" aria-label="Caption for ${d.name}" style="flex:1;padding:.35rem;font:inherit;font-size:.85rem" /></div></div>`).join("")}</div>`;
+
+      createModelLoader({
+        mount: $("loader-vis"),
+        model: { modelId: "Xenova/dinov2-small", runtime: "transformers.js", dtype: "q8", sizeMB: 24, requiresWebGPU: false },
+        load: async (onProgress) => { await vis.load(onProgress); return vis; },
+        onReady: () => { visReady = true; maybeEnable(); },
+      });
+      createModelLoader({
+        mount: $("loader-txt"),
+        model: { modelId: "Xenova/all-MiniLM-L6-v2", runtime: "transformers.js", dtype: "q8", sizeMB: 25, requiresWebGPU: false },
+        load: async (onProgress) => { await txt.load(onProgress); return txt; },
+        onReady: () => { txtReady = true; maybeEnable(); },
+      });
+
+      $("run").addEventListener("click", async () => {
+        $("status").hidden = false; $("status").classList.remove("err"); $("run").disabled = true;
+        try {
+          const captions = DATA.map((_, i) => $(`cap${i}`).value.trim());
+          const labels = DATA.map((d) => d.name);
+
+          $("status").textContent = "Embedding images…";
+          const imgEmbs = []; let iMs = 0, iDev = "wasm";
+          for (let i = 0; i < DATA.length; i++) { const r = await vis.embed(DATA[i].src); imgEmbs.push(r.clsEmb); iMs += r.ms; iDev = r.device; }
+
+          $("status").textContent = "Embedding captions…";
+          const tr = await txt.embed(captions);
+
+          renderImageMatrix($("imgMatrix"), imgSimMatrix(imgEmbs), DATA);
+          renderMatrix($("txtMatrix"), txtSimMatrix(tr.embeddings), labels);
+          $("resultPanel").hidden = false;
+          $("iBackend").textContent = iDev.toUpperCase(); $("iMs").textContent = iMs + " ms";
+          $("tBackend").textContent = tr.device.toUpperCase(); $("tMs").textContent = tr.ms + " ms";
+          $("status").textContent = "Done — compare the two matrices."; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>

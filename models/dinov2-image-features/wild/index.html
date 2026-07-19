@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>DINOv2 Wild — odd-one-out & gallery clustering · Web AI Showcase</title>
+    <meta name="description" content="Playful DINOv2 demos: spot the image that doesn't belong, and cluster a pile of pictures by look with no labels. In your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🦕</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">DINOv2-small</a></p>
+
+    <header>
+      <p class="eyebrow">use case · wild</p>
+      <h1>Wild: odd-one-out &amp; gallery clustering</h1>
+      <p class="lede">
+        Two things that only feel possible once a label-free vision model runs in a tab. Drop in a set and let
+        DINOv2 spot the <strong>odd one out</strong> — the image least like the rest. Then <strong>cluster a
+        gallery</strong> by look alone: a moodboard, a shoot, a folder of screenshots, grouped with no labels.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <div id="tray" class="img-tray" aria-label="Image set"></div>
+      <label class="dropzone" id="dropzone" tabindex="0" role="button">
+        <input type="file" id="file" accept="image/*" multiple hidden />
+        Drop images here, or press to choose. Your files stay on-device.
+      </label>
+      <div style="margin:.6rem 0;display:flex;gap:.4rem;flex-wrap:wrap">
+        <button id="run" type="button" disabled>Embed set</button>
+        <button id="reset" type="button" class="secondary">Reset samples</button>
+      </div>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+    </section>
+
+    <section class="panel" id="oddPanel" hidden>
+      <h3>1 · Odd one out</h3>
+      <p class="muted" style="font-size:.85rem">Each image's average similarity to the others is computed; the lowest is the outlier.</p>
+      <div id="oddOut" aria-live="polite"></div>
+    </section>
+
+    <section class="panel" id="clusterPanel" hidden>
+      <h3>2 · Gallery clustering</h3>
+      <label style="display:flex;gap:.6rem;align-items:center;font-size:.82rem;margin:.2rem 0 .6rem">
+        Grouping threshold
+        <input type="range" id="thresh" min="0.5" max="0.95" step="0.01" value="0.7" style="flex:1" />
+        <b id="threshVal" style="font-family:var(--font-mono)">0.70</b>
+      </label>
+      <div id="clusterOut" aria-live="polite"></div>
+    </section>
+
+    <p class="crumbs"><a href="../practical/">← Practical</a> · <a href="../">Back to DINOv2-small</a> · Next: <a href="../multi-model/">Multi-model →</a></p>
+
+    <script type="module">
+      import { VisionEngine, cosine, clusterByThreshold, fileToDataURL, escapeHTML, VISION_CSS } from "../vision.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = VISION_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new VisionEngine();
+      const SAMPLES = [
+        { src: "../samples/cat-1.jpg", name: "cat A" },
+        { src: "../samples/cat-2.jpg", name: "cat B" },
+        { src: "../samples/car-1.jpg", name: "car A" },
+        { src: "../samples/car-2.jpg", name: "car B" },
+        { src: "../samples/mountain-1.jpg", name: "mountain" },
+        { src: "../samples/flower-1.jpg", name: "flower" },
+      ];
+      let items = SAMPLES.slice(), embs = [];
+
+      function renderTray() {
+        $("tray").replaceChildren(...items.map((it, i) => {
+          const fig = document.createElement("figure"); fig.className = "img-tile";
+          fig.innerHTML = `<img src="${it.src}" alt="${it.name}" /><figcaption>${it.name}</figcaption><button class="rm" type="button" aria-label="Remove ${it.name}" data-i="${i}">×</button>`;
+          return fig;
+        }));
+        for (const b of $("tray").querySelectorAll(".rm")) b.addEventListener("click", () => { items.splice(+b.dataset.i, 1); renderTray(); });
+      }
+      renderTray();
+      $("reset").addEventListener("click", () => { items = SAMPLES.slice(); embs = []; renderTray(); $("oddPanel").hidden = true; $("clusterPanel").hidden = true; });
+
+      const dz = $("dropzone");
+      dz.addEventListener("click", () => $("file").click());
+      dz.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); $("file").click(); } });
+      $("file").addEventListener("change", (e) => addFiles(e.target.files));
+      dz.addEventListener("dragover", (e) => { e.preventDefault(); dz.classList.add("drag"); });
+      dz.addEventListener("dragleave", () => dz.classList.remove("drag"));
+      dz.addEventListener("drop", (e) => { e.preventDefault(); dz.classList.remove("drag"); addFiles(e.dataTransfer.files); });
+      async function addFiles(list) {
+        for (const f of list) { if (!f.type.startsWith("image/")) continue; items.push({ src: await fileToDataURL(f), name: f.name.length > 14 ? f.name.slice(0, 13) + "…" : f.name }); }
+        renderTray();
+      }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/dinov2-small", runtime: "transformers.js", dtype: "q8", sizeMB: 24, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("run").disabled = false; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (items.length < 3) { $("status").hidden = false; $("status").textContent = "Add at least three images."; $("status").classList.add("err"); return; }
+        $("status").hidden = false; $("status").classList.remove("err"); $("run").disabled = true;
+        try {
+          embs = [];
+          for (let i = 0; i < items.length; i++) { $("status").textContent = `Embedding ${i + 1}/${items.length}…`; const r = await engine.embed(items[i].src); embs.push(r.clsEmb); }
+          $("oddPanel").hidden = false; $("clusterPanel").hidden = false;
+          renderOdd(); renderClusters();
+          $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+
+      function renderOdd() {
+        const avg = items.map((_, i) => { let s = 0; for (let j = 0; j < items.length; j++) if (i !== j) s += cosine(embs[i], embs[j]); return s / (items.length - 1); });
+        const min = Math.min(...avg), oddIdx = avg.indexOf(min);
+        $("oddOut").innerHTML = `<div class="sent-list">${items.map((it, i) => `<div class="result-row" style="border-inline-start:4px solid ${i === oddIdx ? "var(--bad)" : "var(--border)"}"><div class="result-head"><span style="display:flex;gap:.5rem;align-items:center"><img src="${it.src}" class="mx-thumb" alt="${it.name}"/><span>${escapeHTML(it.name)}</span>${i === oddIdx ? ' <span class="tone tone-neg">odd one out</span>' : ""}</span><span class="result-score">avg ${avg[i].toFixed(3)}</span></div></div>`).join("")}</div>`;
+      }
+
+      $("thresh").addEventListener("input", () => { $("threshVal").textContent = (+$("thresh").value).toFixed(2); renderClusters(); });
+      function renderClusters() {
+        if (!embs.length) return;
+        const groups = clusterByThreshold(embs, +$("thresh").value);
+        const byGroup = new Map(); groups.forEach((g, i) => { if (!byGroup.has(g)) byGroup.set(g, []); byGroup.get(g).push(i); });
+        const clusters = [...byGroup.values()].sort((a, b) => b.length - a.length);
+        $("clusterOut").innerHTML = `<p class="muted" style="font-size:.8rem">${clusters.length} group(s)</p>` + clusters.map((idxs, gi) =>
+          `<div class="result-row" style="margin-bottom:.5rem;border-inline-start:4px solid ${idxs.length > 1 ? "var(--accent)" : "var(--border)"}"><div class="result-head"><strong>Group ${gi + 1}</strong><span class="tone">${idxs.length} image${idxs.length > 1 ? "s" : ""}</span></div><div class="img-tray" style="margin-top:.4rem">${idxs.map((i) => `<figure class="img-tile" style="inline-size:72px"><img src="${items[i].src}" style="inline-size:72px;block-size:72px" alt="${items[i].name}"/><figcaption>${escapeHTML(items[i].name)}</figcaption></figure>`).join("")}</div></div>`
+        ).join("");
+      }
+    </script>
+  </body>
+</html>
