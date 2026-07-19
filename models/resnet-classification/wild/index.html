@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ResNet-50 Wild — texture vs shape, fool the model · Web AI Showcase</title>
+    <meta name="description" content="Strip colour, blur, invert, scramble and rotate an image, then re-classify — watch ResNet-50's confidence collapse and probe the famous CNN texture-over-shape bias that residual nets are known for." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🧱</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">ResNet-50</a></p>
+
+    <header>
+      <p class="eyebrow">use case · wild</p>
+      <h1>Wild: texture vs shape — fool the model</h1>
+      <p class="lede">
+        ResNet is the model the famous <strong>"CNNs are biased toward texture, not shape"</strong>
+        finding was measured on — this experiment lets you feel that bias directly. Mangle the image —
+        greyscale, blur, invert, scramble it into tiles, rotate it — and re-classify. Scrambling destroys
+        global shape but keeps local texture, so watch how stubbornly a residual CNN holds its answer.
+        Every transform runs on a <code>&lt;canvas&gt;</code>; every re-classify is a real on-device run.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+
+      <div class="field-row" style="align-items:stretch">
+        <div style="flex:1 1 260px">
+          <div class="sample-strip" id="samples">
+            <img class="sample-thumb active" src="../sample-cats.jpg" data-src="../sample-cats.jpg" alt="Two cats on a couch" tabindex="0" role="button" />
+            <img class="sample-thumb" src="../sample-room.jpg" data-src="../sample-room.jpg" alt="A cozy bedroom" tabindex="0" role="button" />
+            <img class="sample-thumb" src="../sample-river.jpg" data-src="../sample-river.jpg" alt="A riverside at golden hour" tabindex="0" role="button" />
+          </div>
+          <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image" style="margin-bottom:.5rem">
+            <span id="dropText">…or drop your own image</span>
+            <input type="file" id="file" accept="image/*" hidden />
+          </div>
+          <canvas id="canvas" width="224" height="224" style="max-inline-size:100%;block-size:auto;border-radius:8px;border:1px solid var(--border)"></canvas>
+        </div>
+        <div style="flex:1 1 260px">
+          <p style="font-size:.82rem;margin:.2rem 0" class="muted">Transforms (toggle any combination):</p>
+          <div class="tag-cloud" id="fx" role="group" aria-label="Image transforms"></div>
+          <div class="field-row" style="margin:.5rem 0">
+            <label style="font-size:.82rem;display:flex;align-items:center;gap:.4rem">Rotate
+              <input type="range" id="rot" min="0" max="180" value="0" style="inline-size:120px" /></label>
+            <span class="muted" style="font-size:.78rem;font-family:var(--font-mono)"><span id="rotVal">0</span>°</span>
+          </div>
+          <button id="run" type="button" disabled>Re-classify</button>
+          <p class="status" id="runStatus" role="status" aria-live="polite"></p>
+          <div class="bars" id="bars" aria-live="polite"></div>
+          <div class="readout" id="readout" hidden>
+            <span>top-1 <b id="rTop">–</b></span>
+            <span>confidence <b id="rConf">–</b></span>
+            <span>entropy <b id="rEnt">–</b></span>
+          </div>
+          <p class="muted" id="deltaNote" style="font-size:.82rem;margin-top:.5rem"></p>
+        </div>
+      </div>
+    </section>
+
+    <p class="crumbs"><a href="../practical/">← Practical</a> · <a href="../">Back to ResNet-50</a> · Next: <a href="../multimodel/">Multi-model →</a></p>
+
+    <style>
+      .tag-cloud { display: flex; flex-wrap: wrap; gap: .4rem; }
+    </style>
+
+    <script type="module">
+      import { ClassifierEngine, fileToDataURL, renderBars, cleanLabel, CLASSIFY_CSS } from "/web-ai-showcase/lib/classify-ui.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = CLASSIFY_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new ClassifierEngine("/web-ai-showcase/models/resnet-classification/worker.js", "ResNet");
+      const canvas = $("canvas"), ctx = canvas.getContext("2d", { willReadFrequently: true });
+      let baseImg = new Image();
+      let baseline = null; // { label, prob } for the untouched image
+
+      const FX = [
+        { id: "gray", label: "Greyscale" },
+        { id: "invert", label: "Invert" },
+        { id: "blur", label: "Blur" },
+        { id: "scramble", label: "Scramble tiles" },
+        { id: "edges", label: "Edges only" },
+      ];
+      const active = new Set();
+      for (const f of FX) {
+        const b = document.createElement("button");
+        b.type = "button"; b.className = "chip"; b.textContent = f.label; b.dataset.fx = f.id;
+        b.setAttribute("aria-pressed", "false");
+        b.addEventListener("click", () => {
+          if (active.has(f.id)) { active.delete(f.id); b.classList.remove("active"); b.setAttribute("aria-pressed", "false"); }
+          else { active.add(f.id); b.classList.add("active"); b.setAttribute("aria-pressed", "true"); }
+          draw();
+        });
+        $("fx").append(b);
+      }
+      const rot = $("rot");
+      rot.addEventListener("input", () => { $("rotVal").textContent = rot.value; draw(); });
+
+      function draw() {
+        const s = 224;
+        ctx.save();
+        ctx.clearRect(0, 0, s, s);
+        ctx.translate(s / 2, s / 2);
+        ctx.rotate(Number(rot.value) * Math.PI / 180);
+        ctx.filter = active.has("blur") ? "blur(3px)" : "none";
+        ctx.drawImage(baseImg, -s / 2, -s / 2, s, s);
+        ctx.restore();
+        ctx.filter = "none";
+        if (active.has("scramble")) scramble(s);
+        let img = ctx.getImageData(0, 0, s, s);
+        if (active.has("edges")) img = edges(img, s);
+        const dd = img.data;
+        for (let i = 0; i < dd.length; i += 4) {
+          if (active.has("gray") && !active.has("edges")) {
+            const g = 0.299 * dd[i] + 0.587 * dd[i + 1] + 0.114 * dd[i + 2];
+            dd[i] = dd[i + 1] = dd[i + 2] = g;
+          }
+          if (active.has("invert")) { dd[i] = 255 - dd[i]; dd[i + 1] = 255 - dd[i + 1]; dd[i + 2] = 255 - dd[i + 2]; }
+        }
+        ctx.putImageData(img, 0, 0);
+      }
+      function scramble(s) {
+        const n = 4, tile = s / n, snap = ctx.getImageData(0, 0, s, s);
+        const tmp = document.createElement("canvas"); tmp.width = s; tmp.height = s;
+        tmp.getContext("2d").putImageData(snap, 0, 0);
+        const order = [...Array(n * n).keys()].sort(() => Math.random() - 0.5);
+        ctx.clearRect(0, 0, s, s);
+        order.forEach((src, dst) => {
+          const sx = (src % n) * tile, sy = ((src / n) | 0) * tile;
+          const dx = (dst % n) * tile, dy = ((dst / n) | 0) * tile;
+          ctx.drawImage(tmp, sx, sy, tile, tile, dx, dy, tile, tile);
+        });
+      }
+      function edges(img, s) {
+        const src = img.data, out = new ImageData(s, s), o = out.data;
+        const gray = (i) => 0.299 * src[i] + 0.587 * src[i + 1] + 0.114 * src[i + 2];
+        for (let y = 1; y < s - 1; y++) {
+          for (let x = 1; x < s - 1; x++) {
+            const i = (y * s + x) * 4;
+            const gx = gray(i - 4) - gray(i + 4), gy = gray(i - s * 4) - gray(i + s * 4);
+            const m = Math.min(255, Math.hypot(gx, gy));
+            o[i] = o[i + 1] = o[i + 2] = m; o[i + 3] = 255;
+          }
+        }
+        return out;
+      }
+
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        await loadURL(el.dataset.src);
+      }
+      function loadURL(url) {
+        return new Promise((res) => {
+          baseImg = new Image(); baseImg.crossOrigin = "anonymous";
+          baseImg.onload = () => { baseline = null; draw(); res(); };
+          baseImg.src = url;
+        });
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } });
+      }
+      loadURL("../sample-cats.jpg");
+
+      const file = $("file"), drop = $("drop");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) {
+        for (const t of $("samples").children) t.classList.remove("active");
+        const url = await fileToDataURL(f); await loadURL(url); $("dropText").textContent = f.name;
+      }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/resnet-50", runtime: "transformers.js", dtype: "q8", sizeMB: 26, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("run").disabled = false; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        $("run").disabled = true; $("runStatus").classList.remove("err"); $("runStatus").textContent = "Classifying the transformed image…";
+        try {
+          if (!baseline) {
+            const s = 224, tmp = document.createElement("canvas"); tmp.width = s; tmp.height = s;
+            tmp.getContext("2d").drawImage(baseImg, 0, 0, s, s);
+            const b = await engine.classify(tmp.toDataURL("image/jpeg", 0.95), 1);
+            baseline = { label: cleanLabel(b.top[0].label), prob: b.top[0].prob };
+          }
+          const r = await engine.classify(canvas.toDataURL("image/jpeg", 0.95), 5);
+          renderBars($("bars"), r.top.map((t) => ({ label: t.label, prob: t.prob })));
+          $("readout").hidden = false;
+          const top = cleanLabel(r.top[0].label);
+          $("rTop").textContent = top;
+          $("rConf").textContent = (r.top[0].prob * 100).toFixed(1) + "%";
+          $("rEnt").textContent = r.entropy.toFixed(3);
+          const changed = top !== baseline.label;
+          const drop2 = (baseline.prob - r.top[0].prob) * 100;
+          $("deltaNote").innerHTML = active.size === 0 && Number(rot.value) === 0
+            ? `Clean image: <b>${baseline.label}</b> at ${(baseline.prob * 100).toFixed(0)}%. Now add some transforms and re-classify.`
+            : changed
+            ? `<b style="color:var(--warn)">Flipped.</b> Was <b>${baseline.label}</b> (${(baseline.prob * 100).toFixed(0)}%), now <b>${top}</b> — the transform broke the prediction.`
+            : `<b style="color:var(--good)">Held.</b> Still <b>${top}</b>, but confidence moved ${drop2 >= 0 ? "down" : "up"} ${Math.abs(drop2).toFixed(0)} pts from the clean image.`;
+          $("runStatus").textContent = "Done."; $("runStatus").classList.add("ok");
+        } catch (err) { $("runStatus").textContent = "Failed: " + err.message; $("runStatus").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>
