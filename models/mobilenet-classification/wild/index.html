@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MobileNet Wild — the degradation torture test · Web AI Showcase</title>
+    <meta name="description" content="Shrink an image to a handful of pixels and JPEG-crush it, then re-classify with MobileNet to find exactly where a tiny model's prediction finally breaks." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>📱</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">MobileNet</a></p>
+
+    <header>
+      <p class="eyebrow">use case · wild</p>
+      <h1>Wild: the degradation torture test</h1>
+      <p class="lede">
+        How little of an image does MobileNet actually need? Downscale a picture to a handful of pixels
+        and crush it with JPEG artefacts, then re-classify. Push the sliders until the prediction finally
+        breaks — you'll be surprised how far a tiny model coasts on blurry, low-res input, which is
+        exactly why it works on cheap camera frames.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+
+      <div class="field-row" style="align-items:stretch">
+        <div style="flex:1 1 260px">
+          <div class="sample-strip" id="samples">
+            <img class="sample-thumb active" src="../sample-cats.jpg" data-src="../sample-cats.jpg" alt="Two cats on a couch" tabindex="0" role="button" />
+            <img class="sample-thumb" src="../sample-room.jpg" data-src="../sample-room.jpg" alt="A cozy bedroom" tabindex="0" role="button" />
+            <img class="sample-thumb" src="../sample-river.jpg" data-src="../sample-river.jpg" alt="A riverside at golden hour" tabindex="0" role="button" />
+          </div>
+          <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image" style="margin-bottom:.5rem">
+            <span id="dropText">…or drop your own image</span>
+            <input type="file" id="file" accept="image/*" hidden />
+          </div>
+          <canvas id="canvas" width="224" height="224" style="max-inline-size:100%;block-size:auto;border-radius:8px;border:1px solid var(--border);image-rendering:pixelated"></canvas>
+        </div>
+        <div style="flex:1 1 260px">
+          <label style="font-size:.82rem;display:flex;flex-direction:column;gap:.25rem">
+            Downscale to <span id="resVal">224</span>×<span id="resVal2">224</span> px
+            <input type="range" id="res" min="8" max="224" step="4" value="224" />
+          </label>
+          <label style="font-size:.82rem;display:flex;flex-direction:column;gap:.25rem;margin-top:.5rem">
+            JPEG quality <span id="qVal">92</span>%
+            <input type="range" id="q" min="1" max="100" value="92" />
+          </label>
+          <button id="run" type="button" disabled style="margin-top:.6rem">Re-classify</button>
+          <p class="status" id="runStatus" role="status" aria-live="polite"></p>
+          <div class="bars" id="bars" aria-live="polite"></div>
+          <div class="readout" id="readout" hidden>
+            <span>top-1 <b id="rTop">–</b></span>
+            <span>confidence <b id="rConf">–</b></span>
+          </div>
+          <p class="muted" id="deltaNote" style="font-size:.82rem;margin-top:.5rem"></p>
+        </div>
+      </div>
+    </section>
+
+    <p class="crumbs"><a href="../practical/">← Practical</a> · <a href="../">Back to MobileNet</a> · Next: <a href="../multimodel/">Multi-model →</a></p>
+
+    <script type="module">
+      import { ClassifierEngine, fileToDataURL, renderBars, cleanLabel, CLASSIFY_CSS } from "/web-ai-showcase/lib/classify-ui.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = CLASSIFY_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new ClassifierEngine("/web-ai-showcase/models/mobilenet-classification/worker.js", "MobileNet");
+      const canvas = $("canvas"), ctx = canvas.getContext("2d");
+      let baseImg = new Image();
+      let baseline = null;
+
+      const res = $("res"), q = $("q");
+      res.addEventListener("input", () => { $("resVal").textContent = res.value; $("resVal2").textContent = res.value; draw(); });
+      q.addEventListener("input", () => { $("qVal").textContent = q.value; });
+
+      function draw() {
+        // Downscale to res×res, then draw back up to 224 (pixelation), for the preview + the run.
+        const n = Number(res.value);
+        const tmp = document.createElement("canvas"); tmp.width = n; tmp.height = n;
+        tmp.getContext("2d").drawImage(baseImg, 0, 0, n, n);
+        ctx.imageSmoothingEnabled = false;
+        ctx.clearRect(0, 0, 224, 224);
+        ctx.drawImage(tmp, 0, 0, n, n, 0, 0, 224, 224);
+      }
+
+      function degradedDataURL() {
+        // Apply JPEG compression at the chosen quality on top of the downscaled canvas.
+        return canvas.toDataURL("image/jpeg", Number(q.value) / 100);
+      }
+
+      function loadURL(url) {
+        return new Promise((res2) => {
+          baseImg = new Image(); baseImg.crossOrigin = "anonymous";
+          baseImg.onload = () => { baseline = null; draw(); res2(); };
+          baseImg.src = url;
+        });
+      }
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        await loadURL(el.dataset.src);
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } });
+      }
+      loadURL("../sample-cats.jpg");
+
+      const file = $("file"), drop = $("drop");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) {
+        for (const t of $("samples").children) t.classList.remove("active");
+        const url = await fileToDataURL(f); await loadURL(url); $("dropText").textContent = f.name;
+      }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/mobilenet_v2_1.0_224", runtime: "transformers.js", dtype: "fp32", sizeMB: 14, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("run").disabled = false; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        $("run").disabled = true; $("runStatus").classList.remove("err"); $("runStatus").textContent = "Classifying the degraded image…";
+        try {
+          if (!baseline) {
+            const tmp = document.createElement("canvas"); tmp.width = 224; tmp.height = 224;
+            tmp.getContext("2d").drawImage(baseImg, 0, 0, 224, 224);
+            const b = await engine.classify(tmp.toDataURL("image/jpeg", 0.95), 1);
+            baseline = { label: cleanLabel(b.top[0].label), prob: b.top[0].prob };
+          }
+          const r = await engine.classify(degradedDataURL(), 5);
+          renderBars($("bars"), r.top.map((t) => ({ label: t.label, prob: t.prob })));
+          $("readout").hidden = false;
+          const top = cleanLabel(r.top[0].label);
+          $("rTop").textContent = top; $("rConf").textContent = (r.top[0].prob * 100).toFixed(1) + "%";
+          const held = top === baseline.label;
+          const px = res.value;
+          $("deltaNote").innerHTML = held
+            ? `<b style="color:var(--good)">Still ${top}</b> at ${px}×${px}px / q${q.value} — down from ${(baseline.prob * 100).toFixed(0)}% on the clean image to ${(r.top[0].prob * 100).toFixed(0)}%.`
+            : `<b style="color:var(--warn)">Broken.</b> At ${px}×${px}px / q${q.value} it flipped from <b>${baseline.label}</b> to <b>${top}</b> — you found the breaking point.`;
+          $("runStatus").textContent = "Done."; $("runStatus").classList.add("ok");
+        } catch (err) { $("runStatus").textContent = "Failed: " + err.message; $("runStatus").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>

@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MobileNet — tiny, fast image classification in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run Google's MobileNetV2 locally: name what's in an image across ImageNet with a ~3.5M-parameter model built to run fast on a phone. Read the real millisecond latency and see how a mobile backbone stacks up against the heavier ViT and ConvNeXt."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>📱</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">image-classification · vision · WASM · ~14 MB</p>
+      <h1>MobileNet — the backbone built to run on a <em>phone</em></h1>
+      <p class="lede">
+        Same 1,000-way ImageNet job as the <a href="/web-ai-showcase/models/vit-image-classification/">ViT</a>
+        and <a href="/web-ai-showcase/models/convnext-classification/">ConvNeXt</a> demos, but with a
+        model a <strong>fraction</strong> of their size. MobileNetV2 is ~3.5M parameters of
+        depthwise-separable convolutions — designed for on-device, real-time inference. Classify an
+        image and read the real millisecond latency; the story here is <strong>tiny + fast</strong>.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/onnx-community/mobilenet_v2_1.0_224" target="_blank" rel="noopener">onnx-community/mobilenet_v2_1.0_224</a></td></tr>
+          <tr><th>Task / pipeline</th><td><code>image-classification</code></td></tr>
+          <tr><th>Architecture</th><td>MobileNetV2 — ~3.5M params, depthwise-separable convs + inverted residuals with linear bottlenecks</td></tr>
+          <tr><th>Labels</th><td>ImageNet-1k + a <code>background</code> class = <strong>1,001</strong> outputs (the ViT/ConvNeXt demos have 1,000)</td></tr>
+          <tr><th>Quantization</th><td>fp32 (see note) — q8 is degenerate for this model</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (runs anywhere; no WebGPU needed)</td></tr>
+          <tr><th>Download</th><td>~14 MB — vs ~29 MB (ConvNeXt) and ~88 MB (ViT)</td></tr>
+          <tr><th>License</th><td>other (Google, per the original model card)</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers, FileReader, getUserMedia (webcam demo) — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+      <details style="margin-top:.6rem">
+        <summary>Why fp32 and not q8?</summary>
+        <p class="muted" style="font-size:.88rem">
+          This repo prefers 8-bit (q8) weights, but MobileNetV2's depthwise-separable convolutions
+          quantise <em>degenerately</em> with the generic int8 export: the <code>ConvInteger</code>
+          operator has no WebAssembly kernel, and the uint8/q8 builds emit garbage labels (verified —
+          a tiger photo comes back "envelope"). fp32 is the honest, correct choice and is still tiny at
+          ~14 MB — a fraction of the heavier backbones, which is exactly the point.
+        </p>
+      </details>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Pick or drop an image and hit Classify. Watch the latency read-out — MobileNet is built to be quick.</p>
+
+      <div id="model-loader"></div>
+
+      <div class="field-row" style="align-items:stretch">
+        <div style="flex:1 1 280px">
+          <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image">
+            <span id="dropText">Drop an image here, or click to choose</span>
+            <input type="file" id="file" accept="image/*" hidden />
+          </div>
+          <div class="sample-strip" id="samples" aria-label="Sample images">
+            <img class="sample-thumb active" src="sample-cats.jpg" data-src="sample-cats.jpg" alt="Two cats sleeping on a pink couch" tabindex="0" role="button" />
+            <img class="sample-thumb" src="sample-room.jpg" data-src="sample-room.jpg" alt="A cozy sunlit bedroom with a bookshelf" tabindex="0" role="button" />
+            <img class="sample-thumb" src="sample-river.jpg" data-src="sample-river.jpg" alt="A riverside at golden hour with a swan" tabindex="0" role="button" />
+          </div>
+          <div class="preview-wrap"><img class="preview-img" id="preview" src="sample-cats.jpg" alt="Selected image preview" /></div>
+        </div>
+        <div style="flex:1 1 280px">
+          <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">
+            How many labels to show (top-k)
+            <input type="range" id="topk" min="3" max="10" value="5" />
+          </label>
+          <p class="muted" style="font-size:.8rem;margin:.2rem 0"><span id="topkVal">5</span> labels</p>
+          <div style="margin:.5rem 0">
+            <button id="run" type="button" disabled>Classify</button>
+          </div>
+          <p class="status" id="runStatus" role="status" aria-live="polite"></p>
+          <div class="bars" id="bars" aria-live="polite"></div>
+          <div class="readout" id="readout" hidden>
+            <span>backend <b id="rBackend">–</b></span>
+            <span>latency <b id="rMs">–</b></span>
+            <span>classes <b id="rN">–</b></span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside</h3>
+      <p class="muted">
+        MobileNet's final layer produces one raw <strong>logit</strong> per class, and a
+        <strong>softmax</strong> turns those into probabilities. The table shows the top classes with
+        their raw logit next to the softmax probability, plus the shape of the distribution:
+        <strong>top-1 margin</strong> and normalised <strong>entropy</strong>.
+      </p>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Run a classification to see the raw numbers.</div>
+      <div id="insideWrap" hidden>
+        <table class="inside-table">
+          <thead><tr><th>Class</th><th>logit</th><th>softmax</th></tr></thead>
+          <tbody id="insideRows"></tbody>
+        </table>
+        <div class="readout" style="margin-top:.8rem">
+          <span>top-1 margin <b id="iMargin">–</b></span>
+          <span>entropy (0–1) <b id="iEntropy">–</b></span>
+          <span id="iVerdict"></span>
+        </div>
+        <p class="muted" style="font-size:.82rem;margin-top:.3rem">Confidence (low ← → high):</p>
+        <div class="conf-meter" aria-hidden="true"><div class="conf-needle" id="confNeedle" style="left:0"></div></div>
+      </div>
+
+      <h4 style="margin:1.2rem 0 .3rem;font-family:var(--font-body)">Size &amp; latency: mobile backbone vs the heavier ones</h4>
+      <p class="muted" style="font-size:.85rem">Download size and parameter counts are fixed facts. The "latency here" cell fills in with a real measured run once you classify above.</p>
+      <table class="inside-table">
+        <thead><tr><th>Model</th><th>Params</th><th>Download</th><th>Outputs</th><th>Latency here</th></tr></thead>
+        <tbody>
+          <tr><th>MobileNetV2</th><td>~3.5M</td><td>~14 MB</td><td>1,001</td><td id="latMobile">run above ↑</td></tr>
+          <tr><th>ConvNeXt-Tiny</th><td>~28M</td><td>~29 MB</td><td>1,000</td><td class="muted">8× the params</td></tr>
+          <tr><th>ViT-B/16</th><td>~86M</td><td>~88 MB</td><td>1,000</td><td class="muted">25× the params</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        MobileNet is the workhorse of on-device vision: small enough to ship inside an app or a web page,
+        fast enough to run on every frame of a camera feed, and accurate enough for a huge range of
+        real tasks. When the constraint is battery, bandwidth, or latency — not the last point of
+        accuracy — this is the backbone you reach for.
+      </p>
+      <ul>
+        <li><strong>Real-time camera tagging</strong> — classify a live webcam feed frame-by-frame; MobileNet is fast enough to keep up.</li>
+        <li><strong>Instant, offline categorisation</strong> — a ~14 MB download tags images the moment they're picked, with no server round-trip.</li>
+        <li><strong>Cheap prefilter</strong> — run MobileNet first to triage, and only escalate the hard/uncertain cases to a heavier model like ViT (see the multi-model demo).</li>
+        <li><strong>Low-power edge devices</strong> — the small footprint fits constrained hardware where a transformer wouldn't.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Classify a sample and read the top-k with a real latency read-out.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Real-time webcam tagging — the mobile use case: classify live camera frames.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Torture test: shrink and JPEG-crush an image and find where the tiny model breaks.</p></a>
+        <a class="model-card" href="multimodel/"><h3>Multi-model</h3><p class="muted">Fast prefilter → confirm: MobileNet triages, ViT double-checks only the uncertain ones.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>The convenience path is two lines with Transformers.js:</p>
+      <pre><code>import { pipeline } from "@huggingface/transformers";
+
+const classify = await pipeline(
+  "image-classification",
+  "onnx-community/mobilenet_v2_1.0_224",
+  { dtype: "fp32" },
+); // downloads + caches ~14 MB once
+
+const output = await classify(imageURL, { top_k: 5 });
+// → [{ label: "tiger, Panthera tigris", score: 0.70 }, { label: "tiger cat", score: 0.21 }, …]</code></pre>
+      <p class="muted">
+        This page goes one level deeper for "See inside": instead of the pipeline it runs the model's
+        own <code>processor</code> then <code>model()</code> in a single forward pass, so it can read the
+        raw <code>logits</code> tensor (all 1,001 classes, including the <code>background</code> class at
+        index 0) and compute the softmax, entropy, and margin itself. Inference runs in a Web Worker so
+        the page never janks.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/onnx-community/mobilenet_v2_1.0_224" target="_blank" rel="noopener">Model card — onnx-community/mobilenet_v2_1.0_224</a></li>
+        <li><a href="https://huggingface.co/google/mobilenet_v2_1.0_224" target="_blank" rel="noopener">Original weights — google/mobilenet_v2_1.0_224</a></li>
+        <li><a href="https://arxiv.org/abs/1801.04381" target="_blank" rel="noopener">Paper — MobileNetV2: Inverted Residuals and Linear Bottlenecks (Sandler et al., 2018)</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { ClassifierEngine, fileToDataURL, renderBars, cleanLabel, escapeHTML, CLASSIFY_CSS } from "/web-ai-showcase/lib/classify-ui.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = CLASSIFY_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new ClassifierEngine("/web-ai-showcase/models/mobilenet-classification/worker.js", "MobileNet");
+      let currentImageURL = null;
+
+      async function useURL(url, previewSrc) {
+        currentImageURL = url;
+        $("preview").src = previewSrc ?? url;
+      }
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        const blob = await (await fetch(el.dataset.src)).blob();
+        const url = await fileToDataURL(new File([blob], "sample", { type: blob.type }));
+        await useURL(url, el.dataset.src);
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => {
+          if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); }
+        });
+      }
+      pickSample($("samples").firstElementChild);
+
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); }
+      });
+      file.addEventListener("change", async () => { if (file.files[0]) await loadFile(file.files[0]); });
+      ["dragover", "dragenter"].forEach((ev) =>
+        drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) =>
+        drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      drop.addEventListener("drop", async (e) => {
+        const f = e.dataTransfer?.files?.[0];
+        if (f && f.type.startsWith("image/")) await loadFile(f);
+      });
+      async function loadFile(f) {
+        for (const t of $("samples").children) t.classList.remove("active");
+        const url = await fileToDataURL(f);
+        await useURL(url);
+        $("dropText").textContent = f.name;
+      }
+
+      const topk = $("topk");
+      topk.addEventListener("input", () => { $("topkVal").textContent = topk.value; });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: {
+          modelId: "onnx-community/mobilenet_v2_1.0_224",
+          runtime: "transformers.js",
+          dtype: "fp32",
+          sizeMB: 14,
+          requiresWebGPU: false,
+        },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("run").disabled = false; },
+      });
+
+      $("run").addEventListener("click", classify);
+      async function classify() {
+        if (!currentImageURL) { $("runStatus").textContent = "Choose an image first."; return; }
+        $("runStatus").classList.remove("err");
+        $("run").disabled = true;
+        $("runStatus").textContent = "Classifying…";
+        try {
+          const r = await engine.classify(currentImageURL, Number(topk.value));
+          renderBars($("bars"), r.top.map((t) => ({ label: t.label, prob: t.prob })));
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = r.ms + " ms";
+          $("rN").textContent = r.numClasses;
+          $("latMobile").textContent = r.ms + " ms (" + r.device.toUpperCase() + ")";
+          renderInside(r);
+          $("runStatus").textContent = "Done.";
+          $("runStatus").classList.add("ok");
+        } catch (err) {
+          $("runStatus").textContent = "Classification failed: " + err.message;
+          $("runStatus").classList.add("err");
+        } finally {
+          $("run").disabled = false;
+        }
+      }
+
+      function renderInside(r) {
+        $("insideEmpty").hidden = true;
+        $("insideWrap").hidden = false;
+        $("insideRows").replaceChildren(...r.top.map((t) => {
+          const tr = document.createElement("tr");
+          tr.innerHTML = `<td>${escapeHTML(cleanLabel(t.label))}</td>
+            <td>${t.logit.toFixed(2)}</td>
+            <td>${(t.prob * 100).toFixed(2)}%</td>`;
+          return tr;
+        }));
+        $("iMargin").textContent = (r.margin * 100).toFixed(1) + " pts";
+        $("iEntropy").textContent = r.entropy.toFixed(3);
+        const confident = r.entropy < 0.35 || r.margin > 0.5;
+        $("iVerdict").innerHTML = confident
+          ? '<b style="color:var(--good)">confident</b>'
+          : '<b style="color:var(--warn)">uncertain</b>';
+        $("confNeedle").style.left = `${Math.round((1 - r.entropy) * 100)}%`;
+      }
+    </script>
+  </body>
+</html>
