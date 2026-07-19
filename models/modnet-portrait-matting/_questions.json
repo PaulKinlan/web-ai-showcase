@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "id": "modnet-portrait-matting",
-  "revision": 2,
+  "revision": 3,
   "reviewedAt": "2026-07-19T00:00:00Z",
-  "reviewer": "agent matrix pass (runner + e2e evidenced, revision 2)",
+  "reviewer": "agent matrix pass (runner + e2e evidenced, revision 2) + off-main-thread composite retrofit (revision 3)",
   "frontend": true,
   "rubric": [
     {
@@ -73,8 +73,8 @@
       "dimension": "performance",
       "score": 5,
       "severity": "info",
-      "evidence": "Inference runs entirely in a Web Worker (inference-off-main-thread=pass) so the main thread stays responsive; the before/after wipe is a pure CSS clip-path driven by a range input (no re-inference). No blocking main-thread loop — INP-safe. e2e latency 743 ms for the full matte, off-thread.",
-      "notes": ""
+      "evidence": "Inference runs entirely in a Web Worker (inference-off-main-thread=pass); the before/after wipe is a pure CSS clip-path (no re-inference). Revision 3: the DENSE alpha composite (getImageData→per-pixel apply-alpha→putImageData that stamps the matte into the photo's alpha) was moved OFF the main thread — worker.js now builds the RGBA subject cutout on an OffscreenCanvas and transfers it back as an ImageBitmap; composeCutout() on the main thread only paints the backdrop + drawImage(bitmap). Measured on a 1920×1080 (≥1080p) portrait, median composeCutout main-thread time 7.1 ms → 1.3 ms (max 8.4 → 1.5 ms, both <8 ms), and the MessageChannel stall probe's worst main-thread block 13.1 ms → 5.2 ms across 9 composites. Output is byte-identical: an old-path vs new-path pixel diff over all 1920×1080 pixels gave maxChannelDiff=0 (0 pixels differing) — same matte/cut-out, correct transparent-PNG export. conformance worker-compliance (transferToImageBitmap) source assertion=pass; console clean.",
+      "notes": "before→after measured with PerformanceObserver('longtask') + MessageChannel stall probe on a 1920×1080 input; equivalence proven pixel-exact vs the prior per-pixel composite."
     }
   ],
   "guidanceConsulted": [
@@ -95,6 +95,12 @@
       "recommendation": "Use cross-document view transitions for catalogue↔page navigation.",
       "appliedOrException": "applied — @view-transition navigation:auto in public/styles.css (invariant 6); the page links the shared stylesheet.",
       "evidence": "shared design system; catalogue↔model nav"
+    },
+    {
+      "query": "move image compositing off main thread into web worker with OffscreenCanvas and transferToImageBitmap",
+      "recommendation": "performance / INP — dense per-pixel output work (>8 ms, scales with area) belongs off the main thread; build the RGBA result in the worker on an OffscreenCanvas and transfer an ImageBitmap (transferable, not structured-cloned), leaving the main thread to drawImage only. Consulted guides: performance (INP & main-thread unblocking, '>250ms offload to a Web Worker', separate UI updates from heavy computation), break-up-long-tasks, identify-inp-causes.",
+      "appliedOrException": "applied — worker.js builds the subject cutout via OffscreenCanvas + transferToImageBitmap() and posts it in the transfer list; composeCutout()/cutoutToPNG() prefer the transferred bitmap (drawImage) and keep the per-pixel path only as a capability fallback. Aligns with SKILL §4c: 'Dense-output composite (seg/matting/depth/super-res) belongs in the worker with a transferred RGBA/ImageBitmap.'",
+      "evidence": "median main-thread composite 7.1 ms → 1.3 ms @1920×1080, worst stall 13.1 ms → 5.2 ms; pixel-exact equivalence (maxChannelDiff=0); conformance worker-compliance=pass"
     },
     {
       "query": "accessible range slider with live output value",

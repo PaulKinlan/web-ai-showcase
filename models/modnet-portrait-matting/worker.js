@@ -23,6 +23,30 @@ function post(msg, transfer) {
   self.postMessage(msg, transfer || []);
 }
 
+// Build the transparent-subject cutout as an RGBA ImageBitmap inside the worker: stamp the alpha matte
+// into the decoded photo's alpha channel via an OffscreenCanvas, then transferToImageBitmap(). Returns
+// null (main-thread per-pixel fallback) if OffscreenCanvas/ImageData aren't available in this worker.
+function buildCutout(image, alpha, w, h) {
+  try {
+    if (typeof OffscreenCanvas === "undefined" || typeof ImageData === "undefined") return null;
+    const src = image.data;
+    const ch = image.channels ?? ((src.length / (w * h)) | 0);
+    const rgba = new Uint8ClampedArray(w * h * 4);
+    for (let i = 0; i < w * h; i++) {
+      const o = i * 4, s = i * ch;
+      rgba[o] = src[s];
+      rgba[o + 1] = ch >= 2 ? src[s + 1] : src[s];
+      rgba[o + 2] = ch >= 3 ? src[s + 2] : src[s];
+      rgba[o + 3] = alpha[i];
+    }
+    const oc = new OffscreenCanvas(w, h);
+    oc.getContext("2d").putImageData(new ImageData(rgba, w, h), 0, 0);
+    return oc.transferToImageBitmap();
+  } catch {
+    return null;
+  }
+}
+
 async function realDevice() {
   if ("gpu" in navigator) {
     try {
@@ -98,7 +122,15 @@ async function run(id, imageURL) {
   }
 
   const ms = Math.round(performance.now() - t0);
-  const buf = alpha.buffer.slice(0);
+
+  // Composite the subject cutout (photo pixels + alpha matte) HERE, off the main thread, and hand back
+  // a ready-to-draw RGBA ImageBitmap. The main thread then only paints a backdrop + drawImage(cutout) —
+  // no getImageData/per-pixel/putImageData on the UI thread (that dense loop was the INP cost @1080p).
+  // Degrade to null where OffscreenCanvas is unavailable; the page keeps its per-pixel fallback.
+  const cutout = buildCutout(image, alpha, w, h);
+
+  const transfer = [buf];
+  if (cutout) transfer.push(cutout);
   post(
     {
       type: "result",
@@ -106,6 +138,7 @@ async function run(id, imageURL) {
       width: w,
       height: h,
       alpha: buf,
+      cutout,
       coverage: fg / alpha.length,
       softEdge: soft,
       hist,
@@ -113,7 +146,7 @@ async function run(id, imageURL) {
       device,
       dtype,
     },
-    [buf],
+    transfer,
   );
 }
 

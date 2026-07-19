@@ -110,8 +110,18 @@ export function paintCheckerboard(ctx, w, h, cell = 12) {
  * Compose the subject cutout into `canvas`.
  * @param opts.backdrop  "checker" | CSS colour string | HTMLImageElement | null (transparent)
  * @param opts.alpha     Uint8Array foreground matte (w*h), 0=background 255=subject
+ * @param opts.cutout    optional worker-composited RGBA ImageBitmap (subject + alpha). When present the
+ *                       main thread just draws it — the per-pixel composite already ran off the main
+ *                       thread in worker.js. Keeps INP low at high resolution.
  */
-export function composeCutout(canvas, img, w, h, alpha, { backdrop = "checker" } = {}) {
+export function composeCutout(
+  canvas,
+  img,
+  w,
+  h,
+  alpha,
+  { backdrop = "checker", cutout = null } = {},
+) {
   canvas.width = w;
   canvas.height = h;
   const ctx = canvas.getContext("2d");
@@ -121,6 +131,13 @@ export function composeCutout(canvas, img, w, h, alpha, { backdrop = "checker" }
     ctx.fillStyle = backdrop;
     ctx.fillRect(0, 0, w, h);
   } else if (backdrop && backdrop.tagName === "IMG") ctx.drawImage(backdrop, 0, 0, w, h);
+
+  // Fast path: the worker already stamped the matte into the photo's alpha (off the main thread) and
+  // handed back an ImageBitmap — just draw it over the backdrop. Main thread does zero per-pixel work.
+  if (cutout) {
+    ctx.drawImage(cutout, 0, 0);
+    return;
+  }
 
   const off = document.createElement("canvas");
   off.width = w;
@@ -133,12 +150,20 @@ export function composeCutout(canvas, img, w, h, alpha, { backdrop = "checker" }
   ctx.drawImage(off, 0, 0);
 }
 
-/** A transparent-background PNG canvas of just the subject (for cutout/sticker export). */
-export function cutoutToPNG(img, w, h, alpha, outline = 0) {
+/**
+ * A transparent-background PNG canvas of just the subject (for cutout/sticker export). When the
+ * worker-composited `cutout` ImageBitmap is passed and no outline is requested, draw it directly (the
+ * alpha stamp already ran off the main thread); otherwise fall back to the per-pixel path.
+ */
+export function cutoutToPNG(img, w, h, alpha, outline = 0, cutout = null) {
   const c = document.createElement("canvas");
   c.width = w;
   c.height = h;
   const ctx = c.getContext("2d");
+  if (cutout && outline === 0) {
+    ctx.drawImage(cutout, 0, 0);
+    return c;
+  }
   ctx.drawImage(img, 0, 0, w, h);
   const id = ctx.getImageData(0, 0, w, h);
   for (let i = 0; i < alpha.length; i++) id.data[i * 4 + 3] = alpha[i];
