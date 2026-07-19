@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Whisper turbo Practical — multilingual transcription &amp; speech translation · Web AI Showcase</title>
+    <meta name="description" content="Transcribe non-English speech, force a specific language, or translate any language's speech straight to English text — one model, in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎧</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Whisper turbo</a></p>
+
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Practical: multilingual transcription &amp; speech-to-English</h1>
+      <p class="lede">
+        Turbo's strength is languages. Leave it on auto-detect, or <strong>force</strong> a language when you
+        know it. Flip the task to <strong>Translate</strong> and Whisper renders speech in any supported
+        language directly as <strong>English</strong> text — no separate translation model.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+
+      <div class="audio-row">
+        <button id="rec" type="button" class="secondary" disabled>● Record</button>
+        <button id="upload" type="button" class="secondary" disabled>Upload audio</button>
+        <input type="file" id="file" accept="audio/*" hidden />
+        <span class="muted" style="font-size:.82rem">or a sample:</span>
+        <span class="sample-row" id="samples">
+          <button class="chip" type="button" data-src="../jfk.wav" data-label="JFK — English (11s)">JFK (English)</button>
+          <button class="chip" type="button" data-src="../ted.wav" data-label="TED clip (12s)">TED clip</button>
+        </span>
+      </div>
+      <div id="micFallback" class="fallback" hidden><strong>No microphone here.</strong> <span class="muted">Use a sample or upload — for non-English audio, record in a normal tab or upload a clip.</span></div>
+      <div class="audio-row"><audio id="player" controls preload="metadata"></audio><span class="muted" id="clipLabel" style="font-size:.82rem">JFK — English (11s)</span></div>
+      <div class="wave-wrap"><canvas id="wave" class="wave" aria-label="Audio waveform"></canvas></div>
+
+      <div class="opt-row">
+        <label>Language <select id="lang" disabled></select></label>
+        <label>Task <select id="task" disabled>
+          <option value="transcribe">Transcribe (same language)</option>
+          <option value="translate">Translate to English</option>
+        </select></label>
+        <button id="run" type="button" disabled>Run</button>
+      </div>
+
+      <h3>Output</h3>
+      <div class="transcript" id="transcript" aria-live="polite">Record or upload non-English speech, choose Translate, and run.</div>
+      <div class="readout" id="readout" hidden>
+        <span>detected <b id="rLang">–</b></span><span>task <b id="rTask">–</b></span>
+        <span>backend <b id="rBackend">–</b></span><span>time <b id="rMs">–</b></span><span>tok/s <b id="rTps">–</b></span>
+      </div>
+    </section>
+
+    <p class="muted" style="font-size:.85rem">
+      Forcing a language helps on short or noisy clips where auto-detect might waver. Translate mode is one
+      model doing two jobs — recognise the speech, and render it in English.
+    </p>
+
+    <p class="crumbs"><a href="../basics/">← Basics</a> · <a href="../">Whisper turbo</a> · Next: <a href="../wild/">Wild →</a></p>
+
+    <script type="module">
+      import { TurboEngine, fillWhisperLangs, WLANG_NAME, urlToMono16k, MicRecorder, drawWaveform, TURBO_CSS } from "../turbo.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      import { hasWebGPU } from "/web-ai-showcase/lib/webai.js";
+      const style = document.createElement("style"); style.textContent = TURBO_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new TurboEngine();
+      const nameFor = (c) => WLANG_NAME[c] || c;
+      let pcm = null;
+      fillWhisperLangs($("lang"));
+
+      async function useAudio(url, label, { revoke = false } = {}) {
+        $("player").src = url; $("clipLabel").textContent = label;
+        $("transcript").textContent = "Run to see the output here."; $("readout").hidden = true;
+        try { const d = await urlToMono16k(url); pcm = d.pcm; drawWaveform($("wave"), pcm, 0); $("run").disabled = !engine.ready; }
+        catch (err) { $("status").hidden = false; $("status").textContent = "Couldn't decode audio: " + err.message; $("status").classList.add("err"); pcm = null; }
+        if (revoke) $("player").addEventListener("emptied", () => URL.revokeObjectURL(url), { once: true });
+      }
+      for (const chip of $("samples").children) chip.addEventListener("click", () => useAudio(chip.dataset.src, chip.dataset.label));
+      useAudio("../jfk.wav", "JFK — English (11s)");
+      $("upload").addEventListener("click", () => $("file").click());
+      $("file").addEventListener("change", async () => { const f = $("file").files[0]; if (f) await useAudio(URL.createObjectURL(f), f.name, { revoke: true }); });
+
+      const mic = new MicRecorder(); let recording = false;
+      if (!MicRecorder.supported()) $("micFallback").hidden = false;
+      $("rec").addEventListener("click", async () => {
+        if (!recording) {
+          try { await mic.start(); } catch { $("micFallback").hidden = false; return; }
+          recording = true; $("rec").innerHTML = '<span class="rec-dot"></span>Stop'; $("rec").classList.remove("secondary");
+        } else {
+          recording = false; $("rec").textContent = "● Record"; $("rec").classList.add("secondary");
+          const { url } = await mic.stop(); await useAudio(url, "Your recording", { revoke: true });
+        }
+      });
+
+      const gpu = await hasWebGPU();
+      createModelLoader({
+        mount: $("model-loader"),
+        model: gpu ? { modelId: "onnx-community/whisper-large-v3-turbo", runtime: "transformers.js", dtype: "q4f16", sizeMB: 560, requiresWebGPU: false }
+                   : { modelId: "onnx-community/whisper-large-v3-turbo", runtime: "transformers.js", dtype: "q8", sizeMB: 1100, requiresWebGPU: false },
+        load: async (onProgress) => await engine.load((p) => onProgress(p)),
+        onReady: () => { $("rec").disabled = false; $("upload").disabled = false; $("lang").disabled = false; $("task").disabled = false; $("run").disabled = !pcm; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!pcm) return;
+        $("run").disabled = true; $("status").hidden = false; $("status").classList.remove("err"); $("status").textContent = "Working…";
+        try {
+          const r = await engine.transcribe(pcm, { language: $("lang").value || null, task: $("task").value });
+          $("transcript").textContent = r.text || "(no speech detected)";
+          $("readout").hidden = false;
+          $("rLang").textContent = r.detectedLang ? `${nameFor(r.detectedLang)} ${(r.detectedProb * 100).toFixed(0)}%` : (r.forcedLanguage ? nameFor(r.forcedLanguage) + " (forced)" : "–");
+          $("rTask").textContent = r.task; $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = (r.ms / 1000).toFixed(1) + " s"; $("rTps").textContent = r.tokPerSec ? r.tokPerSec.toFixed(1) : "–";
+          $("status").textContent = `Done (${r.task}).`; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+      addEventListener("resize", () => pcm && drawWaveform($("wave"), pcm, 0));
+    </script>
+  </body>
+</html>
