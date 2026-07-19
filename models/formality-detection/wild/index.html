@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Formality Wild — find the crossover · Web AI Showcase</title>
+    <meta name="description" content="Score a spectrum of rewrites of the same message from very casual to very formal, and watch the model reveal exactly where the register flips — the borderline between informal and formal." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎩</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Formality detection</a></p>
+
+    <header>
+      <p class="eyebrow">use case · wild</p>
+      <h1>Wild: find the register crossover</h1>
+      <p class="lede">
+        Register isn't binary in real writing — it's a slope. Write the <em>same</em> message several ways,
+        from a text to a mate to a line in a legal letter, and score them all at once. The model sorts them
+        along the meter and marks the <strong>crossover</strong> — the exact point where it stops calling the
+        wording informal and starts calling it formal. That boundary is where the interesting, borderline
+        cases live.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
+        Rewrites of one message (one per line, casual → formal)
+        <textarea id="variants" rows="7" spellcheck="false">u free to chat later?
+you free to talk later?
+Are you free to chat later?
+Would you be free to talk later today?
+Would you be available to speak later this afternoon?
+I would be grateful if you could let me know a convenient time to speak.</textarea>
+      </label>
+      <button id="run" type="button" disabled style="margin:.5rem 0">Score the spectrum</button>
+      <p class="status" id="rowStatus" role="status" aria-live="polite" hidden></p>
+
+      <div class="sent-list" id="list" hidden></div>
+      <p class="muted" id="crossover" hidden style="font-size:.85rem;margin-top:.6rem"></p>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>variants <b id="rN">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+      </div>
+    </section>
+
+    <p class="muted" style="font-size:.85rem">
+      Variants are sorted by the model's formal-probability and shown with their score. The crossover line
+      marks where the verdict flips from informal to formal — often between two rewrites that feel almost
+      identical, which is exactly what makes register a hard, gradient signal rather than a switch.
+    </p>
+
+    <p class="crumbs"><a href="../">← Back to the model</a> · Next: <a href="../multi-model/">Multi-model →</a></p>
+
+    <script type="module">
+      import { FormalityEngine, escapeHTML, FORMALITY_CSS } from "../formality.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = FORMALITY_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new FormalityEngine();
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Deepchecks/roberta_base_formality_ranker_onnx", runtime: "transformers.js", dtype: "fp32", sizeMB: 260, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("run").disabled = false; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        const lines = [...new Set($("variants").value.split(/\n/).map((s) => s.trim()).filter(Boolean))];
+        if (lines.length < 2) { $("rowStatus").hidden = false; $("rowStatus").textContent = "Add at least two rewrites."; $("rowStatus").classList.add("err"); return; }
+        $("rowStatus").hidden = false; $("rowStatus").classList.remove("err"); $("rowStatus").textContent = `Scoring ${lines.length}…`; $("run").disabled = true;
+        try {
+          const t0 = performance.now();
+          const results = [];
+          for (const s of lines) results.push(await engine.classify(s));
+          const ms = Math.round(performance.now() - t0);
+          results.sort((a, b) => a.formal - b.formal); // casual → formal
+          // Find crossover index (first that is formal).
+          const crossIdx = results.findIndex((r) => r.label === "formal");
+          const rows = [];
+          results.forEach((r, i) => {
+            if (i === crossIdx && crossIdx > 0) {
+              const div = document.createElement("div");
+              div.style.cssText = "border-top:2px dashed var(--accent);text-align:center;font-family:var(--font-mono);font-size:.7rem;color:var(--accent);padding-top:.2rem;margin:.2rem 0";
+              div.textContent = "— crossover: informal ↑ / formal ↓ —";
+              rows.push(div);
+            }
+            const el = document.createElement("div");
+            el.className = "sent-row " + (r.label === "formal" ? "formal" : "informal");
+            el.innerHTML = `<span class="sent-text">${escapeHTML(r.text)}</span>` +
+              `<span class="sent-meta"><span class="badge ${r.label === "formal" ? "formal" : "informal"}">${r.label}</span> ${(r.formal * 100).toFixed(0)}% formal</span>`;
+            rows.push(el);
+          });
+          $("list").replaceChildren(...rows);
+          $("list").hidden = false;
+          $("crossover").hidden = false;
+          $("crossover").textContent = crossIdx <= 0
+            ? "The model read every rewrite as formal — try adding a more casual one."
+            : crossIdx >= results.length
+            ? "The model read every rewrite as informal — try adding a more formal one."
+            : `The register flips between "${results[crossIdx - 1].text}" (${(results[crossIdx - 1].formal * 100).toFixed(0)}% formal) and "${results[crossIdx].text}" (${(results[crossIdx].formal * 100).toFixed(0)}% formal).`;
+          $("readout").hidden = false;
+          $("rBackend").textContent = results[0].device.toUpperCase();
+          $("rN").textContent = results.length;
+          $("rMs").textContent = ms + " ms";
+          $("rowStatus").textContent = "Done."; $("rowStatus").classList.add("ok");
+        } catch (err) {
+          $("rowStatus").textContent = "Scoring failed: " + err.message; $("rowStatus").classList.add("err");
+        } finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>

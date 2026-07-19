@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Formality Multi-model — detect then shift register · Web AI Showcase</title>
+    <meta name="description" content="Two models, one pipeline: detect a message's register, then use a T5 paraphraser to rewrite it into the opposite register — re-scoring each rewrite to pick the best shift, all locally." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎩</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Formality detection</a></p>
+
+    <header>
+      <p class="eyebrow">use case · multi-model</p>
+      <h1>Multi-model: detect the register, then shift it</h1>
+      <p class="lede">
+        A tone-rewrite loop, entirely on-device. First this <a href="../">formality detector</a> reads a
+        message's register. Then the
+        <a href="/web-ai-showcase/models/paraphrase-generation/">T5 paraphraser</a> rewrites it several ways,
+        and the detector <em>re-scores each rewrite</em> so we can surface the one that best flips it into the
+        register you asked for. Two models passing work back and forth — no text leaves the tab.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="muted" style="font-size:.8rem;margin-top:.3rem">Loads two models: the ~260 MB formality
+        detector and the ~235 MB T5 paraphraser (cached after first use). Heavy — best on desktop or a
+        capable phone.</p>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
+        Message
+        <textarea id="text" rows="2" disabled>hey, can u send over the report whenever you get a chance? thanks!</textarea>
+      </label>
+      <div style="display:flex;flex-wrap:wrap;gap:.5rem;align-items:center;margin:.5rem 0">
+        <span style="font-size:.82rem">Shift toward:</span>
+        <label style="font-size:.85rem"><input type="radio" name="target" value="formal" checked /> formal</label>
+        <label style="font-size:.85rem"><input type="radio" name="target" value="informal" /> informal</label>
+        <button id="run" type="button" disabled style="margin-inline-start:auto">Detect &amp; rewrite</button>
+      </div>
+
+      <div id="stage1" hidden style="margin-top:.4rem">
+        <h3 style="margin:.2rem 0;font-size:.9rem">1 · Detected register</h3>
+        <div class="verdict-row"><span class="verdict-label" id="vLabel">–</span><span class="verdict-conf" id="vConf">–</span></div>
+        <div class="fmeter" id="meter" aria-hidden="true"><div class="fneedle" id="needle" style="inset-inline-start:50%"></div></div>
+        <div class="fmeter-labels"><span>informal</span><span>formal</span></div>
+      </div>
+
+      <div id="stage2" hidden style="margin-top:1rem">
+        <h3 style="margin:.2rem 0;font-size:.9rem">2 · Rewrites, re-scored — best shift first</h3>
+        <p class="status" id="genStatus" role="status" aria-live="polite">Rewriting…</p>
+        <div class="sent-list" id="variants"></div>
+      </div>
+
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>detect <b id="rDetectMs">–</b></span>
+        <span>rewrite <b id="rGenMs">–</b></span>
+      </div>
+    </section>
+
+    <p class="muted" style="font-size:.85rem">
+      This is a real composition: the paraphraser doesn't "know" about formality, so we generate several
+      rewrites and let the detector judge which one actually moved the register. Both models run in a single
+      Web Worker, sequentially, so the UI stays responsive and each stage lands as it completes.
+    </p>
+
+    <p class="crumbs"><a href="../">← Back to the model</a> · <a href="/web-ai-showcase/models/paraphrase-generation/">T5 paraphraser →</a></p>
+
+    <script type="module">
+      import { FORMALITY_CSS } from "../formality.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = FORMALITY_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+      class ShiftEngine {
+        constructor() {
+          this.worker = new Worker("/web-ai-showcase/models/formality-detection/shift-worker.js", { type: "module" });
+          this.ready = false; this._loadWaiters = []; this._pending = new Map(); this._id = 0;
+          this.onProgress = null; this.device = "wasm";
+          this.worker.addEventListener("message", (e) => this._onMessage(e.data));
+          this.worker.addEventListener("error", (e) => {
+            const err = new Error(e.message || "Worker failed to start");
+            for (const w of this._loadWaiters) w.reject(err); this._loadWaiters = [];
+            for (const [, p] of this._pending) p.reject(err); this._pending.clear();
+          });
+        }
+        _onMessage(msg) {
+          if (msg.type === "progress") this.onProgress?.(msg.p);
+          else if (msg.type === "ready") { this.ready = true; this.device = msg.device; for (const w of this._loadWaiters) w.resolve(msg.device); this._loadWaiters = []; }
+          else if (msg.type === "detected") this._pending.get(msg.id)?.onDetected?.(msg);
+          else if (msg.type === "progress-gen") this._pending.get(msg.id)?.onGen?.(msg);
+          else if (msg.type === "shifted") { const p = this._pending.get(msg.id); if (p) { this._pending.delete(msg.id); p.resolve(msg); } }
+          else if (msg.type === "error") {
+            if (msg.id != null && this._pending.has(msg.id)) { this._pending.get(msg.id).reject(new Error(msg.message)); this._pending.delete(msg.id); }
+            else { const err = new Error(msg.message); for (const w of this._loadWaiters) w.reject(err); this._loadWaiters = []; }
+          }
+        }
+        load(onProgress) {
+          if (onProgress) this.onProgress = onProgress;
+          if (this.ready) return Promise.resolve(this.device);
+          return new Promise((resolve, reject) => { this._loadWaiters.push({ resolve, reject }); this.worker.postMessage({ type: "load" }); });
+        }
+        shift(text, target, handlers) {
+          const id = ++this._id;
+          return new Promise((resolve, reject) => { this._pending.set(id, { resolve, reject, ...handlers }); this.worker.postMessage({ type: "shift", id, text, target, n: 4 }); });
+        }
+      }
+
+      const engine = new ShiftEngine();
+      let loaded = false;
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Deepchecks/roberta_base_formality_ranker_onnx", runtime: "transformers.js", dtype: "fp32", sizeMB: 495, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("text").disabled = false; $("run").disabled = false; loaded = true; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!loaded) return;
+        const text = $("text").value.trim();
+        if (!text) { $("runStatus").hidden = false; $("runStatus").textContent = "Enter a message first."; $("runStatus").classList.add("err"); return; }
+        const target = document.querySelector('input[name="target"]:checked').value;
+        $("run").disabled = true; $("runStatus").hidden = true;
+        $("stage1").hidden = true; $("stage2").hidden = true; $("readout").hidden = true;
+        try {
+          const res = await engine.shift(text, target, {
+            onDetected: (d) => {
+              $("stage1").hidden = false;
+              $("vLabel").textContent = d.label === "formal" ? "Formal" : "Informal";
+              $("vLabel").className = "verdict-label " + d.label;
+              $("vConf").textContent = (d.formal * 100).toFixed(0) + "% formal · shifting toward " + d.target;
+              $("needle").style.insetInlineStart = (d.formal * 100).toFixed(1) + "%";
+              $("stage2").hidden = false; $("genStatus").hidden = false; $("genStatus").textContent = "Rewriting toward " + d.target + "…"; $("genStatus").classList.remove("err");
+              $("readout").hidden = false; $("rBackend").textContent = d.device.toUpperCase(); $("rDetectMs").textContent = d.detectMs + " ms";
+            },
+            onGen: (g) => { $("genStatus").textContent = `Rewriting toward ${target}… ${g.done}/${g.total}`; },
+          });
+          if (!res.variants.length) { $("genStatus").textContent = "The paraphraser returned no usable rewrites — try a longer message."; $("genStatus").classList.add("err"); }
+          else {
+            $("variants").replaceChildren(...res.variants.map((v, i) => {
+              const el = document.createElement("div");
+              const label = v.formal >= 0.5 ? "formal" : "informal";
+              el.className = "sent-row " + label;
+              el.innerHTML = `<span class="sent-text">${i === 0 ? "★ " : ""}${esc(v.text)}</span>` +
+                `<span class="sent-meta"><span class="badge ${label}">${label}</span> ${(v.formal * 100).toFixed(0)}% formal</span>`;
+              return el;
+            }));
+            $("genStatus").hidden = true;
+          }
+          $("rGenMs").textContent = res.genMs + " ms";
+        } catch (err) {
+          $("runStatus").hidden = false; $("runStatus").textContent = "Pipeline failed: " + err.message; $("runStatus").classList.add("err");
+          $("genStatus").hidden = true;
+        } finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>

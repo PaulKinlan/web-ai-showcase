@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Formality Practical — tone-check a draft · Web AI Showcase</title>
+    <meta name="description" content="Paste a draft and tone-check it sentence by sentence — flag the casual sentences in an otherwise formal message, all on-device." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎩</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Formality detection</a></p>
+
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Practical: tone-check a professional draft</h1>
+      <p class="lede">
+        You're writing to a client and want it to read consistently formal. Paste the draft — it's split into
+        sentences, each scored for register, so the one casual line that slipped in ("thanks a bunch!")
+        stands out before you hit send. Nothing is uploaded.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
+        Your draft
+        <textarea id="draft" rows="7">Dear Ms. Carter, thank you for taking the time to meet with us last week. I have attached the revised proposal for your consideration. Hey, just wanted to say the numbers look awesome by the way! Please do not hesitate to contact me should you have any questions. Catch you later!</textarea>
+      </label>
+      <button id="run" type="button" disabled style="margin:.5rem 0">Tone-check sentence by sentence</button>
+      <p class="status" id="rowStatus" role="status" aria-live="polite" hidden></p>
+
+      <div class="sent-list" id="list" hidden></div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>sentences <b id="rN">–</b></span>
+        <span>casual flagged <b id="rCasual">–</b></span>
+        <span>overall <b id="rOverall">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+      </div>
+    </section>
+
+    <p class="muted" style="font-size:.85rem">
+      Each sentence is scored independently; the casual ones are flagged so you can decide whether to reword
+      them. The overall figure is the mean formal-probability across sentences — a quick read on whether the
+      whole message lands where you intend, computed entirely client-side.
+    </p>
+
+    <p class="crumbs"><a href="../">← Back to the model</a> · Next: <a href="../wild/">Wild →</a></p>
+
+    <script type="module">
+      import { FormalityEngine, escapeHTML, FORMALITY_CSS } from "../formality.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = FORMALITY_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new FormalityEngine();
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Deepchecks/roberta_base_formality_ranker_onnx", runtime: "transformers.js", dtype: "fp32", sizeMB: 260, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("run").disabled = false; },
+      });
+
+      // Naive sentence splitter — good enough for a tone check.
+      function sentences(text) {
+        return text.replace(/\s+/g, " ").match(/[^.!?]+[.!?]*/g)?.map((s) => s.trim()).filter((s) => s.length > 1) ?? [];
+      }
+
+      $("run").addEventListener("click", async () => {
+        const sents = sentences($("draft").value);
+        if (!sents.length) { $("rowStatus").hidden = false; $("rowStatus").textContent = "Add a draft first."; $("rowStatus").classList.add("err"); return; }
+        $("rowStatus").hidden = false; $("rowStatus").classList.remove("err"); $("rowStatus").textContent = `Scoring ${sents.length} sentences…`; $("run").disabled = true;
+        try {
+          const t0 = performance.now();
+          const results = [];
+          for (const s of sents) results.push(await engine.classify(s));
+          const ms = Math.round(performance.now() - t0);
+          const casual = results.filter((r) => r.label === "informal").length;
+          const mean = results.reduce((a, r) => a + r.formal, 0) / results.length;
+          $("list").replaceChildren(...results.map((r) => {
+            const el = document.createElement("div");
+            el.className = "sent-row " + (r.label === "formal" ? "formal" : "informal");
+            el.innerHTML = `<span class="sent-text">${escapeHTML(r.text)}</span>` +
+              `<span class="sent-meta"><span class="badge ${r.label === "formal" ? "formal" : "informal"}">${r.label}</span> ${(r.formal * 100).toFixed(0)}% formal</span>`;
+            return el;
+          }));
+          $("list").hidden = false;
+          $("readout").hidden = false;
+          $("rBackend").textContent = results[0].device.toUpperCase();
+          $("rN").textContent = results.length;
+          $("rCasual").textContent = casual;
+          $("rOverall").textContent = (mean * 100).toFixed(0) + "% formal";
+          $("rMs").textContent = ms + " ms";
+          $("rowStatus").textContent = casual ? `${casual} casual sentence(s) flagged.` : "All sentences read formal.";
+          $("rowStatus").classList.add("ok");
+        } catch (err) {
+          $("rowStatus").textContent = "Tone-check failed: " + err.message; $("rowStatus").classList.add("err");
+        } finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>

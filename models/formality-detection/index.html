@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Formality detection — is this writing formal or casual? · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Score any text's register — formal vs informal — locally in your browser, with a live formality meter and a word-level view of which phrases carry the tone. No text leaves the tab."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎩</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">text-classification · text · WASM · ~260 MB</p>
+      <h1>Formality detection — read the register, not the sentiment</h1>
+      <p class="lede">
+        A RoBERTa fine-tuned to judge <strong>register</strong> — is this written <strong>formally</strong>
+        (a report, a cover letter) or <strong>informally</strong> (a text to a friend)? This is stylistic
+        classification, orthogonal to what the text is <em>about</em> or how positive it feels. Type below and
+        watch the formality meter move, then see which words carry the tone. Nothing leaves your device.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/Deepchecks/roberta_base_formality_ranker_onnx" target="_blank" rel="noopener">Deepchecks/roberta_base_formality_ranker_onnx</a> (ONNX export of <a href="https://huggingface.co/s-nlp/roberta-base-formality-ranker" target="_blank" rel="noopener">s-nlp/roberta-base-formality-ranker</a>)</td></tr>
+          <tr><th>Task / pipeline</th><td><code>text-classification</code></td></tr>
+          <tr><th>Labels</th><td><code>formal</code> / <code>informal</code> (binary; softmax over 2 logits)</td></tr>
+          <tr><th>Architecture</th><td>RoBERTa-base fine-tuned on formality-labelled corpora (GYAFC + PT-16)</td></tr>
+          <tr><th>Quantization</th><td>fp32 (32-bit) ONNX — no quantised export ships; this is the graph-optimised full-precision file</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (runs anywhere; no WebGPU needed)</td></tr>
+          <tr><th>Download</th><td>~260 MB, cached after first load (heavier on mobile — see below)</td></tr>
+          <tr><th>License</th><td>CC BY-NC-SA 4.0 (non-commercial)</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+      <p class="muted" style="font-size:.82rem">Because there's no quantised build, this model is a ~260 MB
+        fp32 download and needs a few hundred MB of memory to run — comfortable on desktop and modern phones,
+        but heavier than most demos here. It's cached after the first load and never re-downloaded silently.</p>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Type anything. The register re-scores automatically (debounced) a moment after you stop
+        typing. The meter shows how far toward formal or informal the whole text reads.</p>
+
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
+        Your text
+        <textarea id="text" rows="3" disabled>I would be grateful if you could review the attached report at your earliest convenience.</textarea>
+      </label>
+      <div class="chip-row">
+        <button class="chip" type="button" data-set="I would be grateful if you could review the attached report at your earliest convenience.">formal</button>
+        <button class="chip" type="button" data-set="hey can u take a look at this when u get a sec? thanks!!">casual</button>
+        <button class="chip" type="button" data-set="The committee will convene on Thursday to deliberate the proposed amendments.">very formal</button>
+        <button class="chip" type="button" data-set="lol yeah that meeting was such a waste of time tbh">very casual</button>
+        <button class="chip" type="button" data-set="Thanks for getting back to me — I'll send over the numbers tomorrow.">in between</button>
+      </div>
+
+      <div class="verdict-row" id="verdictRow" hidden>
+        <span class="verdict-label" id="vLabel">–</span>
+        <span class="verdict-conf" id="vConf">–</span>
+      </div>
+      <div class="fmeter" id="meter" hidden aria-hidden="true"><div class="fneedle" id="needle" style="inset-inline-start:50%"></div></div>
+      <div class="fmeter-labels" id="meterLabels" hidden><span>informal</span><span>formal</span></div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside — which words set the register</h3>
+      <p class="muted">
+        This is <strong>occlusion attribution</strong>: we re-run the model with each word removed and see how
+        much the <em>formal</em> score shifts (in <em>log-odds</em>). Remove a word that was pulling the text
+        formal and the score drops — that word gets a <span style="color:var(--formal)">blue</span> weight.
+        Remove a casual word and the score rises — <span style="color:var(--informal)">amber</span>. No
+        gradients, just the model's own predictions, N+1 of them. This is what "register cues" look like:
+        "grateful", "convenience" pull formal; "hey", "u", "lol" pull informal.
+      </p>
+      <button id="explain" type="button" class="secondary" disabled>Show register cues for the current text</button>
+      <p class="status" id="attrStatus" role="status" aria-live="polite" hidden></p>
+      <div class="attr-wrap" id="attr" aria-live="polite"></div>
+      <div class="attr-legend" id="attrLegend" hidden>
+        <span><span class="swatch" style="background:var(--formal)"></span>pulls formal</span>
+        <span><span class="swatch" style="background:var(--informal)"></span>pulls informal</span>
+        <span>brighter = larger effect</span>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        Register is a different axis from sentiment or topic: the same message can be warm or cold, positive or
+        negative, and still be phrased formally or casually. Scoring it in the browser means a writing tool can
+        react to <em>tone</em> as the user types — privately, with no round-trip.
+      </p>
+      <ul>
+        <li><strong>Tone check for professional writing</strong> — warn when an email to a client reads too casual (or a note to a teammate reads stiff).</li>
+        <li><strong>Brand-voice guardrails</strong> — keep support replies or marketing copy inside a target register.</li>
+        <li><strong>Style-consistent editing</strong> — flag the one informal sentence in an otherwise formal document.</li>
+        <li><strong>Dataset curation</strong> — filter a corpus by register, entirely client-side.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Type text, get formal/informal + a live formality meter.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Tone-check a draft sentence by sentence and flag the casual ones.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Slide a message from casual to formal word by word and watch the needle cross over.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">Detect the register, then use a T5 paraphraser to rewrite it into the other one.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>Classification is one call. This repo uses a non-standard file layout, so we point at the exact file:</p>
+      <pre><code>import { pipeline } from "@huggingface/transformers";
+
+const classify = await pipeline(
+  "text-classification",
+  "Deepchecks/roberta_base_formality_ranker_onnx",
+  { subfolder: "", model_file_name: "model_optimized", dtype: "fp32" },
+); // the ONNX sits at the repo root, not under onnx/
+
+const out = await classify("hey can u take a look?", { top_k: 2 });
+// → [{ label: "informal", score: 0.994 }, { label: "formal", score: 0.006 }]</code></pre>
+      <p class="muted">
+        "See inside" re-uses that same call: it classifies the full text plus one copy per word with that word
+        deleted (batched in a single pass), then subtracts the formal log-odds to attribute the shift to each
+        word. All of it runs in a Web Worker so typing never janks.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/Deepchecks/roberta_base_formality_ranker_onnx" target="_blank" rel="noopener">Model card — ONNX export (Deepchecks)</a></li>
+        <li><a href="https://huggingface.co/s-nlp/roberta-base-formality-ranker" target="_blank" rel="noopener">Source model — s-nlp/roberta-base-formality-ranker</a></li>
+        <li><a href="https://aclanthology.org/N18-1012/" target="_blank" rel="noopener">GYAFC — the formality corpus (Rao &amp; Tetreault, 2018)</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { FormalityEngine, renderVerdict, renderAttribution, debounce, FORMALITY_CSS } from "./formality.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = FORMALITY_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new FormalityEngine();
+      let loaded = false;
+
+      for (const c of document.querySelectorAll(".chip")) {
+        c.addEventListener("click", () => { $("text").value = c.dataset.set; scheduleScore(); clearAttr(); });
+      }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: {
+          modelId: "Deepchecks/roberta_base_formality_ranker_onnx",
+          runtime: "transformers.js",
+          dtype: "fp32",
+          sizeMB: 260,
+          requiresWebGPU: false,
+        },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("text").disabled = false; $("explain").disabled = false; loaded = true; score(); },
+      });
+
+      const scheduleScore = debounce(score, 400);
+      $("text").addEventListener("input", () => { scheduleScore(); clearAttr(); });
+
+      async function score() {
+        if (!loaded) return;
+        const text = $("text").value.trim();
+        if (!text) { for (const id of ["verdictRow","meter","meterLabels","readout"]) $(id).hidden = true; return; }
+        try {
+          const r = await engine.classify(text);
+          for (const id of ["verdictRow","meter","meterLabels"]) $(id).hidden = false;
+          renderVerdict({ label: $("vLabel"), conf: $("vConf"), needle: $("needle") }, r);
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = r.ms + " ms";
+        } catch (err) {
+          $("runStatus").hidden = false;
+          $("runStatus").textContent = "Scoring failed: " + err.message; $("runStatus").classList.add("err");
+        }
+      }
+
+      function clearAttr() { $("attr").replaceChildren(); $("attrLegend").hidden = true; }
+
+      $("explain").addEventListener("click", async () => {
+        if (!loaded) return;
+        const text = $("text").value.trim();
+        if (!text) return;
+        $("explain").disabled = true;
+        $("attrStatus").hidden = false; $("attrStatus").classList.remove("err");
+        $("attrStatus").textContent = "Scoring each word out…";
+        try {
+          const r = await engine.attribute(text);
+          renderAttribution($("attr"), r.words, r.attributions);
+          $("attrLegend").hidden = false;
+          $("attrStatus").textContent = `${r.words.length} words scored on ${r.device.toUpperCase()} in ${r.ms} ms.`;
+          $("attrStatus").classList.add("ok");
+        } catch (err) {
+          $("attrStatus").textContent = "Attribution failed: " + err.message; $("attrStatus").classList.add("err");
+        } finally { $("explain").disabled = false; }
+      });
+    </script>
+  </body>
+</html>
