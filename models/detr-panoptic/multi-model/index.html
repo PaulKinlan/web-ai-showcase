@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>DETR panoptic Multi-model — region → CLIP · Web AI Showcase</title>
+    <meta name="description" content="Chain two on-device models: DETR panoptic cuts a scene into segments, then you pick one and CLIP zero-shot classification re-labels or describes just that region — against any words you type. Both run locally." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🧩</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">DETR panoptic</a></p>
+
+    <header>
+      <p class="eyebrow">use case · multi-model</p>
+      <h1>Multi-model: panoptic region → CLIP</h1>
+      <p class="lede">
+        Panoptic tells you <em>where</em> each object is; CLIP tells you what it is against
+        <em>any</em> vocabulary you invent. Chain them: parse the scene, pick a segment, and CLIP
+        zero-shot classification scores that one region against your labels — "a tabby cat / a black
+        cat", "wooden / metal", a mood, a brand. Two models, one tab, nothing uploaded.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="loaders">
+        <p class="muted" style="font-size:.85rem;margin:.2rem 0">Two models load here — DETR panoptic (~45 MB) and CLIP (~90 MB). Each auto-initialises if already cached.</p>
+        <div id="loader-panoptic"></div>
+        <div id="loader-clip" style="margin-top:.5rem"></div>
+      </div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image">
+        <span id="dropText">Drop an image, or click to choose</span>
+        <input type="file" id="file" accept="image/*" hidden />
+      </div>
+      <div class="sample-strip" id="samples">
+        <img class="sample-thumb active" src="../sample-cats.jpg" data-src="../sample-cats.jpg" alt="Two cats on a couch" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-river.jpg" data-src="../sample-river.jpg" alt="A riverside with a swan and people" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-room.jpg" data-src="../sample-room.jpg" alt="A cozy bedroom" tabindex="0" role="button" />
+      </div>
+
+      <div style="margin:.6rem 0"><button id="run" type="button" disabled>Parse scene</button></div>
+
+      <div class="canvas-grid">
+        <div class="canvas-card">
+          <h4>Pick a segment</h4>
+          <canvas id="stage" class="viz-canvas" aria-label="Parsed scene — segments to choose from"></canvas>
+          <div class="legend" id="legend" aria-label="Choose a region to classify"></div>
+        </div>
+        <div class="canvas-card">
+          <h4>Region → CLIP</h4>
+          <canvas id="crop" class="viz-canvas" style="max-block-size:200px" aria-label="Cropped region sent to CLIP"></canvas>
+          <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.5rem">
+            Candidate labels (comma-separated)
+            <textarea id="labels" rows="3">a tabby cat, a black cat, a dog, a cushion, a plant</textarea>
+          </label>
+          <div style="margin:.5rem 0"><button id="classify" type="button" disabled>Classify region</button></div>
+          <div class="bars" id="bars" aria-live="polite"></div>
+        </div>
+      </div>
+      <div class="readout" id="readout" hidden><span>panoptic <b id="rSeg">–</b></span><span>CLIP <b id="rClip">–</b></span><span>region <b id="rPick">–</b></span></div>
+    </section>
+
+    <p class="crumbs"><a href="../wild/">← Wild</a> · <a href="../">Back to DETR panoptic</a></p>
+
+    <script type="module">
+      import { escapeHTML, fileToDataURL, loadImage, paintPanoptic, paintPhoto, PanopticEngine, PANOPTIC_CSS, rgb, urlToDataURL } from "../panoptic.js";
+      import { ClipEngine, parseLabels, renderBars, CLIP_CSS } from "/web-ai-showcase/models/clip-zero-shot-image/clip.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = PANOPTIC_CSS + CLIP_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const pano = new PanopticEngine();
+      const clip = new ClipEngine();
+      let currentImageURL = null, currentImg = null, result = null, picked = null, cropURL = null;
+      let panoReady = false, clipReady = false;
+
+      async function useURL(url) {
+        currentImageURL = url; currentImg = await loadImage(url); result = null; picked = null; cropURL = null;
+        $("legend").replaceChildren(); $("bars").replaceChildren(); $("readout").hidden = true; $("classify").disabled = true;
+        paintPhoto($("stage"), currentImg);
+        const c = $("crop"); c.width = 10; c.height = 10; c.getContext("2d").clearRect(0, 0, 10, 10);
+      }
+      async function pickSample(el) { for (const t of $("samples").children) t.classList.toggle("active", t === el); await useURL(await urlToDataURL(el.dataset.src)); }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } });
+      }
+      pickSample($("samples").firstElementChild);
+
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) { for (const t of $("samples").children) t.classList.remove("active"); await useURL(await fileToDataURL(f)); $("dropText").textContent = f.name; }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
+
+      createModelLoader({
+        mount: $("loader-panoptic"),
+        model: { modelId: "Xenova/detr-resnet-50-panoptic", runtime: "transformers.js", dtype: "q8", sizeMB: 45, requiresWebGPU: false },
+        load: (onProgress) => pano.load(onProgress),
+        onReady: () => { panoReady = true; if (panoReady) $("run").disabled = false; },
+      });
+      createModelLoader({
+        mount: $("loader-clip"),
+        model: { modelId: "Xenova/clip-vit-base-patch16", runtime: "transformers.js", dtype: "q8", sizeMB: 90, requiresWebGPU: false },
+        load: (onProgress) => clip.load(onProgress),
+        onReady: () => { clipReady = true; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!currentImageURL) { $("status").textContent = "Pick an image first."; return; }
+        $("run").disabled = true; $("status").classList.remove("err", "ok"); $("status").textContent = "Parsing scene…";
+        try {
+          result = await pano.segment(currentImageURL); picked = null;
+          paintPanoptic($("stage"), currentImg, result.overlay, result.width, result.height, 0.5);
+          renderLegend();
+          $("rSeg").textContent = result.segmentCount + " segs"; $("readout").hidden = false;
+          $("status").textContent = "Pick a region, then classify it."; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Parse failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+
+      function renderLegend() {
+        $("legend").replaceChildren(...result.segments.map((s) => {
+          const b = document.createElement("button");
+          b.type = "button"; b.className = "seg-item"; b.setAttribute("aria-pressed", "false");
+          b.innerHTML = `<span class="swatch" style="background:${rgb(s)}"></span>${escapeHTML(s.label)} <span class="kind">${s.thing ? "thing" : "stuff"}</span>`;
+          b.addEventListener("click", () => choose(s, b));
+          return b;
+        }));
+      }
+
+      async function choose(seg, btn) {
+        for (const el of $("legend").children) el.setAttribute("aria-pressed", "false");
+        btn.setAttribute("aria-pressed", "true");
+        picked = seg; $("rPick").textContent = seg.label;
+        cropURL = await buildCrop(seg);
+        $("classify").disabled = !clipReady;
+        if (!clipReady) $("status").textContent = "CLIP is still loading — it'll enable when ready.";
+      }
+
+      // Crop the picked segment: mask everything else to white, then tightly crop to its bounding box,
+      // and hand CLIP a self-contained region image.
+      async function buildCrop(seg) {
+        const w = currentImg.naturalWidth, h = currentImg.naturalHeight;
+        const off = document.createElement("canvas"); off.width = result.width; off.height = result.height;
+        off.getContext("2d").putImageData(new ImageData(result.overlay, result.width, result.height), 0, 0);
+        const scaled = document.createElement("canvas"); scaled.width = w; scaled.height = h;
+        const sctx = scaled.getContext("2d"); sctx.imageSmoothingEnabled = false; sctx.drawImage(off, 0, 0, w, h);
+        const owner = sctx.getImageData(0, 0, w, h).data;
+
+        const region = document.createElement("canvas"); region.width = w; region.height = h;
+        const rctx = region.getContext("2d"); rctx.fillStyle = "#fff"; rctx.fillRect(0, 0, w, h);
+        const photo = document.createElement("canvas"); photo.width = w; photo.height = h;
+        const pctx = photo.getContext("2d"); pctx.drawImage(currentImg, 0, 0, w, h);
+        const id = pctx.getImageData(0, 0, w, h);
+        let minX = w, minY = h, maxX = 0, maxY = 0, any = false;
+        for (let y = 0; y < h; y++) {
+          for (let x = 0; x < w; x++) {
+            const o = (y * w + x) * 4;
+            const match = owner[o] === seg.r && owner[o + 1] === seg.g && owner[o + 2] === seg.b && owner[o + 3] > 0;
+            if (!match) { id.data[o + 3] = 0; } else { any = true; if (x < minX) minX = x; if (x > maxX) maxX = x; if (y < minY) minY = y; if (y > maxY) maxY = y; }
+          }
+        }
+        pctx.putImageData(id, 0, 0);
+        rctx.drawImage(photo, 0, 0);
+        if (!any) { minX = 0; minY = 0; maxX = w - 1; maxY = h - 1; }
+        const pad = 8, cx = Math.max(0, minX - pad), cy = Math.max(0, minY - pad);
+        const cw = Math.min(w, maxX + pad) - cx, ch = Math.min(h, maxY + pad) - cy;
+        const cropC = $("crop"); cropC.width = cw; cropC.height = ch;
+        cropC.getContext("2d").drawImage(region, cx, cy, cw, ch, 0, 0, cw, ch);
+        return cropC.toDataURL("image/png");
+      }
+
+      $("classify").addEventListener("click", async () => {
+        if (!cropURL) { $("status").textContent = "Pick a region first."; return; }
+        const labels = parseLabels($("labels").value);
+        if (labels.length < 2) { $("status").textContent = "Give at least two labels."; $("status").classList.add("err"); return; }
+        $("classify").disabled = true; $("status").classList.remove("err"); $("status").textContent = "Classifying region with CLIP…";
+        try {
+          const r = await clip.classify(cropURL, labels);
+          const items = r.labels.map((label, i) => ({ label, prob: r.probs[i], cosine: r.cosines[i] }));
+          renderBars($("bars"), items, { showCosine: true });
+          $("rClip").textContent = r.ms + " ms";
+          $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "CLIP failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("classify").disabled = false; }
+      });
+    </script>
+  </body>
+</html>

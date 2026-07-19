@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>DETR panoptic Basics — parse a scene · Web AI Showcase</title>
+    <meta name="description" content="The fundamental panoptic move: pick an image, parse it, and watch the scene split into colour-coded, labelled segments — countable things plus background stuff. In your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🧩</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">DETR panoptic</a></p>
+
+    <header>
+      <p class="eyebrow">use case · basics</p>
+      <h1>Basics: parse a scene into pieces</h1>
+      <p class="lede">
+        Panoptic segmentation in its simplest form. Give the model an image and it splits every pixel
+        into a labelled segment — each countable object on its own, plus the background regions. Blend
+        the colour map over the photo with the opacity slider.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image">
+        <span id="dropText">Drop an image, or click to choose</span>
+        <input type="file" id="file" accept="image/*" hidden />
+      </div>
+      <div class="sample-strip" id="samples">
+        <img class="sample-thumb active" src="../sample-cats.jpg" data-src="../sample-cats.jpg" alt="Two cats on a couch" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-room.jpg" data-src="../sample-room.jpg" alt="A cozy bedroom" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-river.jpg" data-src="../sample-river.jpg" alt="A riverside at golden hour" tabindex="0" role="button" />
+      </div>
+
+      <div style="margin:.6rem 0"><button id="run" type="button" disabled>Parse scene</button></div>
+
+      <div class="slider-row">
+        <label for="opacity">Overlay opacity</label>
+        <input type="range" id="opacity" min="0" max="1" step="0.05" value="0.55" />
+        <output id="opacityOut" for="opacity">0.55</output>
+      </div>
+
+      <div class="canvas-wrap">
+        <canvas id="stage" class="stage-canvas" aria-label="Panoptic result: image with colour-coded labelled segments"></canvas>
+      </div>
+      <div class="split-chips" id="splitChips" aria-live="polite"></div>
+      <div class="legend" id="legend" aria-label="Segments"></div>
+      <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>latency <b id="rMs">–</b></span><span>segments <b id="rN">–</b></span></div>
+
+      <p class="muted" style="font-size:.85rem">
+        The model runs once; the slider just re-blends the segments it already found. A "thing" is a
+        countable object (two cats = two segments); "stuff" is an amorphous region (a wall, the floor).
+      </p>
+    </section>
+
+    <p class="crumbs"><a href="../">← Back to DETR panoptic</a> · Next: <a href="../practical/">Practical →</a></p>
+
+    <script type="module">
+      import { escapeHTML, fileToDataURL, loadImage, paintPanoptic, paintPhoto, PanopticEngine, PANOPTIC_CSS, rgb, urlToDataURL } from "../panoptic.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = PANOPTIC_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new PanopticEngine();
+      let currentImageURL = null, currentImg = null, result = null;
+
+      async function useURL(url) {
+        currentImageURL = url; currentImg = await loadImage(url); result = null;
+        $("splitChips").replaceChildren(); $("legend").replaceChildren(); $("readout").hidden = true;
+        paintPhoto($("stage"), currentImg);
+      }
+      async function pickSample(el) { for (const t of $("samples").children) t.classList.toggle("active", t === el); await useURL(await urlToDataURL(el.dataset.src)); }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } });
+      }
+      pickSample($("samples").firstElementChild);
+
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) { for (const t of $("samples").children) t.classList.remove("active"); await useURL(await fileToDataURL(f)); $("dropText").textContent = f.name; }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/detr-resnet-50-panoptic", runtime: "transformers.js", dtype: "q8", sizeMB: 45, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: () => { $("run").disabled = false; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!currentImageURL) { $("status").textContent = "Pick an image first."; return; }
+        $("run").disabled = true; $("status").classList.remove("err", "ok"); $("status").textContent = "Parsing…";
+        try {
+          result = await engine.segment(currentImageURL);
+          $("rBackend").textContent = result.device.toUpperCase();
+          render();
+          $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Parse failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+
+      const opacity = $("opacity");
+      opacity.addEventListener("input", () => { $("opacityOut").textContent = (+opacity.value).toFixed(2); if (result) draw(); });
+      function draw() { paintPanoptic($("stage"), currentImg, result.overlay, result.width, result.height, +opacity.value); }
+      function render() {
+        draw();
+        const c = (t) => { const el = document.createElement("span"); el.className = "split-chip"; el.textContent = t; return el; };
+        $("splitChips").replaceChildren(c(`${result.thingCount} things`), c(`${result.stuffCount} stuff`));
+        $("legend").replaceChildren(...result.segments.map((s) => { const el = document.createElement("span"); el.className = "seg-item"; el.innerHTML = `<span class="swatch" style="background:${rgb(s)}"></span>${escapeHTML(s.label)} <span class="kind">${s.thing ? "thing" : "stuff"}</span>`; return el; }));
+        $("readout").hidden = false; $("rMs").textContent = result.ms + " ms"; $("rN").textContent = result.segmentCount;
+      }
+    </script>
+  </body>
+</html>
