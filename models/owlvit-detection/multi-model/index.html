@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OWLViT Multi-model — describe → detect → segment · Web AI Showcase</title>
+    <meta name="description" content="Chain two local models: OWLViT finds a region from your text description, then SlimSAM returns its exact pixel mask — open-vocabulary detection meets segmentation, all on-device." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🦉</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">OWLViT</a></p>
+
+    <header>
+      <p class="eyebrow">use case · multi-model</p>
+      <h1>Multi-model: describe → detect → segment</h1>
+      <p class="lede">
+        OWLViT answers "where is the thing I described?" with a box. <a href="../../slimsam-segment-anything/">SlimSAM</a>
+        answers "what are its exact pixels?" with a mask. Chain them: type a description, pick a detected
+        box, and get a pixel-perfect cut-out — open vocabulary in, precise segmentation out, entirely on
+        your device.
+      </p>
+    </header>
+
+    <section class="panel">
+      <h3>1 · Detect by description (OWLViT)</h3>
+      <div id="owl-loader"></div>
+      <div class="sample-strip" id="samples" aria-label="Sample images">
+        <img class="sample-thumb active" src="../sample-cats.jpg" data-src="../sample-cats.jpg" alt="Cats" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-room.jpg" data-src="../sample-room.jpg" alt="Room" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-river.jpg" data-src="../sample-river.jpg" alt="Riverside" tabindex="0" role="button" />
+      </div>
+      <label class="query-field" for="queries">
+        What to find (comma-separated)
+        <textarea id="queries" rows="2">a cat, a remote control</textarea>
+      </label>
+      <div style="margin:.6rem 0"><button id="run" type="button" disabled>Detect</button></div>
+      <p class="status" id="status1" role="status" aria-live="polite"></p>
+    </section>
+
+    <section class="panel">
+      <h3>2 · Segment a region (SlimSAM)</h3>
+      <div id="sam-loader"></div>
+      <p class="muted" style="font-size:.85rem">Pick a detected box below; SlimSAM masks it using the box centre as its prompt.</p>
+      <div class="obj-list" id="boxList" role="group" aria-label="Detected regions"></div>
+      <p class="status" id="status2" role="status" aria-live="polite"></p>
+      <div class="canvas-wrap"><canvas id="stage" class="stage-canvas" aria-label="Detection boxes and segmentation mask"></canvas></div>
+      <div class="readout" id="readout" hidden><span>region <b id="rLabel">–</b></span><span>mask IoU score <b id="rScore">–</b></span><span>mask time <b id="rMs">–</b></span></div>
+    </section>
+
+    <p class="crumbs"><a href="../wild/">← Wild</a> · <a href="../">Back to OWLViT</a></p>
+
+    <style>
+      .obj-list { display: flex; flex-direction: column; gap: .3rem; margin: .5rem 0; }
+      .obj-btn { display: flex; align-items: center; gap: .5rem; text-align: left; inline-size: 100%;
+        background: var(--bg-raised); color: var(--color); border: 1px solid var(--border);
+        border-radius: 8px; padding: .45rem .6rem; font-size: .85rem; cursor: pointer; }
+      .obj-btn:hover, .obj-btn:focus-visible { border-color: var(--accent); }
+      .obj-btn[aria-pressed=true] { border-color: var(--accent); background: var(--bg-secondary); }
+      .obj-btn .swatch { inline-size: .8rem; block-size: .8rem; border-radius: 3px; flex: none; }
+      .obj-btn .sc { margin-inline-start: auto; font-family: var(--font-mono); color: var(--muted); }
+    </style>
+
+    <script type="module">
+      import { OwlvitEngine, fileToDataURL, decodeImage, parseQueries, drawDetections, colorForQuery, escapeHTML, OWLVIT_CSS } from "../owlvit.js";
+      import { SamEngine, drawMaskOverlay } from "../../slimsam-segment-anything/sam.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = OWLVIT_CSS;
+      document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const owl = new OwlvitEngine();
+      const sam = new SamEngine();
+      let currentURL = null, currentImg = null, detections = [], samReady = false, embedded = false;
+
+      async function useSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        const blob = await (await fetch(el.dataset.src)).blob();
+        currentURL = await fileToDataURL(new File([blob], "s", { type: blob.type }));
+        currentImg = await decodeImage(currentURL); detections = []; embedded = false;
+        $("boxList").replaceChildren(); $("readout").hidden = true; $("status2").textContent = "";
+        const c = $("stage"); c.width = currentImg.naturalWidth; c.height = currentImg.naturalHeight;
+        c.getContext("2d").drawImage(currentImg, 0, 0);
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => useSample(thumb));
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); useSample(thumb); } });
+      }
+      useSample($("samples").firstElementChild);
+
+      createModelLoader({
+        mount: $("owl-loader"),
+        model: { modelId: "Xenova/owlvit-base-patch32", runtime: "transformers.js", dtype: "q8", sizeMB: 155, requiresWebGPU: false },
+        load: (onProgress) => owl.load(onProgress),
+        onReady: () => { $("run").disabled = false; },
+      });
+      createModelLoader({
+        mount: $("sam-loader"),
+        model: { modelId: "Xenova/slimsam-77-uniform", runtime: "transformers.js", dtype: "q8", sizeMB: 45, requiresWebGPU: false },
+        load: (onProgress) => sam.load(onProgress),
+        onReady: () => { samReady = true; },
+      });
+
+      // Step 1 — OWLViT detect.
+      $("run").addEventListener("click", async () => {
+        const q = parseQueries($("queries").value);
+        if (!currentURL || !q.length) { $("status1").textContent = "Pick an image and a query."; return; }
+        $("run").disabled = true; $("status1").classList.remove("err"); $("status1").textContent = "Detecting… (OWLViT first run takes a few seconds)";
+        try {
+          const r = await owl.detect(currentURL, q);
+          detections = r.detections.filter((d) => d.score >= 0.1).sort((a, b) => b.score - a.score).slice(0, 8);
+          drawDetections($("stage"), currentImg, detections);
+          renderBoxList();
+          $("status1").textContent = `Found ${detections.length} region(s). Pick one below to segment.`; $("status1").classList.add("ok");
+        } catch (err) { $("status1").textContent = "Detection failed: " + err.message; $("status1").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+
+      function renderBoxList() {
+        $("boxList").replaceChildren(...detections.map((d, i) => {
+          const b = document.createElement("button");
+          b.type = "button"; b.className = "obj-btn"; b.setAttribute("aria-pressed", "false");
+          b.innerHTML = `<span class="swatch" style="background:${colorForQuery(d.label)}"></span>${escapeHTML(d.label)} <span class="sc">${(d.score * 100).toFixed(0)}%</span>`;
+          b.addEventListener("click", () => segmentBox(i, b));
+          return b;
+        }));
+      }
+
+      // Step 2 — SlimSAM segment the chosen box (prompt = box centre).
+      async function segmentBox(i, btn) {
+        if (!samReady) { $("status2").textContent = "SlimSAM is still loading."; return; }
+        for (const el of $("boxList").children) el.setAttribute("aria-pressed", "false");
+        btn.setAttribute("aria-pressed", "true");
+        const d = detections[i];
+        const cx = (d.box.xmin + d.box.xmax) / 2 / currentImg.naturalWidth;
+        const cy = (d.box.ymin + d.box.ymax) / 2 / currentImg.naturalHeight;
+        $("status2").classList.remove("err"); $("status2").textContent = "Segmenting…";
+        try {
+          if (!embedded) { await sam.embed(currentURL); embedded = true; }
+          const m = await sam.segment([{ x: cx, y: cy, label: 1 }]);
+          drawMaskOverlay($("stage"), currentImg, m.mask, m.width, m.height, [{ x: cx, y: cy, label: 1 }]);
+          $("rLabel").textContent = d.label; $("rScore").textContent = (m.score ?? 0).toFixed(3); $("rMs").textContent = m.ms + " ms";
+          $("readout").hidden = false;
+          $("status2").textContent = `Masked "${d.label}" — OWLViT found the box, SlimSAM found the pixels.`; $("status2").classList.add("ok");
+        } catch (err) { $("status2").textContent = "Segmentation failed: " + err.message; $("status2").classList.add("err"); }
+      }
+    </script>
+  </body>
+</html>
