@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Multilingual MiniLM — Practical: cross-language search &amp; dedup · Web AI Showcase</title>
+    <meta name="description" content="Search a mixed-language corpus with a query in any language, and find near-duplicate content across languages — all locally in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🌍</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Multilingual MiniLM</a></p>
+
+    <header>
+      <p class="eyebrow">Practical · feature-extraction · WASM</p>
+      <h1>Cross-language search &amp; dedup</h1>
+      <p class="lede">
+        Two things every global product needs: search a mixed-language knowledge base with a query in
+        <em>any</em> language, and collapse "same content, different language" duplicates. Both fall straight
+        out of one shared embedding space — no per-language index, no translation step.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="corpus-h">
+      <h3 id="corpus-h">The corpus</h3>
+      <div id="model-loader"></div>
+      <p class="muted">One passage per line. The default set is a mixed-language FAQ. Edit it freely.</p>
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">
+        Passages (one per line, any languages)
+        <textarea id="corpus" rows="9" disabled>To reset your password, click "Forgot password" on the sign-in page.
+Pour réinitialiser votre mot de passe, cliquez sur « Mot de passe oublié ».
+Para restablecer tu contraseña, haz clic en "¿Olvidaste tu contraseña?".
+We offer free shipping on all orders over fifty euros.
+Envío gratuito en todos los pedidos superiores a cincuenta euros.
+Our office is open Monday to Friday, nine to five.
+返品は商品到着後30日以内であれば可能です。
+You can return any item within 30 days of delivery.</textarea>
+      </label>
+    </section>
+
+    <section class="panel" aria-labelledby="search-h">
+      <h3 id="search-h">Cross-language semantic search</h3>
+      <p class="muted">Ask in any language. The green badge marks a hit written in a different language from
+        your query — the payoff of a shared space.</p>
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;max-inline-size:34rem">
+        Query
+        <span style="display:flex;gap:.4rem;flex-wrap:wrap">
+          <input id="query" type="text" value="How do I change my password?" style="flex:1;min-inline-size:12rem" disabled />
+          <button id="search" type="button" disabled>Search</button>
+        </span>
+      </label>
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.5rem 0">
+        <button class="chip" type="button" data-q="How do I change my password?">EN: change password</button>
+        <button class="chip" type="button" data-q="¿Cuándo puedo devolver un producto?">ES: return window</button>
+        <button class="chip" type="button" data-q="送料は無料ですか？">JA: free shipping?</button>
+      </div>
+      <div class="sent-list" id="ranked" aria-live="polite"></div>
+      <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>latency <b id="rMs">–</b></span></div>
+    </section>
+
+    <section class="panel" aria-labelledby="dedup-h">
+      <h3 id="dedup-h">Cross-language dedup</h3>
+      <p class="muted">Embed every passage once, then flag pairs whose cosine similarity is above a threshold —
+        these are likely the <em>same</em> content in different languages. Drag the slider to tighten or loosen.</p>
+      <label style="display:flex;gap:.6rem;align-items:center;font-size:.82rem;flex-wrap:wrap">
+        Similarity threshold
+        <input id="thresh" type="range" min="0.5" max="0.95" step="0.01" value="0.7" disabled />
+        <b id="threshVal" style="font-family:var(--font-mono)">0.70</b>
+        <button id="dedup" type="button" class="secondary" disabled>Find duplicates</button>
+      </label>
+      <div class="sent-list" id="dupes" aria-live="polite" style="margin-top:.6rem"></div>
+    </section>
+
+    <p class="crumbs" style="margin-top:1.5rem"><a href="../wild/">Next: Wild — cluster mixed languages by meaning →</a></p>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via 🤗 Transformers.js.
+      <a href="../">← Back to Multilingual MiniLM</a>
+    </footer>
+
+    <script type="module">
+      import { MLEngine, cosine, parseLines, guessLang, renderRanked, escapeHTML, ML_CSS } from "../ml.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = ML_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new MLEngine();
+
+      for (const c of document.querySelectorAll(".chip")) {
+        c.addEventListener("click", () => { $("query").value = c.dataset.q; search(); });
+      }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/paraphrase-multilingual-MiniLM-L12-v2", runtime: "transformers.js", dtype: "q8", sizeMB: 118, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => {
+          $("corpus").disabled = false; $("query").disabled = false; $("search").disabled = false;
+          $("thresh").disabled = false; $("dedup").disabled = false;
+        },
+      });
+
+      $("search").addEventListener("click", search);
+      $("query").addEventListener("keydown", (e) => { if (e.key === "Enter") search(); });
+      async function search() {
+        const q = $("query").value.trim();
+        const texts = parseLines($("corpus").value);
+        if (!q || texts.length < 1) return;
+        $("search").disabled = true;
+        try {
+          const qLang = guessLang(q);
+          const [qr, dr] = await Promise.all([engine.embed([q]), engine.embed(texts)]);
+          const qv = qr.embeddings[0];
+          const hits = dr.texts.map((text, i) => {
+            const l = guessLang(text);
+            return { text, score: cosine(qv, dr.embeddings[i]), tag: `${l.flag} ${l.name}`, langCode: l.code };
+          }).sort((a, b) => b.score - a.score);
+          renderRanked($("ranked"), hits, { queryLang: qLang.code });
+          $("readout").hidden = false;
+          $("rBackend").textContent = dr.device.toUpperCase();
+          $("rMs").textContent = (qr.ms + dr.ms) + " ms";
+        } catch (err) { $("ranked").textContent = "Search failed: " + err.message; }
+        finally { $("search").disabled = false; }
+      }
+
+      $("thresh").addEventListener("input", () => { $("threshVal").textContent = Number($("thresh").value).toFixed(2); });
+
+      $("dedup").addEventListener("click", async () => {
+        const texts = parseLines($("corpus").value);
+        if (texts.length < 2) { $("dupes").textContent = "Add at least two passages."; return; }
+        $("dedup").disabled = true;
+        try {
+          const r = await engine.embed(texts);
+          const th = Number($("thresh").value);
+          const pairs = [];
+          for (let i = 0; i < texts.length; i++) {
+            for (let j = i + 1; j < texts.length; j++) {
+              const s = cosine(r.embeddings[i], r.embeddings[j]);
+              if (s >= th) pairs.push({ i, j, s });
+            }
+          }
+          pairs.sort((a, b) => b.s - a.s);
+          if (pairs.length === 0) {
+            $("dupes").innerHTML = `<p class="muted">No pairs above ${th.toFixed(2)} — loosen the threshold.</p>`;
+          } else {
+            $("dupes").innerHTML = pairs.map((p) => {
+              const la = guessLang(texts[p.i]), lb = guessLang(texts[p.j]);
+              const cross = la.code !== lb.code ? `<span class="tone xling">cross-language</span>` : `<span class="tone">same language</span>`;
+              return `<div class="result-row"><div class="result-head"><span>${la.flag} ${escapeHTML(texts[p.i])}<br>${lb.flag} ${escapeHTML(texts[p.j])} ${cross}</span><span class="result-score">${p.s.toFixed(3)}</span></div></div>`;
+            }).join("");
+          }
+        } catch (err) { $("dupes").textContent = "Dedup failed: " + err.message; }
+        finally { $("dedup").disabled = false; }
+      });
+    </script>
+  </body>
+</html>

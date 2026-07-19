@@ -1,0 +1,392 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Multilingual MiniLM — cross-lingual sentence embeddings in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="One embedding space shared across 50+ languages: a sentence and its translation land at nearly the same 384-number point, so an English query can find its French or Japanese answer. Build a cross-language cosine matrix, run cross-lingual search, and see the same meaning align across languages — locally, no server."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🌍</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">feature-extraction · text (50+ languages) · WASM · ~118 MB</p>
+      <h1>Multilingual MiniLM — one meaning space for 50+ languages</h1>
+      <p class="lede">
+        Most embedders on this site speak English. This one is <strong>cross-lingual</strong>: it was
+        distilled so that a sentence and its translation land at almost the <em>same</em> point in a shared
+        384-dimensional space. "The weather is nice today", "Il fait beau aujourd'hui" and
+        "今日はいい天気です" get near-identical vectors — so cosine similarity measures <strong>meaning, not
+        language</strong>. Type lines in any mix of languages to build a cross-language similarity matrix,
+        then search with an English query and watch it surface the matching French or Japanese passage above
+        an unrelated English one. Nothing leaves your device.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/Xenova/paraphrase-multilingual-MiniLM-L12-v2" target="_blank" rel="noopener">Xenova/paraphrase-multilingual-MiniLM-L12-v2</a> (ONNX of <a href="https://huggingface.co/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2" target="_blank" rel="noopener">sentence-transformers</a>)</td></tr>
+          <tr><th>Task / pipeline</th><td><code>feature-extraction</code></td></tr>
+          <tr><th>Architecture</th><td>BERT-style encoder (12 layers, ~118M params) → 384-dimensional sentence embedding</td></tr>
+          <tr><th>Languages</th><td><strong>50+</strong> — trained by multilingual knowledge distillation so translations share one space</td></tr>
+          <tr><th>Pooling</th><td>mask-aware <strong>mean pooling</strong>, then <strong>L2-normalize</strong> — and <strong>no instruction prefix</strong> (embed query and doc identically, in any language)</td></tr>
+          <tr><th>Quantization</th><td>q8 (8-bit) ONNX</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (runs anywhere; no WebGPU needed)</td></tr>
+          <tr><th>Download</th><td>~118 MB, cached after first load</td></tr>
+          <tr><th>License</th><td>Apache-2.0 (sentence-transformers)</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Put one sentence per line — <strong>mix languages freely</strong>. The matrix shows the
+        cosine similarity between every pair (1.00 = identical direction). The 2D map is a PCA projection
+        coloured <em>by language</em> — if the model works, points cluster by <strong>meaning</strong>, not by
+        colour. Then run the cross-lingual search below.</p>
+
+      <div id="model-loader"></div>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
+        Sentences (one per line, any languages)
+        <textarea id="sentences" rows="8">The weather is nice today.
+Il fait beau aujourd'hui.
+今日はいい天気です。
+Das Wetter ist heute schön.
+How do I reset my password?
+¿Cómo restablezco mi contraseña?
+The stock market crashed hard this week.</textarea>
+      </label>
+      <div style="margin:.5rem 0;display:flex;gap:.4rem;flex-wrap:wrap">
+        <button id="run" type="button" disabled>Embed &amp; compare</button>
+        <button id="reset" type="button" class="secondary">Reset examples</button>
+      </div>
+      <p class="status" id="rowStatus" role="status" aria-live="polite" hidden></p>
+
+      <div class="grid-2">
+        <div>
+          <h3 style="margin-top:.4rem">Cross-language cosine matrix</h3>
+          <div class="matrix-scroll" id="matrix" aria-live="polite"></div>
+          <p class="muted" id="matrixNote" style="font-size:.76rem"></p>
+        </div>
+        <div>
+          <h3 style="margin-top:.4rem">2D map (PCA), coloured by language</h3>
+          <div id="projection" aria-live="polite"></div>
+          <div class="legend" id="legend"></div>
+          <p class="muted" id="explained" style="font-size:.78rem;font-family:var(--font-mono)"></p>
+        </div>
+      </div>
+
+      <div style="margin-top:1rem">
+        <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;max-inline-size:34rem">
+          Cross-lingual search — rank the lines above by meaning
+          <span style="display:flex;gap:.4rem;flex-wrap:wrap">
+            <input id="query" type="text" value="I can't sign in" style="flex:1;min-inline-size:12rem" disabled />
+            <button id="search" type="button" disabled>Search</button>
+          </span>
+        </label>
+        <p class="muted" style="font-size:.76rem;margin:.3rem 0">Green badge = a hit in a <em>different</em>
+          language from your query. That's the whole point: the English query finds its Spanish/French/Japanese answer.</p>
+        <div class="sent-list" id="ranked" aria-live="polite"></div>
+      </div>
+
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+        <span>sentences <b id="rN">–</b></span>
+        <span>dims <b id="rDim">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside — the vector, and cross-lingual alignment</h3>
+      <p class="muted">
+        The encoder emits one 384-number vector <em>per token</em>; the model <strong>mean-pools</strong> them
+        (mask-aware) and <strong>L2-normalizes</strong>, so every sentence becomes a unit-length arrow and
+        cosine similarity is a plain dot product. Pick a sentence to see its real vector and pre-normalization
+        magnitude.
+      </p>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Embed some sentences above to inspect a vector.</div>
+      <div id="insideWrap" hidden>
+        <label style="font-size:.82rem;display:flex;gap:.4rem;align-items:center;flex-wrap:wrap">
+          Inspect sentence
+          <select id="pick"></select>
+        </label>
+        <div class="readout">
+          <span>dimensions <b>384</b></span>
+          <span>pre-norm ‖v‖ <b id="iNorm">–</b></span>
+          <span>post-norm ‖v‖ <b>1.000</b></span>
+        </div>
+        <p class="muted" style="font-size:.78rem;margin:.3rem 0">First 96 of 384 dimensions (blue = positive, orange = negative, brighter = larger magnitude):</p>
+        <div class="vec-strip" id="vecStrip"></div>
+        <p class="muted" style="font-size:.78rem;font-family:var(--font-mono);margin-top:.5rem;word-break:break-all" id="vecHead"></p>
+      </div>
+
+      <hr style="border:0;border-top:1px solid var(--border);margin:1.2rem 0" />
+      <h4 style="margin:.2rem 0">Alignment — the same sentence, N languages</h4>
+      <p class="muted">
+        Type one sentence and translate it into a few languages (edit the lines). All the vectors should be
+        <strong>mutually close</strong> — a bright, uniform matrix — because they all mean the same thing. A
+        monolingual embedder would score these near zero; this one keeps them together. The last "distractor"
+        line means something different and should stay dark.
+      </p>
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.4rem">
+        One meaning, many languages (+ a distractor)
+        <textarea id="alignText" rows="6">I love learning new languages.
+J'adore apprendre de nouvelles langues.
+Me encanta aprender nuevos idiomas.
+Ich lerne gerne neue Sprachen.
+新しい言語を学ぶのが大好きです。
+The invoice is overdue by thirty days.</textarea>
+      </label>
+      <div style="margin:.4rem 0;display:flex;gap:.4rem;flex-wrap:wrap;align-items:center">
+        <button id="alignRun" type="button" class="secondary" disabled>Check alignment</button>
+        <span class="status" id="alignStatus" role="status" aria-live="polite"></span>
+      </div>
+      <div class="matrix-scroll" id="alignMatrix"></div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        A cross-lingual embedder collapses the "one index per language" problem into a single vector space.
+        You embed everything — questions, documents, product reviews, support tickets — into the same 384-d
+        space regardless of language, and nearest-neighbour search just works across the whole multilingual
+        corpus. No translation round-trip, no per-language model, and the text never leaves the device.
+      </p>
+      <ul>
+        <li><strong>Cross-language search</strong> — an English query retrieves the best answer even if it was written in French, Spanish or Japanese.</li>
+        <li><strong>Multilingual dedup</strong> — collapse "same content, different language" reviews, tickets or docs into one.</li>
+        <li><strong>Language-agnostic clustering</strong> — group text by topic across a mixed-language corpus, not by which language it happens to be in.</li>
+        <li><strong>Zero-shot classification in any language</strong> — embed your English label set once, then tag incoming text in any of 50+ languages by nearest label.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Do a sentence and its translation mean the same thing? One cross-lingual cosine number.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Cross-language semantic search and dedup over a mixed-language corpus.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Cluster mixed-language text by meaning — watch the groups ignore language entirely.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">Retrieve cross-lingually, then translate the winning passage to English with M2M100.</p></a>
+      </div>
+      <p class="muted" style="font-size:.85rem;margin-top:.6rem">Contrast with the English-only
+        <a href="/web-ai-showcase/models/minilm-embeddings/">MiniLM-L6</a> and
+        <a href="/web-ai-showcase/models/gte-embeddings/">GTE-small</a>: same mean-pool recipe, but this one
+        shares a space across 50+ languages.</p>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>Same feature-extraction recipe as any sentence embedder — the difference is entirely in the weights:</p>
+      <pre><code>import { pipeline } from "@huggingface/transformers";
+
+const extract = await pipeline(
+  "feature-extraction",
+  "Xenova/paraphrase-multilingual-MiniLM-L12-v2",
+); // downloads + caches ~118 MB once
+
+// Mean pooling, no instruction prefix — embed a query and a doc IN ANY LANGUAGE the same way:
+const out = await extract(["I can't sign in", "¿Cómo restablezco mi contraseña?"], {
+  pooling: "mean",
+  normalize: true,
+});
+const [q, d] = out.tolist();
+
+// unit-length vectors → cosine similarity is just the dot product:
+const sim = q.reduce((s, x, i) =&gt; s + x * d[i], 0); // high — same meaning, different languages</code></pre>
+      <p class="muted">
+        This page asks the worker for the <em>un</em>-normalized pooled vectors so "See inside" can show the
+        real pre-normalization magnitude, then normalizes them in JS. Inference runs in a Web Worker so the
+        matrix, projection and search never jank the page.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/Xenova/paraphrase-multilingual-MiniLM-L12-v2" target="_blank" rel="noopener">Model card — Xenova/paraphrase-multilingual-MiniLM-L12-v2 (ONNX)</a></li>
+        <li><a href="https://huggingface.co/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2" target="_blank" rel="noopener">Original weights &amp; card (sentence-transformers)</a></li>
+        <li><a href="https://arxiv.org/abs/2004.09813" target="_blank" rel="noopener">Paper — Making Monolingual Sentence Embeddings Multilingual using Knowledge Distillation (Reimers &amp; Gurevych, 2020)</a></li>
+        <li><a href="https://huggingface.co/spaces/mteb/leaderboard" target="_blank" rel="noopener">MTEB leaderboard — how embedders are benchmarked</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import {
+        MLEngine, cosine, simMatrix, pca2d, parseLines, guessLang,
+        renderMatrix, renderProjection, renderRanked, ML_CSS,
+      } from "./ml.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = ML_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new MLEngine();
+      const DEFAULT = $("sentences").value;
+      let last = null; // { texts, embeddings, norms, dim }
+
+      $("reset").addEventListener("click", () => { $("sentences").value = DEFAULT; });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/paraphrase-multilingual-MiniLM-L12-v2", runtime: "transformers.js", dtype: "q8", sizeMB: 118, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => {
+          $("run").disabled = false;
+          $("query").disabled = false;
+          $("search").disabled = false;
+          $("alignRun").disabled = false;
+          run();
+        },
+      });
+
+      $("run").addEventListener("click", run);
+      async function run() {
+        const texts = parseLines($("sentences").value);
+        if (texts.length < 2) {
+          $("rowStatus").hidden = false;
+          $("rowStatus").textContent = "Give at least two distinct sentences.";
+          $("rowStatus").classList.add("err");
+          return;
+        }
+        $("rowStatus").hidden = false;
+        $("rowStatus").classList.remove("err");
+        $("rowStatus").textContent = "Embedding…";
+        $("run").disabled = true;
+        try {
+          const r = await engine.embed(texts);
+          last = r;
+          const langs = texts.map(guessLang);
+          const flags = langs.map((l, i) => `${l.flag}${i + 1}`);
+          renderMatrix($("matrix"), simMatrix(r.embeddings), r.texts, flags);
+          $("matrixNote").textContent = "Row/column labels are language flags — bright cells that cross languages are cross-lingual matches.";
+          const { points, explained } = pca2d(r.embeddings);
+          const uniq = [...new Set(langs.map((l) => l.code))];
+          const groups = langs.map((l) => uniq.indexOf(l.code));
+          renderProjection($("projection"), points, r.texts, { groups });
+          renderLegend(uniq, langs);
+          $("explained").textContent = `PC1+PC2 explain ${(explained * 100).toFixed(0)}% of the variance`;
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = r.ms + " ms";
+          $("rN").textContent = r.texts.length;
+          $("rDim").textContent = r.dim;
+          fillInside(r);
+          $("rowStatus").textContent = "Done.";
+          $("rowStatus").classList.add("ok");
+        } catch (err) {
+          $("rowStatus").textContent = "Embedding failed: " + err.message;
+          $("rowStatus").classList.add("err");
+        } finally {
+          $("run").disabled = false;
+        }
+      }
+
+      const PALETTE = ["var(--accent)", "var(--good)", "var(--bad)", "var(--warn)", "#0e7490", "#9333ea", "#be185d", "#0369a1"];
+      function renderLegend(uniqCodes, langs) {
+        const byCode = new Map(langs.map((l) => [l.code, l]));
+        $("legend").replaceChildren(...uniqCodes.map((code, i) => {
+          const span = document.createElement("span");
+          const sw = document.createElement("span");
+          sw.className = "swatch";
+          sw.style.background = PALETTE[i % PALETTE.length];
+          span.append(sw, document.createTextNode(`${byCode.get(code).flag} ${byCode.get(code).name}`));
+          return span;
+        }));
+      }
+
+      $("search").addEventListener("click", search);
+      $("query").addEventListener("keydown", (e) => { if (e.key === "Enter") search(); });
+      async function search() {
+        const q = $("query").value.trim();
+        const texts = parseLines($("sentences").value);
+        if (!q || texts.length < 1) return;
+        $("search").disabled = true;
+        try {
+          const qLang = guessLang(q);
+          const [qr, dr] = await Promise.all([engine.embed([q]), engine.embed(texts)]);
+          const qv = qr.embeddings[0];
+          const hits = dr.texts
+            .map((text, i) => {
+              const l = guessLang(text);
+              return { text, score: cosine(qv, dr.embeddings[i]), tag: `${l.flag} ${l.name}`, langCode: l.code };
+            })
+            .sort((a, b) => b.score - a.score);
+          renderRanked($("ranked"), hits, { queryLang: qLang.code });
+        } catch (err) {
+          $("ranked").textContent = "Search failed: " + err.message;
+        } finally {
+          $("search").disabled = false;
+        }
+      }
+
+      function fillInside(r) {
+        $("insideEmpty").hidden = true;
+        $("insideWrap").hidden = false;
+        $("pick").replaceChildren(...r.texts.map((t, i) => {
+          const o = document.createElement("option");
+          o.value = String(i);
+          const l = guessLang(t);
+          o.textContent = `${l.flag} S${i + 1} — ${t.length > 34 ? t.slice(0, 33) + "…" : t}`;
+          return o;
+        }));
+        showVector(0);
+      }
+      $("pick").addEventListener("change", (e) => showVector(+e.target.value));
+      function showVector(i) {
+        if (!last) return;
+        const v = last.embeddings[i];
+        $("iNorm").textContent = last.norms[i].toFixed(3);
+        const maxAbs = Math.max(...v.map(Math.abs)) || 1;
+        $("vecStrip").replaceChildren(...v.slice(0, 96).map((val) => {
+          const cell = document.createElement("span");
+          cell.className = "vec-cell";
+          const t = Math.abs(val) / maxAbs;
+          const hue = val >= 0 ? "var(--accent)" : "var(--warn)";
+          cell.style.background = `color-mix(in srgb, ${hue} ${(t * 100).toFixed(0)}%, var(--bg-raised))`;
+          cell.title = val.toFixed(4);
+          return cell;
+        }));
+        $("vecHead").textContent = "[" + v.slice(0, 8).map((x) => x.toFixed(4)).join(", ") + ", … ] (384-d unit vector)";
+      }
+
+      // ---- Alignment: same sentence in N languages → mutually high cosine ----
+      $("alignRun").addEventListener("click", async () => {
+        const texts = parseLines($("alignText").value);
+        if (texts.length < 2) { $("alignStatus").textContent = "Give at least two lines."; return; }
+        $("alignRun").disabled = true;
+        $("alignStatus").classList.remove("err");
+        $("alignStatus").textContent = "Embedding…";
+        try {
+          const r = await engine.embed(texts);
+          const flags = texts.map((t, i) => `${guessLang(t).flag}${i + 1}`);
+          renderMatrix($("alignMatrix"), simMatrix(r.embeddings), r.texts, flags);
+          $("alignStatus").textContent = "";
+        } catch (err) {
+          $("alignStatus").textContent = "Failed: " + err.message;
+          $("alignStatus").classList.add("err");
+        } finally {
+          $("alignRun").disabled = false;
+        }
+      });
+    </script>
+  </body>
+</html>
