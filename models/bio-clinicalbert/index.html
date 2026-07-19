@@ -1,0 +1,331 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Bio_ClinicalBERT fill-mask — a domain-tuned language model in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Put a [MASK] in a clinical or biomedical sentence and watch Bio_ClinicalBERT — a BERT trained on MIMIC-III clinical notes — predict the missing word with domain knowledge, locally in your browser. Compare it head-to-head with general BERT on the same sentence: the domain gap is the story. Exact logits, nothing leaves the tab."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🩺</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">fill-mask · text · WASM · ~131 MB</p>
+      <h1>Bio_ClinicalBERT — the missing word, with a medical education</h1>
+      <p class="lede">
+        Same architecture as BERT, a very different reader. Bio_ClinicalBERT is BERT continued-pretrained
+        on roughly two million <strong>MIMIC-III clinical notes</strong>, so its
+        <strong>masked language modelling</strong> is steeped in medicine: hide a word behind
+        <code>[MASK]</code> in a clinical or biomedical sentence and it ranks what a clinician — not the
+        open web — would expect. Type a masked sentence, see its guesses and the exact <em>logits</em>,
+        then race it against general BERT to watch the <strong>domain gap</strong> appear. All on your device.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/onnx-community/Bio_ClinicalBERT-ONNX" target="_blank" rel="noopener">onnx-community/Bio_ClinicalBERT-ONNX</a> (ONNX of <a href="https://huggingface.co/emilyalsentzer/Bio_ClinicalBERT" target="_blank" rel="noopener">emilyalsentzer/Bio_ClinicalBERT</a>)</td></tr>
+          <tr><th>Task / pipeline</th><td><code>fill-mask</code> — masked language modelling, loaded via <code>AutoModelForMaskedLM</code> for raw logits</td></tr>
+          <tr><th>Domain</th><td>Clinical / biomedical — continued pretraining on ~2M MIMIC-III ICU clinical notes (initialised from BioBERT)</td></tr>
+          <tr><th>Output</th><td>A probability over the 28,996-token cased vocabulary at each <code>[MASK]</code></td></tr>
+          <tr><th>Architecture</th><td>BERT-base (12 layers, ~108M params), cased WordPiece tokenizer — same tokenizer as bert-base-cased, so a fair head-to-head</td></tr>
+          <tr><th>Quantization</th><td>q8 (8-bit) ONNX</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (runs anywhere; no WebGPU needed)</td></tr>
+          <tr><th>Download</th><td>~131 MB, cached after first load</td></tr>
+          <tr><th>License</th><td>MIT</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Write a clinical or biomedical sentence containing <code>[MASK]</code> (use a chip if
+        you're not sure). Bio_ClinicalBERT predicts the missing word. You can use more than one mask.</p>
+
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
+        Your sentence (include <code>[MASK]</code>)
+        <input id="text" class="mask-input" disabled value="The patient was admitted with acute [MASK] failure." />
+      </label>
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.5rem 0" id="chips">
+        <button class="mask-chip" type="button" data-set="The patient was admitted with acute [MASK] failure.">acute failure</button>
+        <button class="mask-chip" type="button" data-set="The enzyme catalyzes the [MASK] of glucose into pyruvate.">biochemistry</button>
+        <button class="mask-chip" type="button" data-set="Magnetic resonance [MASK] revealed a small lesion.">imaging</button>
+        <button class="mask-chip" type="button" data-set="The patient was started on [MASK] for the infection.">treatment</button>
+        <button class="mask-chip" type="button" data-set="Blood pressure was [MASK] on admission to the ICU.">observation</button>
+        <button class="mask-chip" type="button" data-set="A [MASK] biopsy confirmed the diagnosis.">procedure</button>
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;align-items:center;margin:.2rem 0 .4rem">
+        <button id="insertMask" type="button" class="secondary" disabled>Insert [MASK] at cursor</button>
+        <label style="font-size:.78rem;font-family:var(--font-mono);color:var(--muted);display:flex;align-items:center;gap:.4rem">
+          top-k
+          <input id="topk" type="range" min="3" max="15" value="8" disabled />
+          <span id="topkVal">8</span>
+        </label>
+      </div>
+
+      <div id="filled" class="filled-sentence" hidden></div>
+      <div id="preds"></div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+        <span>masks <b id="rMasks">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside — the domain gap, side by side</h3>
+      <p class="muted">
+        A masked LM outputs a <strong>logit</strong> (a raw, unbounded score) for every vocabulary token
+        at the masked position; we <em>softmax</em> those into probabilities. The bars above show the
+        probability and the exact <code>logit</code>. The real story is <em>which</em> tokens rise and
+        how sharply. Run the <strong>same masked sentence through general bert-base-cased and clinical
+        Bio_ClinicalBERT</strong> — identical tokenizer and vocabulary, so the only variable is what each
+        model read during training. Watch the clinical model concentrate mass on the medically-correct
+        word while general BERT spreads its bets.
+      </p>
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;align-items:center;margin:.4rem 0">
+        <button id="cmpRun" type="button" class="secondary" disabled>Compare vs general BERT on this sentence</button>
+        <span class="status" id="cmpStatus" role="status" aria-live="polite"></span>
+      </div>
+      <div id="cmpWrap" hidden></div>
+      <p class="hint-mask" id="entLine" hidden>clinical top-k entropy: <b id="entVal2">–</b> bits · top-1 carries
+        <b id="massVal">–</b> of the shown mass</p>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        A general model averages the whole internet; a domain model has read the notes. On clinical and
+        biomedical text that difference is the difference between a plausible guess and the right one —
+        and it comes for free, in the same 110M-parameter, browser-runnable package, with no prompt
+        engineering and no API bill.
+      </p>
+      <ul>
+        <li><strong>Clinical autocomplete &amp; templating</strong> — suggest the expected term in a notes editor, offline and private.</li>
+        <li><strong>Terminology &amp; abbreviation sense</strong> — probe what the model expects for a masked clinical term to disambiguate context.</li>
+        <li><strong>Domain-vs-general auditing</strong> — quantify how much a specialised model actually shifts predictions on your text.</li>
+        <li><strong>A feature extractor for downstream tasks</strong> — the same encoder feeds clinical NER, classification, and retrieval.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">One mask, ranked predictions with probabilities and the raw logits behind them.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Abbreviation &amp; term expansion — score a fixed candidate set at the mask over clinical templates.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Head-to-head arena — clinical vs general BERT on any masked sentence, with the divergence scored.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">Fill the clinical mask, then rank the candidates by meaning with MiniLM embeddings.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>The one-liner uses the <code>fill-mask</code> pipeline — only the model id is domain-specific:</p>
+      <pre><code>import { pipeline } from "@huggingface/transformers";
+
+const unmask = await pipeline("fill-mask", "onnx-community/Bio_ClinicalBERT-ONNX", { dtype: "q8" });
+const out = await unmask("The patient was admitted with acute [MASK] failure.");
+// → [{ token_str: "respiratory", score: 0.95, sequence: "…" }, { token_str: "heart", … }]</code></pre>
+      <p class="muted">
+        For the "see inside" surface we go one level lower — <code>AutoModelForMaskedLM</code> — so we can
+        read the exact <code>logits</code> tensor (<code>[1, sequence, 28996]</code>), slice the row at the
+        <code>[MASK]</code> position, and softmax it ourselves. The comparison loads general
+        <code>bert-base-cased</code> the same way, in the same Web Worker, so both are exercised
+        identically and the page never janks.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/onnx-community/Bio_ClinicalBERT-ONNX" target="_blank" rel="noopener">Model card — Bio_ClinicalBERT (onnx-community ONNX)</a></li>
+        <li><a href="https://huggingface.co/emilyalsentzer/Bio_ClinicalBERT" target="_blank" rel="noopener">Original model card — emilyalsentzer/Bio_ClinicalBERT</a></li>
+        <li><a href="https://arxiv.org/abs/1904.03323" target="_blank" rel="noopener">Paper — Publicly Available Clinical BERT Embeddings (Alsentzer et al., 2019)</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { ClinicalFillMaskEngine, FILLMASK_CSS, MASK, renderPredictions, topkEntropy, debounce, escapeHTML }
+        from "./clinicalfillmask.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = FILLMASK_CSS + `
+        .cmp-grid { display:grid; grid-template-columns:1fr 1fr; gap:1rem; margin-top:.6rem; }
+        .cmp-card { border:1px solid var(--border); border-radius:10px; background:var(--bg-raised); padding:.7rem .8rem; min-inline-size:0; }
+        .cmp-card h4 { margin:0 0 .1rem; font-family:var(--font-mono); font-size:.82rem; }
+        .cmp-card .sub { font-size:.72rem; color:var(--muted); margin:0 0 .3rem; }
+        @media (max-width:560px) { .cmp-grid { grid-template-columns:1fr; } }
+      `;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new ClinicalFillMaskEngine();
+      let loaded = false;
+
+      for (const c of document.querySelectorAll(".mask-chip")) {
+        c.addEventListener("click", () => { $("text").value = c.dataset.set; schedule(); });
+      }
+      $("topk").addEventListener("input", () => { $("topkVal").textContent = $("topk").value; schedule(); });
+      $("insertMask").addEventListener("click", () => {
+        const el = $("text");
+        const s = el.selectionStart ?? el.value.length;
+        el.value = el.value.slice(0, s) + " " + MASK + " " + el.value.slice(el.selectionEnd ?? s);
+        el.focus();
+        schedule();
+      });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: {
+          modelId: "onnx-community/Bio_ClinicalBERT-ONNX",
+          runtime: "transformers.js",
+          dtype: "q8",
+          sizeMB: 131,
+          requiresWebGPU: false,
+        },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => {
+          $("text").disabled = false;
+          $("insertMask").disabled = false;
+          $("topk").disabled = false;
+          $("cmpRun").disabled = false;
+          loaded = true;
+          run();
+        },
+      });
+
+      const schedule = debounce(run, 350);
+      $("text").addEventListener("input", schedule);
+
+      async function run() {
+        if (!loaded) return;
+        const text = $("text").value;
+        if (!text.includes(MASK)) {
+          $("runStatus").hidden = false;
+          $("runStatus").classList.remove("err");
+          $("runStatus").textContent = "Add a [MASK] token to your sentence.";
+          $("preds").replaceChildren(); $("filled").hidden = true; $("readout").hidden = true;
+          $("entLine").hidden = true;
+          return;
+        }
+        $("runStatus").hidden = true;
+        try {
+          const r = await engine.fill(text, Number($("topk").value), "clinical");
+          renderResult(r);
+        } catch (err) {
+          $("runStatus").hidden = false;
+          $("runStatus").textContent = "Prediction failed: " + err.message;
+          $("runStatus").classList.add("err");
+        }
+      }
+
+      function renderResult(r) {
+        $("preds").replaceChildren();
+        let filledHTML = escapeHTML(r.text);
+        for (const m of r.masks) {
+          const top = m.predictions[0];
+          filledHTML = filledHTML.replace("[MASK]", `<span class="slot">${escapeHTML(top.token)}</span>`);
+        }
+        $("filled").innerHTML = filledHTML;
+        $("filled").hidden = false;
+
+        r.masks.forEach((m, i) => {
+          const head = document.createElement("p");
+          head.className = "pred-head";
+          head.textContent = r.masks.length > 1 ? `Mask ${i + 1}` : "Predictions";
+          const list = document.createElement("div");
+          list.className = "pred-list";
+          renderPredictions(list, m.predictions, (token) => {
+            $("text").value = $("text").value.replace("[MASK]", token);
+            schedule();
+          });
+          $("preds").append(head, list);
+        });
+
+        const first = r.masks[0].predictions;
+        const ent = topkEntropy(first);
+        const mass = first.reduce((a, p) => a + p.prob, 0);
+        $("entVal2").textContent = ent.toFixed(2);
+        $("massVal").textContent = (first[0].prob / mass * 100).toFixed(0) + "%";
+        $("entLine").hidden = false;
+        $("readout").hidden = false;
+        $("rBackend").textContent = r.device.toUpperCase();
+        $("rMs").textContent = r.ms + " ms";
+        $("rMasks").textContent = r.maskCount;
+      }
+
+      // --- clinical vs general head-to-head ---
+      $("cmpRun").addEventListener("click", async () => {
+        const text = $("text").value;
+        if (!text.includes(MASK)) { $("cmpStatus").textContent = "Add a [MASK] first."; return; }
+        $("cmpRun").disabled = true; $("cmpStatus").classList.remove("err");
+        try {
+          if (!engine.generalReady) {
+            $("cmpStatus").textContent = "Loading general bert-base-cased (first time ~132 MB)…";
+            await engine.loadGeneral((p) => {
+              if (p.status === "progress" && typeof p.progress === "number") {
+                $("cmpStatus").textContent = `Loading general BERT… ${p.progress.toFixed(0)}%`;
+              }
+            });
+          }
+          $("cmpStatus").textContent = "Running both models…";
+          const r = await engine.compare(text, Number($("topk").value));
+          renderCompare(r);
+          $("cmpStatus").textContent = "";
+        } catch (err) {
+          $("cmpStatus").textContent = "Comparison failed: " + err.message;
+          $("cmpStatus").classList.add("err");
+        } finally { $("cmpRun").disabled = false; }
+      });
+
+      function renderCompare(r) {
+        // Use the FIRST mask for the side-by-side (single-mask sentences are the norm here).
+        const cPred = r.clinical.masks[0]?.predictions ?? [];
+        const gPred = r.general.masks[0]?.predictions ?? [];
+        const gridWrap = document.createElement("div"); gridWrap.className = "cmp-grid";
+        const card = (title, sub, preds) => {
+          const el = document.createElement("div"); el.className = "cmp-card";
+          const h = document.createElement("h4"); h.textContent = title;
+          const s = document.createElement("p"); s.className = "sub"; s.textContent = sub;
+          const list = document.createElement("div"); list.className = "pred-list";
+          renderPredictions(list, preds);
+          el.append(h, s, list); return el;
+        };
+        gridWrap.append(
+          card("Bio_ClinicalBERT (clinical)", "trained on MIMIC-III notes", cPred),
+          card("bert-base-cased (general)", "trained on Wikipedia + BookCorpus", gPred),
+        );
+        // A small divergence summary: is the top-1 the same? how much more decisive is clinical?
+        const cTop = cPred[0], gTop = gPred[0];
+        const summary = document.createElement("p"); summary.className = "hint-mask";
+        if (cTop && gTop) {
+          const same = cTop.token.trim() === gTop.token.trim();
+          summary.innerHTML = same
+            ? `Both pick <b>${escapeHTML(cTop.token)}</b> — but clinical is ${(cTop.prob * 100).toFixed(0)}% vs general ${(gTop.prob * 100).toFixed(0)}% (decisiveness gap ${(Math.abs(cTop.prob - gTop.prob) * 100).toFixed(0)} pts).`
+            : `Domain gap: clinical → <b>${escapeHTML(cTop.token)}</b> (${(cTop.prob * 100).toFixed(0)}%), general → <b>${escapeHTML(gTop.token)}</b> (${(gTop.prob * 100).toFixed(0)}%). Same tokenizer, so the split is purely what each model read.`;
+        }
+        $("cmpWrap").replaceChildren(gridWrap, summary);
+        $("cmpWrap").hidden = false;
+      }
+    </script>
+  </body>
+</html>

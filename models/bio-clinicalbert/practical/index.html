@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Bio_ClinicalBERT Practical — term &amp; abbreviation scoring · Web AI Showcase</title>
+    <meta name="description" content="A shippable use of masked LM: give Bio_ClinicalBERT a clinical sentence with a [MASK] and a set of candidate terms, and it scores exactly how well each one fits — disambiguating abbreviations and ranking domain vocabulary, in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🧪</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Bio_ClinicalBERT</a></p>
+
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Practical: score candidate terms at the mask</h1>
+      <p class="lede">
+        Sometimes you don't want the top-k over 29,000 tokens — you have a <em>shortlist</em> and you want
+        to know which one fits. Give Bio_ClinicalBERT a clinical sentence with one <code>[MASK]</code> and
+        a set of candidate terms, and it scores each candidate's probability at that position. This is how
+        you disambiguate an abbreviation, rank a controlled vocabulary, or check whether the model expects
+        the term you think it should.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.3rem 0 .5rem">
+        <button class="mask-chip" type="button" data-text="The patient was given [MASK] for pain relief." data-cands="morphine, ibuprofen, acetaminophen, insulin, aspirin">analgesia</button>
+        <button class="mask-chip" type="button" data-text="The [MASK] rate was elevated on admission." data-cands="heart, respiratory, sedimentation, flow, metabolic">which rate?</button>
+        <button class="mask-chip" type="button" data-text="A [MASK] was ordered to evaluate the chest." data-cands="radiograph, ultrasound, biopsy, endoscopy, culture">which test?</button>
+        <button class="mask-chip" type="button" data-text="The patient was started on [MASK] for the infection." data-cands="antibiotics, steroids, insulin, chemotherapy, fluids">which drug?</button>
+        <button class="mask-chip" type="button" data-text="The tumor was found to be [MASK]." data-cands="benign, malignant, metastatic, necrotic, calcified">pathology</button>
+      </div>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">
+        Clinical sentence (exactly one <code>[MASK]</code>)
+        <input id="text" class="mask-input" disabled value="The patient was given [MASK] for pain relief." />
+      </label>
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.5rem">
+        Candidate terms (comma-separated)
+        <input id="cands" class="mask-input" disabled value="morphine, ibuprofen, acetaminophen, insulin, aspirin" />
+      </label>
+      <div style="margin:.6rem 0"><button id="score" type="button" disabled>Score candidates</button></div>
+
+      <div id="scoreOut" class="probe-grid"></div>
+      <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>latency <b id="rMs">–</b></span></div>
+      <p class="muted" style="font-size:.85rem">
+        Multi-word or rare terms are compared by their leading WordPiece token — a disclosed simplification,
+        so treat the ranking as directional. The bars are the softmax probability of each candidate at the
+        masked position (over the full vocabulary), normalised here to the shown set for readability.
+      </p>
+    </section>
+
+    <p class="crumbs"><a href="../basics/">← Basics</a> · <a href="../">Model</a> · Next: <a href="../wild/">Wild →</a></p>
+
+    <script type="module">
+      import { ClinicalFillMaskEngine, FILLMASK_CSS, MASK, escapeHTML } from "../clinicalfillmask.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = FILLMASK_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new ClinicalFillMaskEngine();
+      let loaded = false;
+
+      for (const c of document.querySelectorAll(".mask-chip")) {
+        c.addEventListener("click", () => { $("text").value = c.dataset.text; $("cands").value = c.dataset.cands; if (loaded) score(); });
+      }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/Bio_ClinicalBERT-ONNX", runtime: "transformers.js", dtype: "q8", sizeMB: 131, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("text").disabled = false; $("cands").disabled = false; $("score").disabled = false; loaded = true; score(); },
+      });
+
+      $("score").addEventListener("click", score);
+      async function score() {
+        if (!loaded) return;
+        const text = $("text").value;
+        if (!text.includes(MASK)) { setErr("Add a [MASK] to the sentence."); return; }
+        const candidates = $("cands").value.split(",").map((s) => s.trim()).filter(Boolean);
+        if (!candidates.length) { setErr("Add at least one candidate term."); return; }
+        $("runStatus").hidden = true; $("score").disabled = true;
+        try {
+          const r = await engine.scoreCandidates(text, candidates);
+          renderScores(r.scores);
+          $("readout").hidden = false; $("rBackend").textContent = r.device.toUpperCase(); $("rMs").textContent = r.ms + " ms";
+        } catch (err) { setErr("Scoring failed: " + err.message); }
+        finally { $("score").disabled = false; }
+      }
+      function renderScores(scores) {
+        const shownMax = Math.max(1e-9, ...scores.map((s) => s.prob));
+        const total = scores.reduce((a, s) => a + s.prob, 0) || 1;
+        const sorted = [...scores].sort((a, b) => b.prob - a.prob);
+        const card = document.createElement("div"); card.className = "probe-card";
+        card.append(Object.assign(document.createElement("h4"), { textContent: "Candidate fit at [MASK]" }));
+        for (const s of sorted) {
+          const row = document.createElement("div"); row.className = "cand-row";
+          const word = document.createElement("span"); word.className = "cand-word"; word.textContent = s.word;
+          const barWrap = document.createElement("span"); barWrap.className = "cand-bar";
+          const fill = document.createElement("span"); fill.className = "cand-fill"; fill.style.inlineSize = `${(s.prob / shownMax) * 100}%`;
+          barWrap.append(fill);
+          const num = document.createElement("span"); num.className = "cand-num";
+          num.textContent = s.logit == null ? "n/a" : `${(s.prob / total * 100).toFixed(1)}%`;
+          row.append(word, barWrap, num); card.append(row);
+        }
+        $("scoreOut").replaceChildren(card);
+      }
+      function setErr(m) { $("runStatus").hidden = false; $("runStatus").textContent = m; $("runStatus").classList.add("err"); }
+    </script>
+  </body>
+</html>

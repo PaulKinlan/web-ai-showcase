@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Bio_ClinicalBERT Wild — domain vs general arena · Web AI Showcase</title>
+    <meta name="description" content="Put clinical Bio_ClinicalBERT and general bert-base-cased in the ring on the same masked sentence. Same tokenizer, same vocabulary — so every difference is the domain. Watch where they agree, where they diverge, and how much more decisive the specialist is. In your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🥊</text></svg>" />
+    <style>
+      .cmp-grid { display:grid; grid-template-columns:1fr 1fr; gap:1rem; margin-top:.6rem; }
+      .cmp-card { border:1px solid var(--border); border-radius:10px; background:var(--bg-raised); padding:.7rem .8rem; min-inline-size:0; }
+      .cmp-card h4 { margin:0 0 .1rem; font-family:var(--font-mono); font-size:.82rem; }
+      .cmp-card .sub { font-size:.72rem; color:var(--muted); margin:0 0 .3rem; }
+      .verdict { font-family:var(--font-display); font-size:1.15rem; margin:.5rem 0 .2rem; }
+      @media (max-width:560px) { .cmp-grid { grid-template-columns:1fr; } }
+    </style>
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Bio_ClinicalBERT</a></p>
+
+    <header>
+      <p class="eyebrow">use case · wild</p>
+      <h1>Wild: domain vs general arena</h1>
+      <p class="lede">
+        Two BERTs enter, same masked sentence, same cased vocabulary — the only difference is what they
+        read during training. <strong>Bio_ClinicalBERT</strong> studied MIMIC-III clinical notes;
+        <strong>bert-base-cased</strong> studied Wikipedia and books. Type any sentence with a
+        <code>[MASK]</code> and see where they agree, where they split, and how much more sharply the
+        specialist commits on in-domain text. It's the domain gap, made measurable.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="clinical-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.3rem 0 .5rem" id="chips">
+        <button class="mask-chip" type="button" data-set="The patient was admitted with acute [MASK] failure.">acute failure</button>
+        <button class="mask-chip" type="button" data-set="The [MASK] was elevated, suggesting inflammation.">lab value</button>
+        <button class="mask-chip" type="button" data-set="The patient was started on [MASK] for the infection.">treatment</button>
+        <button class="mask-chip" type="button" data-set="No acute [MASK] on the chest radiograph.">radiology</button>
+        <button class="mask-chip" type="button" data-set="The capital of France is [MASK].">out of domain</button>
+      </div>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">
+        Masked sentence (one <code>[MASK]</code>)
+        <input id="text" class="mask-input" disabled value="The patient was admitted with acute [MASK] failure." />
+      </label>
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;align-items:center;margin:.5rem 0">
+        <button id="fight" type="button" disabled>Run the head-to-head</button>
+        <label style="font-size:.78rem;font-family:var(--font-mono);color:var(--muted);display:flex;align-items:center;gap:.4rem">
+          top-k <input id="topk" type="range" min="3" max="12" value="6" disabled /> <span id="topkVal">6</span>
+        </label>
+        <span class="status" id="cmpStatus" role="status" aria-live="polite"></span>
+      </div>
+
+      <div id="verdict" class="verdict" hidden></div>
+      <div id="cmpWrap" hidden></div>
+      <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>both models <b id="rMs">–</b></span></div>
+      <p class="muted" style="font-size:.85rem">
+        Both models run in one Web Worker via <code>AutoModelForMaskedLM</code>, so they're exercised
+        identically. Loading general bert-base-cased downloads ~132 MB the first time; Bio_ClinicalBERT
+        auto-initialises above.
+      </p>
+    </section>
+
+    <p class="crumbs"><a href="../practical/">← Practical</a> · <a href="../">Model</a> · Next: <a href="../multi-model/">Multi-model →</a></p>
+
+    <script type="module">
+      import { ClinicalFillMaskEngine, FILLMASK_CSS, MASK, renderPredictions, escapeHTML } from "../clinicalfillmask.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style");
+      style.textContent = FILLMASK_CSS + `
+        .cmp-grid { display:grid; grid-template-columns:1fr 1fr; gap:1rem; margin-top:.6rem; }
+        .cmp-card { border:1px solid var(--border); border-radius:10px; background:var(--bg-raised); padding:.7rem .8rem; min-inline-size:0; }
+        .cmp-card h4 { margin:0 0 .1rem; font-family:var(--font-mono); font-size:.82rem; }
+        .cmp-card .sub { font-size:.72rem; color:var(--muted); margin:0 0 .3rem; }
+        @media (max-width:560px) { .cmp-grid { grid-template-columns:1fr; } }`;
+      document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new ClinicalFillMaskEngine();
+      let loaded = false;
+
+      for (const c of document.querySelectorAll(".mask-chip")) c.addEventListener("click", () => { $("text").value = c.dataset.set; });
+      $("topk").addEventListener("input", () => { $("topkVal").textContent = $("topk").value; });
+
+      createModelLoader({
+        mount: $("clinical-loader"),
+        model: { modelId: "onnx-community/Bio_ClinicalBERT-ONNX", runtime: "transformers.js", dtype: "q8", sizeMB: 131, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("text").disabled = false; $("fight").disabled = false; $("topk").disabled = false; loaded = true; },
+      });
+
+      $("fight").addEventListener("click", async () => {
+        if (!loaded) return;
+        const text = $("text").value;
+        if (!text.includes(MASK)) { setErr("Add a [MASK] to the sentence."); return; }
+        $("runStatus").hidden = true; $("fight").disabled = true; $("cmpStatus").classList.remove("err");
+        try {
+          if (!engine.generalReady) {
+            $("cmpStatus").textContent = "Loading general bert-base-cased (first time ~132 MB)…";
+            await engine.loadGeneral((p) => { if (p.status === "progress" && typeof p.progress === "number") $("cmpStatus").textContent = `Loading general BERT… ${p.progress.toFixed(0)}%`; });
+          }
+          $("cmpStatus").textContent = "Running both models…";
+          const r = await engine.compare(text, Number($("topk").value));
+          renderCompare(r);
+          $("cmpStatus").textContent = "";
+          $("readout").hidden = false; $("rBackend").textContent = r.device.toUpperCase(); $("rMs").textContent = r.ms + " ms";
+        } catch (err) { $("cmpStatus").textContent = "Failed: " + err.message; $("cmpStatus").classList.add("err"); }
+        finally { $("fight").disabled = false; }
+      });
+
+      function renderCompare(r) {
+        const cPred = r.clinical.masks[0]?.predictions ?? [];
+        const gPred = r.general.masks[0]?.predictions ?? [];
+        const grid = document.createElement("div"); grid.className = "cmp-grid";
+        const card = (title, sub, preds) => {
+          const el = document.createElement("div"); el.className = "cmp-card";
+          el.append(Object.assign(document.createElement("h4"), { textContent: title }), Object.assign(document.createElement("p"), { className: "sub", textContent: sub }));
+          const list = document.createElement("div"); list.className = "pred-list"; renderPredictions(list, preds); el.append(list); return el;
+        };
+        grid.append(card("Bio_ClinicalBERT (clinical)", "MIMIC-III clinical notes", cPred), card("bert-base-cased (general)", "Wikipedia + BookCorpus", gPred));
+        $("cmpWrap").replaceChildren(grid); $("cmpWrap").hidden = false;
+        const cTop = cPred[0], gTop = gPred[0];
+        if (cTop && gTop) {
+          const same = cTop.token.trim() === gTop.token.trim();
+          $("verdict").innerHTML = same
+            ? `Agreement on <span class="slot">${escapeHTML(cTop.token)}</span> — clinical ${(cTop.prob * 100).toFixed(0)}% vs general ${(gTop.prob * 100).toFixed(0)}% (decisiveness gap ${(Math.abs(cTop.prob - gTop.prob) * 100).toFixed(0)} pts)`
+            : `Split — clinical says <span class="slot">${escapeHTML(cTop.token)}</span> (${(cTop.prob * 100).toFixed(0)}%), general says <span class="slot">${escapeHTML(gTop.token)}</span> (${(gTop.prob * 100).toFixed(0)}%)`;
+          $("verdict").hidden = false;
+        }
+      }
+      function setErr(m) { $("runStatus").hidden = false; $("runStatus").textContent = m; $("runStatus").classList.add("err"); }
+    </script>
+  </body>
+</html>

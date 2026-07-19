@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Bio_ClinicalBERT Multi-model — clinical fill, MiniLM ranks by meaning · Web AI Showcase</title>
+    <meta name="description" content="Compose two models: Bio_ClinicalBERT fills a clinical blank with candidate terms, then MiniLM embeddings re-rank those candidates by how close each completed sentence is in meaning to a target you choose. Both run in the browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🩺</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Bio_ClinicalBERT</a> · <a href="/web-ai-showcase/models/minilm-embeddings/">MiniLM</a></p>
+
+    <header>
+      <p class="eyebrow">use case · multi-model</p>
+      <h1>Multi-model: clinical fill, MiniLM ranks by meaning</h1>
+      <p class="lede">
+        Fill-mask ranks candidates by how <em>likely</em> they are in context — not by what they
+        <em>mean</em>. So compose two models: <strong>Bio_ClinicalBERT</strong> proposes candidate terms
+        for a clinical blank, then <strong>all-MiniLM-L6</strong> embeds each completed sentence and
+        re-ranks them by cosine similarity to a target meaning you choose. It surfaces the fills that
+        actually match clinical intent — a tiny, private, on-device pipeline.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="load-h">
+      <h3 id="load-h">Two models, both on-device</h3>
+      <p class="muted">Bio_ClinicalBERT (~131 MB) proposes; MiniLM embeddings (~25 MB) ranks. Each
+        auto-initialises from cache when present.</p>
+      <div id="loader-clinical"></div>
+      <div id="loader-minilm" style="margin-top:.5rem"></div>
+    </section>
+
+    <section class="panel">
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.2rem 0 .6rem">
+        <button class="mask-chip" type="button" data-tpl="The patient was started on [MASK] for the infection." data-ref="The patient was given antibiotics to treat the bacteria.">antibiotics</button>
+        <button class="mask-chip" type="button" data-tpl="The patient reported severe [MASK]." data-ref="The patient was in a lot of pain.">pain</button>
+        <button class="mask-chip" type="button" data-tpl="A [MASK] confirmed the diagnosis of cancer." data-ref="A tissue sample was examined under the microscope.">biopsy</button>
+      </div>
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">
+        Clinical sentence with one <code>[MASK]</code>
+        <input id="tpl" class="mask-input" disabled value="The patient was started on [MASK] for the infection." />
+      </label>
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.5rem">
+        Target meaning (a full sentence to rank against)
+        <input id="ref" class="mask-input" disabled value="The patient was given antibiotics to treat the bacteria." />
+      </label>
+      <div style="margin:.5rem 0">
+        <button id="go" type="button" disabled>Fill, then rank by meaning</button>
+      </div>
+
+      <div id="results" class="pred-list"></div>
+      <div class="readout" id="readout" hidden>
+        <span>Clinical <b id="rBert">–</b></span>
+        <span>MiniLM <b id="rMini">–</b></span>
+        <span>total <b id="rMs">–</b></span>
+      </div>
+    </section>
+
+    <p class="muted" style="font-size:.85rem">
+      Each row shows Bio_ClinicalBERT's fill probability (how likely the term is in the blank) and MiniLM's
+      cosine similarity (how close the finished sentence is to your target). Sorting by cosine surfaces the
+      clinically-plausible fills that also match your intent — the bridge between a domain LM and semantic search.
+    </p>
+
+    <p class="crumbs"><a href="../wild/">← Wild</a> · <a href="../">Back to Bio_ClinicalBERT</a> · <a href="/web-ai-showcase/models/minilm-embeddings/">MiniLM →</a></p>
+
+    <script type="module">
+      import { ClinicalFillMaskEngine, FILLMASK_CSS, MASK, escapeHTML } from "../clinicalfillmask.js";
+      import { EmbedEngine, cosine } from "/web-ai-showcase/models/minilm-embeddings/embed.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = FILLMASK_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const clinical = new ClinicalFillMaskEngine();
+      const embedder = new EmbedEngine();
+
+      for (const c of document.querySelectorAll("[data-tpl]")) c.addEventListener("click", () => { $("tpl").value = c.dataset.tpl; $("ref").value = c.dataset.ref; run(); });
+      $("go").addEventListener("click", run);
+
+      let clinicalReady = false, miniReady = false;
+      const maybeEnable = () => { if (clinicalReady && miniReady) { $("tpl").disabled = false; $("ref").disabled = false; $("go").disabled = false; run(); } };
+      createModelLoader({
+        mount: $("loader-clinical"),
+        model: { modelId: "onnx-community/Bio_ClinicalBERT-ONNX", runtime: "transformers.js", dtype: "q8", sizeMB: 131, requiresWebGPU: false },
+        load: async (onProgress) => { await clinical.load(onProgress); return clinical; },
+        onReady: () => { clinicalReady = true; maybeEnable(); },
+      });
+      createModelLoader({
+        mount: $("loader-minilm"),
+        model: { modelId: "Xenova/all-MiniLM-L6-v2", runtime: "transformers.js", dtype: "q8", sizeMB: 25, requiresWebGPU: false },
+        load: async (onProgress) => { await embedder.load(onProgress); return embedder; },
+        onReady: () => { miniReady = true; maybeEnable(); },
+      });
+
+      let busy = false;
+      async function run() {
+        if (!clinicalReady || !miniReady || busy) return;
+        const tpl = $("tpl").value; const ref = $("ref").value.trim();
+        if (!tpl.includes(MASK)) { setErr("Add a [MASK] to the sentence."); return; }
+        if (!ref) { setErr("Add a target sentence."); return; }
+        busy = true; $("go").disabled = true; $("runStatus").hidden = true;
+        try {
+          const fm = await clinical.fill(tpl, 8, "clinical");
+          const cands = fm.masks[0]?.predictions ?? [];
+          const sentences = cands.map((c) => tpl.replace("[MASK]", c.token));
+          const emb = await embedder.embed([ref, ...sentences]);
+          const refVec = emb.embeddings[0];
+          const ranked = cands.map((c, i) => ({ token: c.token, prob: c.prob, sentence: sentences[i], sim: cosine(refVec, emb.embeddings[i + 1]) })).sort((a, b) => b.sim - a.sim);
+          const maxSim = Math.max(1e-6, ...ranked.map((r) => Math.max(0, r.sim)));
+          $("results").replaceChildren(...ranked.map((r) => {
+            const row = document.createElement("div"); row.className = "pred-row"; row.style.gridTemplateColumns = "9rem 1fr 4.6rem 5rem";
+            const tok = document.createElement("span"); tok.className = "pred-tok"; tok.textContent = r.token;
+            const barWrap = document.createElement("span"); barWrap.className = "pred-bar";
+            const bar = document.createElement("span"); bar.className = "pred-fill"; bar.style.inlineSize = `${Math.max(0, r.sim) / maxSim * 100}%`; barWrap.append(bar);
+            const sim = document.createElement("span"); sim.className = "pred-num"; sim.textContent = "cos " + r.sim.toFixed(3);
+            const prob = document.createElement("span"); prob.className = "pred-logit"; prob.textContent = "fill " + (r.prob * 100).toFixed(1) + "%";
+            row.append(tok, barWrap, sim, prob); row.title = r.sentence; return row;
+          }));
+          $("readout").hidden = false;
+          $("rBert").textContent = fm.device.toUpperCase() + " " + fm.ms + " ms";
+          $("rMini").textContent = emb.device.toUpperCase() + " " + emb.ms + " ms";
+          $("rMs").textContent = (fm.ms + emb.ms) + " ms";
+        } catch (err) { setErr("Pipeline failed: " + err.message); }
+        finally { busy = false; $("go").disabled = false; }
+      }
+      function setErr(m) { $("runStatus").hidden = false; $("runStatus").textContent = m; $("runStatus").classList.add("err"); }
+    </script>
+  </body>
+</html>
