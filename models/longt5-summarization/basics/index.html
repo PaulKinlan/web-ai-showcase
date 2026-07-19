@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LongT5 Basics — long text to a short gist · Web AI Showcase</title>
+    <meta name="description" content="The fundamental move: pick an article, set a length budget, and get a concise gist generated locally in your browser by LongT5. Watch it stream in." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>📰</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">LongT5</a></p>
+
+    <header>
+      <p class="eyebrow">use case · basics</p>
+      <h1>Basics: long text in, short gist out</h1>
+      <p class="lede">
+        The simplest thing the model does: read a passage and produce a shorter version that keeps the point.
+        Pick a sample, slide the length budget, and summarize — the gist streams in as the model decodes it.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.6rem 0">
+        <button class="chip" type="button" data-sample="space">Space mission</button>
+        <button class="chip" type="button" data-sample="history">History</button>
+        <button class="chip" type="button" data-sample="recipe">How-to</button>
+      </div>
+
+      <div class="sum-io">
+        <label style="display:flex;flex-direction:column;gap:.3rem;font-size:.82rem">
+          Source text
+          <textarea id="src" disabled></textarea>
+        </label>
+        <div style="display:flex;flex-direction:column;gap:.3rem">
+          <span style="font-size:.82rem">Gist</span>
+          <div class="sum-out" id="out" aria-live="polite"></div>
+        </div>
+      </div>
+
+      <div class="controls-grid">
+        <label>Gist length <span class="val" id="maxVal">40 tokens</span>
+          <input type="range" id="maxLen" min="15" max="140" step="5" value="40" />
+        </label>
+        <button id="run" type="button" disabled>Summarize</button>
+      </div>
+      <div class="readout" id="readout" hidden>
+        <span>in→out <b id="rTok">–</b></span><span>compression <b id="rRatio">–</b></span>
+        <span>backend <b id="rBackend">–</b></span><span>time <b id="rMs">–</b></span>
+      </div>
+    </section>
+
+    <p class="muted" style="font-size:.85rem">
+      Shorter budgets force harder choices about what to keep. This is the LongT5 <em>base</em> checkpoint, so it
+      leans extractive — it tends to surface the single most salient sentence rather than freely rewrite.
+    </p>
+
+    <p class="crumbs"><a href="../">← Back to LongT5</a> · Next: <a href="../practical/">Practical →</a></p>
+
+    <script type="module">
+      import { SummarizeEngine, renderStats, SUMMARIZE_CSS } from "../longt5.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = SUMMARIZE_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new SummarizeEngine();
+      let loaded = false;
+
+      const SAMPLES = {
+        space: "A robotic spacecraft has successfully entered orbit around an asteroid after a journey of more than two years. The mission's goal is to collect a small sample of rock and dust and return it to Earth for study. Scientists believe asteroids are leftover building blocks from the early solar system, so the material could reveal how planets formed and where the water and organic molecules that made life possible originally came from. Over the coming months the spacecraft will map the asteroid's surface in detail before choosing a safe spot to briefly touch down and grab a sample. If all goes well, the capsule carrying the material will parachute back to Earth in about three years.",
+        history: "The printing press, developed in the middle of the fifteenth century, transformed how information spread across Europe. Before it, books were copied by hand, a slow and expensive process that kept literacy and learning largely confined to the wealthy and the clergy. Movable metal type made it possible to produce books quickly and cheaply, and within a few decades printing shops had opened in cities across the continent. The flood of affordable books helped standardize languages, spread new scientific and religious ideas, and fuel movements that reshaped politics and faith. Historians often describe the press as one of the most important inventions of the era because it changed not just what people knew, but how fast new knowledge could travel.",
+        recipe: "Making good bread at home comes down to a few simple ideas rather than fancy equipment. Start by mixing flour, water, salt, and yeast until no dry flour remains, then let the dough rest so the flour can fully absorb the water. Instead of long kneading, gently fold the dough over itself a few times during the first hour, which builds strength without much effort. Let it rise slowly until roughly doubled, shape it into a round, and give it a final short rise. Bake it in a very hot oven, ideally with a lid or a tray of water to trap steam early on, which helps the crust stay soft long enough for the loaf to expand before setting into a crisp, golden shell.",
+      };
+      for (const c of document.querySelectorAll(".chip")) c.addEventListener("click", () => { $("src").value = SAMPLES[c.dataset.sample]; });
+      $("maxLen").addEventListener("input", () => { $("maxVal").textContent = $("maxLen").value + " tokens"; });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/long-t5-tglobal-base", runtime: "transformers.js", dtype: "q8", sizeMB: 335, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("src").disabled = false; $("run").disabled = false; loaded = true; if (!$("src").value) $("src").value = SAMPLES.space; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!loaded) return;
+        const text = $("src").value.trim();
+        if (!text) { $("runStatus").hidden = false; $("runStatus").textContent = "Pick or paste some text first."; return; }
+        $("run").disabled = true; $("runStatus").hidden = false; $("runStatus").classList.remove("err");
+        $("runStatus").textContent = "Summarizing…"; $("out").textContent = "";
+        try {
+          const maxLength = +$("maxLen").value;
+          const r = await engine.summarize(text, { maxLength, minLength: Math.min(12, maxLength - 5), numBeams: 1 }, (p) => $("out").textContent = p);
+          $("out").textContent = r.summary;
+          $("rTok").textContent = `${r.inTokens} → ${r.outTokens}`;
+          renderStats({ ratio: $("rRatio"), backend: $("rBackend"), ms: $("rMs") }, r);
+          $("readout").hidden = false;
+          $("runStatus").textContent = "Done."; $("runStatus").classList.add("ok");
+        } catch (err) { $("runStatus").textContent = "Failed: " + err.message; $("runStatus").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>

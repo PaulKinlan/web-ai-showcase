@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LongT5 — long-context summarization in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Paste an article and get a short gist, generated locally in your browser by LongT5 — a distinct long-context summarizer (transient-global attention, Pegasus-style pretraining). Live token streaming, real timing, compression ratio. Nothing uploaded."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>📰</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">summarization · text · WASM · ~335 MB</p>
+      <h1>LongT5 — the long-context gist machine</h1>
+      <p class="lede">
+        A different summarizer family from <a href="../distilbart-summarization/">DistilBART</a>: LongT5 uses
+        <strong>transient-global attention</strong> to read far longer inputs, and it was pretrained with
+        <strong>Pegasus's own gap-sentence objective</strong> — the closest browser-runnable relative of the
+        Pegasus/XSum "one-sentence gist" style. Paste something and watch the gist stream in, token by token.
+        Nothing leaves your device.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="note-h">
+      <h3 id="note-h">A quick, honest note on the model</h3>
+      <p class="muted" style="margin:0">
+        The original ask was <a href="https://huggingface.co/google/pegasus-xsum" target="_blank" rel="noopener">Pegasus XSum</a>,
+        but it has <strong>no transformers.js/ONNX build</strong>, so it can't run in a browser today. LongT5 is
+        the closest <em>distinct</em>, runnable family: same Pegasus-style gap-sentence pretraining, plus long-input
+        attention DistilBART lacks. This is the <em>base</em> checkpoint (not a summarization fine-tune), so its
+        gists lean <strong>extractive</strong> — it tends to lift and lightly compress the single most salient
+        sentence rather than freely rewrite. That's a real, useful behaviour; it just isn't the heavy abstraction
+        a fine-tuned Pegasus would give.
+      </p>
+    </section>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/Xenova/long-t5-tglobal-base" target="_blank" rel="noopener">Xenova/long-t5-tglobal-base</a></td></tr>
+          <tr><th>Task / pipeline</th><td><code>summarization</code> (sequence-to-sequence)</td></tr>
+          <tr><th>Architecture</th><td>LongT5 (TGlobal) — a T5 encoder–decoder with transient-global attention for long inputs; ~250M params</td></tr>
+          <tr><th>Pretraining</th><td>Pegasus-style principle-sentence (gap-sentence) generation on C4</td></tr>
+          <tr><th>Quantization</th><td>q8 (8-bit) ONNX</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (runs anywhere; no WebGPU needed)</td></tr>
+          <tr><th>Download</th><td>~335 MB (encoder + decoder), cached after first load</td></tr>
+          <tr><th>License</th><td>Apache-2.0</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Paste any text, set the length budget, and summarize. Greedy decoding streams the
+        gist live and records real per-token timing; turn up the beams for a slower, often tighter result.</p>
+
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.6rem 0">
+        <button class="chip" type="button" data-sample="ai">AI news</button>
+        <button class="chip" type="button" data-sample="science">Science</button>
+        <button class="chip" type="button" data-sample="meeting">Meeting notes</button>
+      </div>
+
+      <div class="sum-io">
+        <label style="display:flex;flex-direction:column;gap:.3rem;font-size:.82rem">
+          Source text
+          <textarea id="src" disabled></textarea>
+        </label>
+        <div style="display:flex;flex-direction:column;gap:.3rem">
+          <span style="display:flex;justify-content:space-between;align-items:center;font-size:.82rem">
+            <span>Gist
+              <span class="seg-toggle" role="group" aria-label="Summary format" style="margin-inline-start:.5rem">
+                <button type="button" id="fmtPara" aria-pressed="true">Paragraph</button>
+                <button type="button" id="fmtBullets" aria-pressed="false">Bullets</button>
+              </span>
+            </span>
+          </span>
+          <div class="sum-out" id="out" aria-live="polite"></div>
+        </div>
+      </div>
+
+      <div class="controls-grid">
+        <label>Max length <span class="val" id="maxVal">45 tokens</span>
+          <input type="range" id="maxLen" min="15" max="160" step="5" value="45" />
+        </label>
+        <label>Min length <span class="val" id="minVal">10 tokens</span>
+          <input type="range" id="minLen" min="5" max="60" step="5" value="10" />
+        </label>
+        <label>Beams <span class="val" id="beamVal">1 (greedy, streams)</span>
+          <input type="range" id="beams" min="1" max="5" step="1" value="1" />
+        </label>
+        <button id="run" type="button" disabled>Summarize</button>
+      </div>
+
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>time <b id="rMs">–</b></span>
+        <span>speed <b id="rTps">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside — tokens, compression &amp; decode timing</h3>
+      <p class="muted">
+        A summarizer is really a <em>compressor</em>. Here's what it actually did: how many tokens went in
+        versus came out, how much shorter that is, and — for greedy decoding — the real time each output
+        token took to generate. The model emits one token at a time, feeding each back in to pick the next.
+      </p>
+      <div class="stat-row">
+        <div class="stat"><div class="k">Tokens in</div><div class="v" id="inTok">–</div></div>
+        <div class="stat"><div class="k">Tokens out</div><div class="v" id="outTok">–</div></div>
+        <div class="stat"><div class="k">Compression</div><div class="v" id="ratio">–</div></div>
+        <div class="stat"><div class="k">Chars saved</div><div class="v" id="reduction">–</div></div>
+      </div>
+      <p class="muted" style="font-size:.82rem;margin:.8rem 0 .3rem">Per-token decode timeline (ms per token):</p>
+      <canvas id="timeline" class="timeline" aria-label="Bar chart of milliseconds taken to generate each output token"></canvas>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        Summarization turns a wall of text into something you can act on in seconds — and doing it on-device
+        means you can summarize private, sensitive, or offline content without shipping a word to a server.
+        LongT5's long-context attention makes it a natural fit for the <em>big</em> inputs a ~1024-token model
+        can't take in one pass.
+      </p>
+      <ul>
+        <li><strong>Headline / TL;DR generation</strong> — squeeze an article down to a one-line gist for a feed or notification.</li>
+        <li><strong>Long-document digests</strong> — reports, transcripts, and threads that overflow a short-context summarizer.</li>
+        <li><strong>Private, offline recaps</strong> — summarize confidential docs with no API key and no per-call bill.</li>
+        <li><strong>Pipeline stage</strong> — pair with speech-to-text to go from a recording straight to a gist.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Summarize a sample article and dial the length up and down to feel the trade-off.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Headline / TL;DR: turn a paragraph into a one-line gist for a feed or push notification.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Recursively summarize a summary until the whole thing collapses to one sentence.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">Whisper transcribes a recording, then LongT5 gists it — audio in, TL;DR out.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>Summarization is one pipeline call; length is controlled with generation parameters:</p>
+      <pre><code>import { pipeline } from "@huggingface/transformers";
+
+const summarizer = await pipeline(
+  "summarization",
+  "Xenova/long-t5-tglobal-base",
+); // downloads + caches ~335 MB once
+
+const out = await summarizer(longText, {
+  max_new_tokens: 45,
+  min_new_tokens: 10,
+  num_beams: 1,          // greedy; raise for tighter (slower) output
+  no_repeat_ngram_size: 3,
+});
+// → [{ summary_text: "…a concise gist…" }]</code></pre>
+      <p class="muted">
+        For the live token stream and the decode timeline, this page passes a <code>TextStreamer</code> so it
+        can timestamp each generated token — all inside a Web Worker so the UI never janks.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/Xenova/long-t5-tglobal-base" target="_blank" rel="noopener">Model card — LongT5 TGlobal base (Xenova ONNX)</a></li>
+        <li><a href="https://huggingface.co/google/long-t5-tglobal-base" target="_blank" rel="noopener">Original LongT5 weights (Google)</a></li>
+        <li><a href="https://arxiv.org/abs/2112.07916" target="_blank" rel="noopener">Paper — LongT5 (Guo et al., 2021, arXiv:2112.07916)</a></li>
+        <li><a href="https://arxiv.org/abs/1912.08777" target="_blank" rel="noopener">Paper — Pegasus / gap-sentence pretraining (Zhang et al., 2019)</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { SummarizeEngine, toBullets, renderStats, drawTimeline, escapeHTML, SUMMARIZE_CSS }
+        from "./longt5.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = SUMMARIZE_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new SummarizeEngine();
+      let loaded = false;
+      let lastResult = null;
+      let bullets = false;
+
+      const SAMPLES = {
+        ai: "Researchers have released a new open-weights language model that can run entirely inside a web browser, without any server. The model uses a compressed, quantized format that shrinks its size enough to download over a normal connection, and it runs on the same graphics hardware that powers games. Early testers say the quality is close to cloud models for everyday tasks like drafting emails, answering questions, and summarizing documents. Because nothing is sent to a server, the approach appeals to people who care about privacy, and to developers who want to avoid paying for every request. The team behind the release says the next version will add support for images and longer documents, and they are inviting the community to build applications on top of it.",
+        science: "Astronomers using a space telescope have detected water vapor in the atmosphere of a distant planet orbiting a small, cool star. The planet is roughly the size of Earth and sits at a distance from its star where liquid water could, in principle, exist on the surface. Detecting water vapor does not by itself mean the planet is habitable, the researchers cautioned, because the atmosphere could be dominated by other gases or the surface could be far too hot. Still, the finding is significant because it demonstrates that current instruments are sensitive enough to study the atmospheres of small rocky worlds, not just giant gas planets. The team plans further observations to measure the amounts of other molecules and to better estimate the planet's temperature.",
+        meeting: "Team sync, Thursday. Priya opened by noting that the mobile release slipped a week because the payment library needed a security patch; QA signed off this morning so the new target is next Tuesday. Marcus raised that support tickets about slow search have tripled, and after some discussion the group agreed to move the search-indexing rewrite ahead of the settings redesign. Dana will draft a customer note about the delay and share it for review by end of day. We also decided to cancel the Friday standup for the next two weeks while several people are on leave, and to run an async update in the channel instead. Action items: Marcus to scope the indexing work, Priya to confirm the release checklist, Dana to send the customer note.",
+      };
+
+      for (const c of document.querySelectorAll(".chip")) {
+        c.addEventListener("click", () => { $("src").value = SAMPLES[c.dataset.sample]; });
+      }
+
+      $("maxLen").addEventListener("input", () => { $("maxVal").textContent = $("maxLen").value + " tokens"; });
+      $("minLen").addEventListener("input", () => { $("minVal").textContent = $("minLen").value + " tokens"; });
+      $("beams").addEventListener("input", () => {
+        const b = +$("beams").value;
+        $("beamVal").textContent = b === 1 ? "1 (greedy, streams)" : b + " (beam search)";
+      });
+
+      function setFmt(useBullets) {
+        bullets = useBullets;
+        $("fmtPara").setAttribute("aria-pressed", String(!useBullets));
+        $("fmtBullets").setAttribute("aria-pressed", String(useBullets));
+        if (lastResult) renderOut(lastResult.summary);
+      }
+      $("fmtPara").addEventListener("click", () => setFmt(false));
+      $("fmtBullets").addEventListener("click", () => setFmt(true));
+
+      function renderOut(summary) {
+        if (bullets) {
+          const items = toBullets(summary);
+          $("out").innerHTML = "<ul>" + items.map((s) => `<li>${escapeHTML(s)}</li>`).join("") + "</ul>";
+        } else {
+          $("out").textContent = summary;
+        }
+      }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: {
+          modelId: "Xenova/long-t5-tglobal-base",
+          runtime: "transformers.js",
+          dtype: "q8",
+          sizeMB: 335,
+          requiresWebGPU: false,
+        },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => {
+          $("src").disabled = false;
+          $("run").disabled = false;
+          loaded = true;
+          if (!$("src").value) $("src").value = SAMPLES.ai;
+        },
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!loaded) return;
+        const text = $("src").value.trim();
+        if (!text) { $("runStatus").hidden = false; $("runStatus").textContent = "Paste some text first."; return; }
+        $("run").disabled = true;
+        $("runStatus").hidden = false; $("runStatus").classList.remove("err");
+        $("runStatus").textContent = "Summarizing…";
+        $("out").textContent = "";
+        try {
+          const maxLength = +$("maxLen").value, minLength = +$("minLen").value, numBeams = +$("beams").value;
+          const r = await engine.summarize(
+            text,
+            { maxLength, minLength, numBeams },
+            (partial) => { if (!bullets) $("out").textContent = partial; },
+          );
+          lastResult = r;
+          renderOut(r.summary);
+          renderStats(
+            { inTok: $("inTok"), outTok: $("outTok"), ratio: $("ratio"), reduction: $("reduction"),
+              backend: $("rBackend"), ms: $("rMs"), toksec: $("rTps") },
+            r,
+          );
+          drawTimeline($("timeline"), r.intervals);
+          $("readout").hidden = false;
+          $("runStatus").textContent = `Done — ${r.inTokens} → ${r.outTokens} tokens on ${r.device.toUpperCase()}.`;
+          $("runStatus").classList.add("ok");
+        } catch (err) {
+          $("runStatus").textContent = "Summarization failed: " + err.message;
+          $("runStatus").classList.add("err");
+        } finally {
+          $("run").disabled = false;
+        }
+      });
+
+      addEventListener("resize", () => { if (lastResult) drawTimeline($("timeline"), lastResult.intervals); });
+    </script>
+  </body>
+</html>
