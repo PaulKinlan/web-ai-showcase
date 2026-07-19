@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Llama 3.2 3B Wild — text-adventure game master · Web AI Showcase</title>
+    <meta name="description" content="A persona that runs a whole game: Llama 3.2 3B plays a text-adventure game master, narrating an evolving world and reacting to your choices — interactive fiction generated live on your GPU via WebLLM." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🦙</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Llama 3.2 3B</a></p>
+    <header>
+      <p class="eyebrow">use case · wild</p>
+      <h1>Wild: a text-adventure game master</h1>
+      <p class="lede">
+        The system prompt can be a whole game. Here the model plays a <strong>game master</strong>: it
+        sets a scene, then narrates the consequences of whatever you type — keeping track of the world
+        as the story unravels. It's persona work with memory and stakes, which is where a 3B's steadier
+        long-form coherence really shows over a 1B. Pick a setting and start playing; every word is
+        generated on your GPU.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <div id="fallback" class="fallback" hidden></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="chips" id="settings" style="margin-top:.6rem" role="group" aria-label="Adventure setting">
+        <button class="chip" type="button" data-k="dungeon">🗡️ Dungeon crawl</button>
+        <button class="chip" type="button" data-k="space">🚀 Derelict starship</button>
+        <button class="chip" type="button" data-k="noir">🕵️ Noir mystery</button>
+        <button class="chip" type="button" data-k="cottage">🍄 Cosy cottage-core</button>
+        <button class="chip" type="button" data-k="custom">✍️ Custom…</button>
+      </div>
+      <div class="sysbox" style="margin-top:.5rem">
+        <label for="sys">Game master brief (system prompt) — editing it restarts the adventure</label>
+        <textarea id="sys" rows="3"></textarea>
+      </div>
+      <div style="margin:.5rem 0"><button id="begin" type="button" class="secondary" disabled>Begin / restart adventure</button></div>
+
+      <div class="chat-wrap" style="margin-top:.4rem">
+        <div class="chat-log" id="log" aria-live="polite" aria-label="Adventure log">
+          <div class="msg system"><span class="bubble">Pick a setting, load the model, and press Begin.</span></div>
+        </div>
+        <div class="composer">
+          <textarea id="input" placeholder="What do you do? (Enter to act)" disabled></textarea>
+          <button id="send" type="button" disabled>Act</button>
+          <button id="stop" type="button" class="secondary" hidden>Stop</button>
+        </div>
+      </div>
+    </section>
+
+    <p class="crumbs"><a href="../practical/">← Practical</a> · <a href="../">Llama 3.2 3B</a> · Next: <a href="../multi-model/">Multi-model →</a></p>
+
+    <script type="module">
+      import { WebLLMChatEngine, probeWebGPU, escapeHTML, webgpuFallbackHTML, CHAT_CSS } from "../webllm-chat.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = CHAT_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new WebLLMChatEngine();
+      let generating = false, ready = false;
+      let history = [];
+      const MODEL = { modelId: "Llama-3.2-3B-Instruct-q4f16_1-MLC", runtime: "webllm", dtype: "q4f16_1", sizeMB: 1900, requiresWebGPU: true };
+
+      const BASE = "You are the game master of an interactive text adventure. Narrate in the second person ('You…'). Keep each turn to 2-4 vivid sentences, then end with a clear prompt about what the player can do. Track the world state, inventory and consequences consistently across turns. Never break character or mention being an AI. ";
+      const SETTINGS = {
+        dungeon: BASE + "Setting: a torch-lit stone dungeon full of traps, monsters and treasure. Dark-fantasy tone.",
+        space: BASE + "Setting: a derelict starship drifting in silence, systems failing, something else aboard. Tense sci-fi horror tone.",
+        noir: BASE + "Setting: a rain-slicked 1940s city; the player is a private eye on a missing-person case. Hard-boiled noir tone.",
+        cottage: BASE + "Setting: a warm woodland cottage and its enchanted garden; gentle, low-stakes, whimsical. Cosy tone.",
+        custom: BASE + "Setting: (edit me to describe your own world, tone and starting situation.)",
+      };
+      function setSetting(k) {
+        $("sys").value = SETTINGS[k];
+        for (const c of $("settings").children) c.setAttribute("aria-pressed", String(c.dataset.k === k));
+        resetLog("New setting chosen. Press Begin to start the adventure.");
+      }
+      for (const c of $("settings").children) c.addEventListener("click", () => setSetting(c.dataset.k));
+      setSetting("dungeon");
+
+      function resetLog(msg) {
+        history = [];
+        $("log").replaceChildren();
+        const d = document.createElement("div"); d.className = "msg system";
+        d.innerHTML = '<span class="bubble">' + escapeHTML(msg) + '</span>';
+        $("log").append(d);
+      }
+
+      // Shared auto-init model-loading architecture — WebGPU-gated, honest needs-WebGPU state, no fake tokens.
+      createModelLoader({
+        mount: $("model-loader"),
+        model: MODEL,
+        load: async (onProgress) => {
+          await engine.load((p) => { if (typeof p.progress === "number") onProgress({ status: "progress", progress: p.progress * 100 }); });
+          return engine;
+        },
+        onReady: () => { ready = true; $("begin").disabled = false; $("input").disabled = false; $("send").disabled = false; $("input").focus(); },
+        onError: async (err) => {
+          if (String(err?.message ?? err).includes("needs-webgpu")) {
+            const probe = await probeWebGPU();
+            $("fallback").hidden = false; $("fallback").innerHTML = webgpuFallbackHTML(probe);
+          }
+        },
+      });
+
+      function addBubble(role, whoLabel) {
+        const wrap = document.createElement("div"); wrap.className = "msg " + role;
+        const who = document.createElement("span"); who.className = "who"; who.textContent = whoLabel;
+        const b = document.createElement("div"); b.className = "bubble"; wrap.append(who, b);
+        if (role === "assistant") b.innerHTML = '<span class="caret"></span>';
+        $("log").append(wrap); $("log").scrollTop = $("log").scrollHeight; return b;
+      }
+
+      async function turn(userText, isOpening) {
+        if (generating || !ready) return;
+        generating = true; $("send").disabled = true; $("begin").disabled = true; $("stop").hidden = false; $("input").disabled = true;
+        const sys = $("sys").value.trim() || BASE;
+        if (!isOpening) { addBubble("user", "you").textContent = userText; }
+        const opener = isOpening ? "Begin the adventure: set the opening scene and prompt me for my first action." : userText;
+        const messages = [{ role: "system", content: sys }, ...history, { role: "user", content: opener }];
+        const bubble = addBubble("assistant", "game master"); let acc = "";
+        try {
+          await engine.chat({ messages, temperature: 0.95, top_p: 0.95, max_tokens: 320 }, {
+            onToken: (d) => { acc += d; bubble.innerHTML = escapeHTML(acc) + '<span class="caret"></span>'; $("log").scrollTop = $("log").scrollHeight; },
+          });
+          bubble.textContent = acc || "(no output)";
+          history.push({ role: "user", content: opener }, { role: "assistant", content: acc });
+          $("status").textContent = "Your move."; $("status").classList.remove("err"); $("status").classList.add("ok");
+        } catch (err) { bubble.innerHTML = '<span class="muted">Failed.</span>'; $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { generating = false; $("stop").hidden = true; $("begin").disabled = false; $("input").disabled = false; $("send").disabled = false; $("input").focus(); }
+      }
+
+      $("begin").addEventListener("click", () => { resetLog("The adventure begins…"); turn("", true); });
+      $("send").addEventListener("click", () => { const t = $("input").value.trim(); if (t) { $("input").value = ""; turn(t, false); } });
+      $("stop").addEventListener("click", () => { engine.stop(); $("status").textContent = "Stopping…"; });
+      $("input").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("send").click(); } });
+    </script>
+  </body>
+</html>

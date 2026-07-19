@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Llama 3.2 3B Practical — a local tool router · Web AI Showcase</title>
+    <meta name="description" content="The core of an on-device agent: Llama 3.2 3B reads a plain-English request, picks the right tool from a list, and emits a strict JSON function call with typed arguments — all in your browser via WebLLM's JSON mode." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🦙</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Llama 3.2 3B</a></p>
+    <header>
+      <p class="eyebrow">use case · practical · agentic</p>
+      <h1>Practical: a local tool router</h1>
+      <p class="lede">
+        The building block under every "agent": given a plain-English request and a menu of tools, the
+        model must pick <em>one</em> tool and fill in its arguments as strict JSON — the step your code
+        then dispatches to a real function. It leans on instruction-following and schema-adherence,
+        exactly where the 3B pulls ahead of the 1B. WebLLM's JSON mode guarantees the output parses; the
+        whole decision runs on your GPU with no server.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <div id="fallback" class="fallback" hidden></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <p class="muted" style="margin:.5rem 0 .2rem;font-size:.82rem">Available tools (the model must choose exactly one):</p>
+      <ul class="muted" style="margin:.2rem 0 .6rem;font-size:.82rem">
+        <li><code>get_weather</code>(city, unit?) — current conditions</li>
+        <li><code>set_reminder</code>(text, datetime) — schedule a reminder</li>
+        <li><code>send_email</code>(to, subject, body) — draft an email</li>
+        <li><code>convert_currency</code>(amount, from, to) — FX conversion</li>
+        <li><code>search_web</code>(query) — look something up</li>
+      </ul>
+
+      <div class="chips" id="samples" role="group" aria-label="Example requests" style="margin-bottom:.5rem">
+        <button class="chip" type="button" data-k="weather">Weather in Kyoto</button>
+        <button class="chip" type="button" data-k="reminder">Reminder</button>
+        <button class="chip" type="button" data-k="email">Email</button>
+        <button class="chip" type="button" data-k="fx">Currency</button>
+      </div>
+
+      <label for="req" style="font-size:.82rem;color:var(--muted)">Your request</label>
+      <textarea id="req" rows="3" style="width:100%"></textarea>
+      <div style="margin:.5rem 0"><button id="run" type="button" disabled>Route to a tool</button></div>
+
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:1rem">
+        <div>
+          <label style="font-size:.82rem;color:var(--muted)">Chosen tool call (JSON) <span id="valid"></span></label>
+          <pre class="wire" id="out" style="min-block-size:7rem"><span class="muted">The function call streams here.</span></pre>
+        </div>
+        <div>
+          <label style="font-size:.82rem;color:var(--muted)">Dispatch preview</label>
+          <div id="dispatch" class="wire" style="min-block-size:7rem"><span class="muted">A valid call renders as tool → args here (what your app would run).</span></div>
+        </div>
+      </div>
+      <div class="readout" id="readout" hidden><span>first token <b id="rTtft">–</b></span><span>decode <b id="rTps">–</b></span><span>valid JSON <b id="rValid">–</b></span><span>known tool <b id="rTool">–</b></span></div>
+    </section>
+
+    <section aria-labelledby="how-h">
+      <h2 id="how-h">How this stays reliable</h2>
+      <p class="muted">
+        We describe the tool schemas in the system prompt and pass
+        <code>response_format: { type: "json_object" }</code> to WebLLM, which constrains decoding so the
+        tokens can only form valid JSON — no "sometimes it wraps the call in prose" failure. The model
+        returns <code>{ "tool": "…", "arguments": { … } }</code>; the page parses it, checks the tool name
+        against the known list, and shows the dispatch your code would perform. A wrong or unknown tool is
+        flagged rather than hidden — this is a router you could actually wire to real functions.
+      </p>
+    </section>
+
+    <p class="crumbs"><a href="../basics/">← Basics</a> · <a href="../">Llama 3.2 3B</a> · Next: <a href="../wild/">Wild →</a></p>
+
+    <script type="module">
+      import { WebLLMChatEngine, probeWebGPU, escapeHTML, webgpuFallbackHTML, CHAT_CSS } from "../webllm-chat.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = CHAT_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new WebLLMChatEngine();
+      let busy = false;
+      const MODEL = { modelId: "Llama-3.2-3B-Instruct-q4f16_1-MLC", runtime: "webllm", dtype: "q4f16_1", sizeMB: 1900, requiresWebGPU: true };
+
+      const KNOWN = new Set(["get_weather", "set_reminder", "send_email", "convert_currency", "search_web"]);
+      const SAMPLES = {
+        weather: "What's the weather like in Kyoto right now, in celsius?",
+        reminder: "Remind me to call the dentist tomorrow at 9am.",
+        email: "Email jordan@acme.io to say the Q3 report is ready and ask for feedback by Friday.",
+        fx: "How much is 250 US dollars in Japanese yen?",
+      };
+      function loadSample(k) {
+        $("req").value = SAMPLES[k];
+        for (const c of $("samples").children) c.setAttribute("aria-pressed", String(c.dataset.k === k));
+      }
+      for (const c of $("samples").children) c.addEventListener("click", () => loadSample(c.dataset.k));
+      loadSample("weather");
+
+      // Shared auto-init model-loading architecture — WebGPU-gated, honest needs-WebGPU state, no fake tokens.
+      createModelLoader({
+        mount: $("model-loader"),
+        model: MODEL,
+        load: async (onProgress) => {
+          await engine.load((p) => { if (typeof p.progress === "number") onProgress({ status: "progress", progress: p.progress * 100 }); });
+          return engine;
+        },
+        onReady: () => { $("run").disabled = false; },
+        onError: async (err) => {
+          if (String(err?.message ?? err).includes("needs-webgpu")) {
+            const probe = await probeWebGPU();
+            $("fallback").hidden = false; $("fallback").innerHTML = webgpuFallbackHTML(probe);
+          }
+        },
+      });
+
+      const SYSTEM = `You are a function-routing engine. You have exactly these tools:
+- get_weather(city: string, unit?: "celsius"|"fahrenheit")
+- set_reminder(text: string, datetime: string)
+- send_email(to: string, subject: string, body: string)
+- convert_currency(amount: number, from: string, to: string)
+- search_web(query: string)
+Choose the single best tool for the user's request and return ONLY a JSON object of the form
+{"tool": "<tool_name>", "arguments": { ... }}. Use only argument keys from the chosen tool's signature.
+If no tool fits, return {"tool": "none", "arguments": {}}.`;
+
+      $("run").addEventListener("click", async () => {
+        if (busy) return;
+        const req = $("req").value.trim();
+        if (!req) { $("status").textContent = "Type a request first."; return; }
+        busy = true; $("run").disabled = true; $("status").classList.remove("err"); $("status").textContent = "Routing…";
+        $("out").textContent = ""; $("valid").textContent = ""; $("readout").hidden = true;
+        $("dispatch").innerHTML = '<span class="muted">…</span>';
+        const messages = [{ role: "system", content: SYSTEM }, { role: "user", content: req }];
+        let acc = "";
+        try {
+          const res = await engine.chat(
+            { messages, temperature: 0, top_p: 0.9, max_tokens: 200, response_format: { type: "json_object" } },
+            {
+              onFirstToken: (t) => { $("readout").hidden = false; $("rTtft").textContent = t + " ms"; },
+              onToken: (d) => { acc += d; $("out").textContent = acc; },
+            },
+          );
+          let ok = false, pretty = acc, parsed = null;
+          try { parsed = JSON.parse(acc); pretty = JSON.stringify(parsed, null, 2); ok = true; } catch { /* show raw */ }
+          $("out").textContent = pretty || "(no output)";
+          $("valid").textContent = ok ? "✓ valid" : "△ not parseable";
+          $("valid").style.color = ok ? "var(--good)" : "var(--warn)";
+          $("rValid").textContent = ok ? "yes" : "no";
+          const tool = parsed?.tool;
+          const known = ok && (KNOWN.has(tool) || tool === "none");
+          $("rTool").textContent = ok ? (known ? (tool || "?") : "unknown!") : "–";
+          if (ok && KNOWN.has(tool)) {
+            const args = parsed.arguments || {};
+            const argRows = Object.entries(args).map(([k, v]) =>
+              `<div><b style="color:var(--accent)">${escapeHTML(k)}</b> = ${escapeHTML(JSON.stringify(v))}</div>`).join("");
+            $("dispatch").innerHTML = `<div style="margin-bottom:.3rem"><b>${escapeHTML(tool)}</b>(…)</div>${argRows || '<span class="muted">no arguments</span>'}`;
+          } else if (ok && tool === "none") {
+            $("dispatch").innerHTML = '<span class="muted">Model chose no tool for this request.</span>';
+          } else {
+            $("dispatch").innerHTML = '<span class="muted">No valid known tool call to dispatch.</span>';
+          }
+          const decodeMs = Math.max(1, res.ms - res.ttft);
+          $("rTps").textContent = (res.chunks > 1 ? ((res.chunks - 1) / (decodeMs / 1000)).toFixed(1) : "0") + " tok/s";
+          $("status").textContent = "Done."; $("status").classList.remove("err"); $("status").classList.add("ok");
+        } catch (err) { $("out").innerHTML = '<span class="muted">Routing failed.</span>'; $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { busy = false; $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>
