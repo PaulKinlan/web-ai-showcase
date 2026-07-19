@@ -101,47 +101,24 @@ export function decodeImage(url) {
   });
 }
 
-// Indigo overlay by default — matches the design accent and passes over most photos.
+// Indigo overlay by default — matches the design accent and passes over most photos. The coloured
+// fill + crisp edge are baked in worker.js (off the main thread) and arrive as an ImageBitmap; this
+// constant is kept only for parity/reference with the worker's MASK_RGB.
 export const MASK_RGB = [75, 58, 255];
 
-/** Build an RGBA ImageData for a raw H×W 0/1 mask, coloured + translucent. */
-function maskToImageData(mask, w, h, rgb, alpha) {
-  const img = new ImageData(w, h);
-  const d = img.data;
-  const [r, g, b] = rgb;
-  const a = Math.round(alpha * 255);
-  for (let i = 0; i < w * h; i++) {
-    if (mask[i]) {
-      const j = i * 4;
-      d[j] = r;
-      d[j + 1] = g;
-      d[j + 2] = b;
-      d[j + 3] = a;
-    }
-  }
-  return img;
-}
-
 /**
- * Draw `imgEl` at natural resolution onto `canvas`, then overlay the mask as a translucent colour with
- * a crisp outline, plus a marker at each prompt point. Canvas is scaled down by CSS responsively.
+ * Draw `imgEl` at natural resolution onto `canvas`, then blit the pre-composited overlay ImageBitmap
+ * (coloured mask + crisp outline, built off the main thread in worker.js), plus a marker at each prompt
+ * point. The dense per-pixel composite no longer runs here — the main thread only does drawImage(), so
+ * click/keyboard redraws stay well under a frame. `overlay` is the worker's ImageBitmap (or null).
  */
-export function drawMaskOverlay(canvas, imgEl, mask, w, h, points = [], opts = {}) {
-  const rgb = opts.rgb ?? MASK_RGB;
-  const alpha = opts.alpha ?? 0.5;
+export function drawMaskOverlay(canvas, imgEl, overlay, w, h, points = [], _opts = {}) {
   canvas.width = w;
   canvas.height = h;
   const ctx = canvas.getContext("2d");
   ctx.drawImage(imgEl, 0, 0, w, h);
 
-  if (mask) {
-    const off = document.createElement("canvas");
-    off.width = w;
-    off.height = h;
-    off.getContext("2d").putImageData(maskToImageData(mask, w, h, rgb, alpha), 0, 0);
-    ctx.drawImage(off, 0, 0);
-    if (opts.outline !== false) strokeMaskEdge(ctx, mask, w, h, rgb);
-  }
+  if (overlay) ctx.drawImage(overlay, 0, 0, w, h);
 
   for (const p of points) {
     const px = p.x * w, py = p.y * h;
@@ -154,32 +131,6 @@ export function drawMaskOverlay(canvas, imgEl, mask, w, h, points = [], opts = {
     ctx.strokeStyle = p.label === 0 ? "#fff" : "#4b3aff";
     ctx.stroke();
   }
-}
-
-// Cheap 1px edge: mark a pixel if it's set and any 4-neighbour is unset.
-function strokeMaskEdge(ctx, mask, w, h, rgb) {
-  const edge = new ImageData(w, h);
-  const d = edge.data;
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      const i = y * w + x;
-      if (!mask[i]) continue;
-      const boundary = x === 0 || y === 0 || x === w - 1 || y === h - 1 ||
-        !mask[i - 1] || !mask[i + 1] || !mask[i - w] || !mask[i + w];
-      if (boundary) {
-        const j = i * 4;
-        d[j] = rgb[0];
-        d[j + 1] = rgb[1];
-        d[j + 2] = rgb[2];
-        d[j + 3] = 255;
-      }
-    }
-  }
-  const off = document.createElement("canvas");
-  off.width = w;
-  off.height = h;
-  off.getContext("2d").putImageData(edge, 0, 0);
-  ctx.drawImage(off, 0, 0);
 }
 
 /** Return a canvas holding only the masked pixels of `imgEl` (transparent elsewhere) — a cut-out. */

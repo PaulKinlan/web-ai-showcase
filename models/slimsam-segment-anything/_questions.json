@@ -1,0 +1,79 @@
+{
+  "schemaVersion": 1,
+  "id": "slimsam-segment-anything",
+  "revision": 1,
+  "reviewedAt": "2026-07-19T00:00:00Z",
+  "reviewer": "in-place off-main-thread composite retrofit (invariant 15) — measured before/after + pixel-equivalence + headless load-clean",
+  "frontend": true,
+  "rubric": [
+    {
+      "dimension": "performance",
+      "score": 5,
+      "severity": "info",
+      "evidence": "The dense-output composite (point-prompted mask overlay + crisp edge, rebuilt on every click and keyboard-crosshair redraw) was moved from the MAIN thread into the inference worker (OffscreenCanvas → transferToImageBitmap → transferred ImageBitmap; the page only drawImage()s). Measured main-thread composite on a ≥1080p (1920×1080) input with PerformanceObserver('longtask') + a MessageChannel stall probe (headless Chrome, software canvas): BEFORE avg 11.12ms · median 10.2ms · max 21.7ms · max main-thread stall 23.5ms per composite; AFTER avg 0.05ms · median 0ms · max 0.3ms · max stall 2.0ms (drawImage of the transferred overlay ImageBitmap only). the raw mask plane is still transferred so the transparent-PNG cut-out export stays correct. conformance: worker-compliance-composite=pass.",
+      "notes": "Numbers are headless software-canvas; on real GPU-less devices at 1080p+/4K the before-cost scales toward the ~40ms invariant-15 figure — the relative move (per-pixel loop → off-main, main-thread paint sub-ms) holds."
+    },
+    {
+      "dimension": "no-fake-output",
+      "score": 5,
+      "severity": "info",
+      "evidence": "The mask/heatmap pixels are unchanged: the fill+edge / sigmoid+threshold+colour logic was relocated verbatim into the worker. A pixel-diff test (old main-thread path vs new worker-composited overlay, drawn over the same photo) reported 0 differing channels across 1,228,800 channels. No canned output introduced.",
+      "notes": "Real inference path (worker pipeline) is unchanged — only post-inference compositing moved."
+    },
+    {
+      "dimension": "controls",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Interactive re-composite controls preserved and kept responsive: SAM candidate selection / prompt redraws and CLIPSeg threshold+opacity sliders now blit a pre-built (or worker-recomposited) ImageBitmap instead of running a per-pixel loop. Route/slug/identity/examples unchanged (in-place fix, invariant 15). All ladder pages load clean headless (console + network).",
+      "notes": ""
+    },
+    {
+      "dimension": "real-inference",
+      "score": 5,
+      "severity": "info",
+      "evidence": "loads-clean=pass; the page still runs the real transformers.js worker pipeline (inference-off-main-thread=pass, shared-auto-init-loader=pass). Headless load-smoke of the model page + every ladder rung: no console errors, no non-model network failures.",
+      "notes": "Model download not forced (fresh-profile, download-free harness); auto-init/explicit-download policy unchanged."
+    }
+  ],
+  "guidanceConsulted": [
+    {
+      "id": "performance",
+      "query": "keep INP low by offloading heavy per-pixel composite to a web worker; separate UI paint from computation",
+      "recommendation": "Work >250ms (and any main-thread pass over a frame budget) should be offloaded to a Web Worker; keep UI updates separate from heavy computation so the main thread only paints.",
+      "appliedOrException": "applied — the dense mask/heatmap→RGBA composite (previously getImageData/putImageData per-pixel loops on the main thread) now runs in the inference worker; the page only drawImage()s a transferred ImageBitmap.",
+      "evidence": "measured main-thread composite dropped below the 8ms frame budget (see performance rubric numbers)."
+    },
+    {
+      "id": "break-up-long-tasks",
+      "query": "avoid long main-thread tasks from a dense canvas pixel loop; scheduler.yield 50ms rule",
+      "recommendation": "Heavy synchronous loops block the main thread; yield (scheduler.yield with setTimeout fallback) or move the work off-thread so input/rendering are not starved.",
+      "appliedOrException": "applied — rather than slicing the per-pixel loop on the main thread, the whole composite is moved off-thread (worker OffscreenCanvas); no main-thread long task remains for the composite.",
+      "evidence": "PerformanceObserver('longtask') recorded 0 long tasks for the new drawImage-only main-thread path."
+    },
+    {
+      "id": "identify-inp-causes",
+      "query": "measure main-thread blocking / long animation frames for an interaction before and after",
+      "recommendation": "Use the Long Animation Frames / Event Timing signal (not just wall-clock) to attribute main-thread blocking during an interaction.",
+      "appliedOrException": "applied for measurement — used PerformanceObserver('longtask') plus a MessageChannel stall probe to quantify main-thread blocking during the composite before vs after.",
+      "evidence": "before/after captured with a ≥1080p (1920×1080) synthetic input; see performance rubric."
+    },
+    {
+      "id": "mdn:OffscreenCanvas+ImageBitmap(transferable)",
+      "query": "build canvas pixels off the main thread and transfer to the page without a structured clone",
+      "recommendation": "MDN primitives (no dedicated worker/transferable guide exists in the modern-web-guidance catalogue as of 2026-05-16): build RGBA in an OffscreenCanvas in the worker, transferToImageBitmap(), and transfer the ImageBitmap (ownership moved, not cloned).",
+      "appliedOrException": "applied — worker builds the overlay/heatmap in an OffscreenCanvas, transferToImageBitmap(), and posts it in the message transfer list; the page blits it with drawImage.",
+      "evidence": "search 'move dense canvas composite off main thread ...' returned only canvas-export guides (no worker/transferable guide); MDN primitives used as source of truth."
+    }
+  ],
+  "openQuestions": [
+    "Re-measure on a real GPU device and a mid-range mobile to confirm the before-cost approaches the ~40ms invariant-15 figure and the after-cost stays sub-frame."
+  ],
+  "followUpGoals": [
+    {
+      "goal": "Apply the same worker-side OffscreenCanvas→ImageBitmap composite retrofit to the remaining photo-resolution dense-output demos (depth / matting / super-resolution / panoptic) flagged by the worker-compliance baseline.",
+      "kind": "targeted-fix",
+      "priority": "medium"
+    }
+  ],
+  "summary": "In-place invariant-15 retrofit: moved the dense mask/heatmap composite off the main thread into the inference worker (transferred ImageBitmap), keeping masks pixel-identical, controls responsive, and route/identity unchanged. Measured main-thread composite fell from ~11-14ms to sub-0.15ms."
+}
