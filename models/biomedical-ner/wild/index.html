@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Biomedical NER Wild — drug–event radar · Web AI Showcase</title>
+    <meta name="description" content="Point the model at dense clinical text and it scans for a medication and an adverse sign or symptom appearing near each other — a first-pass pharmacovigilance signal, built entirely on-device from named-entity spans in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>📡</text></svg>" />
+    <style>
+      .signal-list { display:grid; gap:.6rem; margin-top:.6rem; }
+      .signal { border:1px solid var(--border); border-radius:10px; background:var(--bg-raised); padding:.7rem .8rem; }
+      .signal .pair { font-family:var(--font-display); font-size:1.05rem; display:flex; flex-wrap:wrap; gap:.4rem; align-items:center; }
+      .signal .ctx { font-size:.85rem; color:var(--muted); margin-top:.3rem; overflow-wrap:anywhere; }
+      .signal .ctx mark { padding:0 .15rem; border-radius:3px; }
+      .pill { font-family:var(--font-mono); font-size:.82rem; padding:.12rem .5rem; border-radius:999px; border:1px solid transparent; }
+      .arrow { color:var(--muted); }
+    </style>
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Biomedical NER</a></p>
+
+    <header>
+      <p class="eyebrow">use case · wild</p>
+      <h1>Wild: drug–event radar</h1>
+      <p class="lede">
+        Adverse-event surveillance starts with a simple question: did a <strong>medication</strong> and an
+        <strong>adverse sign, symptom or condition</strong> show up together? Point the model at a dense
+        block of clinical text and it extracts every drug and every finding, then flags the pairs that
+        co-occur closely — a first-pass pharmacovigilance signal, entirely on-device. It's the kind of scan
+        you could run over a corpus of notes without any of them leaving the machine.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.3rem 0 .5rem" id="chips">
+        <button class="ner-chip" type="button" data-set="The patient was started on amoxicillin and within two days developed a widespread rash and pruritus. Ibuprofen was given for pain but caused epigastric discomfort and nausea. Warfarin was continued, and the patient later reported easy bruising and a nosebleed.">adverse reactions</button>
+        <button class="ner-chip" type="button" data-set="Following administration of metformin, the patient experienced diarrhoea and abdominal cramps. Atorvastatin was associated with muscle aches and fatigue. Lisinopril produced a persistent dry cough.">side effects</button>
+        <button class="ner-chip" type="button" data-set="Chemotherapy with cisplatin led to severe nausea, vomiting and hearing loss. Ondansetron was added, which relieved the vomiting but caused constipation and a headache.">oncology</button>
+      </div>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">
+        Dense clinical text
+        <textarea id="text" class="ner-input" rows="5" disabled>The patient was started on amoxicillin and within two days developed a widespread rash and pruritus. Ibuprofen was given for pain but caused epigastric discomfort and nausea. Warfarin was continued, and the patient later reported easy bruising and a nosebleed.</textarea>
+      </label>
+      <div style="display:flex;flex-wrap:wrap;gap:.6rem;align-items:center;margin:.6rem 0">
+        <button id="scan" type="button" disabled>Scan for drug–event signals</button>
+        <label style="font-size:.78rem;font-family:var(--font-mono);color:var(--muted);display:flex;align-items:center;gap:.4rem">
+          window <input id="window" type="range" min="30" max="200" value="90" disabled /> <span id="winVal">90</span> chars
+        </label>
+      </div>
+
+      <div id="signals" class="signal-list" aria-live="polite"></div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+        <span>drugs <b id="rDrugs">–</b></span>
+        <span>events <b id="rEvents">–</b></span>
+        <span>signals <b id="rSignals">–</b></span>
+      </div>
+      <p class="muted" style="font-size:.85rem">
+        Co-occurrence is <em>not</em> causation — this flags proximity, not a proven adverse reaction, and
+        is a research/education demo, not a pharmacovigilance system. "Window" is the maximum character
+        distance between a drug span and a finding span for them to be paired. Inference runs in a Web
+        Worker; the pairing maths is a light main-thread pass.
+      </p>
+    </section>
+
+    <p class="crumbs"><a href="../practical/">← Practical</a> · <a href="../">Model</a> · Next: <a href="../multi-model/">Multi-model →</a></p>
+
+    <script type="module">
+      import { BiomedNEREngine, BIOMED_CSS, groupOf, prettyType, escapeHTML } from "../biomedner.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = BIOMED_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new BiomedNEREngine();
+      let loaded = false;
+
+      const DRUG = new Set(["Medication"]);
+      const EVENT = new Set(["Sign_symptom", "Disease_disorder"]);
+
+      for (const c of document.querySelectorAll(".ner-chip")) c.addEventListener("click", () => { $("text").value = c.dataset.set; if (loaded) run(); });
+      $("window").addEventListener("input", () => { $("winVal").textContent = $("window").value; });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/biomedical-ner-all-ONNX", runtime: "transformers.js", dtype: "q8", sizeMB: 67, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("text").disabled = false; $("scan").disabled = false; $("window").disabled = false; loaded = true; run(); },
+      });
+
+      $("scan").addEventListener("click", run);
+      async function run() {
+        if (!loaded) return;
+        const text = $("text").value.trim();
+        if (!text) { setErr("Add some clinical text."); return; }
+        $("runStatus").hidden = true; $("scan").disabled = true;
+        try {
+          const r = await engine.ner(text);
+          const drugs = r.spans.filter((s) => DRUG.has(s.type) && s.start != null);
+          const events = r.spans.filter((s) => EVENT.has(s.type) && s.start != null);
+          const win = Number($("window").value);
+          const signals = [];
+          for (const d of drugs) {
+            for (const e of events) {
+              const gap = e.start >= d.end ? e.start - d.end : (e.end <= d.start ? d.start - e.end : 0);
+              if (gap <= win) {
+                const lo = Math.max(0, Math.min(d.start, e.start) - 20);
+                const hi = Math.min(text.length, Math.max(d.end, e.end) + 20);
+                signals.push({ drug: d, event: e, gap, ctxStart: lo, ctxEnd: hi });
+              }
+            }
+          }
+          signals.sort((a, b) => a.gap - b.gap);
+          renderSignals(signals, text);
+          $("readout").hidden = false; $("rBackend").textContent = r.device.toUpperCase(); $("rMs").textContent = r.ms + " ms";
+          $("rDrugs").textContent = drugs.length; $("rEvents").textContent = events.length; $("rSignals").textContent = signals.length;
+        } catch (err) { setErr("Scan failed: " + err.message); }
+        finally { $("scan").disabled = false; }
+      }
+
+      function renderSignals(signals, text) {
+        if (!signals.length) { $("signals").replaceChildren(Object.assign(document.createElement("p"), { className: "muted", textContent: "No drug–event pairs within the window. Widen it, or try a sample with reactions." })); return; }
+        $("signals").replaceChildren(...signals.map((s) => {
+          const el = document.createElement("div"); el.className = "signal";
+          const pair = document.createElement("div"); pair.className = "pair";
+          const dp = document.createElement("span"); dp.className = "pill ent-medication"; dp.style.background = "color-mix(in srgb, currentColor 16%, transparent)"; dp.textContent = s.drug.text;
+          const ep = document.createElement("span"); ep.className = "pill ent-condition"; ep.style.background = "color-mix(in srgb, currentColor 16%, transparent)"; ep.textContent = s.event.text;
+          const arrow = document.createElement("span"); arrow.className = "arrow"; arrow.textContent = "→";
+          const gap = document.createElement("span"); gap.className = "tsub"; gap.style.cssText = "font-family:var(--font-mono);font-size:.7rem;color:var(--muted)"; gap.textContent = `${s.gap} chars apart · ${prettyType(s.event.type)}`;
+          pair.append(dp, arrow, ep, gap);
+          const ctx = document.createElement("div"); ctx.className = "ctx";
+          // Highlight the drug + event inside the context snippet (offsets are escaped in renderCtx).
+          ctx.innerHTML = "…" + renderCtx(s, text) + "…";
+          el.append(pair, ctx); return el;
+        }));
+      }
+      function renderCtx(s, text) {
+        // Build an escaped snippet with the drug + event spans wrapped, using absolute offsets.
+        const points = [
+          { start: s.drug.start, end: s.drug.end, cls: "ent-medication" },
+          { start: s.event.start, end: s.event.end, cls: "ent-condition" },
+        ].sort((a, b) => a.start - b.start);
+        let html = "", cursor = s.ctxStart;
+        for (const p of points) {
+          if (p.start < cursor) continue;
+          html += escapeHTML(text.slice(cursor, p.start));
+          html += `<mark class="ent ${p.cls}" style="background:color-mix(in srgb, currentColor 16%, transparent)">${escapeHTML(text.slice(p.start, p.end))}</mark>`;
+          cursor = p.end;
+        }
+        html += escapeHTML(text.slice(cursor, s.ctxEnd));
+        return html;
+      }
+      function setErr(m) { $("runStatus").hidden = false; $("runStatus").textContent = m; $("runStatus").classList.add("err"); }
+    </script>
+  </body>
+</html>

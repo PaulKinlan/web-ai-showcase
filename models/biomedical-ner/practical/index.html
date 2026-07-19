@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Biomedical NER Practical — structure &amp; de-identify a note · Web AI Showcase</title>
+    <meta name="description" content="Two shippable moves: turn a free-text clinical note into a structured problem / medication / finding list, and de-identify Age / Sex / Date spans on-device before the text is shared. Both run entirely in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🗂️</text></svg>" />
+    <style>
+      .struct-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:.8rem; margin-top:.6rem; }
+      .struct-card { border:1px solid var(--border); border-radius:10px; background:var(--bg-raised); padding:.7rem .8rem; min-inline-size:0; }
+      .struct-card h4 { margin:0 0 .4rem; font-family:var(--font-mono); font-size:.78rem; display:flex; align-items:center; gap:.4rem; }
+      .struct-card ul { margin:0; padding-inline-start:1.1rem; }
+      .struct-card li { font-size:.9rem; margin:.15rem 0; overflow-wrap:anywhere; }
+      .struct-card .tsub { font-family:var(--font-mono); font-size:.66rem; color:var(--muted); }
+      .redact-mask { background:var(--color); color:var(--color); border-radius:4px; padding:0 .35rem; user-select:none; }
+      @media (prefers-color-scheme: dark) { .redact-mask { background:#e6e6ea; color:#e6e6ea; } }
+    </style>
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Biomedical NER</a></p>
+
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Practical: structure a note, and de-identify it</h1>
+      <p class="lede">
+        Two things a clinic or research team would actually ship. <strong>Structure</strong> turns a
+        free-text note into grouped lists — problems, medications, procedures, measurements — a first pass
+        for a human to confirm. <strong>De-identify</strong> masks the spans that identify a patient
+        (<code>Age</code>, <code>Sex</code>, <code>Date</code>, person references) so the note can be shared
+        or logged. Both run entirely on your device — the point of doing this in the browser.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.3rem 0 .5rem" id="chips">
+        <button class="ner-chip" type="button" data-set="A 63-year-old man was admitted on 12 March with acute chest pain. He was diagnosed with an inferior myocardial infarction and started on aspirin 300mg, atorvastatin 80mg, and a heparin infusion. Troponin was markedly elevated.">cardiology</button>
+        <button class="ner-chip" type="button" data-set="A 4-year-old girl presented with a high fever and productive cough. Chest radiograph showed right basal consolidation consistent with pneumonia; amoxicillin 250mg three times daily was commenced.">paediatrics</button>
+        <button class="ner-chip" type="button" data-set="Mrs Jones, a 71-year-old retired teacher, reported worsening breathlessness over two weeks. Spirometry confirmed COPD and she was started on a salbutamol inhaler.">respiratory</button>
+      </div>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">
+        Clinical note
+        <textarea id="text" class="ner-input" rows="4" disabled>A 63-year-old man was admitted on 12 March with acute chest pain. He was diagnosed with an inferior myocardial infarction and started on aspirin 300mg, atorvastatin 80mg, and a heparin infusion. Troponin was markedly elevated.</textarea>
+      </label>
+      <div style="display:flex;flex-wrap:wrap;gap:.6rem;align-items:center;margin:.6rem 0">
+        <button id="run" type="button" disabled>Analyse note</button>
+        <label style="display:flex;align-items:center;gap:.4rem;font-size:.85rem;min-block-size:32px">
+          <input id="redact" type="checkbox" disabled /> De-identify (mask Age / Sex / Date / person)
+        </label>
+      </div>
+
+      <h3 style="font-family:var(--font-display);font-size:1.05rem;margin:.8rem 0 .2rem">Note</h3>
+      <div id="out" class="ner-out" aria-live="polite"></div>
+      <div class="ent-legend" id="legend" hidden></div>
+
+      <h3 style="font-family:var(--font-display);font-size:1.05rem;margin:1rem 0 .2rem">Structured extraction</h3>
+      <div id="struct" class="struct-grid" aria-live="polite"></div>
+
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+        <span>entities <b id="rEnts">–</b></span>
+        <span>masked <b id="rMasked">–</b></span>
+      </div>
+      <p class="muted" style="font-size:.85rem">
+        Research/education demo — NOT a validated de-identification tool. It masks only what the model
+        detects; real de-identification needs exhaustive recall and human review. Structuring is a first
+        pass to be confirmed, never a substitute for the record.
+      </p>
+    </section>
+
+    <p class="crumbs"><a href="../basics/">← Basics</a> · <a href="../">Model</a> · Next: <a href="../wild/">Wild →</a></p>
+
+    <script type="module">
+      import { BiomedNEREngine, BIOMED_CSS, ENTITY_GROUPS, groupOf, prettyType, renderHighlighted, renderLegend, escapeHTML } from "../biomedner.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = BIOMED_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new BiomedNEREngine();
+      let loaded = false;
+
+      // Types treated as patient-identifying for the de-identify pass.
+      const IDENTIFYING = new Set(["Age", "Sex", "Date", "Time", "Subject", "Personal_background", "Occupation", "Family_history", "History"]);
+
+      for (const c of document.querySelectorAll(".ner-chip")) c.addEventListener("click", () => { $("text").value = c.dataset.set; if (loaded) run(); });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/biomedical-ner-all-ONNX", runtime: "transformers.js", dtype: "q8", sizeMB: 67, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("text").disabled = false; $("run").disabled = false; $("redact").disabled = false; loaded = true; run(); },
+      });
+
+      $("run").addEventListener("click", run);
+      $("redact").addEventListener("change", run);
+
+      async function run() {
+        if (!loaded) return;
+        const text = $("text").value.trim();
+        if (!text) { setErr("Add some clinical text."); return; }
+        $("runStatus").hidden = true; $("run").disabled = true;
+        try {
+          const r = await engine.ner(text);
+          const redact = $("redact").checked;
+          let masked = 0;
+          if (redact) {
+            // Rebuild the note with identifying spans replaced by ▁ blocks, keeping other entity highlights.
+            const ordered = r.spans.filter((s) => s.start != null).sort((a, b) => a.start - b.start);
+            const frag = document.createDocumentFragment();
+            let cursor = 0;
+            for (const s of ordered) {
+              if (s.start < cursor) continue;
+              if (s.start > cursor) frag.append(document.createTextNode(text.slice(cursor, s.start)));
+              if (IDENTIFYING.has(s.type)) {
+                masked++;
+                const m = document.createElement("span"); m.className = "redact-mask"; m.textContent = "█".repeat(Math.max(3, Math.min(10, s.end - s.start)));
+                m.setAttribute("title", `masked ${prettyType(s.type)}`); m.setAttribute("aria-label", `redacted ${prettyType(s.type)}`);
+                frag.append(m);
+              } else {
+                const g = groupOf(s.type);
+                const mark = document.createElement("mark"); mark.className = "ent ent-" + g; mark.textContent = text.slice(s.start, s.end);
+                const tag = document.createElement("span"); tag.className = "ent-tag"; tag.textContent = prettyType(s.type); mark.append(tag);
+                mark.setAttribute("title", `${prettyType(s.type)} · ${(s.score * 100).toFixed(1)}%`);
+                frag.append(mark);
+              }
+              cursor = s.end;
+            }
+            if (cursor < text.length) frag.append(document.createTextNode(text.slice(cursor)));
+            $("out").replaceChildren(frag);
+          } else {
+            renderHighlighted($("out"), r.text, r.spans);
+          }
+          const present = new Set(r.spans.filter((s) => !(redact && IDENTIFYING.has(s.type))).map((s) => groupOf(s.type)));
+          renderLegend($("legend"), present); $("legend").hidden = present.size === 0;
+          renderStruct(r.spans, redact);
+          $("readout").hidden = false; $("rBackend").textContent = r.device.toUpperCase(); $("rMs").textContent = r.ms + " ms";
+          $("rEnts").textContent = r.spans.length; $("rMasked").textContent = masked;
+        } catch (err) { setErr("Analysis failed: " + err.message); }
+        finally { $("run").disabled = false; }
+      }
+
+      function renderStruct(spans, redact) {
+        // Group entities by their super-group, deduping identical surface strings per group.
+        const groups = new Map();
+        for (const s of spans) {
+          if (redact && IDENTIFYING.has(s.type)) continue;
+          const g = groupOf(s.type);
+          if (!groups.has(g)) groups.set(g, new Map());
+          const key = s.text.toLowerCase().trim();
+          const prev = groups.get(g).get(key);
+          if (!prev || s.score > prev.score) groups.get(g).set(key, s);
+        }
+        const order = Object.keys(ENTITY_GROUPS).filter((g) => groups.has(g) && groups.get(g).size);
+        if (!order.length) { $("struct").replaceChildren(Object.assign(document.createElement("p"), { className: "muted", textContent: "No entities found." })); return; }
+        $("struct").replaceChildren(...order.map((g) => {
+          const card = document.createElement("div"); card.className = "struct-card";
+          const h = document.createElement("h4");
+          const sw = document.createElement("span"); sw.className = "sw ent-" + g; sw.style.cssText = "display:inline-block;inline-size:.8rem;block-size:.8rem;border-radius:3px;background:currentColor";
+          h.append(sw, document.createTextNode(ENTITY_GROUPS[g].label)); card.append(h);
+          const ul = document.createElement("ul");
+          for (const s of [...groups.get(g).values()].sort((a, b) => b.score - a.score)) {
+            const li = document.createElement("li");
+            li.textContent = s.text + " ";
+            const sub = document.createElement("span"); sub.className = "tsub"; sub.textContent = prettyType(s.type) + " · " + (s.score * 100).toFixed(0) + "%";
+            li.append(sub); ul.append(li);
+          }
+          card.append(ul); return card;
+        }));
+      }
+      function setErr(m) { $("runStatus").hidden = false; $("runStatus").textContent = m; $("runStatus").classList.add("err"); }
+    </script>
+  </body>
+</html>
