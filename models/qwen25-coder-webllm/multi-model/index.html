@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Qwen2.5-Coder Multi-model — code, then explained · Web AI Showcase</title>
+    <meta name="description" content="Two models in a pipeline: Qwen2.5-Coder writes the code, then Llama-3.2-1B explains it in plain English for a non-programmer — both running locally on your GPU via WebLLM." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>👨‍💻</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Qwen2.5-Coder</a></p>
+    <header>
+      <p class="eyebrow">use case · multi-model</p>
+      <h1>Multi-model: code, then explained</h1>
+      <p class="lede">
+        One model writes, another translates it for humans. Describe a function; <strong>Qwen2.5-Coder</strong>
+        writes it, then that code is handed to <strong>Llama-3.2-1B</strong> — a small general chat model —
+        which explains what it does in plain English for someone who doesn't code. Two specialised models,
+        both on your GPU, nothing uploaded. It's a pattern: use the code model for code, a general model for
+        prose.
+      </p>
+    </header>
+
+    <section class="panel">
+      <h3 style="margin-top:0">Models</h3>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:1rem">
+        <div><h4 style="font-family:var(--font-body);font-size:.85rem;margin:.2rem 0">Coder (writes code)</h4><div id="coder-loader"></div></div>
+        <div><h4 style="font-family:var(--font-body);font-size:.85rem;margin:.2rem 0">Llama-3.2-1B (explains it)</h4><div id="llama-loader"></div></div>
+      </div>
+      <div id="fallback" class="fallback" hidden style="margin-top:.6rem"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="chat-wrap" style="margin-top:.6rem">
+        <label class="control" for="lang" style="max-inline-size:14rem">language
+          <span class="row"><select id="lang">
+            <option value="python">Python</option><option value="javascript">JavaScript</option>
+            <option value="typescript">TypeScript</option><option value="go">Go</option><option value="rust">Rust</option>
+          </select></span>
+        </label>
+        <div class="chips" id="examples">
+          <button class="chip" type="button"># group a list of transactions by month and sum the amounts</button>
+          <button class="chip" type="button"># retry an async operation with exponential backoff</button>
+          <button class="chip" type="button"># validate that a password has 8+ chars, a digit and a symbol</button>
+        </div>
+        <div class="composer">
+          <textarea id="input" placeholder="# describe the function…" disabled></textarea>
+          <button id="send" type="button" disabled>Write &amp; explain</button>
+          <button id="stop" type="button" class="secondary" hidden>Stop</button>
+        </div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:1rem;margin-top:.8rem">
+        <div>
+          <h4 style="font-family:var(--font-body);font-size:.85rem;margin:.2rem 0">① Code (Qwen2.5-Coder)</h4>
+          <div id="code" class="proseout"><span class="muted">The generated code appears here.</span></div>
+        </div>
+        <div>
+          <h4 style="font-family:var(--font-body);font-size:.85rem;margin:.2rem 0">② Plain-English explanation (Llama-3.2-1B)</h4>
+          <div id="explain" class="msg-explain proseout"><span class="muted">The explanation streams here, after the code is written.</span></div>
+        </div>
+      </div>
+      <div class="readout" id="readout" hidden><span>code <b id="rCode">–</b></span><span>explain <b id="rExp">–</b></span></div>
+    </section>
+
+    <section aria-labelledby="how-h">
+      <h2 id="how-h">Why two models beat one</h2>
+      <p class="muted">
+        The code-tuned model is best at writing correct, idiomatic code; a general instruct model is better
+        at warm, plain-language prose for a non-programmer. Chaining them plays to each one's strength: the
+        Coder's output becomes the second model's input. The same idea generalises — Coder writes a migration
+        and a reasoning model reviews it, or Coder writes a query and a chat model turns the results into a
+        summary. Because both run locally, the whole pipeline is private and free. Note the combined VRAM:
+        Coder (~1.6 GB) plus Llama-3.2-1B (~1.1 GB) both resident at once.
+      </p>
+    </section>
+
+    <p class="crumbs"><a href="../wild/">← Wild</a> · <a href="../">Qwen2.5-Coder</a></p>
+
+    <script type="module">
+      import { WebLLMChatEngine, probeWebGPU, webgpuFallbackHTML, highlightCode, extractCodeBlocks, CHAT_CSS } from "../webllm-chat.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = CHAT_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      // Two WebLLM engines, same parameterised worker.js, different MLC model ids.
+      const coder = new WebLLMChatEngine("Qwen2.5-Coder-1.5B-Instruct-q4f16_1-MLC");
+      const llama = new WebLLMChatEngine("Llama-3.2-1B-Instruct-q4f16_1-MLC");
+      let coderReady = false, llamaReady = false, busy = false, fellBack = false;
+
+      for (const c of $("examples").children) c.addEventListener("click", () => { $("input").value = c.textContent; });
+
+      function maybeEnable() {
+        if (coderReady && llamaReady) { $("input").disabled = false; $("send").disabled = false; $("status").classList.add("ok"); $("status").textContent = "Both models ready."; $("input").focus(); }
+      }
+      async function fallback(err) {
+        if (fellBack) return;
+        if (String(err?.message ?? err).includes("needs-webgpu")) { fellBack = true; const probe = await probeWebGPU(); $("fallback").hidden = false; $("fallback").innerHTML = webgpuFallbackHTML(probe, "~2 GB combined", "~2.7 GB"); }
+      }
+
+      createModelLoader({
+        mount: $("coder-loader"),
+        model: { modelId: "Qwen2.5-Coder-1.5B-Instruct-q4f16_1-MLC", runtime: "webllm", dtype: "q4f16_1", sizeMB: 880, requiresWebGPU: true },
+        load: async (onProgress) => { await coder.load((p) => { if (typeof p.progress === "number") onProgress({ status: "progress", progress: p.progress * 100 }); }); return coder; },
+        onReady: () => { coderReady = true; maybeEnable(); }, onError: fallback,
+      });
+      createModelLoader({
+        mount: $("llama-loader"),
+        model: { modelId: "Llama-3.2-1B-Instruct-q4f16_1-MLC", runtime: "webllm", dtype: "q4f16_1", sizeMB: 880, requiresWebGPU: true },
+        load: async (onProgress) => { await llama.load((p) => { if (typeof p.progress === "number") onProgress({ status: "progress", progress: p.progress * 100 }); }); return llama; },
+        onReady: () => { llamaReady = true; maybeEnable(); }, onError: fallback,
+      });
+
+      function renderCode(text, streaming, langHint) {
+        const { blocks, prose } = extractCodeBlocks(text); const el = $("code"); el.innerHTML = "";
+        if (prose) { const p = document.createElement("div"); p.className = "proseout"; p.textContent = prose; el.append(p); }
+        for (const blk of blocks) {
+          const wrap = document.createElement("div"); wrap.className = "codeout";
+          const bar = document.createElement("div"); bar.className = "codeout-bar";
+          const lang = document.createElement("span"); lang.className = "lang"; lang.textContent = blk.lang || langHint;
+          const copy = document.createElement("button"); copy.className = "copybtn"; copy.type = "button"; copy.textContent = "Copy";
+          copy.addEventListener("click", async () => { try { await navigator.clipboard.writeText(blk.code); copy.textContent = "Copied"; setTimeout(() => copy.textContent = "Copy", 1200); } catch { copy.textContent = "—"; } });
+          bar.append(lang, copy);
+          const pre = document.createElement("pre"); const code = document.createElement("code");
+          code.innerHTML = highlightCode(blk.code) + (streaming ? '<span class="caret"></span>' : ""); pre.append(code); wrap.append(bar, pre); el.append(wrap);
+        }
+        if (!blocks.length && streaming) { const c = document.createElement("span"); c.className = "caret"; el.append(c); }
+      }
+
+      async function run() {
+        if (busy || !(coderReady && llamaReady)) return;
+        const q = $("input").value.trim(); if (!q) return;
+        const lang = $("lang").value;
+        busy = true; $("send").disabled = true; $("input").disabled = true; $("stop").hidden = false;
+        $("status").classList.remove("err", "ok"); $("status").textContent = "① Coder is writing the code…";
+        let codeAcc = ""; renderCode("", true, lang);
+        $("explain").innerHTML = '<span class="muted">Waiting for the code…</span>';
+        try {
+          const t0 = performance.now();
+          const cRes = await coder.chat(
+            { messages: [
+              { role: "system", content: "You are a coding assistant. Write clean, correct, idiomatic code for the request. Reply with a single fenced code block only." },
+              { role: "user", content: `Language: ${lang}\n${q}` },
+            ], temperature: 0.2, top_p: 0.95, max_tokens: 400 },
+            { onToken: (d) => { codeAcc += d; renderCode(codeAcc, true, lang); } },
+          );
+          renderCode(codeAcc, false, lang);
+          const codeMs = Math.round(performance.now() - t0);
+          $("rCode").textContent = codeMs + " ms";
+
+          const { blocks } = extractCodeBlocks(codeAcc);
+          const codeOnly = blocks.length ? blocks[0].code : codeAcc;
+          $("status").textContent = "② Llama-3.2-1B is explaining it…";
+          $("explain").innerHTML = '<span class="caret"></span>'; let expAcc = "";
+          const t1 = performance.now();
+          const eRes = await llama.chat(
+            { messages: [
+              { role: "system", content: "You explain code to someone who does not program. Use plain English, short sentences, and an everyday analogy where it helps. Do not include code." },
+              { role: "user", content: `Explain what this ${lang} code does, for a non-programmer:\n\n${codeOnly}` },
+            ], temperature: 0.5, top_p: 0.95, max_tokens: 320 },
+            { onToken: (d) => { expAcc += d; $("explain").textContent = expAcc; } },
+          );
+          $("explain").textContent = expAcc || "(no explanation)";
+          $("rExp").textContent = Math.round(performance.now() - t1) + " ms"; $("readout").hidden = false;
+          $("status").textContent = "Done — code by Coder, explanation by Llama."; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { busy = false; $("send").disabled = false; $("input").disabled = false; $("stop").hidden = true; }
+      }
+      $("send").addEventListener("click", run);
+      $("input").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); run(); } });
+      $("stop").addEventListener("click", () => { coder.stop(); llama.stop(); $("status").textContent = "Stopping…"; });
+    </script>
+  </body>
+</html>
