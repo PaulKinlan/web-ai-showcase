@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>BGE-M3 Practical — long-document, cross-language search &amp; dedup · Web AI Showcase</title>
+    <meta name="description" content="Search a mixed-language knowledge base of long passages by meaning, and find near-duplicate documents across languages — all with one 1024-d embedder, locally in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🌐</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">BGE-M3</a></p>
+
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Practical: search &amp; dedup a multilingual knowledge base</h1>
+      <p class="lede">
+        The everyday job of a retrieval embedder. Below is a small knowledge base of <strong>long
+        passages</strong> in several languages. Ask a question in any language and BGE-M3 ranks every passage
+        by meaning; then it flags the <strong>near-duplicate</strong> passages — the same content written in
+        two languages — that you'd want to collapse in a real index. One model, one 1024-d space, no
+        translation round-trip.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="s-h">
+      <h3 id="s-h">1 · Cross-language search</h3>
+      <div id="model-loader"></div>
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.5rem">
+        Knowledge base (one passage per line — make them long)
+        <textarea id="corpus" rows="9" disabled>To extend battery life, lower your screen brightness and turn off background app refresh when you are not using the device.
+Pour prolonger l'autonomie de la batterie, réduisez la luminosité de l'écran et désactivez l'actualisation des applications en arrière-plan lorsque vous n'utilisez pas l'appareil.
+Orders are normally dispatched within three to five business days, and you will receive a tracking link by email once the parcel leaves our warehouse.
+バッテリーが膨らんだり変形したりした場合は、直ちに使用を中止し、正規のサービスセンターにお持ちください。自分で交換しないでください。
+Our two-year warranty covers manufacturing defects but does not cover accidental damage, liquid ingress, or normal wear and tear.
+Nuestra garantía de dos años cubre defectos de fabricación, pero no cubre daños accidentales, entrada de líquidos ni el desgaste normal por el uso.</textarea>
+      </label>
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;max-inline-size:34rem;margin-top:.5rem">
+        Query (any language)
+        <span style="display:flex;gap:.4rem;flex-wrap:wrap">
+          <input id="query" type="text" value="How can I make my phone battery last longer?" style="flex:1;min-inline-size:12rem" disabled />
+          <button id="search" type="button" disabled>Search</button>
+        </span>
+      </label>
+      <div class="sent-list" id="ranked" aria-live="polite"></div>
+      <div class="readout" id="rReadout" hidden><span>backend <b id="rBackend">–</b></span><span>latency <b id="rMs">–</b></span></div>
+    </section>
+
+    <section class="panel" aria-labelledby="d-h">
+      <h3 id="d-h">2 · Cross-language dedup</h3>
+      <p class="muted">Every pair of passages above whose cosine exceeds the threshold — these are candidates to
+        merge in a real index (usually the same content in two languages).</p>
+      <label style="font-size:.82rem;display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">
+        Duplicate threshold
+        <input id="thresh" type="range" min="0.7" max="0.98" step="0.01" value="0.85" disabled />
+        <b id="threshVal" style="font-family:var(--font-mono)">0.85</b>
+        <button id="dedup" type="button" class="secondary" disabled>Find duplicates</button>
+      </label>
+      <div class="sent-list" id="dupes" aria-live="polite"></div>
+    </section>
+
+    <p class="muted" style="font-size:.85rem">
+      Because retrieval happens in one shared space, you never maintain a separate index per language, and you
+      never translate the corpus up front. Long passages stay whole — BGE-M3's 8192-token window means you can
+      embed a full paragraph instead of shredding it into sentences that lose context.
+    </p>
+
+    <p class="crumbs"><a href="../basics/">← Basics</a> · <a href="../">Back to BGE-M3</a> · Next: <a href="../wild/">Wild →</a></p>
+
+    <script type="module">
+      import { BGEEngine, cosine, parseLines, guessLang, renderRanked, escapeHTML, BGE_CSS } from "../bge.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = BGE_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new BGEEngine();
+      let loaded = false;
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/bge-m3", runtime: "transformers.js", dtype: "q8", sizeMB: 570, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => {
+          $("corpus").disabled = false; $("query").disabled = false; $("search").disabled = false;
+          $("thresh").disabled = false; $("dedup").disabled = false;
+          loaded = true; search();
+        },
+      });
+
+      $("search").addEventListener("click", search);
+      $("query").addEventListener("keydown", (e) => { if (e.key === "Enter") search(); });
+      async function search() {
+        if (!loaded) return;
+        const q = $("query").value.trim();
+        const texts = parseLines($("corpus").value);
+        if (!q || texts.length < 1) return;
+        $("search").disabled = true;
+        try {
+          const qLang = guessLang(q);
+          const [qr, dr] = await Promise.all([engine.embed([q]), engine.embed(texts)]);
+          const qv = qr.embeddings[0];
+          const hits = dr.texts.map((text, i) => {
+            const l = guessLang(text);
+            return { text, score: cosine(qv, dr.embeddings[i]), tag: `${l.flag} ${l.name}`, langCode: l.code };
+          }).sort((a, b) => b.score - a.score);
+          renderRanked($("ranked"), hits, { queryLang: qLang.code });
+          $("rReadout").hidden = false;
+          $("rBackend").textContent = dr.device.toUpperCase();
+          $("rMs").textContent = (qr.ms + dr.ms) + " ms";
+        } catch (err) { $("ranked").textContent = "Search failed: " + err.message; }
+        finally { $("search").disabled = false; }
+      }
+
+      $("thresh").addEventListener("input", () => { $("threshVal").textContent = (+$("thresh").value).toFixed(2); });
+      $("dedup").addEventListener("click", async () => {
+        if (!loaded) return;
+        const texts = parseLines($("corpus").value);
+        if (texts.length < 2) return;
+        const th = +$("thresh").value;
+        $("dedup").disabled = true;
+        try {
+          const r = await engine.embed(texts);
+          const pairs = [];
+          for (let i = 0; i < texts.length; i++) {
+            for (let j = i + 1; j < texts.length; j++) {
+              const s = cosine(r.embeddings[i], r.embeddings[j]);
+              if (s >= th) pairs.push({ i, j, s });
+            }
+          }
+          pairs.sort((a, b) => b.s - a.s);
+          if (pairs.length === 0) {
+            $("dupes").replaceChildren();
+            const p = document.createElement("p"); p.className = "muted"; p.style.fontSize = ".85rem";
+            p.textContent = "No pairs above the threshold — lower it to catch looser matches.";
+            $("dupes").append(p);
+            return;
+          }
+          $("dupes").replaceChildren(...pairs.map(({ i, j, s }) => {
+            const la = guessLang(texts[i]), lb = guessLang(texts[j]);
+            const row = document.createElement("div"); row.className = "result-row";
+            row.innerHTML = `<div class="result-head"><span>${la.flag} ${escapeHTML(texts[i].slice(0, 90))}…<br>${lb.flag} ${escapeHTML(texts[j].slice(0, 90))}…</span><span class="result-score">${s.toFixed(3)}</span></div>`;
+            return row;
+          }));
+        } catch (err) { $("dupes").textContent = "Dedup failed: " + err.message; }
+        finally { $("dedup").disabled = false; }
+      });
+    </script>
+  </body>
+</html>

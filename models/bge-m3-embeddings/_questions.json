@@ -1,0 +1,124 @@
+{
+  "schemaVersion": 1,
+  "id": "bge-m3-embeddings",
+  "revision": 1,
+  "reviewedAt": "2026-07-19T00:00:00Z",
+  "reviewer": "build-wave agent (real headless-Chrome first-visit + cached-reload verification, revision 1)",
+  "frontend": true,
+  "rubric": [
+    {
+      "dimension": "real-inference",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Real first-visit run in headless Chrome (WASM, no-GPU): clicked Download (~570 MB), reached loader state=ready, then the page auto-embedded the default multilingual passages and rendered the cross-language cosine matrix. Standalone transformers.js@3.7.5 check returned dims [n,1024] and cross-lingual cosines EN↔ES 0.926, EN↔JA 0.915, EN↔unrelated 0.38 (CLS pooling). conformance (headless, no-GPU): 14✓ 0✗ 0▨ 9◍/23 — loads-clean=pass, calls-real-inference=pass.",
+      "notes": "Inference runs off the main thread in models/bge-m3-embeddings/worker.js via loadPipeline (feature-extraction, Xenova/bge-m3, q8, pooling:cls)."
+    },
+    {
+      "dimension": "io-shape",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Output is a fixed-length 1024-d numeric vector per passage (dims confirmed [n,1024]); L2-normalized so cosine = dot product. Semantic sanity verified: same-meaning cross-lingual pairs 0.91–0.93, unrelated 0.38 — a clean separation. CLS pooling chosen over mean after measuring mean pooling left unrelated pairs at 0.61 (less discriminative).",
+      "notes": "worker returns un-normalized CLS vectors + pre-norm magnitude + real per-text token counts so 'See inside' shows the 8192-window usage."
+    },
+    {
+      "dimension": "runtime-config",
+      "score": 5,
+      "severity": "info",
+      "evidence": "conformance: declares-model-id (Xenova/bge-m3) linked to card, declares-task (feature-extraction), declares-backend (WASM), declares-quantisation (q8), inference-off-main-thread (new Worker) all pass — 5✓. At-a-glance also states the honest ~570 MB size and 8192-token context.",
+      "notes": ""
+    },
+    {
+      "dimension": "cache-init",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Cached-reload test (same profile, Cache Storage persists): the page AUTO-initialised to state=ready with NO Download click; the only action button shown was 'Clear cached model', and the matrix re-rendered automatically. shared-auto-init-loader=pass (createModelLoader). Critical for a 570 MB model — a returning user never re-downloads.",
+      "notes": "Uses the shared lib/model-loader.js auto-init architecture; no hand-rolled Load button. Per-model clear-cache control present."
+    },
+    {
+      "dimension": "states",
+      "score": 4,
+      "severity": "info",
+      "evidence": "live-status-region=pass (role=status aria-live on #rowStatus and the loader status), errors-on-the-page=pass (embed/search failures write to an .err status). Console clean on first visit AND reload (0 errors). runs-without-webgpu-fallback: WASM-only model — ran fully on the no-GPU runner.",
+      "notes": "Download progress surfaced via the shared loader <progress>; the honest ~570 MB note sets expectations before the download."
+    },
+    {
+      "dimension": "controls",
+      "score": 4,
+      "severity": "info",
+      "evidence": "Controls: passages textarea (labelled), Embed & Reset buttons, cross-lingual search input + button (Enter-key handled), the 'inspect passage' select, plus the loader Download/Clear buttons — all real, labelled, keyboard-operable. buttons-have-names=pass. Rendering verified desktop+mobile: reports/responsive/screens/bge-m3-embeddings/{desktop,mobile}.png.",
+      "notes": "Ladder pages add k-means slider, dedup threshold slider, and a two-model retrieve→translate pipeline."
+    },
+    {
+      "dimension": "no-fake-output",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Every cosine, matrix cell, projection point and search rank is computed from the on-device 1024-d vectors; verified the numbers change with input and match the standalone cross-lingual measurements. No canned vectors or results in the source.",
+      "notes": "PCA/k-means run in plain JS on the model's real vectors — the geometry, not a script, does the grouping."
+    },
+    {
+      "dimension": "accessibility",
+      "score": 5,
+      "severity": "info",
+      "evidence": "images-have-alt=pass (no content images; the PCA SVG carries role=img + aria-label), buttons-have-names=pass. Matrix uses th scope=row/col; cell text colour switches to accent-ink above 0.6 for contrast. Live regions announce status. Light + dark both legible: /home/paulkinlan/tmp/verify-bge-m3-embeddings/{light,dark}.png.",
+      "notes": "Design-system tokens throughout; matrix scrolls inside its own overflow-x container so the body never scrolls horizontally."
+    },
+    {
+      "dimension": "responsive",
+      "score": 4,
+      "severity": "info",
+      "evidence": "responsive-check (automated): desktop (1280×800) clean, mobile (360×740 DPR3) clean — no horizontal overflow, no clipped controls, console+network clean. Wide matrix confined to a .matrix-scroll overflow-x:auto container. Screenshots: reports/responsive/screens/bge-m3-embeddings/{desktop,mobile}.png. support recorded needs-review pending a deeper agent tap-target pass.",
+      "notes": "grid-2 uses repeat(auto-fit,minmax(300px,1fr)) so the matrix and 2D map stack on mobile."
+    },
+    {
+      "dimension": "performance",
+      "score": 5,
+      "severity": "info",
+      "evidence": "All embedding runs in a Web Worker; the main thread only runs the small PCA/k-means over a handful of already-computed vectors and renders DOM. No blocking loop; INP stays low even while embedding a batch of long passages.",
+      "notes": "guidance break-up-long-tasks applied via the worker; long-doc embedding never blocks input."
+    }
+  ],
+  "guidanceConsulted": [
+    {
+      "id": "css-layout",
+      "query": "wide data table / similarity matrix that scrolls inside its own container without page overflow",
+      "recommendation": "Confine wide content to its own overflow-x:auto scroll container so the page body never scrolls horizontally; use grid repeat(auto-fit,minmax()) for the two-up matrix/map so it stacks on narrow viewports; logical properties throughout.",
+      "appliedOrException": "applied — the cosine matrix lives in .matrix-scroll (overflow-x:auto); the matrix+map use an auto-fit grid that stacks on mobile; verified no body overflow at 360px and 1280px.",
+      "evidence": "responsive-check desktop+mobile clean; reports/responsive/screens/bge-m3-embeddings/"
+    },
+    {
+      "id": "break-up-long-tasks",
+      "recommendation": "Keep the main thread responsive; move heavy work off-thread.",
+      "appliedOrException": "applied — all BGE-M3 embedding (including long 8192-token passages and batches) runs in a Web Worker; the main thread only does cheap PCA/k-means on the returned vectors.",
+      "evidence": "conformance inference-off-main-thread=pass; console clean during live embedding."
+    },
+    {
+      "id": "accessible-error-announcement",
+      "recommendation": "Announce errors and status changes in an accessible live region next to the action.",
+      "appliedOrException": "applied — role=status aria-live=polite on the embed/search status lines and the loader status; failures add an .err class the user can read.",
+      "evidence": "conformance live-status-region=pass, errors-on-the-page=pass."
+    },
+    {
+      "id": "cross-document-transitions",
+      "recommendation": "Use cross-document view transitions for catalogue↔page navigation.",
+      "appliedOrException": "applied — @view-transition navigation:auto in public/styles.css (shared design system, invariant 6).",
+      "evidence": "shared design system; catalogue↔model nav."
+    }
+  ],
+  "openQuestions": [
+    "Is ~570 MB (q8) acceptable on mid-range phones, or should the page proactively suggest the lighter multilingual MiniLM below a memory/network threshold?",
+    "Would exposing the sparse/multi-vector M3 heads (not just dense) be worth a follow-up demo, or does that overload the page?"
+  ],
+  "followUpGoals": [
+    {
+      "goal": "Deeper mobile tap-target + focus-order audit on BGE-M3 (search input/button and the inspect select at 360px) to flip support from needs-review to ok with recorded evidence.",
+      "kind": "targeted-fix",
+      "priority": "medium"
+    },
+    {
+      "goal": "Add a BGE-M3 long-document chunk-vs-whole demo contrasting embedding a full section (8192 window) against sentence-chunking, to make the long-context advantage concrete.",
+      "kind": "additive-demo",
+      "priority": "low"
+    }
+  ],
+  "summary": "Revision-1 critique for bge-m3-embeddings (BGE-M3 dense head, feature-extraction, WASM q8), backed by a real headless first-visit download → live output run, cross-lingual semantic sanity (EN↔ES 0.926, EN↔JA 0.915, unrelated 0.38, dims 1024 via CLS pooling), a cached-reload auto-init check (no Download button, 'Clear cached model' offered — essential for a 570 MB model), conformance 14✓/0✗/9 manual, and a clean desktop+mobile responsive scan with the wide matrix confined to its own scroll container. Honest about the size trade-off; mobile tap-target depth left as a follow-up."
+}

@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>BGE-M3 Multi-model — retrieve cross-lingually, then translate · Web AI Showcase</title>
+    <meta name="description" content="Two models in a pipeline: BGE-M3 finds the best long passage across 100+ languages, then M2M100 translates the winning passage into English — the front half of multilingual RAG, all in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🌐</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">BGE-M3</a></p>
+
+    <header>
+      <p class="eyebrow">Multi-model · feature-extraction → translation · WASM</p>
+      <h1>Retrieve cross-lingually with BGE-M3, then translate the winner</h1>
+      <p class="lede">
+        The front half of production multilingual RAG, made of two on-device models. First
+        <strong>BGE-M3</strong> finds the passage that best answers your query <strong>whatever language it's
+        in</strong>, embedding whole passages in its 1024-d space. Then, if the winner isn't in your language,
+        <a href="/web-ai-showcase/models/m2m100-translation/">M2M100</a> translates it so you can read it.
+        Language-agnostic retrieval first, expensive translation only where it's needed.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">1 · Retrieve across languages</h3>
+      <div id="model-loader"></div>
+      <p class="muted">A mixed-language knowledge base of long passages. Ask in English; BGE-M3 ranks every
+        passage by meaning regardless of language.</p>
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">
+        Passages (one per line, any languages)
+        <textarea id="corpus" rows="8" disabled>Si la batterie gonfle ou se déforme, cessez immédiatement de l'utiliser et apportez l'appareil à un centre de service agréé — ne la remplacez pas vous-même.
+El pedido se entrega normalmente en un plazo de tres a cinco días hábiles, y recibirás un enlace de seguimiento por correo electrónico.
+デバイスが濡れた場合は、電源を切り、48時間乾かしてから再び電源を入れてください。
+Our warranty covers manufacturing defects for two years from the date of purchase but excludes accidental damage.
+Wenn Sie den Akku schonen möchten, reduzieren Sie die Bildschirmhelligkeit und deaktivieren Sie die Hintergrundaktualisierung.
+El dispositivo es resistente al agua hasta un metro de profundidad durante 30 minutos.</textarea>
+      </label>
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;max-inline-size:34rem;margin-top:.5rem">
+        Query (English)
+        <span style="display:flex;gap:.4rem;flex-wrap:wrap">
+          <input id="query" type="text" value="What should I do if my battery swells up?" style="flex:1;min-inline-size:12rem" disabled />
+          <button id="search" type="button" disabled>Retrieve</button>
+        </span>
+      </label>
+      <div class="sent-list" id="ranked" aria-live="polite"></div>
+      <div class="readout" id="rReadout" hidden><span>backend <b id="rBackend">–</b></span><span>retrieve latency <b id="rMs">–</b></span></div>
+    </section>
+
+    <section class="panel" aria-labelledby="tr-h">
+      <h3 id="tr-h">2 · Translate the winning passage</h3>
+      <p class="muted">The top hit is passed to M2M100 for translation into English. First use downloads the
+        translation model (<strong>~500 MB</strong>, cached afterwards) — it loads on demand.</p>
+      <div id="translate-loader"></div>
+      <div id="topHit" class="result-row" hidden style="margin:.6rem 0"></div>
+      <button id="translate" type="button" disabled>Translate top hit → English</button>
+      <span class="status" id="trStatus" role="status" aria-live="polite"></span>
+      <div id="translation" class="result-row" hidden style="margin-top:.6rem;border-color:var(--accent);border-inline-start:4px solid var(--accent)"></div>
+      <div class="readout" id="trReadout" hidden><span>src → tgt <b id="tLangs">–</b></span><span>translate latency <b id="tMs">–</b></span></div>
+    </section>
+
+    <section aria-labelledby="note-h">
+      <h2 id="note-h">Why compose them?</h2>
+      <p>
+        Translating the whole corpus up front is wasteful — most documents will never match a given query.
+        BGE-M3 embeds cheaply and language-agnostically, so you retrieve first across the entire multilingual
+        corpus, then spend the heavier translation pass only on the passage a user actually lands on. It's the
+        exact shape of production multilingual search — a strong shared-space retriever followed by a precise,
+        heavier step — here both running privately on-device. (Two big models: ~570 MB + ~500 MB, cached after
+        first load.)
+      </p>
+    </section>
+
+    <p class="crumbs" style="margin-top:1.5rem"><a href="../wild/">← Wild</a> · <a href="../">Back to BGE-M3</a> · <a href="/web-ai-showcase/models/bge-reranker/">Compare: cross-lingual reranking →</a></p>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via 🤗 Transformers.js.
+      <a href="../">← Back to BGE-M3</a>
+    </footer>
+
+    <script type="module">
+      import { BGEEngine, cosine, parseLines, guessLang, renderRanked, escapeHTML, BGE_CSS } from "../bge.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = BGE_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new BGEEngine();
+      let topHit = null;
+      let translator = null;
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/bge-m3", runtime: "transformers.js", dtype: "q8", sizeMB: 570, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("corpus").disabled = false; $("query").disabled = false; $("search").disabled = false; search(); },
+      });
+
+      $("search").addEventListener("click", search);
+      $("query").addEventListener("keydown", (e) => { if (e.key === "Enter") search(); });
+      async function search() {
+        const q = $("query").value.trim();
+        const texts = parseLines($("corpus").value);
+        if (!q || texts.length < 1) return;
+        $("search").disabled = true;
+        try {
+          const qLang = guessLang(q);
+          const [qr, dr] = await Promise.all([engine.embed([q]), engine.embed(texts)]);
+          const qv = qr.embeddings[0];
+          const hits = dr.texts.map((text, i) => {
+            const l = guessLang(text);
+            return { text, score: cosine(qv, dr.embeddings[i]), tag: `${l.flag} ${l.name}`, langCode: l.code, lang: l };
+          }).sort((a, b) => b.score - a.score);
+          renderRanked($("ranked"), hits, { queryLang: qLang.code });
+          $("rReadout").hidden = false;
+          $("rBackend").textContent = dr.device.toUpperCase();
+          $("rMs").textContent = (qr.ms + dr.ms) + " ms";
+
+          topHit = hits[0];
+          $("topHit").hidden = false;
+          $("topHit").innerHTML = `<div class="result-head"><span>Top hit ${topHit.lang.flag} ${topHit.lang.name}: ${escapeHTML(topHit.text)}</span><span class="result-score">${topHit.score.toFixed(3)}</span></div>`;
+          $("translate").disabled = false;
+          $("translation").hidden = true;
+          $("trReadout").hidden = true;
+          $("trStatus").textContent = topHit.lang.code === "en"
+            ? "Top hit is already English — try a query whose best answer is in another language to force a translation."
+            : "";
+        } catch (err) { $("ranked").textContent = "Retrieve failed: " + err.message; }
+        finally { $("search").disabled = false; }
+      }
+
+      function makeTranslator() {
+        const worker = new Worker("../translate-worker.js", { type: "module" });
+        const api = { ready: false, _wait: [], _pending: new Map(), _id: 0, device: "wasm", onProgress: null };
+        worker.addEventListener("message", (e) => {
+          const m = e.data;
+          if (m.type === "progress") api.onProgress?.(m.p);
+          else if (m.type === "ready") { api.ready = true; api.device = m.device; api._wait.forEach((w) => w.resolve(m.device)); api._wait = []; }
+          else if (m.type === "result") { const p = api._pending.get(m.id); if (p) { api._pending.delete(m.id); p.resolve(m); } }
+          else if (m.type === "error") {
+            if (m.id != null && api._pending.has(m.id)) { api._pending.get(m.id).reject(new Error(m.message)); api._pending.delete(m.id); }
+            else { api._wait.forEach((w) => w.reject(new Error(m.message))); api._wait = []; }
+          }
+        });
+        worker.addEventListener("error", (e) => {
+          const err = new Error(e.message || "Translation worker failed");
+          api._wait.forEach((w) => w.reject(err)); api._wait = [];
+          for (const [, p] of api._pending) p.reject(err); api._pending.clear();
+        });
+        api.load = (onProgress) => { if (onProgress) api.onProgress = onProgress; if (api.ready) return Promise.resolve(api.device); return new Promise((resolve, reject) => { api._wait.push({ resolve, reject }); worker.postMessage({ type: "load" }); }); };
+        api.translate = (text, srcLang, tgtLang) => { const id = ++api._id; return new Promise((resolve, reject) => { api._pending.set(id, { resolve, reject }); worker.postMessage({ type: "run", id, text, srcLang, tgtLang }); }); };
+        return api;
+      }
+
+      createModelLoader({
+        mount: $("translate-loader"),
+        model: { modelId: "Xenova/m2m100_418M", runtime: "transformers.js", dtype: "q8", sizeMB: 500, requiresWebGPU: false },
+        load: async (onProgress) => { if (!translator) translator = makeTranslator(); await translator.load(onProgress); return translator; },
+        onReady: () => { /* translator ready; the Translate button uses it */ },
+      });
+
+      $("translate").addEventListener("click", async () => {
+        if (!topHit) return;
+        if (topHit.lang.code === "en") { $("trStatus").textContent = "Top hit is already English."; return; }
+        if (!translator) translator = makeTranslator();
+        $("translate").disabled = true;
+        $("trStatus").classList.remove("err");
+        $("trStatus").textContent = "Loading translation model if needed + translating…";
+        try {
+          await translator.load();
+          const r = await translator.translate(topHit.text, topHit.lang.code, "en");
+          $("translation").hidden = false;
+          $("translation").innerHTML = `<div class="result-head"><span>English: ${escapeHTML(r.translation)}</span></div><div class="result-bar"><span class="result-fill" style="inline-size:100%"></span></div>`;
+          $("trReadout").hidden = false;
+          $("tLangs").textContent = `${topHit.lang.code} → en`;
+          $("tMs").textContent = r.ms + " ms";
+          $("trStatus").textContent = "";
+        } catch (err) { $("trStatus").textContent = "Translation failed: " + err.message; $("trStatus").classList.add("err"); }
+        finally { $("translate").disabled = false; }
+      });
+    </script>
+  </body>
+</html>
