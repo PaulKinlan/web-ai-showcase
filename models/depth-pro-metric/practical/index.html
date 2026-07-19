@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>DepthPro Practical — measure distance between two points · Web AI Showcase</title>
+    <meta name="description" content="A shippable job: estimate depth once, then tap two points on the photo and read which is nearer and by how much, from DepthPro's metric-scale depth field. All on-device; needs WebGPU." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>📐</text></svg>" />
+    <style>
+      .stage2 { display:flex; flex-wrap:wrap; gap:1rem; align-items:flex-start; }
+      .img-col { flex:2 1 340px; min-inline-size:0; }
+      .read-col { flex:1 1 240px; min-inline-size:0; }
+      .pt-canvas { inline-size:100%; block-size:auto; max-block-size:60vh; object-fit:contain; border-radius:8px; border:1px solid var(--border); background:var(--bg-raised); display:block; cursor:crosshair; touch-action:none; }
+      .pt-canvas:focus-visible { outline:3px solid var(--accent); outline-offset:-3px; }
+      .pt-row { display:flex; align-items:center; gap:.5rem; margin:.3rem 0; font-family:var(--font-mono); font-size:.85rem; }
+      .dot { inline-size:.9rem; block-size:.9rem; border-radius:999px; flex:none; border:2px solid #fff; }
+      .verdict { font-family:var(--font-display); font-size:1.3rem; margin:.4rem 0; }
+    </style>
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">DepthPro</a></p>
+
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Practical: measure distance between two points</h1>
+      <p class="lede">
+        Because DepthPro's depth field is on a consistent metric scale, you can compare distances across a
+        scene — not just guess "nearer / further". Estimate depth once, then tap two points on the photo:
+        the page reads DepthPro's depth at each and tells you which is nearer and by how much. This is the
+        core of a tape-measure-from-a-photo tool. Needs a WebGPU device.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="sample-strip" id="samples">
+        <img class="sample-thumb active" src="../sample-portrait.jpg" data-src="../sample-portrait.jpg" alt="Two cats on a couch" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-room.jpg" data-src="../sample-room.jpg" alt="A sunlit bedroom" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-street.jpg" data-src="../sample-street.jpg" alt="A riverside at golden hour" tabindex="0" role="button" />
+      </div>
+      <div class="controls-row">
+        <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image" style="flex:1 1 240px">
+          <span id="dropText">Drop a photo, or click to choose</span>
+          <input type="file" id="file" accept="image/*" hidden />
+        </div>
+        <button id="run" type="button" disabled>Estimate depth</button>
+        <button id="clearPts" type="button" class="secondary">Clear points</button>
+      </div>
+
+      <div class="stage2" style="margin-top:.6rem">
+        <div class="img-col">
+          <canvas id="stage" class="pt-canvas" tabindex="0" role="button" aria-label="Photo — click two points to measure their relative distance"></canvas>
+          <p class="muted" style="font-size:.8rem">Click / tap two points on the photo after estimating depth.</p>
+        </div>
+        <div class="read-col">
+          <div class="verdict" id="verdict">—</div>
+          <div class="pt-row"><span class="dot" style="background:#1565c0" id="dotA"></span> A <b id="depthA" style="margin-inline-start:auto">–</b></div>
+          <div class="pt-row"><span class="dot" style="background:#b3261e" id="dotB"></span> B <b id="depthB" style="margin-inline-start:auto">–</b></div>
+          <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>latency <b id="rMs">–</b></span><span>range <b id="rRange">–</b></span></div>
+          <p class="muted" style="font-size:.78rem;margin-top:.6rem">Values are DepthPro's metric-scale depth field, linearly rescaled between the scene's own min and max. They read as relative distance; exact metres also need the camera focal length (not exposed by transformers.js yet), so this is a calibrated <em>comparison</em>, not an absolute tape measure.</p>
+        </div>
+      </div>
+    </section>
+
+    <p class="crumbs"><a href="../basics/">← Basics</a> · <a href="../">DepthPro</a> · Next: <a href="../wild/">Wild →</a></p>
+
+    <script type="module">
+      import { DepthProEngine, fileToDataURL, urlToDataURL, DEPTH_CSS } from "../depthpro.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = DEPTH_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new DepthProEngine();
+      let currentURL = null, currentImg = null, result = null;
+      let pts = []; // {x,y} in image pixels
+
+      function decode(url) { return new Promise((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = () => rej(new Error("decode failed")); im.src = url; }); }
+      function redraw() {
+        const c = $("stage"); if (!currentImg) return;
+        c.width = currentImg.naturalWidth; c.height = currentImg.naturalHeight;
+        const ctx = c.getContext("2d"); ctx.drawImage(currentImg, 0, 0);
+        if (pts.length === 2) { ctx.strokeStyle = "#fff"; ctx.lineWidth = Math.max(2, c.width / 300); ctx.setLineDash([c.width / 60, c.width / 90]); ctx.beginPath(); ctx.moveTo(pts[0].x, pts[0].y); ctx.lineTo(pts[1].x, pts[1].y); ctx.stroke(); ctx.setLineDash([]); }
+        const colors = ["#1565c0", "#b3261e"];
+        pts.forEach((p, i) => { const r = Math.max(6, c.width / 90); ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, 7); ctx.fillStyle = colors[i]; ctx.fill(); ctx.lineWidth = Math.max(2, c.width / 320); ctx.strokeStyle = "#fff"; ctx.stroke(); ctx.fillStyle = "#fff"; ctx.font = `600 ${Math.max(12, c.width / 40)}px system-ui`; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText(i === 0 ? "A" : "B", p.x, p.y); });
+      }
+      async function useURL(url) {
+        currentURL = url; currentImg = await decode(url); result = null; pts = [];
+        $("verdict").textContent = "—"; $("depthA").textContent = "–"; $("depthB").textContent = "–"; $("readout").hidden = true;
+        redraw();
+      }
+      async function pickSample(el) { for (const t of $("samples").children) t.classList.toggle("active", t === el); await useURL(await urlToDataURL(el.dataset.src)); }
+      for (const thumb of $("samples").children) { thumb.addEventListener("click", () => pickSample(thumb)); thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } }); }
+      pickSample($("samples").firstElementChild);
+
+      const file = $("file"), drop = $("drop");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) { for (const t of $("samples").children) t.classList.remove("active"); await useURL(await fileToDataURL(f)); $("dropText").textContent = f.name; }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/DepthPro-ONNX", runtime: "transformers.js", dtype: "q4f16", sizeMB: 572, requiresWebGPU: true },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: () => { $("run").disabled = false; },
+        onError: () => { $("run").disabled = true; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!currentURL) { $("status").textContent = "Pick a photo first."; return; }
+        $("run").disabled = true; $("status").classList.remove("err"); $("status").textContent = "Estimating depth…";
+        try {
+          result = await engine.estimate(currentURL);
+          $("readout").hidden = false; $("rBackend").textContent = result.device.toUpperCase(); $("rMs").textContent = result.ms + " ms";
+          $("rRange").textContent = result.rawMin != null ? `${result.rawMin.toFixed(2)}…${result.rawMax.toFixed(2)}` : "0…255";
+          pts = []; redraw(); $("verdict").textContent = "Now tap two points"; $("status").textContent = "Depth ready — tap two points on the photo."; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+
+      // Sample the normalized depth (0..255) at an image pixel, mapped to the depth-map resolution.
+      function depthAt(px, py) {
+        if (!result) return null;
+        const dx = Math.max(0, Math.min(result.width - 1, Math.round(px / currentImg.naturalWidth * result.width)));
+        const dy = Math.max(0, Math.min(result.height - 1, Math.round(py / currentImg.naturalHeight * result.height)));
+        const g = result.depth[dy * result.width + dx]; // 0..255, brighter = nearer
+        const norm = g / 255;
+        // Rescale into DepthPro's metric-scale field between the scene min/max (approximate, honest).
+        const metric = (result.rawMin != null && result.rawMax != null)
+          ? (result.rawMin + norm * (result.rawMax - result.rawMin))
+          : null;
+        return { norm, metric };
+      }
+      function fmt(d) { return d.metric != null ? `${d.metric.toFixed(2)} (scale)` : `${(d.norm * 100).toFixed(0)}% near`; }
+
+      function addPoint(px, py) {
+        if (!result) { $("status").textContent = "Estimate depth first."; return; }
+        if (pts.length >= 2) pts = [];
+        pts.push({ x: px, y: py }); redraw();
+        if (pts.length === 2) {
+          const a = depthAt(pts[0].x, pts[0].y), b = depthAt(pts[1].x, pts[1].y);
+          $("depthA").textContent = fmt(a); $("depthB").textContent = fmt(b);
+          // brighter (higher norm) = nearer
+          const nearer = a.norm > b.norm ? "A" : "B";
+          const gap = Math.abs(a.norm - b.norm) * 100;
+          $("verdict").innerHTML = `Point <b>${nearer}</b> is nearer` + (gap > 1 ? ` — by ${gap.toFixed(0)}% of the scene depth range` : " (about the same depth)");
+        } else { $("verdict").textContent = "Tap one more point"; $("depthA").textContent = fmt(depthAt(px, py)); $("depthB").textContent = "–"; }
+      }
+      const stage = $("stage");
+      function evtToImg(e) { const r = stage.getBoundingClientRect(); const cx = (e.touches?.[0]?.clientX ?? e.clientX) - r.left; const cy = (e.touches?.[0]?.clientY ?? e.clientY) - r.top; return { x: cx / r.width * stage.width, y: cy / r.height * stage.height }; }
+      stage.addEventListener("click", (e) => { const p = evtToImg(e); addPoint(p.x, p.y); });
+      stage.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); addPoint(stage.width / 2, stage.height / 2); } });
+      $("clearPts").addEventListener("click", () => { pts = []; redraw(); $("verdict").textContent = result ? "Now tap two points" : "—"; $("depthA").textContent = "–"; $("depthB").textContent = "–"; });
+    </script>
+  </body>
+</html>

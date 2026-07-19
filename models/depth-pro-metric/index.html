@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>DepthPro — sharp, metric-scale monocular depth in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run Apple's DepthPro locally with WebGPU: sharp, boundary-accurate, metric-scale depth from a single photo — crisp edges and a consistently-scaled depth field, distinct from Depth Anything's smooth relative maps. Colourised depth, the raw metric range, and a boundary-sharpness readout, all on-device."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>📏</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">depth-estimation · vision · WebGPU (q4f16) · ~572 MB</p>
+      <h1>DepthPro — sharp, metric-scale depth from one photo</h1>
+      <p class="lede">
+        DepthPro is Apple's high-resolution monocular depth model. Give it one photo and it estimates the
+        distance to every pixel — but unlike a smooth <em>relative</em> map, DepthPro is trained for
+        <strong>metric-scale</strong> depth with <strong>razor-sharp boundaries</strong>: crisp object
+        edges and a consistently-scaled depth field. It's a large model that runs on
+        <strong>WebGPU</strong>; the photo never leaves the tab.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/onnx-community/DepthPro-ONNX" target="_blank" rel="noopener">onnx-community/DepthPro-ONNX</a> (ONNX of Apple <a href="https://huggingface.co/apple/DepthPro" target="_blank" rel="noopener">apple/DepthPro</a>)</td></tr>
+          <tr><th>Task / pipeline</th><td><code>depth-estimation</code> — monocular, metric-scale (model_type <code>depth_pro</code>)</td></tr>
+          <tr><th>Architecture</th><td>Multi-scale ViT (patch + image encoders) fused into a high-resolution depth head → sharp, absolute-scale depth at native 1536²</td></tr>
+          <tr><th>Quantization</th><td>q4f16 (4-bit weights, fp16 compute) ONNX</td></tr>
+          <tr><th>Backend</th><td><strong>WebGPU required</strong> — a large fp16 model; there is no practical WASM/CPU path in a browser</td></tr>
+          <tr><th>Download</th><td>~572 MB, cached after first load — only downloaded on a WebGPU device</td></tr>
+          <tr><th>License</th><td>apple-ascl (Apple Sample Code License, on the onnx-community ONNX repo)</td></tr>
+          <tr><th>Web APIs</th><td>WebGPU (required), Web Workers, Canvas 2D, FileReader — the page shows an honest needs-WebGPU state where WebGPU is missing</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Pick or drop a photo, then estimate depth. Warmer / brighter means <em>closer</em>; darker means further away. DepthPro keeps boundaries crisp, so edges between near and far stay sharp. Needs a WebGPU device — the panel below says so if yours can't run it.</p>
+
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="controls-row">
+        <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image" style="flex:1 1 240px">
+          <span id="dropText">Drop a photo, or click to choose</span>
+          <input type="file" id="file" accept="image/*" hidden />
+        </div>
+      </div>
+      <div class="sample-strip" id="samples" aria-label="Sample images">
+        <img class="sample-thumb active" src="sample-portrait.jpg" data-src="sample-portrait.jpg" alt="Two cats on a couch" tabindex="0" role="button" />
+        <img class="sample-thumb" src="sample-room.jpg" data-src="sample-room.jpg" alt="A sunlit bedroom" tabindex="0" role="button" />
+        <img class="sample-thumb" src="sample-street.jpg" data-src="sample-street.jpg" alt="A riverside at golden hour" tabindex="0" role="button" />
+      </div>
+
+      <div class="controls-row">
+        <label style="font-size:.82rem">Colour map
+          <select id="cmap" style="min-block-size:44px">
+            <option value="turbo">turbo</option>
+            <option value="viridis">viridis</option>
+            <option value="magma">magma</option>
+            <option value="gray">grayscale</option>
+          </select>
+        </label>
+        <button id="run" type="button" disabled>Estimate depth</button>
+      </div>
+
+      <div class="canvas-grid">
+        <div class="canvas-card">
+          <h4>Input</h4>
+          <img class="preview-img" id="preview" src="sample-portrait.jpg" alt="Selected photo" />
+        </div>
+        <div class="canvas-card">
+          <h4>Estimated depth (sharp, metric-scale)</h4>
+          <canvas class="viz-canvas" id="depthCanvas" width="480" height="360" aria-label="Colourised depth map"></canvas>
+          <div class="legend-row"><span>far</span><canvas class="legend-canvas" id="legend" width="220" height="14"></canvas><span>near</span></div>
+        </div>
+      </div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+        <span>output <b id="rDims">–</b></span>
+        <span>edge sharpness <b id="rEdge">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside</h3>
+      <p class="muted">
+        DepthPro outputs a <strong>tensor of real numbers</strong>, one per pixel — the raw
+        <em>metric-scale</em> depth field. Two things make it different from a relative depth model: the
+        values carry a <strong>consistent absolute scale</strong> (not arbitrary units re-normalized per
+        image), and the boundaries are <strong>sharp</strong>. Below is the honest view: the raw range
+        straight from the model, the depth distribution, and a measured <strong>boundary-sharpness</strong>
+        score — the fraction of pixels sitting on a real depth discontinuity, computed from this run.
+      </p>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Estimate a depth map to see the raw numbers.</div>
+      <div id="insideWrap" hidden>
+        <table class="inside-table">
+          <tbody>
+            <tr><th>predicted_depth shape</th><td id="iDims">–</td></tr>
+            <tr><th>raw depth range (metric-scale)</th><td id="iRange">–</td></tr>
+            <tr><th>mean raw depth</th><td id="iMean">–</td></tr>
+            <tr><th>boundary sharpness (edge fraction)</th><td id="iEdge">–</td></tr>
+            <tr><th>pixels estimated</th><td id="iPix">–</td></tr>
+          </tbody>
+        </table>
+        <h4 style="font-family:var(--font-body);font-size:.8rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:.9rem 0 0">Depth distribution (far → near)</h4>
+        <div class="histo" id="histo" role="img" aria-label="Histogram of estimated depth, far on the left to near on the right"></div>
+      </div>
+
+      <hr style="border:0;border-top:1px solid var(--border);margin:1.2rem 0" />
+      <h4 style="margin:.2rem 0">DepthPro vs relative depth (Depth Anything)</h4>
+      <p class="muted">
+        <a href="/web-ai-showcase/models/depth-anything/">Depth Anything</a> is small, fast, WASM-friendly,
+        and gives a <em>relative</em> depth map — great for parallax and blur, but the range is arbitrary
+        and re-normalized per image, and fine boundaries soften. DepthPro trades size and a WebGPU
+        requirement for <strong>metric scale</strong> (consistent absolute depth) and
+        <strong>sharp boundaries</strong> — the right tool when you need real distances or a clean cut at
+        object edges. Same one-photo input; different guarantees.
+      </p>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        Metric, boundary-accurate depth from a single frame — no stereo rig, no LiDAR — opens up effects
+        and measurements that a relative map can't support:
+      </p>
+      <ul>
+        <li><strong>Real distances</strong> — a consistently-scaled depth field lets you compare "how far" across the scene, not just "nearer/further".</li>
+        <li><strong>Clean cut-outs & portrait blur</strong> — sharp boundaries mean the subject/background split follows real edges, so a depth-driven blur or matte looks crisp.</li>
+        <li><strong>AR occlusion & compositing</strong> — place virtual objects at the right depth with edges that don't bleed.</li>
+        <li><strong>3D from a photo</strong> — a high-resolution depth field drives believable parallax and relighting.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">One photo in, a sharp colourised depth map out — read distance as colour.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Tap two points and read their relative distance from the metric-scale depth field.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">3D parallax — tilt a flat photo with your pointer and feel DepthPro's crisp depth.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">DepthPro depth + Segformer segmentation → the mean distance of each labelled region.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>Depth is a one-liner with Transformers.js. The pipeline returns both a ready-to-display image and the raw tensor:</p>
+      <pre><code>import { pipeline } from "@huggingface/transformers";
+
+const estimator = await pipeline(
+  "depth-estimation",
+  "onnx-community/DepthPro-ONNX",
+  { device: "webgpu", dtype: "q4f16" },   // ~572 MB, WebGPU; cached after first load
+);
+
+const { depth, predicted_depth } = await estimator(imageURL);
+// depth          → RawImage: grayscale, min–max normalized to 0–255 (great for display)
+// predicted_depth → Tensor:  the raw per-pixel metric-scale depth (dims = [H, W])</code></pre>
+      <p class="muted">
+        This page colourises <code>depth</code> on a canvas and reads <code>predicted_depth</code> for the
+        real range + distribution, and measures boundary sharpness from the depth map, in "See inside".
+        Inference runs in a Web Worker so estimating a large photo never freezes the page. DepthPro is a
+        WebGPU-class model; the loader shows an honest needs-WebGPU state on devices without a GPU adapter
+        rather than downloading ~572 MB or faking a result.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/onnx-community/DepthPro-ONNX" target="_blank" rel="noopener">Model card — onnx-community/DepthPro-ONNX</a></li>
+        <li><a href="https://huggingface.co/apple/DepthPro" target="_blank" rel="noopener">Apple DepthPro — original weights &amp; card</a></li>
+        <li><a href="https://arxiv.org/abs/2410.02073" target="_blank" rel="noopener">Paper — Depth Pro: Sharp Monocular Metric Depth in Less Than a Second (Bochkovskii et al., 2024)</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/api/pipelines#module_pipelines.DepthEstimationPipeline" target="_blank" rel="noopener">Transformers.js — DepthEstimationPipeline</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { DepthProEngine, fileToDataURL, urlToDataURL, renderDepthColor, renderColorLegend, DEPTH_CSS }
+        from "./depthpro.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = DEPTH_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new DepthProEngine();
+      let currentImageURL = null;
+      let lastResult = null;
+
+      renderColorLegend($("legend"), $("cmap").value);
+
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        currentImageURL = await urlToDataURL(el.dataset.src);
+        $("preview").src = el.dataset.src;
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => {
+          if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); }
+        });
+      }
+      pickSample($("samples").firstElementChild);
+
+      const file = $("file"), drop = $("drop");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) {
+        for (const t of $("samples").children) t.classList.remove("active");
+        currentImageURL = await fileToDataURL(f);
+        $("preview").src = currentImageURL;
+        $("dropText").textContent = f.name;
+      }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
+
+      $("cmap").addEventListener("change", () => {
+        renderColorLegend($("legend"), $("cmap").value);
+        if (lastResult) renderDepthColor($("depthCanvas"), lastResult.width, lastResult.height, lastResult.depth, $("cmap").value);
+      });
+
+      // DepthPro is a large fp16 model → WebGPU required. requiresWebGPU:true makes the shared loader
+      // show an HONEST needs-WebGPU state (and NOT download ~572 MB) on a device with no GPU adapter.
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/DepthPro-ONNX", runtime: "transformers.js", dtype: "q4f16", sizeMB: 572, requiresWebGPU: true },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: () => { $("run").disabled = false; },
+        onError: () => { $("run").disabled = true; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!currentImageURL) { $("status").textContent = "Pick a photo first."; return; }
+        $("run").disabled = true; $("status").classList.remove("err"); $("status").textContent = "Estimating depth…";
+        try {
+          const r = await engine.estimate(currentImageURL);
+          lastResult = r;
+          renderDepthColor($("depthCanvas"), r.width, r.height, r.depth, $("cmap").value);
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase() + (r.dtype ? " · " + r.dtype : "");
+          $("rMs").textContent = r.ms + " ms";
+          $("rDims").textContent = `${r.width} × ${r.height}`;
+          $("rEdge").textContent = (r.edgeFraction * 100).toFixed(1) + "%";
+          renderInside(r);
+          $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (err) {
+          $("status").textContent = "Depth estimation failed: " + err.message; $("status").classList.add("err");
+        } finally { $("run").disabled = false; }
+      });
+
+      function renderInside(r) {
+        $("insideEmpty").hidden = true;
+        $("insideWrap").hidden = false;
+        $("iDims").textContent = r.rawDims?.length ? `[${r.rawDims.join(" × ")}]` : `[${r.height} × ${r.width}] (from depth image)`;
+        $("iRange").textContent = r.rawMin != null ? `${r.rawMin.toFixed(3)} … ${r.rawMax.toFixed(3)} (metric-scale units)` : "normalized 0 … 255";
+        $("iMean").textContent = r.rawMean != null ? r.rawMean.toFixed(3) : "–";
+        $("iEdge").textContent = `${(r.edgeFraction * 100).toFixed(1)}% of pixels on a depth edge · mean |∇| ${r.meanGradient.toFixed(1)}`;
+        $("iPix").textContent = (r.width * r.height).toLocaleString();
+        const max = Math.max(...r.hist, 1);
+        $("histo").replaceChildren(...r.hist.map((c) => {
+          const s = document.createElement("span");
+          s.style.blockSize = (c / max * 100).toFixed(1) + "%";
+          s.title = c.toLocaleString() + " px";
+          return s;
+        }));
+      }
+    </script>
+  </body>
+</html>
