@@ -1,0 +1,352 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>YOLOS-Tiny — fast ViT object detection in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run YOLOS-Tiny locally in your browser: a plain Vision Transformer that boxes and labels every object it finds, small and fast enough for a live webcam — no server, real detections you can see inside, with a live score threshold and a side-by-side speed/size contrast against DETR."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>⚡</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">object-detection · vision · WASM · ~30 MB</p>
+      <h1>YOLOS-Tiny — fast object detection with a plain Vision Transformer</h1>
+      <p class="lede">
+        YOLOS ("You Only Look at One Sequence") strips detection back to a bare Vision Transformer: no
+        CNN backbone, no anchors, no region proposals — just image patches plus a handful of learned
+        "detection tokens," and out come labelled boxes. The <em>tiny</em> build is about a fifth the
+        size of DETR and quick enough to run on a live camera, entirely on your device.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/Xenova/yolos-tiny" target="_blank" rel="noopener">Xenova/yolos-tiny</a></td></tr>
+          <tr><th>Task / pipeline</th><td><code>object-detection</code></td></tr>
+          <tr><th>Architecture</th><td>ViT-Tiny encoder + 100 detection tokens — a pure transformer, no convolutional backbone</td></tr>
+          <tr><th>Classes</th><td>80 COCO categories (person, car, dog, chair, bottle…)</td></tr>
+          <tr><th>Quantization</th><td>q8 (8-bit) ONNX</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (runs anywhere; no WebGPU needed)</td></tr>
+          <tr><th>Download</th><td>~30 MB, cached after first load</td></tr>
+          <tr><th>License</th><td>Apache-2.0 (HUST Vision Lab)</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers, Canvas, FileReader — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Pick or drop an image and hit Detect. YOLOS runs once at a low floor; the score slider then filters the boxes live without re-running the model.</p>
+
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image">
+        <span id="dropText">Drop an image here, or click to choose</span>
+        <input type="file" id="file" accept="image/*" hidden />
+      </div>
+      <div class="sample-strip" id="samples" aria-label="Sample images">
+        <img class="sample-thumb active" src="sample-cats.jpg" data-src="sample-cats.jpg" alt="Two cats sleeping on a pink couch" tabindex="0" role="button" />
+        <img class="sample-thumb" src="sample-room.jpg" data-src="sample-room.jpg" alt="A cozy sunlit bedroom with a bookshelf" tabindex="0" role="button" />
+        <img class="sample-thumb" src="sample-river.jpg" data-src="sample-river.jpg" alt="A riverside at golden hour with a swan" tabindex="0" role="button" />
+      </div>
+
+      <div style="margin:.6rem 0">
+        <button id="run" type="button" disabled>Detect objects</button>
+      </div>
+
+      <div class="slider-row">
+        <label for="thresh">Score threshold</label>
+        <input type="range" id="thresh" min="0.05" max="0.95" step="0.05" value="0.4" />
+        <output id="threshOut" for="thresh">0.40</output>
+      </div>
+
+      <div class="canvas-wrap">
+        <canvas id="stage" class="stage-canvas" aria-label="Detection result: image with labelled boxes"></canvas>
+      </div>
+      <div class="count-chips" id="countChips" aria-live="polite"></div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+        <span>objects shown <b id="rN">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside</h3>
+      <p class="muted">
+        YOLOS carries 100 "detection tokens" through the transformer alongside the image patches; each
+        token is decoded into one class (or "no object") plus a box of four numbers. Below is the raw
+        list for the boxes above the current threshold: the label, the softmax confidence, and the box
+        as <code>x, y, width, height</code> in the image's own pixels. No post-processing beyond the
+        score filter — this is what the model actually returned.
+      </p>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Run detection to see the raw boxes.</div>
+      <div id="insideWrap" hidden>
+        <div class="readout">
+          <span>total above floor <b id="iTotal">–</b></span>
+          <span>shown at threshold <b id="iShown">–</b></span>
+          <span>distinct classes <b id="iClasses">–</b></span>
+        </div>
+        <table class="inside-table">
+          <thead><tr><th>#</th><th>label</th><th>score</th><th>x</th><th>y</th><th>w</th><th>h</th></tr></thead>
+          <tbody id="insideRows"></tbody>
+        </table>
+      </div>
+
+      <h4 style="font-family:var(--font-body);font-size:.8rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:1.1rem 0 0">YOLOS-Tiny vs DETR — why you'd pick the small one</h4>
+      <p class="muted" style="font-size:.85rem;margin:.3rem 0">
+        Both do the same job — 80 COCO classes, boxes + scores from one forward pass. They trade
+        differently: DETR's ResNet-50 backbone is more accurate on small/cluttered objects; YOLOS-Tiny
+        is a fraction of the download and fast enough to run per webcam frame. Latency below is measured
+        live on <em>your</em> device when you run each model.
+      </p>
+      <div class="compare-grid" role="table" aria-label="YOLOS-Tiny versus DETR comparison">
+        <div class="h" role="columnheader"></div><div class="h v" role="columnheader">YOLOS-Tiny</div><div class="h v" role="columnheader">DETR (ResNet-50)</div>
+        <div role="cell">Download (q8)</div><div class="v" role="cell">~30 MB</div><div class="v" role="cell">~160 MB</div>
+        <div role="cell">Backbone</div><div class="v" role="cell">ViT-Tiny (no CNN)</div><div class="v" role="cell">ResNet-50 + transformer</div>
+        <div role="cell">COCO box AP</div><div class="v" role="cell">28.7</div><div class="v" role="cell">42.0</div>
+        <div role="cell">This device — latency</div><div class="v" role="cell" id="cYolos">run to measure</div><div class="v" role="cell" id="cDetr">—</div>
+      </div>
+      <p class="muted" style="font-size:.82rem;margin:.4rem 0 0">
+        <button id="benchDetr" type="button" class="secondary" disabled>Measure DETR on this image too</button>
+        Loads DETR (~160 MB) once and detects the same photo, so the latency figures above are apples-to-apples on your hardware.
+      </p>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        A capable detector that downloads in a few seconds and runs per frame changes what's practical
+        in a web page. YOLOS-Tiny turns "what's in this camera feed, right now?" into a local function
+        call — private, offline, free per call — without shipping a 160 MB model first.
+      </p>
+      <ul>
+        <li><strong>Lightweight on-device counting</strong> — tally people in a queue, cars in a lot, or items on a shelf, with a model small enough to bundle into a PWA.</li>
+        <li><strong>Live camera UX</strong> — react to what the webcam sees (is a person present? a phone? a cup?) at interactive frame rates on modest devices.</li>
+        <li><strong>Cheap first pass</strong> — run YOLOS everywhere as a fast trigger, and only reach for a heavier detector when the stakes justify the bytes.</li>
+        <li><strong>Edge & offline</strong> — kiosks, field tools, and flaky-network apps get real detection with nothing to upload.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">One image, labelled boxes, a threshold slider — feel ViT detection first-hand.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">On-device inventory counter — pick a class and count it across a batch of photos.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Live webcam object counter — small enough to run per frame, on-device.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">YOLOS boxes → tap one → SlimSAM returns its exact pixel mask.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>Detection is a one-liner with Transformers.js — YOLOS uses the exact same <code>object-detection</code> pipeline as DETR, so swapping models is a one-line change. The boxes come back in pixel coordinates:</p>
+      <pre><code>import { pipeline } from "@huggingface/transformers";
+
+const detect = await pipeline(
+  "object-detection",
+  "Xenova/yolos-tiny",
+); // downloads + caches ~30 MB once
+
+const output = await detect(imageURL, { threshold: 0.4, percentage: false });
+// → [{ label: "cat", score: 0.96, box: { xmin, ymin, xmax, ymax } }, …]
+//   percentage:false gives pixel coordinates; true gives 0–1 fractions</code></pre>
+      <p class="muted">
+        This page runs the model once at a low floor threshold (0.05) inside a Web Worker, caches every
+        box, and filters the cached list as you drag the slider — so the slider is instant and never
+        re-runs inference. The canvas is drawn at the image's natural resolution and scaled by CSS, so
+        the boxes stay pixel-accurate.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/Xenova/yolos-tiny" target="_blank" rel="noopener">Model card — Xenova/yolos-tiny</a></li>
+        <li><a href="https://huggingface.co/hustvl/yolos-tiny" target="_blank" rel="noopener">Original weights — hustvl/yolos-tiny</a></li>
+        <li><a href="https://arxiv.org/abs/2106.00666" target="_blank" rel="noopener">Paper — You Only Look at One Sequence (Fang et al., 2021, arXiv:2106.00666)</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { YolosEngine, fileToDataURL, urlToDataURL, decodeImage, drawDetections, countByLabel, colorForLabel, escapeHTML, YOLOS_CSS }
+        from "./yolos.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      import { loadPipeline } from "/web-ai-showcase/lib/webai.js";
+
+      const style = document.createElement("style");
+      style.textContent = YOLOS_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new YolosEngine();
+      let currentImageURL = null;
+      let currentImg = null;      // decoded HTMLImageElement for drawing
+      let allDetections = [];     // everything above the floor, cached
+      let lastMs = 0;
+
+      // --- image selection ---
+      async function useURL(url) {
+        currentImageURL = url;
+        currentImg = await decodeImage(url);
+        allDetections = [];
+        $("insideWrap").hidden = true;
+        $("insideEmpty").hidden = false;
+        $("countChips").replaceChildren();
+        $("readout").hidden = true;
+        // show the raw image so the stage is never blank
+        const c = $("stage");
+        c.width = currentImg.naturalWidth; c.height = currentImg.naturalHeight;
+        c.getContext("2d").drawImage(currentImg, 0, 0);
+      }
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        await useURL(await urlToDataURL(el.dataset.src));
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => {
+          if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); }
+        });
+      }
+      pickSample($("samples").firstElementChild);
+
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) {
+        for (const t of $("samples").children) t.classList.remove("active");
+        await useURL(await fileToDataURL(f));
+        $("dropText").textContent = f.name;
+      }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
+
+      // --- load model (shared auto-init architecture) ---
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/yolos-tiny", runtime: "transformers.js", dtype: "q8", sizeMB: 30, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: () => { $("run").disabled = false; $("benchDetr").disabled = false; },
+      });
+
+      // --- detect ---
+      $("run").addEventListener("click", async () => {
+        if (!currentImageURL) { $("status").textContent = "Pick an image first."; return; }
+        $("run").disabled = true; $("status").classList.remove("err", "ok"); $("status").textContent = "Detecting…";
+        try {
+          const r = await engine.detect(currentImageURL);
+          allDetections = r.detections;
+          lastMs = r.ms;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("cYolos").textContent = r.ms + " ms";
+          render();
+          $("status").textContent = `Found ${allDetections.length} candidate boxes above the floor.`;
+          $("status").classList.add("ok");
+        } catch (err) {
+          $("status").textContent = "Detection failed: " + err.message;
+          $("status").classList.add("err");
+        } finally { $("run").disabled = false; }
+      });
+
+      // --- threshold slider filters the cached detections, no re-run ---
+      const thresh = $("thresh");
+      thresh.addEventListener("input", () => { $("threshOut").textContent = (+thresh.value).toFixed(2); if (allDetections.length) render(); });
+
+      function render() {
+        const t = +thresh.value;
+        const shown = allDetections.filter((d) => d.score >= t);
+        drawDetections($("stage"), currentImg, shown);
+        $("countChips").replaceChildren(...countByLabel(shown).map(({ label, count }) => {
+          const el = document.createElement("span");
+          el.className = "count-chip";
+          el.innerHTML = `<span class="swatch" style="background:${colorForLabel(label)}"></span>${escapeHTML(label)} <b>×${count}</b>`;
+          return el;
+        }));
+        $("readout").hidden = false;
+        $("rMs").textContent = lastMs + " ms";
+        $("rN").textContent = shown.length;
+        renderInside(shown);
+      }
+
+      function renderInside(shown) {
+        $("insideEmpty").hidden = true;
+        $("insideWrap").hidden = false;
+        $("iTotal").textContent = allDetections.length;
+        $("iShown").textContent = shown.length;
+        $("iClasses").textContent = new Set(shown.map((d) => d.label)).size;
+        const rows = [...shown].sort((a, b) => b.score - a.score).map((d, i) => {
+          const { xmin, ymin, xmax, ymax } = d.box;
+          const tr = document.createElement("tr");
+          tr.innerHTML = `<td>${i + 1}</td><td>${escapeHTML(d.label)}</td><td>${(d.score * 100).toFixed(1)}%</td>
+            <td>${Math.round(xmin)}</td><td>${Math.round(ymin)}</td>
+            <td>${Math.round(xmax - xmin)}</td><td>${Math.round(ymax - ymin)}</td>`;
+          return tr;
+        });
+        $("insideRows").replaceChildren(...rows);
+      }
+
+      // --- optional apples-to-apples DETR benchmark on the same image (loads ~160 MB once) ---
+      let detrPipe = null;
+      $("benchDetr").addEventListener("click", async () => {
+        if (!currentImageURL) { $("status").textContent = "Pick an image first."; return; }
+        $("benchDetr").disabled = true;
+        $("status").classList.remove("err", "ok");
+        try {
+          if (!detrPipe) {
+            $("status").textContent = "Loading DETR (~160 MB) once for the comparison…";
+            const loaded = await loadPipeline({ task: "object-detection", model: "Xenova/detr-resnet-50", backend: "wasm", dtype: "q8" });
+            detrPipe = loaded.pipe;
+          }
+          $("status").textContent = "Running DETR on this image…";
+          const t0 = performance.now();
+          await detrPipe(currentImageURL, { threshold: 0.4, percentage: false });
+          $("cDetr").textContent = Math.round(performance.now() - t0) + " ms";
+          $("status").textContent = "Comparison ready — see the latency row above."; $("status").classList.add("ok");
+        } catch (err) {
+          $("status").textContent = "DETR comparison failed: " + err.message; $("status").classList.add("err");
+        } finally { $("benchDetr").disabled = false; }
+      });
+
+      // Headless / deep-link auto-run: ?auto picks a sample, kicks the loader (Download on first
+      // visit; cached auto-inits with no button), waits for ready, and detects — for verification.
+      if (new URLSearchParams(location.search).has("auto")) {
+        (async () => {
+          await pickSample($("samples").firstElementChild);
+          // Poll for a Download button (first visit) and click it once it renders; on a cached visit
+          // the loader auto-inits and no button ever appears — either way we wait for ready, then run.
+          const t0 = Date.now();
+          let clicked = false;
+          // Wait until the Run button is actually enabled (the loader enables it via onReady, which
+          // fires slightly after engine.ready — clicking before that would hit a disabled button).
+          while ($("run").disabled && Date.now() - t0 < 130000) {
+            if (!clicked) {
+              const b = $("model-loader").querySelector(".loader-actions button");
+              if (b && /download/i.test(b.textContent)) { b.click(); clicked = true; }
+            }
+            await new Promise((r) => setTimeout(r, 200));
+          }
+          if (!$("run").disabled) $("run").click();
+        })();
+      }
+    </script>
+  </body>
+</html>

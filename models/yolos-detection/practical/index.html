@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>YOLOS Practical — on-device inventory counter · Web AI Showcase</title>
+    <meta name="description" content="Count a class across a batch of photos, entirely on-device: YOLOS-Tiny scans each image, tallies every object by type, and totals the class you care about — no upload, no per-image bill." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🧮</text></svg>" />
+    <style>
+      .tile-grid { display:flex; flex-wrap:wrap; gap:.7rem; margin:.6rem 0; }
+      .tile { flex:1 1 180px; max-inline-size:240px; border:1px solid var(--border); border-radius:8px; overflow:hidden; background:var(--bg-raised); }
+      .tile canvas { display:block; inline-size:100%; block-size:auto; }
+      .tile .cap { font-size:.8rem; padding:.35rem .5rem; display:flex; justify-content:space-between; gap:.5rem; }
+      .tile .cap b { font-family:var(--font-mono); }
+      .target-row { display:flex; flex-wrap:wrap; gap:.6rem; align-items:center; margin:.6rem 0; }
+      .target-row select { font: inherit; padding:.3rem .5rem; border-radius:8px; border:1px solid var(--border-strong); background:var(--bg-raised); color:var(--color); }
+    </style>
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">YOLOS-Tiny</a></p>
+
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Practical: on-device inventory counter</h1>
+      <p class="lede">
+        Point a small, fast detector at a stack of photos and let it count for you. YOLOS-Tiny scans each
+        image, tallies everything it recognises by class, and totals the one you care about — shelf
+        facings, cars in a lot, people in a room. It's small enough to bundle into a PWA, and every photo
+        stays on the device.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Add images to the batch">
+        <span id="dropText">Drop photos to add them to the batch, or click to choose</span>
+        <input type="file" id="file" accept="image/*" multiple hidden />
+      </div>
+
+      <div style="margin:.6rem 0"><button id="run" type="button" disabled>Scan all photos</button></div>
+
+      <div class="target-row">
+        <label for="target">Count this class:</label>
+        <select id="target" disabled><option value="">— scan first —</option></select>
+        <span class="big-count" id="bigCount" aria-live="polite">—</span>
+      </div>
+
+      <div class="tile-grid" id="tiles"></div>
+
+      <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>images <b id="rImgs">–</b></span><span>total objects <b id="rTotal">–</b></span></div>
+
+      <h3 style="margin-top:1rem">Totals by class (across the whole batch)</h3>
+      <div id="totalsEmpty" class="muted" style="font-size:.85rem">Scan the batch to tally every class.</div>
+      <table class="inside-table" id="totalsTable" hidden>
+        <thead><tr><th>class</th><th>total count</th><th>appears in</th></tr></thead>
+        <tbody id="totalsRows"></tbody>
+      </table>
+      <p class="muted" style="font-size:.85rem">
+        Each image is detected once in a Web Worker; the tallies are pure client-side arithmetic over the
+        boxes. Add your own photos above to count objects in a real batch.
+      </p>
+    </section>
+
+    <p class="crumbs"><a href="../basics/">← Basics</a> · <a href="../">YOLOS-Tiny</a> · <a href="../wild/">Wild →</a></p>
+
+    <script type="module">
+      import { YolosEngine, fileToDataURL, urlToDataURL, decodeImage, drawDetections, colorForLabel, escapeHTML, YOLOS_CSS } from "../yolos.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = YOLOS_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new YolosEngine();
+      const THRESH = 0.4;
+      // batch entries: { name, url, img, detections|null }
+      const batch = [];
+
+      async function addURL(name, url) {
+        const img = await decodeImage(url);
+        batch.push({ name, url, img, detections: null });
+      }
+      async function seed() {
+        for (const s of ["../sample-cats.jpg", "../sample-room.jpg", "../sample-river.jpg"]) {
+          await addURL(s.split("/").pop(), await urlToDataURL(s));
+        }
+        renderTiles();
+      }
+      seed();
+
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function addFiles(files) { for (const f of files) if (f.type.startsWith("image/")) await addURL(f.name, await fileToDataURL(f)); renderTiles(); }
+      file.addEventListener("change", () => file.files.length && addFiles([...file.files]));
+      drop.addEventListener("drop", (e) => { const fs = e.dataTransfer?.files; if (fs?.length) addFiles([...fs]); });
+
+      function renderTiles() {
+        $("tiles").replaceChildren(...batch.map((b, i) => {
+          const tile = document.createElement("div"); tile.className = "tile";
+          const canvas = document.createElement("canvas"); canvas.setAttribute("aria-label", `${b.name} with detected boxes`);
+          const shown = (b.detections || []).filter((d) => d.score >= THRESH);
+          drawDetections(canvas, b.img, shown);
+          const cap = document.createElement("div"); cap.className = "cap";
+          const target = $("target").value;
+          const n = target ? shown.filter((d) => d.label === target).length : shown.length;
+          cap.innerHTML = `<span>${escapeHTML(b.name)}</span><b>${b.detections ? (target ? `${n} ${escapeHTML(target)}` : `${n} obj`) : "—"}</b>`;
+          tile.append(canvas, cap);
+          return tile;
+        }));
+      }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/yolos-tiny", runtime: "transformers.js", dtype: "q8", sizeMB: 30, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: () => { $("run").disabled = false; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!batch.length) { $("status").textContent = "Add some photos first."; return; }
+        $("run").disabled = true; $("status").classList.remove("err", "ok"); $("status").textContent = "Scanning…";
+        try {
+          let backend = "wasm";
+          for (let i = 0; i < batch.length; i++) {
+            $("status").textContent = `Scanning ${i + 1} / ${batch.length}…`;
+            const r = await engine.detect(batch[i].url);
+            batch[i].detections = r.detections; backend = r.device;
+          }
+          $("rBackend").textContent = backend.toUpperCase();
+          buildTargets(); renderTiles(); renderTotals(); updateBigCount();
+          $("readout").hidden = false;
+          $("status").textContent = "Scan complete."; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Scan failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+
+      function allShown() { return batch.flatMap((b) => (b.detections || []).filter((d) => d.score >= THRESH)); }
+      function buildTargets() {
+        const labels = [...new Set(allShown().map((d) => d.label))].sort();
+        const sel = $("target"); const prev = sel.value;
+        sel.replaceChildren(...["", ...labels].map((l) => { const o = document.createElement("option"); o.value = l; o.textContent = l || "Any object"; return o; }));
+        sel.value = labels.includes(prev) ? prev : (labels[0] || "");
+        sel.disabled = false;
+      }
+      $("target").addEventListener("change", () => { renderTiles(); updateBigCount(); });
+      function updateBigCount() {
+        const t = $("target").value; const shown = allShown();
+        const n = t ? shown.filter((d) => d.label === t).length : shown.length;
+        $("bigCount").innerHTML = `${n} <small>${escapeHTML(t || "objects")} in ${batch.filter((b) => b.detections).length} photo(s)</small>`;
+      }
+      function renderTotals() {
+        const map = new Map(); // label -> {count, imgs}
+        batch.forEach((b) => { const seen = new Set(); (b.detections || []).filter((d) => d.score >= THRESH).forEach((d) => { const e = map.get(d.label) || { count: 0, imgs: 0 }; e.count++; if (!seen.has(d.label)) { e.imgs++; seen.add(d.label); } map.set(d.label, e); }); });
+        const rows = [...map.entries()].sort((a, b) => b[1].count - a[1].count);
+        $("rImgs").textContent = batch.filter((b) => b.detections).length;
+        $("rTotal").textContent = allShown().length;
+        $("totalsEmpty").hidden = true; $("totalsTable").hidden = false;
+        $("totalsRows").replaceChildren(...rows.map(([label, e]) => { const tr = document.createElement("tr"); tr.innerHTML = `<td><span style="display:inline-block;inline-size:.7rem;block-size:.7rem;border-radius:2px;background:${colorForLabel(label)};margin-inline-end:.4rem"></span>${escapeHTML(label)}</td><td>${e.count}</td><td>${e.imgs}</td>`; return tr; }));
+      }
+
+      if (new URLSearchParams(location.search).has("auto")) {
+        (async () => { const t0 = Date.now(); let cl = false; while ($("run").disabled && Date.now() - t0 < 130000) { if (!cl) { const b = $("model-loader").querySelector(".loader-actions button"); if (b && /download/i.test(b.textContent)) { b.click(); cl = true; } } await new Promise((r) => setTimeout(r, 200)); } if (!$("run").disabled) $("run").click(); })();
+      }
+    </script>
+  </body>
+</html>
