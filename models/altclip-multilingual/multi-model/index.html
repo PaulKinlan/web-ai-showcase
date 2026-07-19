@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Multi-model — caption → cross-lingual grounding · Web AI Showcase</title>
+    <meta name="description" content="A captioner describes the image in English; then Jina-CLIP v2 grounds that caption against the picture and shows it holds up in other languages too. Two models, one pipeline, all local." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🌍</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Multilingual CLIP</a></p>
+
+    <header>
+      <p class="eyebrow">Multi-model · captioner → CLIP</p>
+      <h1>Caption an image, then ground it across languages</h1>
+      <p class="lede">
+        Two models in a row. First <a href="https://huggingface.co/Xenova/vit-gpt2-image-captioning" target="_blank" rel="noopener">ViT-GPT2</a>
+        writes an English caption. Then jina-clip-v2 <strong>grounds</strong> it — scoring the caption
+        against the image — and you can add the same idea in other languages to confirm the grounding
+        holds cross-lingually. A generator and a multilingual matcher, both on your device.
+      </p>
+    </header>
+
+    <section class="warn-box" aria-label="Download note">
+      <strong>Heads up:</strong> this page loads <em>two</em> models — the captioner (~250 MB) and
+      jina-clip-v2 (~874 MB). Best on desktop with a good connection; cached after the first load.
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run the pipeline</h3>
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="field-row" style="align-items:stretch">
+        <div style="flex:1 1 260px">
+          <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image">
+            <span id="dropText">Drop an image, or click to choose</span>
+            <input type="file" id="file" accept="image/*" hidden />
+          </div>
+          <div class="sample-strip" id="samples" aria-label="Sample images">
+            <img class="sample-thumb active" src="../sample-cats.jpg" data-src="../sample-cats.jpg" alt="Two cats sleeping on a couch" tabindex="0" role="button" />
+            <img class="sample-thumb" src="../sample-room.jpg" data-src="../sample-room.jpg" alt="A cozy sunlit bedroom" tabindex="0" role="button" />
+            <img class="sample-thumb" src="../sample-river.jpg" data-src="../sample-river.jpg" alt="A riverside at golden hour" tabindex="0" role="button" />
+          </div>
+          <div class="preview-wrap"><img class="preview-img" id="preview" src="../sample-cats.jpg" alt="Selected image preview" /></div>
+        </div>
+        <div style="flex:1 1 260px">
+          <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">Extra paraphrases to ground (any languages)
+            <textarea id="extra" rows="3" dir="auto">deux chats qui dorment, 睡觉的猫, un perro corriendo</textarea>
+          </label>
+          <div style="margin:.5rem 0"><button id="run" type="button" disabled>Caption &amp; ground</button></div>
+          <div id="captionBox" hidden style="margin:.5rem 0">
+            <div class="metric"><div class="k">ViT-GPT2 caption</div><div class="v" id="caption" style="font-size:1rem" dir="auto">–</div></div>
+          </div>
+          <div class="bars" id="bars" aria-live="polite"></div>
+          <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>caption <b id="rCap">–</b></span><span>total <b id="rMs">–</b></span></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="how-h">
+      <h3 id="how-h">How the two models connect</h3>
+      <pre><code>const caption = (await captioner(image))[0].generated_text;      // ViT-GPT2 → English text
+const labels  = [caption, ...paraphrasesInOtherLanguages];
+
+const img = await clip({ pixel_values });                        // jina-clip-v2
+const txt = await clip(tokenizer(labels));
+// cosine(img, txt[i]) → how well each phrasing grounds to the picture</code></pre>
+    </section>
+
+    <section aria-labelledby="next-h">
+      <h2 id="next-h">Next</h2>
+      <div class="model-grid">
+        <a class="model-card" href="../basics/"><h3>← Basics</h3><p class="muted">Label an image in one non-English language.</p></a>
+        <a class="model-card" href="../practical/"><h3>Practical →</h3><p class="muted">Multilingual tagging &amp; moderation.</p></a>
+        <a class="model-card" href="../wild/"><h3>Wild →</h3><p class="muted">The same image in 5 languages at once.</p></a>
+      </div>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="../">← Back to Multilingual CLIP</a>
+    </footer>
+
+    <script type="module">
+      import { CaptionGroundEngine, fileToDataURL } from "../mm.js";
+      import { parseLabels, softmax, renderBars, ALTCLIP_CSS } from "../altclip.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = ALTCLIP_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new CaptionGroundEngine();
+      let currentImageURL = null;
+      function setStatus(m, c) { $("status").textContent = m; $("status").classList.remove("err","ok"); if (c) $("status").classList.add(c); }
+
+      async function useURL(url, previewSrc) { currentImageURL = url; $("preview").src = previewSrc ?? url; }
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        const blob = await (await fetch(el.dataset.src)).blob();
+        await useURL(await fileToDataURL(new File([blob], "s", { type: blob.type })), el.dataset.src);
+      }
+      for (const thumb of $("samples").children) { thumb.addEventListener("click", () => pickSample(thumb)); thumb.addEventListener("keydown", e => { if (e.key==="Enter"||e.key===" ") { e.preventDefault(); pickSample(thumb); } }); }
+      pickSample($("samples").firstElementChild);
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", e => { if (e.key==="Enter"||e.key===" ") { e.preventDefault(); file.click(); } });
+      ["dragover","dragenter"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave","drop"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove("drag"); }));
+      file.addEventListener("change", async () => { if (file.files[0]) { for (const t of $("samples").children) t.classList.remove("active"); await useURL(await fileToDataURL(file.files[0])); $("dropText").textContent = file.files[0].name; } });
+      drop.addEventListener("drop", async e => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) { for (const t of $("samples").children) t.classList.remove("active"); await useURL(await fileToDataURL(f)); $("dropText").textContent = f.name; } });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "jinaai/jina-clip-v2", runtime: "transformers.js", dtype: "q8", sizeMB: 1124, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("run").disabled = false; setStatus("Both models ready.", "ok"); },
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!engine.ready || !currentImageURL) return;
+        $("run").disabled = true; setStatus("Captioning, then grounding…");
+        try {
+          const extra = parseLabels($("extra").value);
+          const r = await engine.run(currentImageURL, extra);
+          $("captionBox").hidden = false; $("caption").textContent = r.caption || "(no caption)";
+          const probs = softmax(r.cosines);
+          const items = r.labels.map((label, i) => ({ label: i === 0 ? "🅐 " + label + "  (caption)" : label, cosine: r.cosines[i], prob: probs[i] }));
+          renderBars($("bars"), items);
+          $("readout").hidden = false; $("rBackend").textContent = r.device.toUpperCase(); $("rCap").textContent = r.capMs + " ms"; $("rMs").textContent = r.ms + " ms";
+          setStatus("Caption grounded.", "ok");
+        } catch (e) { setStatus("Pipeline failed: " + e.message, "err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>
