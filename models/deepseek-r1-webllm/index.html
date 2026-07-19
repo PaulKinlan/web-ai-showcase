@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>DeepSeek-R1-Distill on WebLLM — watch a model reason · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run DeepSeek-R1-Distill-Llama-8B locally on WebGPU via MLC's WebLLM engine: a reasoning model that emits its chain of thought in <think>…</think> before answering. This page separates the reasoning trace (a collapsible panel) from the final answer, and counts reasoning tokens vs answer tokens, tok/s, and time-to-first-answer-token — all on your GPU, nothing sent to a server."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🧩</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">text-generation · reasoning model · WebLLM (MLC) · WebGPU · ~4.5 GB</p>
+      <h1>DeepSeek-R1-Distill — watch a model reason before it answers</h1>
+      <p class="lede">
+        DeepSeek-R1-Distill-Llama-8B is a <strong>reasoning</strong> model: distilled from DeepSeek-R1, it's
+        trained to think out loud — emitting a full chain of thought wrapped in <code>&lt;think&gt;…&lt;/think&gt;</code>
+        before it commits to a final answer. It runs entirely in your browser, compiled to WebGPU by MLC's
+        <strong>WebLLM</strong> engine. This page does the thing that makes an R1 model special: it
+        <strong>separates the reasoning trace from the answer</strong> — the thinking goes in a collapsible
+        panel, the answer stands on its own — and counts reasoning tokens vs answer tokens live. Nothing is
+        uploaded. WebLLM is WebGPU-only, so it needs a real GPU with enough VRAM.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="glance">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Llama-8B" target="_blank" rel="noopener">deepseek-ai/DeepSeek-R1-Distill-Llama-8B</a></td></tr>
+          <tr><th>MLC build</th><td><code>DeepSeek-R1-Distill-Llama-8B-q4f16_1-MLC</code> <span class="muted">(verified present in WebLLM's prebuiltAppConfig)</span></td></tr>
+          <tr><th>Runtime</th><td><strong>WebLLM / MLC</strong> — <em>not</em> Transformers.js. Weights are precompiled to WebGPU shaders.</td></tr>
+          <tr><th>Task</th><td><code>text-generation</code> (reasoning / chain-of-thought)</td></tr>
+          <tr><th>Params / dtype</th><td>8B · <code>q4f16_1</code> (4-bit weights, fp16 compute)</td></tr>
+          <tr><th>Backend</th><td>WebGPU <strong>only</strong> — no WASM fallback. Gated on a real GPU adapter (~5 GB VRAM).</td></tr>
+          <tr><th>Download</th><td>~4.5 GB, cached after first load</td></tr>
+          <tr><th>Reasoning format</th><td>Emits <code>&lt;think&gt;…&lt;/think&gt;</code> then the answer (the chat template opens the block)</td></tr>
+          <tr><th>Context window</th><td>4096 tokens (MLC prebuilt config)</td></tr>
+          <tr><th>License</th><td><a href="https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Llama-8B/blob/main/LICENSE" target="_blank" rel="noopener">MIT</a> (base: Llama-3.1 community license)</td></tr>
+          <tr><th>Web APIs</th><td>WebGPU, Web Workers, ES module imports, <code>&lt;details&gt;</code></td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it — reason then answer</h3>
+      <div id="model-loader"></div>
+      <div id="fallback" class="fallback" hidden></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="controls">
+        <label class="control">temperature
+          <span class="row"><input type="range" id="temp" min="0" max="1.2" step="0.05" value="0.6" /><b id="tempV">0.60</b></span>
+        </label>
+        <label class="control">max tokens
+          <span class="row"><input type="range" id="maxtok" min="128" max="2048" step="64" value="1024" /><b id="maxtokV">1024</b></span>
+        </label>
+      </div>
+
+      <div class="chat-wrap" style="margin-top:.4rem">
+        <div class="chips" id="examples">
+          <button class="chip" type="button">If a train travels 60 km in 45 minutes, what is its speed in km/h?</button>
+          <button class="chip" type="button">A bat and a ball cost $1.10. The bat costs $1 more than the ball. How much is the ball?</button>
+          <button class="chip" type="button">I have two coins totalling 30p. One of them is not a 20p. What are the two coins?</button>
+          <button class="chip" type="button">How many times do the hands of a clock overlap in 24 hours?</button>
+        </div>
+        <div class="composer">
+          <textarea id="input" placeholder="Ask a maths or logic question… (Cmd/Ctrl+Enter to send)" disabled></textarea>
+          <button id="send" type="button" disabled>Ask</button>
+          <button id="stop" type="button" class="secondary" hidden>Stop</button>
+        </div>
+
+        <div id="reasoningMount"></div>
+        <label style="font-size:.82rem;color:var(--muted)">Answer</label>
+        <div id="answer" class="answer pending">The final answer appears here, separate from the reasoning above.</div>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside</h3>
+      <p class="muted">
+        A reasoning model spends most of its tokens <em>thinking</em>, then a few on the answer — and that
+        split is the whole story. The reasoning trace is parsed out of the raw stream by finding the
+        <code>&lt;/think&gt;</code> boundary: everything before it (minus a leading <code>&lt;think&gt;</code>)
+        is reasoning; everything after is the answer. The counters below are measured live, so you can see
+        how much compute the model spent reasoning versus answering, and how long it took before the
+        <strong>answer</strong> (not just the first token) started.
+      </p>
+      <div class="inside-grid" id="insideGrid">
+        <div class="stat"><div class="k">reasoning tokens <small>(est.)</small></div><div class="v" id="sReason">–</div></div>
+        <div class="stat"><div class="k">answer tokens <small>(est.)</small></div><div class="v" id="sAnswer">–</div></div>
+        <div class="stat"><div class="k">decode speed</div><div class="v" id="sTps">–</div></div>
+        <div class="stat"><div class="k">time to first token</div><div class="v" id="sTtft">–</div></div>
+        <div class="stat"><div class="k">time to first answer token</div><div class="v" id="sTtfa">–</div></div>
+        <div class="stat"><div class="k">total time</div><div class="v" id="sTotal">–</div></div>
+      </div>
+      <p class="muted" id="statsRaw" style="font-family:var(--font-mono);font-size:.76rem"></p>
+      <h4 style="font-family:var(--font-body);font-size:.85rem;margin:.6rem 0 .2rem">Exact chat messages sent to the model (last turn)</h4>
+      <pre class="wire" id="wire"><span class="muted">Ask something to see the messages array that WebLLM receives.</span></pre>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        Reasoning models trade tokens for reliability: by working a hard problem out in the open before
+        answering, they get maths, logic, and multi-step tasks right far more often than a model that blurts
+        a single guess. Running one on WebLLM makes that a private, client-side primitive — and because the
+        reasoning is <em>visible</em>, you can audit <em>how</em> the model reached its answer, not just take
+        the answer on faith.
+      </p>
+      <ul>
+        <li><strong>Auditable answers</strong> — show the working, so a user (or a reviewer) can check the logic, on-device.</li>
+        <li><strong>Step-by-step tutoring</strong> — the reasoning trace <em>is</em> the explanation; great for teaching maths and logic.</li>
+        <li><strong>Planning stage for agents</strong> — let R1 reason out a plan, then hand the plan to a faster model to execute (see the multi-model demo).</li>
+        <li><strong>Private problem-solving</strong> — debugging logic, puzzles, and analysis where the prompt never leaves the browser.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">A maths / logic puzzle, with the model's working shown separately from the answer.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Step-by-step problem solving and debugging-reasoning over a snippet or scenario.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Watch it reason through a lateral-thinking riddle or plan a multi-step task.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">R1 plans the approach → Qwen2.5-Coder writes the code that implements it.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>
+        WebLLM gives you an OpenAI-shaped chat API backed by a WebGPU engine. The reasoning is not a special
+        API feature — it's in the <em>text</em> the model generates. You stream the completion as normal,
+        then split the stream on the <code>&lt;/think&gt;</code> boundary to separate reasoning from answer.
+        This page uses the shared helpers in <code>lib/webllm.js</code> plus a small <code>splitThink()</code>
+        parser, all inside a Web Worker so the UI stays responsive:
+      </p>
+      <pre><code>import { webGPUAdapterAvailable, createEngine, streamChat }
+  from "/web-ai-showcase/lib/webllm.js";
+import { splitThink } from "./webllm-chat.js";
+
+if (!(await webGPUAdapterAvailable())) {
+  showNeedsWebGPU();          // never a faked reasoning trace
+} else {
+  const engine = await createEngine({
+    model: "DeepSeek-R1-Distill-Llama-8B-q4f16_1-MLC",
+    onProgress: (p) => setProgress(p.text, p.progress),   // ~4.5 GB, cached after first load
+  });
+
+  // R1-distill: keep the system prompt minimal; the model reasons on its own.
+  const messages = [{ role: "user", content: "How many times do a clock's hands overlap in 24 hours?" }];
+
+  let acc = "";
+  await streamChat(engine, { messages, temperature: 0.6, max_tokens: 1024 }, (delta) => {
+    acc += delta;
+    const { reasoning, answer, thinking } = splitThink(acc);
+    renderReasoning(reasoning, thinking);   // collapsible <details> panel
+    renderAnswer(answer);                   // shown distinctly once </think> arrives
+  });
+}</code></pre>
+      <p class="muted">
+        Everything here runs exactly that path in <code>worker.js</code>, and gates on a real WebGPU adapter
+        first. No adapter → a labelled needs-WebGPU state, never a canned reasoning trace.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Llama-8B" target="_blank" rel="noopener">Model card — DeepSeek-R1-Distill-Llama-8B</a></li>
+        <li><a href="https://github.com/deepseek-ai/DeepSeek-R1" target="_blank" rel="noopener">DeepSeek-R1 — paper &amp; repo (reasoning via RL, distillation recipe)</a></li>
+        <li><a href="https://github.com/mlc-ai/web-llm" target="_blank" rel="noopener">WebLLM — in-browser LLM inference engine (MLC)</a></li>
+        <li><a href="https://webllm.mlc.ai/docs/" target="_blank" rel="noopener">WebLLM documentation &amp; prebuilt model list</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/mlc-ai/web-llm" target="_blank" rel="noopener">WebLLM / MLC</a> on WebGPU.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <style>
+      .glance { inline-size:100%; border-collapse:collapse; font-size:.85rem; }
+      .glance th, .glance td { text-align:left; padding:.3rem .5rem; border-bottom:1px solid var(--border); vertical-align:top; }
+      .glance th { color:var(--muted); font-weight:600; inline-size:11rem; }
+      .glance td { font-family:var(--font-mono); }
+    </style>
+
+    <script type="module">
+      import {
+        WebLLMChatEngine, splitThink, probeWebGPU, escapeHTML, estimateTokens,
+        webgpuFallbackHTML, CHAT_CSS,
+      } from "./webllm-chat.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = CHAT_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new WebLLMChatEngine();
+      let generating = false, ready = false;
+
+      const MODEL = { modelId: "DeepSeek-R1-Distill-Llama-8B-q4f16_1-MLC", runtime: "webllm", dtype: "q4f16_1", sizeMB: 4500, requiresWebGPU: true };
+
+      const bind = (r, out, fmt) => { const el = $(r), o = $(out); const upd = () => o.textContent = fmt(el.value); el.addEventListener("input", upd); upd(); };
+      bind("temp", "tempV", (v) => (+v).toFixed(2));
+      bind("maxtok", "maxtokV", (v) => String(v));
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: MODEL,
+        load: async (onProgress) => { await engine.load((p) => { if (typeof p.progress === "number") onProgress({ status: "progress", progress: p.progress * 100 }); }); return engine; },
+        onReady: () => { ready = true; $("input").disabled = false; $("send").disabled = false; $("input").focus(); },
+        onError: async (err) => { if (String(err?.message ?? err).includes("needs-webgpu")) { const probe = await probeWebGPU(); $("fallback").hidden = false; $("fallback").innerHTML = webgpuFallbackHTML(probe); } },
+      });
+      for (const c of $("examples").children) c.addEventListener("click", () => { $("input").value = c.textContent; });
+
+      // Render the reasoning trace as a native <details> disclosure (collapsible, searchable, a11y).
+      // Stays open while thinking; auto-collapses once the answer starts so the answer is the focus.
+      let userToggled = false, detailsEl = null;
+      function renderReasoning(reasoning, thinking) {
+        const mount = $("reasoningMount");
+        if (!reasoning) { mount.innerHTML = ""; detailsEl = null; userToggled = false; return; }
+        if (!detailsEl) {
+          mount.innerHTML = "";
+          detailsEl = document.createElement("details"); detailsEl.className = "reasoning"; detailsEl.open = true;
+          const sum = document.createElement("summary");
+          sum.innerHTML = '<span>Reasoning</span><span class="badge" id="reasonBadge"></span>';
+          const body = document.createElement("div"); body.className = "think-body";
+          detailsEl.append(sum, body); mount.append(detailsEl);
+          detailsEl.addEventListener("toggle", () => { userToggled = true; });
+        }
+        detailsEl.querySelector(".think-body").textContent = reasoning;
+        const badge = detailsEl.querySelector("#reasonBadge");
+        badge.innerHTML = thinking
+          ? '<span class="think-live"><span class="think-dot"></span>thinking…</span>'
+          : `≈${estimateTokens(reasoning)} tok`;
+        if (!thinking && !userToggled) detailsEl.open = false; // collapse once done, unless user intervened
+      }
+      function renderAnswer(answer, thinking) {
+        const el = $("answer");
+        if (answer) { el.classList.remove("pending"); el.innerHTML = escapeHTML(answer) + (generating ? '<span class="caret"></span>' : ""); }
+        else if (thinking) { el.classList.add("pending"); el.textContent = "Reasoning first… the answer will appear here."; }
+      }
+
+      let raf = false, acc = "";
+      function schedule() { if (raf) return; raf = true; requestAnimationFrame(() => { raf = false; const { reasoning, answer, thinking } = splitThink(acc); renderReasoning(reasoning, thinking); renderAnswer(answer, thinking); }); }
+
+      async function ask() {
+        const q = $("input").value.trim();
+        if (!q || generating || !ready) return;
+        generating = true;
+        $("send").disabled = true; $("stop").hidden = false; $("input").disabled = true;
+        $("status").classList.remove("err", "ok"); $("status").textContent = "Reasoning…";
+        userToggled = false; detailsEl = null;
+        // R1-distill guidance: no system prompt; put any instruction in the user turn.
+        const messages = [{ role: "user", content: q }];
+        $("wire").textContent = JSON.stringify(messages, null, 2);
+        acc = ""; $("reasoningMount").innerHTML = ""; $("answer").className = "answer pending"; $("answer").textContent = "Reasoning first… the answer will appear here.";
+        const t0 = performance.now();
+        let ttfa = null;
+        try {
+          const res = await engine.chat(
+            { messages, temperature: +$("temp").value, top_p: 0.95, max_tokens: +$("maxtok").value },
+            { onToken: (d) => {
+                acc += d;
+                // Time-to-first-ANSWER-token: the first token that lands after </think>.
+                if (ttfa === null && splitThink(acc).answer) ttfa = Math.round(performance.now() - t0);
+                schedule();
+              } },
+          );
+          generating = false;
+          const sp = splitThink(res.text);
+          renderReasoning(sp.reasoning, false); renderAnswer(sp.answer || "(no answer)", false);
+          const decodeMs = Math.max(1, res.ms - res.ttft);
+          const tps = res.chunks > 1 ? ((res.chunks - 1) / (decodeMs / 1000)) : 0;
+          $("sReason").innerHTML = estimateTokens(sp.reasoning) + ' <small>tok</small>';
+          $("sAnswer").innerHTML = estimateTokens(sp.answer) + ' <small>tok</small>';
+          $("sTps").innerHTML = tps.toFixed(1) + ' <small>tok/s</small>';
+          $("sTtft").innerHTML = res.ttft + ' <small>ms</small>';
+          $("sTtfa").innerHTML = (ttfa != null ? ttfa : res.ms) + ' <small>ms</small>';
+          $("sTotal").innerHTML = res.ms + ' <small>ms</small>';
+          $("statsRaw").textContent = (res.stats ? "WebLLM runtime: " + res.stats + "  ·  " : "") + "Token counts are ~4-chars/token estimates; TTF-answer is when the first post-</think> token arrived.";
+          $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (err) {
+          $("status").textContent = "Generation failed: " + err.message; $("status").classList.add("err");
+        } finally {
+          generating = false; $("stop").hidden = true; $("input").disabled = false; $("send").disabled = false; $("input").focus();
+        }
+      }
+      $("send").addEventListener("click", () => ask());
+      $("stop").addEventListener("click", () => { engine.stop(); $("status").textContent = "Stopping…"; });
+      $("input").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); ask(); } });
+
+      if ("serviceWorker" in navigator) navigator.serviceWorker.register("/web-ai-showcase/sw.js").catch(() => {});
+    </script>
+  </body>
+</html>

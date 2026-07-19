@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>DeepSeek-R1 Multi-model — R1 plans, Coder executes · Web AI Showcase</title>
+    <meta name="description" content="Two models in a pipeline: DeepSeek-R1-Distill reasons out a plan, then Qwen2.5-Coder writes the code that implements it — both running locally on your GPU via WebLLM." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🧩</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">DeepSeek-R1-Distill</a></p>
+    <header>
+      <p class="eyebrow">use case · multi-model</p>
+      <h1>Multi-model: R1 plans, Coder executes</h1>
+      <p class="lede">
+        A reasoning model and a coding model, chained. Give a programming task;
+        <strong>DeepSeek-R1-Distill</strong> reasons out an approach — the plan — and then
+        <strong>Qwen2.5-Coder</strong> takes that plan and writes the actual code. You see the reasoning, the
+        plan it commits to, and the implementation, each from the model best suited to it. Both on your GPU,
+        nothing uploaded.
+      </p>
+    </header>
+
+    <section class="panel">
+      <h3 style="margin-top:0">Models</h3>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:1rem">
+        <div><h4 style="font-family:var(--font-body);font-size:.85rem;margin:.2rem 0">R1-Distill (plans)</h4><div id="r1-loader"></div></div>
+        <div><h4 style="font-family:var(--font-body);font-size:.85rem;margin:.2rem 0">Qwen2.5-Coder (executes)</h4><div id="coder-loader"></div></div>
+      </div>
+      <div id="fallback" class="fallback" hidden style="margin-top:.6rem"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="chat-wrap" style="margin-top:.6rem">
+        <label class="control" for="lang" style="max-inline-size:14rem">target language
+          <span class="row"><select id="lang">
+            <option value="python">Python</option><option value="javascript">JavaScript</option>
+            <option value="typescript">TypeScript</option><option value="go">Go</option><option value="rust">Rust</option>
+          </select></span>
+        </label>
+        <div class="chips" id="examples">
+          <button class="chip" type="button">A function that finds the longest palindromic substring of a string.</button>
+          <button class="chip" type="button">Parse a CSV string into an array of objects, handling quoted fields with commas.</button>
+          <button class="chip" type="button">An LRU cache with O(1) get and put.</button>
+        </div>
+        <div class="composer">
+          <textarea id="input" placeholder="Describe a coding task… (Cmd/Ctrl+Enter)" disabled></textarea>
+          <button id="send" type="button" disabled>Plan &amp; build</button>
+          <button id="stop" type="button" class="secondary" hidden>Stop</button>
+        </div>
+      </div>
+
+      <div style="margin-top:.8rem">
+        <h4 style="font-family:var(--font-body);font-size:.85rem;margin:.2rem 0">① R1's reasoning &amp; plan</h4>
+        <div id="reasoningMount"></div>
+        <div id="plan" class="answer pending">R1's committed plan appears here.</div>
+      </div>
+      <div style="margin-top:.8rem">
+        <h4 style="font-family:var(--font-body);font-size:.85rem;margin:.2rem 0">② Qwen2.5-Coder's implementation</h4>
+        <div id="code" class="proseout"><span class="muted">The code appears here, after R1 has planned.</span></div>
+      </div>
+      <div class="readout" id="readout" hidden><span>plan <b id="rPlan">–</b></span><span>code <b id="rCode">–</b></span></div>
+    </section>
+
+    <section aria-labelledby="how-h">
+      <h2 id="how-h">Why split planning from coding</h2>
+      <p class="muted">
+        A reasoning model is strong at deciding <em>what</em> to build and catching edge cases up front; a
+        code-tuned model is strong at writing correct, idiomatic code. Chaining them means the plan carries
+        the thinking and the Coder just executes it — often better than asking one model to do both at once.
+        The plan is a natural checkpoint you could edit before the code is written. Note the combined VRAM:
+        R1-Distill-Llama-8B (~5 GB) plus Qwen2.5-Coder-1.5B (~1.6 GB) both resident — this one wants a
+        larger GPU.
+      </p>
+    </section>
+
+    <p class="crumbs"><a href="../wild/">← Wild</a> · <a href="../">DeepSeek-R1-Distill</a></p>
+
+    <script type="module">
+      import { WebLLMChatEngine, splitThink, probeWebGPU, escapeHTML, estimateTokens, webgpuFallbackHTML, CHAT_CSS } from "../webllm-chat.js";
+      import { highlightCode, extractCodeBlocks } from "/web-ai-showcase/models/qwen25-coder-webllm/webllm-chat.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = CHAT_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      // Two WebLLM engines, same parameterised worker.js, different MLC model ids.
+      const r1 = new WebLLMChatEngine("DeepSeek-R1-Distill-Llama-8B-q4f16_1-MLC");
+      const coder = new WebLLMChatEngine("Qwen2.5-Coder-1.5B-Instruct-q4f16_1-MLC");
+      let r1Ready = false, coderReady = false, busy = false, fellBack = false;
+
+      for (const c of $("examples").children) c.addEventListener("click", () => { $("input").value = c.textContent; });
+      function maybeEnable() { if (r1Ready && coderReady) { $("input").disabled = false; $("send").disabled = false; $("status").classList.add("ok"); $("status").textContent = "Both models ready."; $("input").focus(); } }
+      async function fallback(err) { if (fellBack) return; if (String(err?.message ?? err).includes("needs-webgpu")) { fellBack = true; const probe = await probeWebGPU(); $("fallback").hidden = false; $("fallback").innerHTML = webgpuFallbackHTML(probe, "~6 GB combined", "~6.6 GB"); } }
+
+      createModelLoader({
+        mount: $("r1-loader"),
+        model: { modelId: "DeepSeek-R1-Distill-Llama-8B-q4f16_1-MLC", runtime: "webllm", dtype: "q4f16_1", sizeMB: 4500, requiresWebGPU: true },
+        load: async (onProgress) => { await r1.load((p) => { if (typeof p.progress === "number") onProgress({ status: "progress", progress: p.progress * 100 }); }); return r1; },
+        onReady: () => { r1Ready = true; maybeEnable(); }, onError: fallback,
+      });
+      createModelLoader({
+        mount: $("coder-loader"),
+        model: { modelId: "Qwen2.5-Coder-1.5B-Instruct-q4f16_1-MLC", runtime: "webllm", dtype: "q4f16_1", sizeMB: 880, requiresWebGPU: true },
+        load: async (onProgress) => { await coder.load((p) => { if (typeof p.progress === "number") onProgress({ status: "progress", progress: p.progress * 100 }); }); return coder; },
+        onReady: () => { coderReady = true; maybeEnable(); }, onError: fallback,
+      });
+
+      let detailsEl = null, userToggled = false;
+      function renderReasoning(reasoning, thinking) {
+        const mount = $("reasoningMount");
+        if (!reasoning) { mount.innerHTML = ""; detailsEl = null; userToggled = false; return; }
+        if (!detailsEl) {
+          mount.innerHTML = ""; detailsEl = document.createElement("details"); detailsEl.className = "reasoning"; detailsEl.open = true;
+          detailsEl.innerHTML = '<summary><span>R1 reasoning</span><span class="badge" id="reasonBadge"></span></summary><div class="think-body"></div>';
+          mount.append(detailsEl); detailsEl.addEventListener("toggle", () => { userToggled = true; });
+        }
+        detailsEl.querySelector(".think-body").textContent = reasoning;
+        $("reasonBadge").innerHTML = thinking ? '<span class="think-live"><span class="think-dot"></span>thinking…</span>' : `≈${estimateTokens(reasoning)} tok`;
+        if (!thinking && !userToggled) detailsEl.open = false;
+      }
+      function renderPlan(answer, busyPlan) { const el = $("plan"); if (answer) { el.classList.remove("pending"); el.innerHTML = escapeHTML(answer) + (busyPlan ? '<span class="caret"></span>' : ""); } }
+      function renderCode(text, streaming, langHint) {
+        const { blocks, prose } = extractCodeBlocks(text); const el = $("code"); el.innerHTML = "";
+        if (prose) { const p = document.createElement("div"); p.className = "proseout"; p.textContent = prose; el.append(p); }
+        for (const blk of blocks) {
+          const wrap = document.createElement("div"); wrap.className = "codeout";
+          const bar = document.createElement("div"); bar.className = "codeout-bar";
+          const lang = document.createElement("span"); lang.className = "lang"; lang.textContent = blk.lang || langHint;
+          const copy = document.createElement("button"); copy.className = "copybtn"; copy.type = "button"; copy.textContent = "Copy";
+          copy.addEventListener("click", async () => { try { await navigator.clipboard.writeText(blk.code); copy.textContent = "Copied"; setTimeout(() => copy.textContent = "Copy", 1200); } catch { copy.textContent = "—"; } });
+          bar.append(lang, copy);
+          const pre = document.createElement("pre"); const code = document.createElement("code");
+          code.innerHTML = highlightCode(blk.code) + (streaming ? '<span class="caret"></span>' : ""); pre.append(code); wrap.append(bar, pre); el.append(wrap);
+        }
+        if (!blocks.length && streaming) { const c = document.createElement("span"); c.className = "caret"; el.append(c); }
+      }
+
+      let raf = false, planAcc = "";
+      function schedulePlan() { if (raf) return; raf = true; requestAnimationFrame(() => { raf = false; const s = splitThink(planAcc); renderReasoning(s.reasoning, s.thinking); renderPlan(s.answer, true); }); }
+
+      async function run() {
+        if (busy || !(r1Ready && coderReady)) return;
+        const q = $("input").value.trim(); if (!q) return;
+        const lang = $("lang").value;
+        busy = true; $("send").disabled = true; $("input").disabled = true; $("stop").hidden = false;
+        $("status").classList.remove("err", "ok"); $("status").textContent = "① R1 is reasoning out a plan…";
+        detailsEl = null; userToggled = false; planAcc = ""; $("reasoningMount").innerHTML = ""; $("plan").className = "answer pending"; $("plan").textContent = "Planning…"; $("code").innerHTML = '<span class="muted">Waiting for the plan…</span>';
+        try {
+          const t0 = performance.now();
+          const pRes = await r1.chat(
+            { messages: [{ role: "user", content: `I want to build this in ${lang}: ${q}\n\nThink it through, then give a short numbered plan (the approach, key steps, and edge cases to handle). Do not write the code yet.` }], temperature: 0.6, top_p: 0.95, max_tokens: 1024 },
+            { onToken: (d) => { planAcc += d; schedulePlan(); } },
+          );
+          const planSplit = splitThink(pRes.text);
+          renderReasoning(planSplit.reasoning, false); renderPlan(planSplit.answer || "(no plan)", false);
+          const plan = planSplit.answer || planSplit.reasoning;
+          $("rPlan").textContent = Math.round(performance.now() - t0) + " ms";
+
+          $("status").textContent = "② Qwen2.5-Coder is implementing the plan…";
+          renderCode("", true, lang); let codeAcc = ""; const t1 = performance.now();
+          await coder.chat(
+            { messages: [
+              { role: "system", content: "You are a coding assistant. Implement the given plan as clean, correct, idiomatic code. Reply with a single fenced code block, then a one-line note." },
+              { role: "user", content: `Language: ${lang}\nTask: ${q}\n\nPlan to implement:\n${plan}` },
+            ], temperature: 0.2, top_p: 0.95, max_tokens: 640 },
+            { onToken: (d) => { codeAcc += d; renderCode(codeAcc, true, lang); } },
+          );
+          renderCode(codeAcc, false, lang);
+          $("rCode").textContent = Math.round(performance.now() - t1) + " ms"; $("readout").hidden = false;
+          $("status").textContent = "Done — plan by R1, code by Coder."; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { busy = false; $("send").disabled = false; $("input").disabled = false; $("stop").hidden = true; }
+      }
+      $("send").addEventListener("click", run);
+      $("input").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); run(); } });
+      $("stop").addEventListener("click", () => { r1.stop(); coder.stop(); $("status").textContent = "Stopping…"; });
+    </script>
+  </body>
+</html>
