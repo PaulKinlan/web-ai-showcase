@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Jina v2 — Wild: cluster passages into themes · Web AI Showcase</title>
+    <meta name="description" content="Drop a pile of passages and watch k-means over Jina's long-context embeddings sort them into themes — with a 2D map coloured by cluster. Unsupervised topic discovery, in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🧬</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Jina v2</a></p>
+
+    <header>
+      <p class="eyebrow">Wild · feature-extraction · WASM</p>
+      <h1>Sort a pile of passages into themes</h1>
+      <p class="lede">
+        Give the model a jumble of unlabeled passages and it will group them — no categories supplied. Embed
+        each one, run <strong>k-means</strong> over the vectors, and "same topic, different words" collapses
+        into clusters. The 2D map colours each passage by its cluster so you can see the themes separate.
+        Unsupervised topic discovery, entirely on-device.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Cluster your passages</h3>
+      <div id="model-loader"></div>
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
+        One passage per line
+        <textarea id="corpus" class="ctx-input" rows="10" disabled>The striker scored a stunning goal in the final minute to win the match.
+Our team lost the championship after a penalty shootout last night.
+The central bank raised interest rates to curb rising inflation.
+Investors worried as the stock market fell sharply on the news.
+A new study shows regular exercise reduces the risk of heart disease.
+Doctors recommend a balanced diet and good sleep for a healthy heart.
+The spacecraft entered orbit around Mars after a seven-month journey.
+Astronomers discovered a new exoplanet in a distant solar system.</textarea>
+      </label>
+      <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin:.5rem 0">
+        <label style="font-size:.82rem;display:flex;gap:.4rem;align-items:center">
+          Clusters (k)
+          <input id="k" type="range" min="2" max="6" step="1" value="4" disabled />
+          <b id="kVal" style="font-family:var(--font-mono)">4</b>
+        </label>
+        <button id="run" type="button" disabled>Cluster</button>
+        <span class="status" id="status" role="status" aria-live="polite"></span>
+      </div>
+
+      <div class="grid-2">
+        <div id="clusters" aria-live="polite"></div>
+        <div>
+          <h3 style="margin-top:.4rem">2D map, coloured by cluster</h3>
+          <div id="projection" aria-live="polite"></div>
+          <p class="muted" id="explained" style="font-size:.78rem;font-family:var(--font-mono)"></p>
+        </div>
+      </div>
+      <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>latency <b id="rMs">–</b></span><span>passages <b id="rN">–</b></span></div>
+    </section>
+
+    <section aria-labelledby="next-h">
+      <h2 id="next-h">Keep exploring</h2>
+      <div class="model-grid">
+        <a class="model-card" href="../basics/"><h3>← Basics</h3><p class="muted">One cosine number for two passages.</p></a>
+        <a class="model-card" href="../practical/"><h3>Practical →</h3><p class="muted">Long-document search &amp; dedup.</p></a>
+        <a class="model-card" href="../multi-model/"><h3>Multi-model →</h3><p class="muted">Retrieve then rerank.</p></a>
+      </div>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="../">Back to the model →</a>
+    </footer>
+
+    <script type="module">
+      import { JinaEngine, kmeans, pca2d, parseLines, renderProjection, JINA_CSS } from "../jina.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = JINA_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new JinaEngine();
+      const PALETTE = ["var(--accent)", "var(--good)", "var(--bad)", "var(--warn)", "#0e7490", "#9333ea"];
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/jina-embeddings-v2-base-en", runtime: "transformers.js", dtype: "q8", sizeMB: 139, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("corpus").disabled = false; $("k").disabled = false; $("run").disabled = false; run(); },
+      });
+
+      $("k").addEventListener("input", () => { $("kVal").textContent = $("k").value; });
+      $("run").addEventListener("click", run);
+      async function run() {
+        const texts = parseLines($("corpus").value);
+        if (texts.length < 3) { $("status").textContent = "Give at least three passages."; $("status").classList.add("err"); return; }
+        $("status").classList.remove("err");
+        $("status").textContent = "Embedding & clustering…";
+        $("run").disabled = true;
+        try {
+          const r = await engine.embed(texts);
+          const k = Math.min(+$("k").value, texts.length);
+          const assign = kmeans(r.embeddings, k);
+          const { points, explained } = pca2d(r.embeddings);
+          renderProjection($("projection"), points, r.texts, { groups: assign });
+          $("explained").textContent = `PC1+PC2 explain ${(explained * 100).toFixed(0)}% of the variance`;
+
+          const groups = {};
+          assign.forEach((c, i) => { (groups[c] ??= []).push(i); });
+          $("clusters").replaceChildren(...Object.keys(groups).map((c) => {
+            const box = document.createElement("div");
+            box.className = "cluster-group";
+            box.innerHTML = `<h4><span class="cluster-dot" style="background:${PALETTE[c % PALETTE.length]}"></span>Cluster ${+c + 1} · ${groups[c].length} passage(s)</h4>` +
+              groups[c].map((i) => `<div style="font-size:.85rem;margin:.15rem 0">S${i + 1}: ${escapeHTML(r.texts[i])}</div>`).join("");
+            return box;
+          }));
+
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = r.ms + " ms";
+          $("rN").textContent = r.texts.length;
+          $("status").textContent = "";
+        } catch (err) {
+          $("status").textContent = "Failed: " + err.message; $("status").classList.add("err");
+        } finally {
+          $("run").disabled = false;
+        }
+      }
+      function escapeHTML(s) { return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
+    </script>
+  </body>
+</html>

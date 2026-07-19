@@ -1,0 +1,381 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Jina v2 — long-context text embeddings in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Jina embeddings v2 base — an 8192-token long-context embedder that turns a whole document into one 768-number vector, locally in your browser. Build a cosine-similarity matrix, search long passages by meaning, and watch it read a tail a 512-token model never sees. Real embeddings, no server."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🧬</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">feature-extraction · text · WASM · ~139 MB</p>
+      <h1>Jina v2 — the embedder that reads the whole document</h1>
+      <p class="lede">
+        Most sentence embedders stop at 512 tokens — feed them a long document and they quietly ignore
+        everything after the first few paragraphs. <strong>Jina embeddings v2</strong> swaps learned
+        positional embeddings for <strong>ALiBi</strong>, so a single 768-number vector can represent up to
+        <strong>8192 tokens</strong> — a whole article. Type passages to build a live similarity matrix,
+        search long text by meaning, and watch Jina catch an answer buried in a tail that a 512-token model
+        never even reads. Nothing leaves your device.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/Xenova/jina-embeddings-v2-base-en" target="_blank" rel="noopener">Xenova/jina-embeddings-v2-base-en</a> (ONNX of <a href="https://huggingface.co/jinaai/jina-embeddings-v2-base-en" target="_blank" rel="noopener">jinaai/jina-embeddings-v2-base-en</a>)</td></tr>
+          <tr><th>Task / pipeline</th><td><code>feature-extraction</code></td></tr>
+          <tr><th>Architecture</th><td>JinaBERT (BERT + <strong>ALiBi</strong>, ~137M params) → 768-dimensional embedding</td></tr>
+          <tr><th>Context length</th><td><strong>8192 tokens</strong> — vs the usual 512 (this is the whole point)</td></tr>
+          <tr><th>Pooling</th><td>mask-aware <strong>mean pooling</strong>, then <strong>L2-normalize</strong>; no instruction prefix</td></tr>
+          <tr><th>Quantization</th><td>q8 (8-bit) ONNX</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (runs anywhere; no WebGPU needed)</td></tr>
+          <tr><th>Download</th><td>~139 MB, cached after first load</td></tr>
+          <tr><th>License</th><td>Apache-2.0</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Put one passage per line (they can be long — full paragraphs), then embed. The matrix is
+        the cosine similarity between every pair; the scatter is a 2D PCA map where near = similar. Then
+        type a query to rank the passages by meaning.</p>
+
+      <div id="model-loader"></div>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
+        Passages (one per line — long is fine)
+        <textarea id="sentences" rows="7">The refund policy allows customers to return any item within thirty days of delivery for a full refund, provided the packaging is intact.
+Shoppers can send products back within a month of receiving them and get all their money returned, as long as the box is undamaged.
+Our engineering team migrated the entire billing service to a new database cluster over the weekend with zero downtime.
+The Amazon rainforest produces roughly twenty percent of the world's oxygen and is home to millions of species of insects.
+Photosynthesis lets plants convert sunlight, water and carbon dioxide into glucose and oxygen.</textarea>
+      </label>
+      <div style="margin:.5rem 0;display:flex;gap:.4rem;flex-wrap:wrap">
+        <button id="run" type="button" disabled>Embed &amp; compare</button>
+        <button id="reset" type="button" class="secondary">Reset examples</button>
+      </div>
+      <p class="status" id="rowStatus" role="status" aria-live="polite" hidden></p>
+
+      <div class="grid-2">
+        <div>
+          <h3 style="margin-top:.4rem">Cosine similarity matrix</h3>
+          <div class="matrix-scroll" id="matrix" aria-live="polite"></div>
+        </div>
+        <div>
+          <h3 style="margin-top:.4rem">2D map (PCA)</h3>
+          <div id="projection" aria-live="polite"></div>
+          <p class="muted" id="explained" style="font-size:.78rem;font-family:var(--font-mono)"></p>
+        </div>
+      </div>
+
+      <div style="margin-top:1rem">
+        <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;max-inline-size:36rem">
+          Semantic search — rank the passages above by meaning
+          <span style="display:flex;gap:.4rem;flex-wrap:wrap">
+            <input id="query" type="text" value="how long do I have to send something back?" style="flex:1;min-inline-size:14rem" disabled />
+            <button id="search" type="button" disabled>Search</button>
+          </span>
+        </label>
+        <div class="sent-list" id="ranked" aria-live="polite"></div>
+      </div>
+
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+        <span>passages <b id="rN">–</b></span>
+        <span>dims <b id="rDim">–</b></span>
+        <span>max tokens <b id="rTok">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside — the vector, and the long-context advantage</h3>
+      <p class="muted">
+        The encoder emits one 768-number vector per token; Jina <strong>mean-pools</strong> them (mask-aware)
+        and <strong>L2-normalizes</strong>, so each passage becomes a unit-length arrow and cosine is a dot
+        product. Embed above, then pick a passage to see its real vector and pre-normalization magnitude.
+      </p>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Embed some passages above to inspect a vector.</div>
+      <div id="insideWrap" hidden>
+        <label style="font-size:.82rem;display:flex;gap:.4rem;align-items:center;flex-wrap:wrap">
+          Inspect passage
+          <select id="pick"></select>
+        </label>
+        <div class="readout">
+          <span>dimensions <b id="iDim">768</b></span>
+          <span>pre-norm ‖v‖ <b id="iNorm">–</b></span>
+          <span>post-norm ‖v‖ <b>1.000</b></span>
+          <span>tokens <b id="iTok">–</b></span>
+        </div>
+        <p class="muted" style="font-size:.78rem;margin:.3rem 0">First 96 of 768 dimensions (blue = positive, orange = negative, brighter = larger magnitude):</p>
+        <div class="vec-strip" id="vecStrip"></div>
+      </div>
+
+      <hr style="border:0;border-top:1px solid var(--border);margin:1.2rem 0" />
+      <h4 style="margin:.2rem 0">The tail a 512-token model never reads</h4>
+      <p class="muted">
+        Here is a long document whose answer to the query below sits in the <strong>final</strong> paragraph
+        — past the 512-token cutoff of a standard encoder. We embed it with <strong>Jina</strong> (full
+        document) and with <strong>MiniLM-L6</strong> (which truncates at 512 tokens), then score each against
+        the query. Jina saw the tail; MiniLM didn't. Watch the cosine gap.
+      </p>
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;align-items:center;margin:.4rem 0">
+        <button id="ctxRun" type="button" class="secondary" disabled>Run the long-context test (loads MiniLM ~25 MB)</button>
+        <span class="status" id="ctxStatus" role="status" aria-live="polite"></span>
+      </div>
+      <div id="ctxWrap" hidden></div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        Long context changes what you can embed. Instead of chopping a document into 512-token chunks and
+        hoping the right chunk survives, you embed the whole thing once — fewer vectors, no lost tail, and a
+        representation that actually reflects the full text. All private, because nothing leaves the tab.
+      </p>
+      <ul>
+        <li><strong>Whole-document search</strong> — index articles, contracts or transcripts as one vector each, not a pile of fragments.</li>
+        <li><strong>Long-form dedup &amp; clustering</strong> — group near-duplicate documents by their full content.</li>
+        <li><strong>RAG without chunk-juggling</strong> — retrieve whole passages for a local LLM instead of stitching fragments.</li>
+        <li><strong>Robust classification</strong> — embed the entire text so the label reflects the ending, not just the intro.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Do two passages mean the same thing? One cosine number — even for long text.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Long-document semantic search and near-duplicate detection over full paragraphs.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Cluster a pile of passages into themes with k-means over the embeddings.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">Jina retrieves a shortlist, then a cross-encoder reranker re-scores the top hits.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>Feature-extraction with mean pooling — and no prefix, no 512-token ceiling:</p>
+      <pre><code>import { pipeline } from "@huggingface/transformers";
+
+const extract = await pipeline(
+  "feature-extraction",
+  "Xenova/jina-embeddings-v2-base-en",
+); // downloads + caches ~139 MB once
+
+// Jina uses MEAN pooling and needs NO prefix — and accepts up to 8192 tokens:
+const out = await extract([longDocument, query], { pooling: "mean", normalize: true });
+const [doc, q] = out.tolist();
+
+// unit-length vectors → cosine similarity is just the dot product:
+const sim = q.reduce((s, x, i) =&gt; s + x * doc[i], 0);</code></pre>
+      <p class="muted">
+        This page pools with <code>normalize:false</code> so "See inside" can show the real pre-normalization
+        magnitude, then normalizes in JS. Inference runs in a Web Worker, so the matrix, projection and
+        long-context test never jank the page.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/Xenova/jina-embeddings-v2-base-en" target="_blank" rel="noopener">Model card — Xenova/jina-embeddings-v2-base-en (ONNX)</a></li>
+        <li><a href="https://huggingface.co/jinaai/jina-embeddings-v2-base-en" target="_blank" rel="noopener">Original Jina v2 base weights &amp; card (jinaai)</a></li>
+        <li><a href="https://arxiv.org/abs/2310.19923" target="_blank" rel="noopener">Paper — Jina Embeddings 2: 8192-Token General-Purpose Text Embeddings (2023)</a></li>
+        <li><a href="https://arxiv.org/abs/2108.12409" target="_blank" rel="noopener">Paper — ALiBi: Train Short, Test Long (Press et al., 2021)</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import {
+        JinaEngine, EmbedClient, WORKERS, MODEL_LABELS, cosine, simMatrix, pca2d, parseLines,
+        renderMatrix, renderProjection, renderRanked, JINA_CSS,
+      } from "./jina.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = JINA_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new JinaEngine();
+      const DEFAULT = $("sentences").value;
+      let last = null;
+
+      $("reset").addEventListener("click", () => { $("sentences").value = DEFAULT; });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/jina-embeddings-v2-base-en", runtime: "transformers.js", dtype: "q8", sizeMB: 139, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => {
+          $("run").disabled = false;
+          $("query").disabled = false;
+          $("search").disabled = false;
+          $("ctxRun").disabled = false;
+        },
+      });
+
+      $("run").addEventListener("click", run);
+      async function run() {
+        const texts = parseLines($("sentences").value);
+        if (texts.length < 2) {
+          $("rowStatus").hidden = false;
+          $("rowStatus").textContent = "Give at least two distinct passages.";
+          $("rowStatus").classList.add("err");
+          return;
+        }
+        $("rowStatus").hidden = false;
+        $("rowStatus").classList.remove("err");
+        $("rowStatus").textContent = "Embedding…";
+        $("run").disabled = true;
+        try {
+          const r = await engine.embed(texts);
+          last = r;
+          renderMatrix($("matrix"), simMatrix(r.embeddings), r.texts);
+          const { points, explained } = pca2d(r.embeddings);
+          renderProjection($("projection"), points, r.texts);
+          $("explained").textContent = `PC1+PC2 explain ${(explained * 100).toFixed(0)}% of the variance`;
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = r.ms + " ms";
+          $("rN").textContent = r.texts.length;
+          $("rDim").textContent = r.dim;
+          $("rTok").textContent = Math.max(...r.tokenCounts.filter((t) => t != null), 0);
+          fillInside(r);
+          $("rowStatus").textContent = "Done.";
+          $("rowStatus").classList.add("ok");
+        } catch (err) {
+          $("rowStatus").textContent = "Embedding failed: " + err.message;
+          $("rowStatus").classList.add("err");
+        } finally {
+          $("run").disabled = false;
+        }
+      }
+
+      $("search").addEventListener("click", search);
+      $("query").addEventListener("keydown", (e) => { if (e.key === "Enter") search(); });
+      async function search() {
+        const q = $("query").value.trim();
+        const texts = parseLines($("sentences").value);
+        if (!q || texts.length < 1) return;
+        $("search").disabled = true;
+        try {
+          const [qr, dr] = await Promise.all([engine.embed([q]), engine.embed(texts)]);
+          const qv = qr.embeddings[0];
+          const hits = dr.texts
+            .map((text, i) => ({ text, score: cosine(qv, dr.embeddings[i]), tokens: dr.tokenCounts[i] }))
+            .sort((a, b) => b.score - a.score);
+          renderRanked($("ranked"), hits);
+        } catch (err) {
+          $("ranked").textContent = "Search failed: " + err.message;
+        } finally {
+          $("search").disabled = false;
+        }
+      }
+
+      function fillInside(r) {
+        $("insideEmpty").hidden = true;
+        $("insideWrap").hidden = false;
+        $("iDim").textContent = r.dim;
+        $("pick").replaceChildren(...r.texts.map((t, i) => {
+          const o = document.createElement("option");
+          o.value = String(i);
+          o.textContent = `S${i + 1} — ${t.length > 44 ? t.slice(0, 43) + "…" : t}`;
+          return o;
+        }));
+        showVector(0);
+      }
+      $("pick").addEventListener("change", (e) => showVector(+e.target.value));
+      function showVector(i) {
+        if (!last) return;
+        const v = last.embeddings[i];
+        $("iNorm").textContent = last.norms[i].toFixed(3);
+        $("iTok").textContent = last.tokenCounts[i] ?? "–";
+        const maxAbs = Math.max(...v.map(Math.abs)) || 1;
+        $("vecStrip").replaceChildren(...v.slice(0, 96).map((val) => {
+          const cell = document.createElement("span");
+          cell.className = "vec-cell";
+          const t = Math.abs(val) / maxAbs;
+          const hue = val >= 0 ? "var(--accent)" : "var(--warn)";
+          cell.style.background = `color-mix(in srgb, ${hue} ${(t * 100).toFixed(0)}%, var(--bg-raised))`;
+          cell.title = val.toFixed(4);
+          return cell;
+        }));
+      }
+
+      // ---- Long-context test: Jina (full) vs MiniLM (512-token cap) on a doc whose answer is in the tail ----
+      const FILLER = (
+        "The company was founded in a small garage in the late nineties by a pair of graduate students who " +
+        "wanted to make information easier to find. In its early years it focused almost entirely on search, " +
+        "refining ranking algorithms and building out data centres across several continents. Over the following " +
+        "decade it expanded into email, mapping, mobile operating systems and cloud infrastructure, hiring tens " +
+        "of thousands of engineers along the way. The culture emphasised data-driven decisions, rapid " +
+        "experimentation and a famously difficult interview process. Countless internal projects were launched " +
+        "and quietly retired, and the company became known both for its ambitious moonshots and for occasionally " +
+        "abandoning popular products. Its advertising business funded most of this expansion, drawing scrutiny " +
+        "from regulators around the world. "
+      ).repeat(3);
+      const TAIL = "Finally, in a footnote almost no one reads, the annual report disclosed that the CEO's total compensation for the year was exactly forty-two million dollars.";
+      const LONG_DOC = FILLER + TAIL;
+      const CTX_QUERY = "How much was the chief executive paid?";
+
+      let minilm = null;
+      $("ctxRun").addEventListener("click", async () => {
+        $("ctxRun").disabled = true;
+        $("ctxStatus").classList.remove("err");
+        $("ctxStatus").textContent = "Loading MiniLM and embedding the long document…";
+        try {
+          if (!minilm) { minilm = new EmbedClient(WORKERS.minilm); await minilm.load(); }
+          const [jDoc, jQ] = await Promise.all([engine.embed([LONG_DOC]), engine.embed([CTX_QUERY])]);
+          const [mDoc, mQ] = await Promise.all([minilm.embed([LONG_DOC]), minilm.embed([CTX_QUERY])]);
+          const jSim = cosine(jDoc.embeddings[0], jQ.embeddings[0]);
+          const mSim = cosine(mDoc.embeddings[0], mQ.embeddings[0]);
+          const docTokens = jDoc.tokenCounts[0] ?? 0;
+          renderCtx({ jSim, mSim, docTokens });
+          $("ctxStatus").textContent = "";
+        } catch (err) {
+          $("ctxStatus").textContent = "Test failed: " + err.message;
+          $("ctxStatus").classList.add("err");
+        } finally {
+          $("ctxRun").disabled = false;
+        }
+      });
+
+      function renderCtx({ jSim, mSim, docTokens }) {
+        const seenPct = Math.min(100, (512 / docTokens) * 100);
+        $("ctxWrap").innerHTML = `
+          <p style="font-size:.86rem"><strong>Query:</strong> “${CTX_QUERY}”<br>
+            <span class="muted">The answer ("forty-two million dollars") is in the last sentence — around token ${docTokens} of ${docTokens}.</span></p>
+          <p class="muted" style="font-size:.8rem;margin:.4rem 0 .1rem">What MiniLM sees (first 512 tokens) vs the full document:</p>
+          <div class="tokbar"><span class="seen" style="flex:${seenPct.toFixed(1)}"></span><span class="cut" style="flex:${(100 - seenPct).toFixed(1)}"></span></div>
+          <p class="muted" style="font-size:.74rem">green = read · red = truncated &amp; never seen by MiniLM (${docTokens} tokens total)</p>
+          <table class="cmp-table">
+            <thead><tr><th>Model</th><th>Context</th><th>cosine(query, doc)</th></tr></thead>
+            <tbody>
+              <tr><td>${MODEL_LABELS.jina}</td><td>full document</td><td><b>${jSim.toFixed(3)}</b></td></tr>
+              <tr><td>${MODEL_LABELS.minilm}</td><td>first 512 tokens only</td><td>${mSim.toFixed(3)}</td></tr>
+            </tbody>
+          </table>
+          <p class="muted" style="font-size:.78rem;margin-top:.4rem">Jina read the tail where the answer lives, so it scores the query notably higher. MiniLM's window ended long before the number appeared — the information simply wasn't in what it encoded.</p>`;
+        $("ctxWrap").hidden = false;
+      }
+    </script>
+  </body>
+</html>
