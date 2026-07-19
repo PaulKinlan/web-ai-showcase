@@ -115,10 +115,28 @@ export function paintPhoto(canvas, img) {
 }
 
 /**
- * Paint the panoptic overlay over the photo. `overlay` is an RGBA buffer (mapW×mapH) of the per-
- * segment colours; it's scaled to the photo and blended at `opacity` (0–1). At opacity 1 you get the
- * pure colour-blocked parse; lower it to see the photo beneath. Nearest-neighbour keeps crisp segment
- * boundaries. `onlyIndices` (optional Set) restricts which segments are drawn (used for hover/isolate).
+ * Turn an overlay SOURCE into a `drawImage`-able without a main-thread per-pixel readback. The worker
+ * composites the colour-coded panoptic overlay off the main thread and transfers back an `ImageBitmap`
+ * (OffscreenCanvas.transferToImageBitmap) — the fast path is a bare `drawImage(bitmap)`. When only a
+ * raw RGBA buffer is available (worker without OffscreenCanvas, or the isolate path handing us a
+ * freshly-filtered buffer) we fall back to a one-off `putImageData` at the map resolution (invariant 15
+ * measured fallback; modern-web-guidance `performance` — keep heavy pixel work off the main thread).
+ */
+function overlayToDrawable(source, mapW, mapH) {
+  if (typeof ImageBitmap !== "undefined" && source instanceof ImageBitmap) return source;
+  const off = document.createElement("canvas");
+  off.width = mapW;
+  off.height = mapH;
+  off.getContext("2d").putImageData(new ImageData(source, mapW, mapH), 0, 0);
+  return off;
+}
+
+/**
+ * Paint the panoptic overlay over the photo. `overlay` is EITHER the worker-composited `ImageBitmap`
+ * (preferred — the main thread only `drawImage`s it) OR the raw RGBA buffer (mapW×mapH) fallback; it's
+ * scaled to the photo and blended at `opacity` (0–1). At opacity 1 you get the pure colour-blocked
+ * parse; lower it to see the photo beneath. Nearest-neighbour keeps crisp segment boundaries. Opacity
+ * drags re-`drawImage` the same bitmap — no putImageData.
  */
 export function paintPanoptic(canvas, img, overlay, mapW, mapH, opacity = 0.55) {
   const w = img.naturalWidth, h = img.naturalHeight;
@@ -128,14 +146,10 @@ export function paintPanoptic(canvas, img, overlay, mapW, mapH, opacity = 0.55) 
   ctx.clearRect(0, 0, w, h);
   ctx.drawImage(img, 0, 0, w, h);
 
-  const off = document.createElement("canvas");
-  off.width = mapW;
-  off.height = mapH;
-  off.getContext("2d").putImageData(new ImageData(overlay, mapW, mapH), 0, 0);
-
+  const src = overlayToDrawable(overlay, mapW, mapH);
   ctx.globalAlpha = opacity;
   ctx.imageSmoothingEnabled = false;
-  ctx.drawImage(off, 0, 0, w, h);
+  ctx.drawImage(src, 0, 0, w, h);
   ctx.globalAlpha = 1;
 }
 
@@ -143,13 +157,10 @@ export function paintPanoptic(canvas, img, overlay, mapW, mapH, opacity = 0.55) 
 export function paintMapOnly(canvas, overlay, mapW, mapH, outW, outH) {
   canvas.width = outW;
   canvas.height = outH;
-  const off = document.createElement("canvas");
-  off.width = mapW;
-  off.height = mapH;
-  off.getContext("2d").putImageData(new ImageData(overlay, mapW, mapH), 0, 0);
+  const src = overlayToDrawable(overlay, mapW, mapH);
   const ctx = canvas.getContext("2d");
   ctx.imageSmoothingEnabled = false;
-  ctx.drawImage(off, 0, 0, outW, outH);
+  ctx.drawImage(src, 0, 0, outW, outH);
 }
 
 /**

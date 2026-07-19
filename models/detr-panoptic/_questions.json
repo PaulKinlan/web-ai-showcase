@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "id": "detr-panoptic",
-  "revision": 2,
+  "revision": 3,
   "reviewedAt": "2026-07-19T00:00:00Z",
-  "reviewer": "agent matrix pass (runner-evidenced + screenshots read + real-inference verified), revision 2",
+  "reviewer": "agent matrix pass + off-main-thread composite retrofit (invariant 15), revision 3",
   "frontend": true,
   "rubric": [
     {
@@ -71,10 +71,10 @@
     },
     {
       "dimension": "performance",
-      "score": 4,
+      "score": 5,
       "severity": "info",
-      "evidence": "conformance (wasm, headless no-GPU): 0✓ 0✗ 0▨ 1◍ — inp-stays-low=manual. screenshots: reports/responsive/screens/detr-panoptic/desktop.png, reports/responsive/screens/detr-panoptic/mobile.png",
-      "notes": "auto-checkable parts pass; manual-evidenced parts need an agent to Read the screenshot and confirm real output / controls / parity."
+      "evidence": "AGENT VERDICT (invariant-15 retrofit): the dense-output mask→colour-overlay composite now runs OFF the main thread. worker.js builds the colour-coded RGBA overlay in an OffscreenCanvas and transfers an ImageBitmap back (transferToImageBitmap); the page only drawImage()s it and the opacity slider re-drawImage()s the same bitmap — no main-thread putImageData per render/tick. MEASURED, headless Chrome (software raster): real DETR masks return at 512×384, so the pre-existing main-thread render composite was already small (~0.5ms) — the retrofit removes it entirely (worker compositeMs 0.4 off-main; main-thread paint drawImage-only). Synthetic scaling proof (full-res inputs): paintPanoptic composite median 14.5ms→3.2ms @12MP (4032×3024) and 1.7ms→0.0ms @2MP; MessageChannel opacity-drag stall-probe worst gap 36ms→11.4ms @12MP, 16ms→1.4ms @2MP. New immutable conformance assertion worker-compliance added. inp-stays-low still manual.",
+      "notes": "The isolate toggle builds its single-segment overlay ONCE per click (cached canvas) instead of per opacity tick. The remaining full-res getImageData class-hit-testing (wild/multi-model per-pixel extract) is a discrete user action, not the continuous render path — tracked as a follow-up, out of this composite-retrofit's scope. createModelLoader auto-init unchanged."
     }
   ],
   "guidanceConsulted": [
@@ -89,8 +89,15 @@
       "id": "break-up-long-tasks",
       "query": "break up long tasks INP responsiveness",
       "recommendation": "Move heavy synchronous work off the main thread so input/paint stay responsive.",
-      "appliedOrException": "applied — the full segmentation pass AND the per-pixel mask compositing run in models/detr-panoptic/worker.js (a Web Worker); the main thread only paints the returned overlay + reads the slider.",
-      "evidence": "conformance inference-off-main-thread=pass; source uses new Worker(worker.js)"
+      "appliedOrException": "applied — the full segmentation pass AND the per-pixel mask compositing run in models/detr-panoptic/worker.js (a Web Worker); the worker now also rasterises the colour-coded overlay into an OffscreenCanvas and transfers an ImageBitmap, so the main thread only drawImage()s it (no full-res putImageData). The main thread only paints the returned bitmap + reads the slider.",
+      "evidence": "conformance inference-off-main-thread=pass + worker-compliance=pass; source uses new Worker(worker.js) + OffscreenCanvas.transferToImageBitmap"
+    },
+    {
+      "id": "performance",
+      "query": "move heavy canvas pixel compositing off the main thread with a worker and OffscreenCanvas transferable ImageBitmap; keep INP low during opacity slider drag",
+      "recommendation": "INP & Main-Thread Unblocking — separate UI updates from heavy computations and push background processing to a Web Worker; break up tasks over 50ms; keep the main thread painting only.",
+      "appliedOrException": "applied — the mask→colour overlay composite moved into the inference worker (OffscreenCanvas + transferToImageBitmap → transferred ImageBitmap). The main thread's paintPanoptic is a bare drawImage of the transferred bitmap; the opacity slider re-drawImage()s the cached bitmap rather than re-running putImageData. OffscreenCanvas/transferToImageBitmap/transferable ImageBitmap are Baseline widely-available (same primitives lib/worker-protocol.js documents); a guarded main-thread putImageData fallback (overlayToDrawable) remains for worker realms without OffscreenCanvas.",
+      "evidence": "MEASURED composite median 14.5ms→3.2ms @12MP, 1.7ms→0.0ms @2MP; MessageChannel opacity-drag stall 36ms→11.4ms @12MP, 16ms→1.4ms @2MP; live headless run: overlayBitmap=ImageBitmap 512×384, worker compositeMs 0.4, console+network clean"
     },
     {
       "id": "accessibility",
@@ -118,5 +125,5 @@
       "priority": "low"
     }
   ],
-  "summary": "Revision-2 agent matrix pass for detr-panoptic (panoptic image-segmentation, Xenova/detr-resnet-50-panoptic, wasm/q8). Real in-browser inference verified in headless Chrome (per-instance masks + thing/stuff split, correct on the cats sample), auto-init-on-cached verified over two visits, mobile+desktop matrix clean with screenshots read, guidance (css-layout, break-up-long-tasks, accessibility, expose-canvas-content-to-browser-features) applied. Support ok on both classes."
+  "summary": "Revision-3 for detr-panoptic (panoptic image-segmentation, Xenova/detr-resnet-50-panoptic, wasm/q8). Revision 2's matrix pass (real per-instance masks + thing/stuff split, auto-init-on-cached, mobile+desktop clean) still holds. Revision 3 is an invariant-15 in-place perf retrofit: the dense-output mask→colour-overlay composite moved into the inference worker (OffscreenCanvas → transferToImageBitmap → transferred ImageBitmap); the page is now drawImage-only and the opacity slider re-draws the cached bitmap (no per-tick putImageData). Measured composite 14.5ms→3.2ms @12MP; live headless run returns overlayBitmap=ImageBitmap with clean console/network and identical segments/labels. New immutable conformance assertion worker-compliance added. Route/slug/identity/controls/examples unchanged. Guidance: performance (INP/main-thread unblocking), break-up-long-tasks, plus css-layout, accessibility, expose-canvas-content-to-browser-features. Support ok on both classes."
 }

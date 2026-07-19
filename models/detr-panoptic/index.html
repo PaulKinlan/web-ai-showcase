@@ -193,14 +193,20 @@ const segments = await segment(imageURL);
       const engine = new PanopticEngine();
       let currentImageURL = null;
       let currentImg = null;
-      let result = null; // last parse: { overlay, width, height, segments, … }
+      let result = null; // last parse: { overlay, overlayBitmap, width, height, segments, … }
       let isolated = null; // segment index isolated by the legend, or null for all
+      let isolatedDrawable = null; // cached single-segment canvas; rebuilt once per toggle, not per opacity tick
+
+      // Free the worker-composited ImageBitmap when a parse is superseded (no GPU-memory leak on re-run).
+      function releaseResult(r) { try { r?.overlayBitmap?.close?.(); } catch { /* noop */ } }
 
       async function useURL(url) {
         currentImageURL = url;
         currentImg = await loadImage(url);
+        releaseResult(result);
         result = null;
         isolated = null;
+        isolatedDrawable = null;
         $("insideWrap").hidden = true;
         $("insideEmpty").hidden = false;
         $("splitChips").replaceChildren();
@@ -246,8 +252,11 @@ const segments = await segment(imageURL);
         $("status").classList.remove("err", "ok");
         $("status").textContent = "Parsing the scene…";
         try {
-          result = await engine.segment(currentImageURL);
+          const parse = await engine.segment(currentImageURL);
+          releaseResult(result);
+          result = parse;
           isolated = null;
+          isolatedDrawable = null;
           $("rBackend").textContent = result.device.toUpperCase();
           render();
           $("status").textContent = `Found ${result.segmentCount} segments (${result.thingCount} instances + ${result.stuffCount} regions).`;
@@ -266,27 +275,36 @@ const segments = await segment(imageURL);
         if (result) drawOverlay();
       });
 
-      function drawOverlay() {
-        // Isolate one segment if selected: dim the others by masking their colour out of the overlay.
-        let overlay = result.overlay;
-        if (isolated != null) {
-          const seg = result.segments.find((s) => s.index === isolated);
-          overlay = new Uint8ClampedArray(result.overlay.length);
-          if (seg) {
-            for (let i = 0; i < result.overlay.length; i += 4) {
-              if (
-                result.overlay[i] === seg.r && result.overlay[i + 1] === seg.g &&
-                result.overlay[i + 2] === seg.b && result.overlay[i + 3] > 0
-              ) {
-                overlay[i] = seg.r;
-                overlay[i + 1] = seg.g;
-                overlay[i + 2] = seg.b;
-                overlay[i + 3] = 255;
-              }
+      // Build a one-segment overlay ONCE per isolate toggle and rasterise it to a canvas the opacity
+      // slider can cheaply re-drawImage — the per-pixel colour filter never runs on an opacity tick.
+      function buildIsolatedDrawable(index) {
+        const seg = result.segments.find((s) => s.index === index);
+        const buf = new Uint8ClampedArray(result.overlay.length);
+        if (seg) {
+          for (let i = 0; i < result.overlay.length; i += 4) {
+            if (
+              result.overlay[i] === seg.r && result.overlay[i + 1] === seg.g &&
+              result.overlay[i + 2] === seg.b && result.overlay[i + 3] > 0
+            ) {
+              buf[i] = seg.r;
+              buf[i + 1] = seg.g;
+              buf[i + 2] = seg.b;
+              buf[i + 3] = 255;
             }
           }
         }
-        paintPanoptic($("stage"), currentImg, overlay, result.width, result.height, +opacity.value);
+        const off = document.createElement("canvas");
+        off.width = result.width;
+        off.height = result.height;
+        off.getContext("2d").putImageData(new ImageData(buf, result.width, result.height), 0, 0);
+        return off;
+      }
+
+      function drawOverlay() {
+        // Full parse → the worker-composited ImageBitmap (drawImage-only, no main-thread putImageData).
+        // Isolated → the cached single-segment canvas. Either way an opacity tick just re-drawImage()s.
+        const src = isolated == null ? (result.overlayBitmap ?? result.overlay) : isolatedDrawable;
+        paintPanoptic($("stage"), currentImg, src, result.width, result.height, +opacity.value);
       }
 
       function render() {
@@ -318,6 +336,7 @@ const segments = await segment(imageURL);
         for (const el of $("legend").children) el.setAttribute("aria-pressed", "false");
         isolated = wasPressed ? null : index;
         if (!wasPressed) btn.setAttribute("aria-pressed", "true");
+        isolatedDrawable = isolated == null ? null : buildIsolatedDrawable(isolated);
         drawOverlay();
       }
 
