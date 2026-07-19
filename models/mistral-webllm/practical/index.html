@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Mistral 7B Practical — reasoning &amp; tool-style calls · Web AI Showcase</title>
+    <meta name="description" content="Put Mistral 7B's capability to work: step-by-step reasoning, and tool-style prompting where the model emits a strict JSON function call chosen from a set of tools — validated on-device." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🌬️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Mistral 7B Instruct</a></p>
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Practical: reasoning &amp; tool-style calls</h1>
+      <p class="lede">
+        A 7B model has the headroom for two shipped patterns the small models struggle with: working
+        through a problem <strong>step by step</strong>, and <strong>tool-style prompting</strong> — reading
+        a menu of functions and emitting a strict JSON call for the right one. Pick a mode, try the samples,
+        and watch it run, with the tool call validated on-device.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <div id="fallback" class="fallback" hidden></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="controls" style="margin-top:.6rem">
+        <label class="control" style="min-inline-size:auto">mode
+          <span class="row">
+            <select id="mode">
+              <option value="reason">Step-by-step reasoning</option>
+              <option value="tool">Tool-style function call</option>
+            </select>
+          </span>
+        </label>
+      </div>
+
+      <div class="chips" id="examples" style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.4rem 0"></div>
+
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:1rem;margin-top:.2rem">
+        <div>
+          <p id="toolsNote" style="font-size:.78rem;color:var(--muted);display:none;margin:0 0 .4rem">Available tools: <code>get_weather(city)</code>, <code>set_timer(minutes, label)</code>, <code>send_email(to, subject, body)</code>, <code>search_web(query)</code>.</p>
+          <label style="font-size:.82rem;color:var(--muted);display:block" id="inLabel">Question</label>
+          <textarea id="input" rows="5" style="inline-size:100%" disabled></textarea>
+          <button id="run" type="button" disabled style="margin-block-start:.4rem">Run</button>
+          <button id="stop" type="button" class="secondary" hidden>Stop</button>
+        </div>
+        <div>
+          <p style="font-size:.82rem;color:var(--muted);margin:0 0 .2rem">Result</p>
+          <pre id="out" style="min-block-size:8rem;margin:0"><span class="muted">The answer appears here.</span></pre>
+          <p class="status" id="valid" role="status" style="margin-block-start:.3rem"></p>
+          <div class="readout" id="readout" hidden><span>first token <b id="rTtft">–</b></span><span>decode <b id="rTps">–</b></span></div>
+        </div>
+      </div>
+    </section>
+
+    <p class="crumbs"><a href="../basics/">← Basics</a> · <a href="../">Mistral 7B Instruct</a> · Next: <a href="../wild/">Wild →</a></p>
+
+    <script type="module">
+      import { MistralChatEngine, probeWebGPU, foldSystemForMistral, webgpuFallbackHTML, CHAT_CSS } from "../webllm-chat.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = CHAT_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new MistralChatEngine();
+      let ready = false, generating = false;
+
+      const TOOLS = ["get_weather", "set_timer", "send_email", "search_web"];
+      const SAMPLES = {
+        reason: [
+          { label: "Train arrival", text: "If a train leaves at 2:15pm and the journey takes 1 hour 50 minutes, what time does it arrive? Think step by step." },
+          { label: "Marbles", text: "A bag has 4 red, 6 blue and 2 green marbles. If I draw one at random, what's the probability it is NOT blue? Reason step by step, then give the fraction." },
+          { label: "Planning", text: "I have 3 hours before a flight, need to pack, drop off a parcel 20 min away, and eat. Suggest an efficient order and rough timings. Think it through." },
+        ],
+        tool: [
+          { label: "Weather", text: "What's the weather like in Lisbon right now?" },
+          { label: "Timer", text: "Set a 10 minute timer for the pasta." },
+          { label: "Email", text: "Email jia@acme.co to say the report is ready and I'll send it tomorrow." },
+          { label: "Search", text: "Find me the latest news on WebGPU support in Safari." },
+        ],
+      };
+
+      function renderExamples() {
+        const mode = $("mode").value;
+        $("examples").replaceChildren();
+        for (const s of SAMPLES[mode]) {
+          const b = document.createElement("button"); b.className = "chip"; b.type = "button"; b.textContent = s.label;
+          b.addEventListener("click", () => { $("input").value = s.text; });
+          $("examples").append(b);
+        }
+        const tool = mode === "tool";
+        $("toolsNote").style.display = tool ? "block" : "none";
+        $("inLabel").textContent = tool ? "User request" : "Question";
+        $("input").value = SAMPLES[mode][0].text;
+        $("out").innerHTML = '<span class="muted">The answer appears here.</span>'; $("valid").textContent = "";
+      }
+      $("mode").addEventListener("change", renderExamples); renderExamples();
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Mistral-7B-Instruct-v0.3-q4f16_1-MLC", runtime: "webllm", dtype: "q4f16_1", sizeMB: 4200, requiresWebGPU: true },
+        load: async (onProgress) => { await engine.load((p) => { if (typeof p.progress === "number") onProgress({ status: "progress", progress: p.progress * 100 }); }); return engine; },
+        onReady: () => { ready = true; $("input").disabled = false; $("run").disabled = false; },
+        onError: async (err) => { if (String(err?.message ?? err).includes("needs-webgpu")) { const probe = await probeWebGPU(); $("fallback").hidden = false; $("fallback").innerHTML = webgpuFallbackHTML(probe); } },
+      });
+
+      function extractJSON(s) {
+        const fenced = s.match(/```(?:json)?\s*([\s\S]*?)```/i);
+        const body = fenced ? fenced[1] : s;
+        const start = body.indexOf("{"), end = body.lastIndexOf("}");
+        if (start === -1 || end === -1 || end < start) return null;
+        return body.slice(start, end + 1);
+      }
+
+      async function run() {
+        if (!ready || generating) return;
+        const mode = $("mode").value;
+        const text = $("input").value.trim(); if (!text) return;
+        generating = true; $("run").disabled = true; $("stop").hidden = false;
+        $("status").classList.remove("err"); $("status").textContent = "Generating…"; $("valid").textContent = ""; $("out").textContent = "";
+        let system, temperature, max_tokens;
+        if (mode === "tool") {
+          system = `You are a function-calling engine. You have exactly these tools:
+- get_weather(city)
+- set_timer(minutes, label)
+- send_email(to, subject, body)
+- search_web(query)
+Given the user's request, reply with ONLY a single minified JSON object of the form {"tool": "<name>", "arguments": { ... }} choosing the single best tool and filling its arguments from the request. No prose, no code fences.`;
+          temperature = 0.1; max_tokens = 200;
+        } else {
+          system = "You are a careful reasoning assistant. Work through the problem step by step, then give a clearly labelled final answer.";
+          temperature = 0.4; max_tokens = 450;
+        }
+        const messages = foldSystemForMistral([{ role: "system", content: system }, { role: "user", content: text }]);
+        let acc = "";
+        try {
+          const res = await engine.chat({ messages, temperature, top_p: 0.9, max_tokens }, {
+            onFirstToken: (t) => { $("rTtft").textContent = t + " ms"; },
+            onToken: (d) => { acc += d; $("out").textContent = acc; },
+          });
+          if (mode === "tool") {
+            const jsonStr = extractJSON(acc);
+            if (jsonStr) {
+              try {
+                const obj = JSON.parse(jsonStr);
+                $("out").textContent = JSON.stringify(obj, null, 2);
+                if (obj.tool && TOOLS.includes(obj.tool)) { $("valid").textContent = `✓ Valid call to ${obj.tool}() — parsed on-device.`; $("valid").className = "status ok"; }
+                else { $("valid").textContent = "△ Parsed JSON, but 'tool' isn't one of the four available tools."; $("valid").className = "status err"; }
+              } catch (e) { $("out").textContent = acc; $("valid").textContent = "△ JSON-like text that didn't parse: " + e.message; $("valid").className = "status err"; }
+            } else { $("out").textContent = acc; $("valid").textContent = "△ No JSON object found — try again."; $("valid").className = "status err"; }
+          } else {
+            $("out").textContent = acc || "(no output)";
+          }
+          const decodeMs = Math.max(1, res.ms - res.ttft);
+          $("readout").hidden = false; $("rTtft").textContent = res.ttft + " ms"; $("rTps").textContent = (res.chunks > 1 ? ((res.chunks - 1) / (decodeMs / 1000)).toFixed(1) : "0") + " tok/s";
+          $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (err) { $("valid").textContent = "Failed: " + err.message; $("valid").className = "status err"; $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { generating = false; $("run").disabled = false; $("stop").hidden = true; }
+      }
+      $("run").addEventListener("click", run);
+      $("stop").addEventListener("click", () => { engine.stop(); $("status").textContent = "Stopping…"; });
+    </script>
+  </body>
+</html>
