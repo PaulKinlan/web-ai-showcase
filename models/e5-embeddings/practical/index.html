@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>E5 Practical — asymmetric search &amp; zero-shot classify · Web AI Showcase</title>
+    <meta name="description" content="Two shippable embedding jobs over your own text with E5, prefixes applied correctly: asymmetric semantic search (query: vs passage:) and classify-by-nearest-label with zero training. All in the browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🧭</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">E5-small-v2</a></p>
+
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Two jobs you'd actually ship</h1>
+      <p class="lede">
+        Once text is a vector, product features become arithmetic. Here are two, running entirely on your
+        device with E5 and its prefixes applied the right way: <strong>asymmetric semantic search</strong>
+        (the query and the documents get different prefixes) and <strong>classification by nearest
+        label</strong>, which needs no training data at all.
+      </p>
+    </header>
+
+    <div id="model-loader"></div>
+
+    <section class="panel" aria-labelledby="corpus-h">
+      <h3 id="corpus-h">Your text (one item per line)</h3>
+      <p class="muted">Everything below runs on these lines, embedded with the <code>passage:</code> prefix. Edit them, or keep the mixed support/topic sample.</p>
+      <textarea id="corpus" rows="10" disabled>My password reset email never arrived.
+I can't log into my account.
+Two-factor authentication is blocking me.
+How do I get a refund for my order?
+The item arrived damaged, I want my money back.
+Can I return this within 30 days?
+The mobile app crashes when I open settings.
+The app freezes on the loading screen.
+Your checkout page throws an error on payment.
+I love the new dashboard, it's beautiful.
+The onboarding flow was smooth and clear.
+Great product, works exactly as advertised.</textarea>
+    </section>
+
+    <section class="panel" aria-labelledby="search-h">
+      <h3 id="search-h">1 · Asymmetric semantic search</h3>
+      <p class="muted">The query is embedded with <code>query:</code>, every line with <code>passage:</code> — E5's intended retrieval setup. Rank by meaning, no keyword overlap required.</p>
+      <div style="display:flex;gap:.4rem;flex-wrap:wrap;align-items:center;margin:.4rem 0">
+        <input id="q" type="text" value="I'm locked out and can't sign in" style="flex:1;min-inline-size:14rem" disabled />
+        <button id="searchBtn" type="button" disabled>Search</button>
+      </div>
+      <div class="sent-list" id="searchOut" aria-live="polite"></div>
+    </section>
+
+    <section class="panel" aria-labelledby="classify-h">
+      <h3 id="classify-h">2 · Classify by nearest label (zero training)</h3>
+      <p class="muted">Embed a handful of label <em>names</em> once (as <code>query:</code>), then tag every
+        line by whichever label vector it sits closest to. Change the labels and everything re-tags
+        instantly — no retraining.</p>
+      <div style="display:flex;gap:.4rem;flex-wrap:wrap;align-items:center;margin:.4rem 0">
+        <input id="labels" type="text" value="login problem, refund request, bug report, positive feedback" style="flex:1;min-inline-size:16rem" disabled />
+        <button id="classifyBtn" type="button" disabled>Classify</button>
+      </div>
+      <div class="sent-list" id="classifyOut" aria-live="polite"></div>
+    </section>
+
+    <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>last op <b id="rMs">–</b></span></div>
+
+    <p class="crumbs" style="margin-top:1.5rem"><a href="../wild/">Next: Wild — cluster a pile of text →</a></p>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via 🤗 Transformers.js.
+      <a href="../">← Back to E5-small-v2</a>
+    </footer>
+
+    <script type="module">
+      import { E5Engine, cosine, parseLines, renderRanked, escapeHTML, GTE_CSS } from "../e5.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = GTE_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new E5Engine();
+      let corpusCache = null; // { key, texts, embeddings } — passages
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/e5-small-v2", runtime: "transformers.js", dtype: "q8", sizeMB: 34, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => {
+          for (const id of ["corpus", "q", "searchBtn", "labels", "classifyBtn"]) $(id).disabled = false;
+        },
+      });
+
+      async function embedCorpus() {
+        const texts = parseLines($("corpus").value);
+        if (corpusCache && corpusCache.key === $("corpus").value) return corpusCache;
+        const r = await engine.embed(texts, "passage");
+        corpusCache = { key: $("corpus").value, texts: r.texts, embeddings: r.embeddings, device: r.device, ms: r.ms };
+        showReadout(r.device, r.ms);
+        return corpusCache;
+      }
+      function showReadout(device, ms) { $("readout").hidden = false; $("rBackend").textContent = device.toUpperCase(); $("rMs").textContent = ms + " ms"; }
+
+      $("searchBtn").addEventListener("click", async () => {
+        $("searchBtn").disabled = true;
+        try {
+          const c = await embedCorpus();
+          const qr = await engine.embed([$("q").value.trim() || "help"], "query");
+          const hits = c.texts.map((text, i) => ({ text, score: cosine(qr.embeddings[0], c.embeddings[i]) }))
+            .sort((a, b) => b.score - a.score);
+          renderRanked($("searchOut"), hits);
+        } catch (e) { $("searchOut").textContent = "Failed: " + e.message; }
+        finally { $("searchBtn").disabled = false; }
+      });
+
+      $("classifyBtn").addEventListener("click", async () => {
+        $("classifyBtn").disabled = true;
+        try {
+          const c = await embedCorpus();
+          const labels = $("labels").value.split(",").map((s) => s.trim()).filter(Boolean);
+          if (labels.length < 2) { $("classifyOut").textContent = "Give at least two comma-separated labels."; return; }
+          const lr = await engine.embed(labels, "query");
+          const tagged = c.texts.map((text, i) => {
+            let best = 0, bestScore = -Infinity;
+            labels.forEach((_, li) => { const s = cosine(c.embeddings[i], lr.embeddings[li]); if (s > bestScore) { bestScore = s; best = li; } });
+            return { text, score: bestScore, label: labels[best] };
+          });
+          renderRanked($("classifyOut"), tagged.map((t) => ({ text: t.text, score: t.score })),
+            { tags: tagged.map((t) => t.label) });
+        } catch (e) { $("classifyOut").textContent = "Failed: " + e.message; }
+        finally { $("classifyBtn").disabled = false; }
+      });
+    </script>
+  </body>
+</html>
