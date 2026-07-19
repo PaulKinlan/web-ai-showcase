@@ -110,6 +110,9 @@ export function paintCheckerboard(ctx, w, h, cell = 12) {
  * @param opts.backdrop  "checker" | CSS colour string | HTMLImageElement | null(transparent)
  * @param opts.alpha     Uint8Array foreground matte (w*h), 0=background 255=subject
  * @param opts.feather   extra alpha softening (0–1) applied multiplicatively
+ * @param opts.cutout    optional worker-composited RGBA ImageBitmap (subject + alpha). When present
+ *                       (and feather===1) the main thread just draws it — the per-pixel composite
+ *                       already ran off the main thread in worker.js. Keeps INP low at high res.
  */
 export function composeCutout(
   canvas,
@@ -117,7 +120,7 @@ export function composeCutout(
   w,
   h,
   alpha,
-  { backdrop = "checker", feather = 1 } = {},
+  { backdrop = "checker", feather = 1, cutout = null } = {},
 ) {
   canvas.width = w;
   canvas.height = h;
@@ -131,7 +134,15 @@ export function composeCutout(
     ctx.fillRect(0, 0, w, h);
   } else if (backdrop && backdrop.tagName === "IMG") ctx.drawImage(backdrop, 0, 0, w, h);
 
-  // Subject: draw the photo to an offscreen buffer, stamp the matte into its alpha, blit on top.
+  // Fast path: the worker already stamped the matte into the photo's alpha (off the main thread) and
+  // handed back an ImageBitmap — just draw it over the backdrop. Main thread does zero per-pixel work.
+  if (cutout && feather === 1) {
+    ctx.drawImage(cutout, 0, 0);
+    return;
+  }
+
+  // Fallback (no bitmap, or a feather multiplier that re-weights the baked alpha): draw the photo to an
+  // offscreen buffer, stamp the matte into its alpha, blit on top.
   const off = document.createElement("canvas");
   off.width = w;
   off.height = h;
@@ -145,12 +156,20 @@ export function composeCutout(
   ctx.drawImage(off, 0, 0);
 }
 
-/** A transparent-background PNG of just the subject (for sticker export). */
-export function cutoutToPNG(img, w, h, alpha, outline = 0) {
+/**
+ * A transparent-background PNG of just the subject (for sticker export). When the worker-composited
+ * `cutout` ImageBitmap is passed and no outline is requested, draw it directly (the alpha stamp already
+ * ran off the main thread); otherwise fall back to the per-pixel path.
+ */
+export function cutoutToPNG(img, w, h, alpha, outline = 0, cutout = null) {
   const c = document.createElement("canvas");
   c.width = w;
   c.height = h;
   const ctx = c.getContext("2d");
+  if (cutout && outline === 0) {
+    ctx.drawImage(cutout, 0, 0);
+    return c;
+  }
   ctx.drawImage(img, 0, 0, w, h);
   const id = ctx.getImageData(0, 0, w, h);
   for (let i = 0; i < alpha.length; i++) id.data[i * 4 + 3] = alpha[i];

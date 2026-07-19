@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "id": "rmbg-background-removal",
+  "revision": 1,
+  "reviewedAt": "2026-07-19T00:00:00Z",
+  "reviewer": "off-main-thread composite retrofit (revision 1) — targeted performance critique",
+  "frontend": true,
+  "rubric": [
+    {
+      "dimension": "performance",
+      "score": 5,
+      "severity": "info",
+      "evidence": "The DENSE alpha composite (getImageData→per-pixel apply-alpha→putImageData that stamps the RMBG matte into the photo's alpha) was moved OFF the main thread: worker.js now builds the RGBA subject cutout on an OffscreenCanvas and transfers it back as an ImageBitmap; composeCutout()/cutoutToPNG() on the main thread only paint the backdrop + drawImage(bitmap). Measured on a 1920×1080 (≥1080p) portrait: median composeCutout main-thread time 7.5 ms → 1.4 ms (max 10.2 → 1.5 ms, both <8 ms); MessageChannel stall probe worst main-thread block 17.1 ms → 4.1 ms across 9 composites. Inference already ran in a Web Worker (inference-off-main-thread=pass). conformance worker-compliance (transferToImageBitmap) source assertion=pass.",
+      "notes": "before→after measured via PerformanceObserver('longtask') + MessageChannel stall probe on a 1920×1080 input."
+    },
+    {
+      "dimension": "no-fake-output",
+      "score": 5,
+      "severity": "info",
+      "evidence": "The cut-out is still derived entirely from the real worker matte — the only change is WHERE the RGBA stamp runs (worker OffscreenCanvas vs main thread). An old-path vs new-path pixel diff over all 1920×1080 pixels gave maxChannelDiff=0 (0 pixels differing): the composited cut-out and the transparent-PNG export are byte-identical to the prior verified output. No canned result introduced.",
+      "notes": "pixel-exact equivalence proves the retrofit preserves the real output."
+    },
+    {
+      "dimension": "real-inference",
+      "score": 5,
+      "severity": "info",
+      "evidence": "conformance (headless runner, this change): loads-clean=pass, calls-real-inference=pass, inference-off-main-thread (worker.js)=pass, shared-auto-init-loader (createModelLoader)=pass — 16/16 auto-testable assertions pass, console clean on load. Real briaai/RMBG-1.4 segmentation path unchanged.",
+      "notes": ""
+    },
+    {
+      "dimension": "runtime-config",
+      "score": 5,
+      "severity": "info",
+      "evidence": "conformance: declares-model-id (briaai/RMBG-1.4)=pass, declares-task (image-segmentation)=pass, declares-backend=pass, declares-quantisation (fp32)=pass. Route/slug/identity unchanged (in-place fix, invariant 15): route gate PASS (additive-only, identities preserved).",
+      "notes": ""
+    }
+  ],
+  "guidanceConsulted": [
+    {
+      "query": "move image compositing off main thread into web worker with OffscreenCanvas and transferToImageBitmap",
+      "recommendation": "performance / INP — dense per-pixel output work (>8 ms, scales with area) belongs off the main thread; build the RGBA result in the worker on an OffscreenCanvas and transfer an ImageBitmap (transferable, not structured-cloned), leaving the main thread to drawImage only. Consulted guides: performance (INP & main-thread unblocking, '>250ms offload to a Web Worker', separate UI updates from heavy computation), break-up-long-tasks, identify-inp-causes.",
+      "appliedOrException": "applied — worker.js builds the subject cutout via OffscreenCanvas + transferToImageBitmap() and posts it in the transfer list; composeCutout()/cutoutToPNG() prefer the transferred bitmap (drawImage) and keep the per-pixel path only as a capability fallback. Aligns with SKILL §4c: 'Dense-output composite (seg/matting/depth/super-res) belongs in the worker with a transferred RGBA/ImageBitmap.'",
+      "evidence": "median main-thread composite 7.5 ms → 1.4 ms @1920×1080, worst stall 17.1 ms → 4.1 ms; pixel-exact equivalence (maxChannelDiff=0); conformance worker-compliance=pass"
+    }
+  ],
+  "openQuestions": [
+    "On a real WebGPU device the fp32 path gives a crisper matte than the WASM q8 fallback verified on the headless runner — untested on a GPU in this environment."
+  ],
+  "followUpGoals": [],
+  "summary": "Revision-1 targeted performance critique for rmbg-background-removal: the dense alpha composite that stamped the matte into the photo's alpha channel was moved off the main thread into the existing inference worker (OffscreenCanvas → transferToImageBitmap), so the main thread only paints a backdrop + drawImage(bitmap). Measured median main-thread composite 7.5 ms → 1.4 ms @1920×1080 (worst stall 17.1 → 4.1 ms), output byte-identical to the prior per-pixel composite (maxChannelDiff=0 over all pixels), transparent-PNG export correct. Route/slug/identity/controls/examples preserved (in-place fix, invariant 15); conformance worker-compliance assertion added and passing; both gates PASS."
+}
