@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Emotion Practical — call &amp; feedback triage · Web AI Showcase</title>
+    <meta name="description" content="A support-call / user-feedback triage board: classify several voice clips on-device and surface the ones that sound upset first — angry, fearful, sad — so a human can prioritise. No audio leaves the browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎭</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Speech Emotion Recognition</a></p>
+
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Practical: triage what sounds upset</h1>
+      <p class="lede">
+        Imagine a queue of support calls or spoken feedback. You can't listen to all of them — but you
+        can rank them. Add clips, classify each on-device, and the board surfaces the ones that sound
+        <em>upset</em> (angry, fearful, sad, disgust) so a human handles those first. Nothing is uploaded.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="field-row">
+        <button id="addSamples" type="button" class="secondary">+ Add the 3 sample clips</button>
+        <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Add audio files to the queue" style="flex:1 1 220px;min-inline-size:0">
+          <span id="dropText">…or drop your own clips here</span>
+          <input type="file" id="file" accept="audio/*" multiple hidden />
+        </div>
+      </div>
+      <div class="field-row">
+        <button id="run" type="button" disabled>Classify the queue</button>
+        <button id="clear" type="button" class="secondary">Clear</button>
+        <span class="muted" id="queueCount">0 clips queued</span>
+      </div>
+
+      <div id="board"></div>
+    </section>
+
+    <p class="crumbs"><a href="../basics/">← Basics</a> · <a href="../">Back</a> · Next: <a href="../wild/">Wild →</a></p>
+
+    <script type="module">
+      import { EmotionEngine, blobToMono16k, urlToMono16k, emoji, prettyLabel, hue, escapeHTML, EMOTION_CSS } from "../emotion.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style");
+      style.textContent = EMOTION_CSS + `
+        .clip-card { border:1px solid var(--border); border-radius:var(--radius); background:var(--bg-raised); padding:.7rem .9rem; margin:.5rem 0; }
+        .clip-card.upset { border-color:var(--bad); }
+        .clip-head { display:flex; flex-wrap:wrap; gap:.5rem; align-items:center; justify-content:space-between; }
+        .clip-name { font-weight:600; min-inline-size:0; overflow:hidden; text-overflow:ellipsis; }
+        .clip-top { display:flex; align-items:center; gap:.4rem; font-family:var(--font-mono); font-size:.85rem; }
+        .badge { font-size:.72rem; padding:.1rem .5rem; border-radius:999px; border:1px solid var(--border); }
+        .badge.upset { background:color-mix(in srgb, var(--bad) 15%, transparent); border-color:var(--bad); color:var(--bad); }
+      `;
+      document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new EmotionEngine();
+      let ready = false;
+      const UPSET = new Set(["ANGRY", "FEAR", "SAD", "DISGUST"]);
+      const queue = []; // { name, pcm, labels? }
+
+      function updateCount() { $("queueCount").textContent = `${queue.length} clip${queue.length === 1 ? "" : "s"} queued`; $("run").disabled = !(ready && queue.length); }
+
+      function upsetScore(labels) { return labels.filter((l) => UPSET.has(l.label.toUpperCase())).reduce((a, l) => a + l.score, 0); }
+
+      function renderBoard() {
+        const sorted = [...queue].sort((a, b) => (b.labels ? upsetScore(b.labels) : -1) - (a.labels ? upsetScore(a.labels) : -1));
+        $("board").innerHTML = sorted.map((c) => {
+          if (!c.labels) return `<div class="clip-card"><div class="clip-head"><span class="clip-name">${escapeHTML(c.name)}</span><span class="muted">not classified yet</span></div></div>`;
+          const top = c.labels[0]; const up = upsetScore(c.labels); const isUp = UPSET.has(top.label.toUpperCase());
+          return `<div class="clip-card ${isUp ? "upset" : ""}"><div class="clip-head">
+            <span class="clip-name">${escapeHTML(c.name)}</span>
+            <span class="clip-top"><span aria-hidden="true">${emoji(top.label)}</span> ${escapeHTML(prettyLabel(top.label))} ${(top.score * 100).toFixed(0)}%
+            <span class="badge ${isUp ? "upset" : ""}">upset ${(up * 100).toFixed(0)}%</span></span>
+          </div></div>`;
+        }).join("");
+      }
+
+      async function addUrl(name, url) { const { pcm } = await urlToMono16k(url); queue.push({ name, pcm }); }
+
+      $("addSamples").addEventListener("click", async () => {
+        $("status").textContent = "Decoding samples…";
+        try {
+          await addUrl("Speech A (sample)", "../speech-jfk.wav");
+          await addUrl("Speech B (sample)", "../speech-ted.wav");
+          await addUrl("Speech C (sample)", "../speech-sample.wav");
+          updateCount(); renderBoard(); $("status").textContent = "Samples added — hit Classify the queue.";
+        } catch (e) { $("status").textContent = "Decode failed: " + e.message; $("status").classList.add("err"); }
+      });
+
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function addFiles(files) {
+        for (const f of files) { try { const { pcm } = await blobToMono16k(f); queue.push({ name: f.name, pcm }); } catch (e) { $("status").textContent = "Skipped " + f.name + ": " + e.message; } }
+        updateCount(); renderBoard();
+      }
+      file.addEventListener("change", () => file.files.length && addFiles([...file.files]));
+      drop.addEventListener("drop", (e) => { const fs = e.dataTransfer?.files; if (fs?.length) addFiles([...fs]); });
+
+      $("clear").addEventListener("click", () => { queue.length = 0; updateCount(); renderBoard(); $("status").textContent = "Queue cleared."; });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/wav2vec2-base-Speech_Emotion_Recognition-ONNX", runtime: "transformers.js", dtype: "q8", sizeMB: 95, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: () => { ready = true; updateCount(); },
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!ready || !queue.length) return;
+        $("run").disabled = true;
+        try {
+          for (let i = 0; i < queue.length; i++) {
+            if (queue[i].labels) continue;
+            $("status").textContent = `Classifying ${i + 1}/${queue.length}…`;
+            const r = await engine.classify(queue[i].pcm);
+            queue[i].labels = r.labels;
+            renderBoard();
+          }
+          $("status").textContent = "Done — most upset first."; $("status").classList.add("ok");
+        } catch (e) { $("status").textContent = "Failed: " + e.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>

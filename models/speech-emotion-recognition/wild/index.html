@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Emotion Wild — emotion over time · Web AI Showcase</title>
+    <meta name="description" content="Slide a window across a clip and watch the emotion change moment to moment — a coloured emotion timeline over the waveform, computed entirely on-device." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎭</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Speech Emotion Recognition</a></p>
+
+    <header>
+      <p class="eyebrow">use case · wild</p>
+      <h1>Wild: emotion over time</h1>
+      <p class="lede">
+        One label for a whole clip hides the story. Here we slide a short window across the audio and
+        classify each step, so you can watch the feeling move — a calm opening that turns tense, a laugh
+        in the middle. The strip under the waveform colours each moment by its top emotion.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an audio file">
+        <span id="dropText">Drop an audio file, or click to choose</span>
+        <input type="file" id="file" accept="audio/*" hidden />
+      </div>
+      <div class="sample-row" id="samples" aria-label="Sample clips" role="group">
+        <button class="chip" type="button" data-src="../speech-ted.wav" aria-pressed="true">🎤 Talk excerpt</button>
+        <button class="chip" type="button" data-src="../speech-jfk.wav" aria-pressed="false">🗣 Speech A</button>
+      </div>
+
+      <div class="param-grid" aria-label="Window settings">
+        <div class="param">
+          <label for="win">Window length (s)</label>
+          <div class="row" style="display:flex;gap:.5rem;align-items:center"><input type="range" id="win" min="1" max="4" step="0.5" value="2" style="inline-size:100%;min-inline-size:0" /><output id="winOut" style="font-family:var(--font-mono);font-size:.78rem;color:var(--muted)">2.0</output></div>
+        </div>
+        <div class="param">
+          <label for="hop">Hop (s)</label>
+          <div class="row" style="display:flex;gap:.5rem;align-items:center"><input type="range" id="hop" min="0.5" max="2" step="0.5" value="1" style="inline-size:100%;min-inline-size:0" /><output id="hopOut" style="font-family:var(--font-mono);font-size:.78rem;color:var(--muted)">1.0</output></div>
+        </div>
+      </div>
+
+      <div class="wave-wrap"><canvas id="wave" class="wave" aria-label="Waveform of the selected audio"></canvas></div>
+      <div style="margin:.4rem 0"><button id="run" type="button" disabled>Track emotion over time</button></div>
+      <p class="muted" id="progress" role="status" aria-live="polite" style="font-family:var(--font-mono);font-size:.8rem"></p>
+
+      <p class="muted" style="font-size:.78rem;margin:.4rem 0 .2rem">Emotion timeline (colour = top emotion, brighter = more confident):</p>
+      <canvas id="timeline" class="emo-timeline" aria-label="Coloured strip showing the top emotion for each window across the clip"></canvas>
+      <div id="legend" class="sample-row" aria-hidden="true" style="margin-top:.4rem"></div>
+      <div id="steps"></div>
+    </section>
+
+    <p class="crumbs"><a href="../practical/">← Practical</a> · <a href="../">Back</a> · Next: <a href="../multi-model/">Multi-model →</a></p>
+
+    <script type="module">
+      import { EmotionEngine, blobToMono16k, urlToMono16k, drawWaveform, drawEmotionTimeline, emoji, prettyLabel, hue, escapeHTML, EMOTION_CSS } from "../emotion.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style");
+      style.textContent = EMOTION_CSS + `.step-row{display:flex;gap:.6rem;align-items:center;font-size:.85rem;padding:.25rem 0;border-bottom:1px solid var(--border)}.step-row .t{font-family:var(--font-mono);font-size:.78rem;color:var(--muted);min-inline-size:6ch}`;
+      document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new EmotionEngine();
+      const SR = 16000;
+      let pcm = null, dur = 0, ready = false;
+
+      function bindOut(id, out, fmt) { const el = $(id); el.addEventListener("input", () => $(out).textContent = fmt(el.value)); $(out).textContent = fmt(el.value); }
+      bindOut("win", "winOut", (v) => Number(v).toFixed(1));
+      bindOut("hop", "hopOut", (v) => Number(v).toFixed(1));
+
+      async function useAudio(p, duration) { pcm = p; dur = duration; $("steps").innerHTML = ""; $("progress").textContent = ""; drawWaveform($("wave"), pcm); drawEmotionTimeline($("timeline"), []); $("run").disabled = !ready; }
+      async function pickSample(btn) {
+        for (const b of $("samples").children) b.setAttribute("aria-pressed", String(b === btn));
+        $("status").textContent = "Decoding…";
+        try { const { pcm: p, duration } = await urlToMono16k(btn.dataset.src); await useAudio(p, duration); $("status").textContent = "Ready — hit Track emotion over time."; }
+        catch (e) { $("status").textContent = "Decode failed: " + e.message; $("status").classList.add("err"); }
+      }
+      for (const btn of $("samples").children) btn.addEventListener("click", () => pickSample(btn));
+
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) {
+        for (const b of $("samples").children) b.setAttribute("aria-pressed", "false");
+        $("dropText").textContent = f.name; $("status").textContent = "Decoding…";
+        try { const { pcm: p, duration } = await blobToMono16k(f); await useAudio(p, duration); $("status").textContent = "Ready."; }
+        catch (e) { $("status").textContent = "Decode failed: " + e.message; $("status").classList.add("err"); }
+      }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f) loadFile(f); });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/wav2vec2-base-Speech_Emotion_Recognition-ONNX", runtime: "transformers.js", dtype: "q8", sizeMB: 95, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: () => { ready = true; $("run").disabled = !pcm; },
+      });
+      pickSample($("samples").firstElementChild);
+
+      const winResults = [];
+      engine.onWindow = (msg) => {
+        winResults[msg.index] = msg.labels;
+        drawEmotionTimeline($("timeline"), winResults.filter(Boolean));
+        $("progress").textContent = `window ${msg.index + 1}/${msg.total}…`;
+      };
+
+      $("run").addEventListener("click", async () => {
+        if (!pcm) return;
+        $("run").disabled = true; $("status").textContent = "Sliding a window across the clip…";
+        winResults.length = 0;
+        const winS = Number($("win").value), hopS = Number($("hop").value);
+        const winN = Math.floor(winS * SR), hopN = Math.floor(hopS * SR);
+        const windows = []; const starts = [];
+        for (let s = 0; s + winN <= pcm.length || (s === 0 && pcm.length > 0); s += hopN) {
+          const end = Math.min(s + winN, pcm.length);
+          windows.push(pcm.subarray(s, end)); starts.push(s / SR);
+          if (end >= pcm.length) break;
+        }
+        try {
+          await engine.classifyWindows(windows);
+          drawEmotionTimeline($("timeline"), winResults.filter(Boolean));
+          $("steps").innerHTML = winResults.map((labels, i) => {
+            const top = labels[0];
+            return `<div class="step-row"><span class="t">${starts[i].toFixed(1)}s</span><span aria-hidden="true">${emoji(top.label)}</span> <b>${escapeHTML(prettyLabel(top.label))}</b> <span class="muted">${(top.score * 100).toFixed(0)}%</span></div>`;
+          }).join("");
+          $("progress").textContent = `${winResults.length} windows classified.`;
+          $("status").textContent = "Done — see the emotion timeline."; $("status").classList.add("ok");
+        } catch (e) { $("status").textContent = "Failed: " + e.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>

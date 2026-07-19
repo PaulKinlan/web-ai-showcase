@@ -1,0 +1,304 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Speech Emotion Recognition in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run wav2vec2 speech-emotion recognition locally: record or drop a clip and hear the emotion in the VOICE — angry, happy, sad, fearful, disgust, neutral — with confidence bars and the waveform. No server."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎭</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">audio-classification · audio · WASM · ~95 MB</p>
+      <h1>Speech Emotion Recognition — hear the feeling, not the words</h1>
+      <p class="lede">
+        Two people can say "I'm fine" and mean opposite things. This model listens to <em>how</em>
+        something is said — the acoustics of the voice, not the transcript — and names the emotion:
+        <strong>angry, happy, sad, fearful, disgust, or neutral</strong>. It's a wav2vec2 network that
+        reads the raw waveform, running entirely on your device.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/onnx-community/wav2vec2-base-Speech_Emotion_Recognition-ONNX" target="_blank" rel="noopener">onnx-community/wav2vec2-base-Speech_Emotion_Recognition-ONNX</a></td></tr>
+          <tr><th>Task / pipeline</th><td><code>audio-classification</code></td></tr>
+          <tr><th>Architecture</th><td>wav2vec2-base with a sequence-classification head (<code>Wav2Vec2ForSequenceClassification</code>) — reads the raw 16 kHz waveform, no spectrogram step</td></tr>
+          <tr><th>Classes</th><td>6 emotions: ANGRY, DISGUST, FEAR, HAPPY, NEUTRAL, SAD</td></tr>
+          <tr><th>Input</th><td>16 kHz mono <code>Float32Array</code>, mean/variance normalised</td></tr>
+          <tr><th>Quantization</th><td>q8 (8-bit) ONNX</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (runs anywhere; WebGPU used when an adapter exists)</td></tr>
+          <tr><th>Download</th><td>~95 MB, cached after first load</td></tr>
+          <tr><th>License</th><td>Apache-2.0 (wav2vec2 base)</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers, Web Audio, MediaRecorder, Canvas — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+      <p class="muted" style="font-size:.82rem">
+        <strong>An honest caveat:</strong> emotion models learn from <em>acted</em> emotional speech.
+        They pick up real acoustic cues (pitch, energy, tremor), but they are not a lie detector and
+        real neutral speech can get surprising labels. Read the confidence bars, not just the top label —
+        and treat this as a signal, not a verdict.
+      </p>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Pick a sample, drop an audio clip, or record yourself saying the same sentence in different tones, then hit Read emotion.</p>
+
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an audio file">
+        <span id="dropText">Drop an audio file here, or click to choose</span>
+        <input type="file" id="file" accept="audio/*" hidden />
+      </div>
+
+      <div class="sample-row" id="samples" aria-label="Sample clips" role="group">
+        <button class="chip" type="button" data-src="speech-jfk.wav" aria-pressed="true">🗣 Speech A</button>
+        <button class="chip" type="button" data-src="speech-ted.wav" aria-pressed="false">🎤 Speech B</button>
+        <button class="chip" type="button" data-src="speech-sample.wav" aria-pressed="false">💬 Speech C</button>
+      </div>
+
+      <div class="field-row">
+        <button id="recBtn" type="button" class="secondary">● Record from mic</button>
+        <span id="recState" class="muted" aria-live="polite"></span>
+      </div>
+      <div class="audio-row"><audio id="player" controls preload="metadata"></audio></div>
+
+      <div class="wave-wrap"><canvas id="wave" class="wave" aria-label="Waveform of the selected audio"></canvas></div>
+
+      <div style="margin:.6rem 0"><button id="run" type="button" disabled>Read emotion</button></div>
+
+      <div class="big-emotion" id="big" hidden>
+        <span class="face" id="bigFace" aria-hidden="true">🎭</span>
+        <span><span class="name" id="bigName">–</span> <span class="conf" id="bigConf"></span></span>
+      </div>
+      <div class="emo-bars" id="bars" aria-label="Emotion confidence scores" aria-live="polite"></div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+        <span>clip length <b id="rDur">–</b></span>
+        <span>top emotion <b id="rTop">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside</h3>
+      <p class="muted">
+        The model outputs a probability for every emotion class — a distribution, not a single answer.
+        When the top two are close, the voice is ambiguous (or between emotions). Below are the raw class
+        probabilities from your clip, and the waveform the network actually read (wav2vec2 works on the
+        raw signal — there's no spectrogram in between).
+      </p>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Read a clip to see its full emotion distribution.</div>
+      <div id="insideWrap" hidden>
+        <table class="inside-table">
+          <thead><tr><th>emotion</th><th>probability</th></tr></thead>
+          <tbody id="insideRows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        Tone carries meaning that transcripts throw away. Detecting it on-device means an app can react
+        to <em>how</em> a user sounds without shipping their voice to a server — private by construction.
+      </p>
+      <ul>
+        <li><strong>Call-centre &amp; support triage</strong> — flag calls where a caller sounds angry or distressed so a supervisor can step in, without recording or uploading the audio.</li>
+        <li><strong>UX &amp; product research</strong> — measure emotional reaction in spoken user-testing feedback, locally, instead of hand-coding hours of tape.</li>
+        <li><strong>Accessibility &amp; wellbeing</strong> — a journaling or mood app that notices tone over time, all data staying on the device.</li>
+        <li><strong>Expressive interfaces</strong> — a character or avatar that mirrors the emotion in your voice in real time, no cloud round-trip.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Read the emotion in a clip and see the full confidence distribution.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">A call/feedback triage board — classify several clips and surface the ones that sound upset.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Emotion over time — slide a window across a clip and watch the feeling change.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">Whisper transcript + voice emotion side by side: what was said vs how it sounded.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>Classification is one call with Transformers.js. Feed a 16 kHz mono <code>Float32Array</code>:</p>
+      <pre><code>import { pipeline } from "@huggingface/transformers";
+
+const classify = await pipeline(
+  "audio-classification",
+  "onnx-community/wav2vec2-base-Speech_Emotion_Recognition-ONNX",
+  { dtype: "q8" },              // downloads + caches ~95 MB once
+);
+
+const output = await classify(audio, { top_k: 6 });
+// audio = Float32Array @ 16 kHz mono (decode with the Web Audio API)
+// → [{ label: "ANGRY", score: 0.62 }, { label: "NEUTRAL", score: 0.15 }, … ]</code></pre>
+      <p class="muted">
+        This page decodes files / mic recordings to 16 kHz mono with an <code>OfflineAudioContext</code>,
+        runs the pipeline inside a Web Worker so the UI never janks, and renders the full probability
+        distribution — not just the winner.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/onnx-community/wav2vec2-base-Speech_Emotion_Recognition-ONNX" target="_blank" rel="noopener">Model card — onnx-community/wav2vec2-base-Speech_Emotion_Recognition-ONNX</a></li>
+        <li><a href="https://huggingface.co/facebook/wav2vec2-base" target="_blank" rel="noopener">Base model — facebook/wav2vec2-base</a></li>
+        <li><a href="https://arxiv.org/abs/2006.11477" target="_blank" rel="noopener">Paper — wav2vec 2.0 (Baevski et al., 2020)</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import {
+        EmotionEngine, blobToMono16k, urlToMono16k, MicRecorder,
+        drawWaveform, renderEmotionBars, emoji, prettyLabel, escapeHTML, EMOTION_CSS,
+      } from "./emotion.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = EMOTION_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new EmotionEngine();
+      let pcm = null, ready = false;
+
+      function setStatus(msg, cls) {
+        $("status").textContent = msg;
+        $("status").classList.remove("err", "ok");
+        if (cls) $("status").classList.add(cls);
+      }
+
+      async function useAudio(pcmData, url) {
+        pcm = pcmData;
+        $("bars").replaceChildren();
+        $("big").hidden = true;
+        $("readout").hidden = true;
+        $("insideWrap").hidden = true;
+        $("insideEmpty").hidden = false;
+        drawWaveform($("wave"), pcm);
+        if (url) $("player").src = url;
+        $("run").disabled = !ready;
+      }
+
+      async function pickSample(btn) {
+        for (const b of $("samples").children) b.setAttribute("aria-pressed", String(b === btn));
+        setStatus("Decoding sample…");
+        try {
+          const { pcm: p } = await urlToMono16k(btn.dataset.src);
+          await useAudio(p, btn.dataset.src);
+          setStatus("Sample ready — hit Read emotion.");
+        } catch (e) {
+          setStatus("Could not decode the sample: " + e.message, "err");
+        }
+      }
+      for (const btn of $("samples").children) btn.addEventListener("click", () => pickSample(btn));
+
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) {
+        for (const b of $("samples").children) b.setAttribute("aria-pressed", "false");
+        $("dropText").textContent = f.name;
+        setStatus("Decoding " + f.name + "…");
+        try {
+          const { pcm: p } = await blobToMono16k(f);
+          await useAudio(p, URL.createObjectURL(f));
+          setStatus("Audio ready — hit Read emotion.");
+        } catch (e) {
+          setStatus("Could not decode that file: " + e.message, "err");
+        }
+      }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f) loadFile(f); });
+
+      const rec = new MicRecorder();
+      let recording = false;
+      if (!MicRecorder.supported()) { $("recBtn").disabled = true; $("recState").textContent = "No microphone API here."; }
+      $("recBtn").addEventListener("click", async () => {
+        if (!recording) {
+          try {
+            await rec.start();
+            recording = true;
+            $("recBtn").textContent = "■ Stop recording";
+            $("recState").innerHTML = '<span class="rec-dot"></span>Recording…';
+          } catch (e) {
+            $("recState").textContent = "Mic blocked: " + e.message;
+          }
+        } else {
+          const { blob, url } = await rec.stop();
+          recording = false;
+          $("recBtn").textContent = "● Record from mic";
+          $("recState").textContent = "Recorded.";
+          setStatus("Decoding recording…");
+          const { pcm: p } = await blobToMono16k(blob);
+          await useAudio(p, url);
+          setStatus("Recording ready — hit Read emotion.");
+        }
+      });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/wav2vec2-base-Speech_Emotion_Recognition-ONNX", runtime: "transformers.js", dtype: "q8", sizeMB: 95, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: () => { ready = true; $("run").disabled = !pcm; },
+      });
+
+      pickSample($("samples").firstElementChild);
+
+      $("run").addEventListener("click", async () => {
+        if (!pcm) { setStatus("Pick or record some audio first."); return; }
+        $("run").disabled = true;
+        setStatus("Listening for emotion…");
+        try {
+          const r = await engine.classify(pcm);
+          renderEmotionBars($("bars"), r.labels);
+          const top = r.labels[0];
+          $("bigFace").textContent = emoji(top.label);
+          $("bigName").textContent = prettyLabel(top.label);
+          $("bigConf").textContent = `${(top.score * 100).toFixed(0)}% confident`;
+          $("big").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = r.ms + " ms";
+          $("rDur").textContent = r.durationS.toFixed(1) + " s";
+          $("rTop").textContent = `${prettyLabel(top.label)} (${(top.score * 100).toFixed(0)}%)`;
+          $("readout").hidden = false;
+          $("insideEmpty").hidden = true;
+          $("insideWrap").hidden = false;
+          $("insideRows").replaceChildren(...r.labels.map((l) => {
+            const tr = document.createElement("tr");
+            tr.innerHTML = `<td>${emoji(l.label)} ${escapeHTML(prettyLabel(l.label))}</td><td>${(l.score * 100).toFixed(2)}%</td>`;
+            return tr;
+          }));
+          setStatus(`Sounds ${prettyLabel(top.label).toLowerCase()}.`, "ok");
+        } catch (e) {
+          setStatus("Emotion read failed: " + e.message, "err");
+        } finally {
+          $("run").disabled = false;
+        }
+      });
+    </script>
+  </body>
+</html>
