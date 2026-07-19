@@ -1,0 +1,325 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OWLv2 — open-vocabulary object detection in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run Google's OWLv2 locally in your browser: describe ANY object in plain text — 'a cat', 'a person wearing red', 'something dangerous' — and it boxes every matching region with a score. Open-vocabulary detection, no server, real inference you can see inside."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🦉</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">zero-shot-object-detection · vision + language · WASM · ~400 MB</p>
+      <h1>OWLv2 — detect <em>anything you can describe</em> in an image</h1>
+      <p class="lede">
+        Ordinary detectors only know the classes they were trained on. OWLv2 is open-vocabulary: you type
+        the objects you want as free text — <code>a cat</code>, <code>a remote control</code>,
+        <code>a person wearing red</code> — and it embeds each phrase and each image region into a shared
+        space, then boxes the regions that match. New label set, no retraining, all on your device.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/Xenova/owlv2-base-patch16-ensemble" target="_blank" rel="noopener">Xenova/owlv2-base-patch16-ensemble</a></td></tr>
+          <tr><th>Task / pipeline</th><td><code>zero-shot-object-detection</code></td></tr>
+          <tr><th>Architecture</th><td>OWLv2 — ViT-B/16 image encoder + text encoder, per-region query matching</td></tr>
+          <tr><th>Vocabulary</th><td>Open — any text query you provide at runtime (no fixed class list)</td></tr>
+          <tr><th>Quantization</th><td>q8 (8-bit) ONNX</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (runs anywhere; no WebGPU needed)</td></tr>
+          <tr><th>Download</th><td>~400 MB, cached after first load</td></tr>
+          <tr><th>License</th><td>Apache-2.0 (Google OWLv2)</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers, Canvas, FileReader — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+      <p class="muted" style="font-size:.85rem">
+        OWLv2 is a big model and runs on the CPU here, so the first detect after loading can take a few
+        seconds — honest progress is shown, and it is genuinely running on your device.
+      </p>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Pick or drop an image, type the objects you want as comma-separated text, and hit Detect. OWLv2 runs once at a low floor; the score slider then filters the boxes live without re-running the model.</p>
+
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image">
+        <span id="dropText">Drop an image here, or click to choose</span>
+        <input type="file" id="file" accept="image/*" hidden />
+      </div>
+      <div class="sample-strip" id="samples" aria-label="Sample images">
+        <img class="sample-thumb active" src="sample-cats.jpg" data-src="sample-cats.jpg" alt="Two cats sleeping on a pink couch" tabindex="0" role="button" />
+        <img class="sample-thumb" src="sample-room.jpg" data-src="sample-room.jpg" alt="A cozy sunlit bedroom with a bookshelf" tabindex="0" role="button" />
+        <img class="sample-thumb" src="sample-river.jpg" data-src="sample-river.jpg" alt="A riverside at golden hour with a swan" tabindex="0" role="button" />
+      </div>
+
+      <label class="query-field" for="queries">
+        Text queries (comma-separated — describe anything)
+        <textarea id="queries" rows="2">a cat, a pink blanket, a remote control</textarea>
+      </label>
+      <div class="preset-row" id="presets" aria-label="Query presets">
+        <button type="button" class="chip" data-q="a cat, a pink blanket, a remote control">Cats scene</button>
+        <button type="button" class="chip" data-q="a book, a lamp, a plant, a window">Room objects</button>
+        <button type="button" class="chip" data-q="a bird, water, a tree">Riverside</button>
+        <button type="button" class="chip" data-q="something soft, something electronic">Abstract</button>
+      </div>
+
+      <div style="margin:.6rem 0">
+        <button id="run" type="button" disabled>Detect</button>
+      </div>
+
+      <div class="slider-row">
+        <label for="thresh">Score threshold</label>
+        <input type="range" id="thresh" min="0.02" max="0.5" step="0.01" value="0.1" />
+        <output id="threshOut" for="thresh">0.10</output>
+      </div>
+
+      <div class="canvas-wrap">
+        <canvas id="stage" class="stage-canvas" aria-label="Detection result: image with labelled boxes"></canvas>
+      </div>
+      <div class="count-chips" id="countChips" aria-live="polite"></div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+        <span>queries <b id="rQ">–</b></span>
+        <span>boxes shown <b id="rN">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside</h3>
+      <p class="muted">
+        OWLv2 turns every text query into a vector and every candidate image region into a vector in the
+        <em>same</em> space, then scores each region against each query by similarity — that score is what
+        the threshold filters. Below is the real output: a per-query summary (how many regions matched and
+        the best score), then the raw boxes with their matched query and pixel coordinates. This is what
+        the model returned — no post-processing beyond the score filter.
+      </p>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Run detection to see per-query scores and the raw boxes.</div>
+      <div id="insideWrap" hidden>
+        <div class="readout">
+          <span>candidates above floor <b id="iTotal">–</b></span>
+          <span>shown at threshold <b id="iShown">–</b></span>
+          <span>queries matched <b id="iMatched">–</b></span>
+        </div>
+        <table class="inside-table">
+          <thead><tr><th>query</th><th>matches</th><th>best score</th></tr></thead>
+          <tbody id="queryRows"></tbody>
+        </table>
+        <table class="inside-table">
+          <thead><tr><th>#</th><th>query</th><th>score</th><th>x</th><th>y</th><th>w</th><th>h</th></tr></thead>
+          <tbody id="insideRows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        Every fixed-class detector forces the same question: "is your object one of the 80 it knows?" If
+        not, you collect a dataset and fine-tune. OWLv2 removes that step — the class list is an
+        <em>input</em>, typed at runtime, in the browser, for free. That turns bespoke detection from a
+        training project into a text box.
+      </p>
+      <ul>
+        <li><strong>Custom on-device inventory / inspection</strong> — find "a forklift", "a safety helmet", or "an empty shelf" without training a model per site, and with nothing uploaded.</li>
+        <li><strong>Zero-setup visual search</strong> — let users describe what to find in their own photos ("my passport", "a red mug") and box it locally.</li>
+        <li><strong>Content triage &amp; moderation</strong> — box regions matching policy phrases before an image is shared, all client-side.</li>
+        <li><strong>Region proposals for other models</strong> — OWLv2 finds "where"; hand each region to a segmenter or captioner for "what exactly", chaining tiny local models.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Type your own labels, hit detect, and watch OWLv2 box exactly what you described.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Custom inventory / inspection — count "a forklift" or "a helmet" with no training.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Ask for weird things — "something dangerous", "the odd one out" — and see what matches.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">OWLv2 finds a region → SlimSAM returns its exact pixel mask.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>Open-vocabulary detection is a one-liner with Transformers.js — the query list is just an argument:</p>
+      <pre><code>import { pipeline } from "@huggingface/transformers";
+
+const detect = await pipeline(
+  "zero-shot-object-detection",
+  "Xenova/owlv2-base-patch16-ensemble",
+); // downloads + caches ~400 MB once
+
+const queries = ["a cat", "a remote control", "a person wearing red"];
+const output = await detect(imageURL, queries, { threshold: 0.1, percentage: false });
+// → [{ label: "a cat", score: 0.29, box: { xmin, ymin, xmax, ymax } }, …]
+//   label is the matched query; percentage:false gives pixel coordinates</code></pre>
+      <p class="muted">
+        This page runs the model once at a low floor threshold inside a Web Worker, caches every box, and
+        filters the cached list as you drag the slider — so the slider is instant and never re-runs
+        inference. Changing the query text re-runs the model (new text embeddings). The canvas is drawn at
+        the image's natural resolution and scaled by CSS, so boxes stay pixel-accurate.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/Xenova/owlv2-base-patch16-ensemble" target="_blank" rel="noopener">Model card — Xenova/owlv2-base-patch16-ensemble</a></li>
+        <li><a href="https://huggingface.co/docs/transformers/model_doc/owlv2" target="_blank" rel="noopener">Google OWLv2 — model documentation</a></li>
+        <li><a href="https://arxiv.org/abs/2306.09683" target="_blank" rel="noopener">Paper — Scaling Open-Vocabulary Object Detection (Minderer et al., 2023)</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import {
+        OwlEngine, fileToDataURL, decodeImage, parseQueries, drawDetections,
+        summariseByQuery, colorForQuery, escapeHTML, OWL_CSS,
+      } from "./owlv2.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = OWL_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new OwlEngine();
+      let currentImageURL = null;
+      let currentImg = null;      // decoded HTMLImageElement for drawing
+      let allDetections = [];     // everything above the floor, cached
+      let lastQueries = [];
+      let lastMs = 0;
+
+      async function useURL(url) {
+        currentImageURL = url;
+        currentImg = await decodeImage(url);
+        allDetections = [];
+        $("insideWrap").hidden = true;
+        $("insideEmpty").hidden = false;
+        $("countChips").replaceChildren();
+        $("readout").hidden = true;
+        const c = $("stage");
+        c.width = currentImg.naturalWidth; c.height = currentImg.naturalHeight;
+        c.getContext("2d").drawImage(currentImg, 0, 0);
+      }
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        const blob = await (await fetch(el.dataset.src)).blob();
+        await useURL(await fileToDataURL(new File([blob], "sample", { type: blob.type })));
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => {
+          if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); }
+        });
+      }
+      pickSample($("samples").firstElementChild);
+
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) {
+        for (const t of $("samples").children) t.classList.remove("active");
+        await useURL(await fileToDataURL(f));
+        $("dropText").textContent = f.name;
+      }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
+
+      // Presets fill the query field.
+      for (const b of $("presets").children) {
+        b.addEventListener("click", () => { $("queries").value = b.dataset.q; });
+      }
+
+      // --- load model (shared auto-init architecture) ---
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/owlv2-base-patch16-ensemble", runtime: "transformers.js", dtype: "q8", sizeMB: 400, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: () => { $("run").disabled = false; },
+      });
+
+      // --- detect ---
+      $("run").addEventListener("click", async () => {
+        if (!currentImageURL) { $("status").textContent = "Pick an image first."; return; }
+        const queries = parseQueries($("queries").value);
+        if (queries.length < 1) { $("status").textContent = "Type at least one query."; $("status").classList.add("err"); return; }
+        $("run").disabled = true; $("status").classList.remove("err"); $("status").textContent = "Detecting… (OWLv2 is large; first run takes a few seconds)";
+        try {
+          const r = await engine.detect(currentImageURL, queries);
+          allDetections = r.detections;
+          lastQueries = r.queries;
+          lastMs = r.ms;
+          $("rBackend").textContent = r.device.toUpperCase();
+          render();
+          $("status").textContent = `Found ${allDetections.length} candidate boxes across ${queries.length} quer${queries.length === 1 ? "y" : "ies"}.`;
+          $("status").classList.add("ok");
+        } catch (err) {
+          $("status").textContent = "Detection failed: " + err.message;
+          $("status").classList.add("err");
+        } finally { $("run").disabled = false; }
+      });
+
+      const thresh = $("thresh");
+      thresh.addEventListener("input", () => { $("threshOut").textContent = (+thresh.value).toFixed(2); if (allDetections.length) render(); });
+
+      function render() {
+        const t = +thresh.value;
+        const shown = allDetections.filter((d) => d.score >= t);
+        drawDetections($("stage"), currentImg, shown);
+        $("countChips").replaceChildren(...summariseByQuery(lastQueries, shown).filter((s) => s.count).map(({ query, count }) => {
+          const el = document.createElement("span");
+          el.className = "count-chip";
+          el.innerHTML = `<span class="swatch" style="background:${colorForQuery(query)}"></span>${escapeHTML(query)} <b>×${count}</b>`;
+          return el;
+        }));
+        $("readout").hidden = false;
+        $("rMs").textContent = lastMs + " ms";
+        $("rQ").textContent = lastQueries.length;
+        $("rN").textContent = shown.length;
+        renderInside(shown);
+      }
+
+      function renderInside(shown) {
+        $("insideEmpty").hidden = true;
+        $("insideWrap").hidden = false;
+        $("iTotal").textContent = allDetections.length;
+        $("iShown").textContent = shown.length;
+        const summary = summariseByQuery(lastQueries, shown);
+        $("iMatched").textContent = `${summary.filter((s) => s.count).length}/${lastQueries.length}`;
+        $("queryRows").replaceChildren(...summary.map((s) => {
+          const tr = document.createElement("tr");
+          tr.innerHTML = `<td>${escapeHTML(s.query)}</td><td>${s.count}</td><td>${s.count ? (s.top * 100).toFixed(1) + "%" : "–"}</td>`;
+          return tr;
+        }));
+        const rows = [...shown].sort((a, b) => b.score - a.score).map((d, i) => {
+          const { xmin, ymin, xmax, ymax } = d.box;
+          const tr = document.createElement("tr");
+          tr.innerHTML = `<td>${i + 1}</td><td>${escapeHTML(d.label)}</td><td>${(d.score * 100).toFixed(1)}%</td>
+            <td>${Math.round(xmin)}</td><td>${Math.round(ymin)}</td>
+            <td>${Math.round(xmax - xmin)}</td><td>${Math.round(ymax - ymin)}</td>`;
+          return tr;
+        });
+        $("insideRows").replaceChildren(...rows);
+      }
+    </script>
+  </body>
+</html>
