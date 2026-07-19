@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Moonshine Wild — real-time streaming captions · Web AI Showcase</title>
+    <meta name="description" content="Stream audio through Moonshine in a rolling loop to produce live captions, in your browser. Something the model's low latency makes possible client-side." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🌙</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Moonshine</a></p>
+
+    <header>
+      <p class="eyebrow">use case · wild</p>
+      <h1>Wild: real-time streaming captions</h1>
+      <p class="lede">
+        Moonshine's low latency means you can caption audio as it flows. This page slices a clip into
+        short windows and transcribes them one after another, appending each to a rolling caption —
+        exactly the loop you'd run over a live mic. Watch it caption a sample, or drive it from your mic.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+
+      <div class="audio-row">
+        <label style="font-size:.82rem">Window
+          <select id="win">
+            <option value="2">2 s</option>
+            <option value="3" selected>3 s</option>
+            <option value="4">4 s</option>
+          </select>
+        </label>
+        <span class="muted" style="font-size:.82rem">Stream a sample:</span>
+        <span class="sample-row" id="samples">
+          <button class="chip" type="button" data-src="../jfk.wav">JFK inaugural</button>
+          <button class="chip" type="button" data-src="../ted.wav">TED clip</button>
+        </span>
+        <button id="mic" type="button" class="secondary" disabled>● Live mic captions</button>
+      </div>
+      <div id="micFallback" class="fallback" hidden>
+        <strong>No microphone here.</strong>
+        <p class="muted" style="margin:.3rem 0">Live mic captions need mic access. Use "Stream a sample" above to see the same rolling-caption loop.</p>
+      </div>
+
+      <h3>Live caption</h3>
+      <div class="caption-box" id="caption" aria-live="polite">Pick a sample to start streaming captions.</div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span><span>windows <b id="rWins">–</b></span>
+        <span>avg / window <b id="rAvg">–</b></span><span><span class="speed-badge" id="rSpeed">–</span></span>
+      </div>
+    </section>
+
+    <p class="crumbs"><a href="../">← Back to Moonshine</a> · Next: <a href="../multi-model/">Multi-model →</a></p>
+
+    <script type="module">
+      import { MoonshineEngine, urlToMono16k, MicRecorder, blobToMono16k, MOONSHINE_CSS } from "../moonshine.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = MOONSHINE_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new MoonshineEngine();
+      let streaming = false;
+
+      // Stream a decoded pcm array through Moonshine in fixed windows, appending each transcript.
+      async function streamPcm(pcm, rate = 16000) {
+        if (streaming) return; streaming = true;
+        $("caption").textContent = ""; $("readout").hidden = false;
+        const winSec = +$("win").value, winLen = Math.floor(winSec * rate);
+        let wins = 0, totalMs = 0, backend = "–";
+        for (let off = 0; off < pcm.length && streaming; off += winLen) {
+          const slice = pcm.subarray(off, Math.min(off + winLen, pcm.length));
+          if (slice.length < rate * 0.4) break; // skip a tiny tail
+          try {
+            const r = await engine.transcribe(slice, slice.length / rate);
+            const t = (r.text || "").trim();
+            if (t) $("caption").textContent = ($("caption").textContent + " " + t).trim();
+            wins++; totalMs += r.ms; backend = r.device.toUpperCase();
+            $("rBackend").textContent = backend; $("rWins").textContent = wins;
+            $("rAvg").textContent = (totalMs / wins / 1000).toFixed(2) + " s";
+            const speed = (winSec) / (r.ms / 1000);
+            $("rSpeed").textContent = `${speed.toFixed(1)}× real time`;
+          } catch (err) { $("status").hidden = false; $("status").textContent = "Window failed: " + err.message; $("status").classList.add("err"); break; }
+        }
+        streaming = false;
+      }
+
+      for (const chip of $("samples").children) {
+        chip.addEventListener("click", async () => {
+          if (!engine.ready) return;
+          $("status").hidden = false; $("status").classList.remove("err"); $("status").textContent = "Streaming…";
+          const d = await urlToMono16k(chip.dataset.src);
+          await streamPcm(d.pcm);
+          $("status").textContent = "Done streaming the clip.";
+        });
+      }
+
+      // Live mic: record short windows in a loop and caption each.
+      const mic = new MicRecorder(); let micOn = false;
+      if (!MicRecorder.supported()) $("micFallback").hidden = false;
+      $("mic").addEventListener("click", async () => {
+        if (micOn) { micOn = false; streaming = false; $("mic").textContent = "● Live mic captions"; $("mic").classList.add("secondary"); return; }
+        micOn = true; $("mic").innerHTML = '<span class="rec-dot"></span>Stop'; $("mic").classList.remove("secondary");
+        $("caption").textContent = ""; $("readout").hidden = false;
+        const winSec = +$("win").value; let wins = 0, totalMs = 0;
+        try {
+          while (micOn) {
+            await mic.start();
+            await new Promise((res) => setTimeout(res, winSec * 1000));
+            if (!micOn) { await mic.stop(); break; }
+            const { blob } = await mic.stop();
+            const d = await blobToMono16k(blob);
+            const r = await engine.transcribe(d.pcm, d.duration);
+            const t = (r.text || "").trim();
+            if (t) $("caption").textContent = ($("caption").textContent + " " + t).trim();
+            wins++; totalMs += r.ms;
+            $("rBackend").textContent = r.device.toUpperCase(); $("rWins").textContent = wins;
+            $("rAvg").textContent = (totalMs / wins / 1000).toFixed(2) + " s";
+            $("rSpeed").textContent = `${(d.duration / (r.ms / 1000)).toFixed(1)}× real time`;
+          }
+        } catch (err) { $("micFallback").hidden = false; micOn = false; $("mic").textContent = "● Live mic captions"; $("mic").classList.add("secondary"); }
+      });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/moonshine-base-ONNX", runtime: "transformers.js", dtype: "q8", sizeMB: 65, requiresWebGPU: false },
+        load: async (onProgress) => ({ device: await engine.load((p) => onProgress(p)) }),
+        onReady: () => { $("mic").disabled = false; },
+      });
+    </script>
+  </body>
+</html>

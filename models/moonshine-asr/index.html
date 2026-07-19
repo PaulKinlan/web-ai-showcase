@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Moonshine — fast speech-to-text in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run Moonshine locally in your browser: a fast, low-latency speech-to-text model built for the edge. Record, drop a file, or use a sample clip and get a transcript in a fraction of the audio's length — WebAssembly, nothing uploaded."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🌙</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">automatic-speech-recognition · audio · WASM (WebGPU when available) · ~65 MB</p>
+      <h1>Moonshine — fast, low-latency speech-to-text</h1>
+      <p class="lede">
+        Moonshine listens to audio and writes down what was said — like Whisper, but built for
+        <strong>speed at the edge</strong>. It doesn't pad every clip to 30 seconds, so a short utterance
+        transcribes in a fraction of its own length. Record from the mic, drop a file, or use a sample,
+        and watch the real-time factor.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="seg-table" style="inline-size:100%;border-collapse:collapse">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/onnx-community/moonshine-base-ONNX" target="_blank" rel="noopener">onnx-community/moonshine-base-ONNX</a> <span class="muted">(Useful Sensors Moonshine, base)</span></td></tr>
+          <tr><th>Task / pipeline</th><td><code>automatic-speech-recognition</code></td></tr>
+          <tr><th>Architecture</th><td>Encoder-decoder transformer (~61M params) trained for short-form, low-latency ASR; input scales with audio length instead of padding to a fixed 30 s window</td></tr>
+          <tr><th>Quantization</th><td>q8 (8-bit) ONNX — the <code>*_quantized.onnx</code> weights</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (WebGPU when a real adapter is present), honest fallback</td></tr>
+          <tr><th>Download</th><td>~65 MB (encoder + merged decoder), cached after first load</td></tr>
+          <tr><th>License</th><td>MIT (Useful Sensors Moonshine)</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly / WebGPU, Web Workers, Web Audio (decode + resample), MediaRecorder (mic)</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">
+        Choose audio — record from your mic, upload a file, or pick a sample. The page decodes it to
+        16 kHz mono (what Moonshine expects), draws the waveform, and transcribes it in a Web Worker. The
+        headline number is <strong>speed</strong>: how much faster than real time it ran.
+      </p>
+
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+
+      <div class="audio-row">
+        <button id="rec" type="button" class="secondary" disabled>● Record</button>
+        <button id="upload" type="button" class="secondary" disabled>Upload audio</button>
+        <input type="file" id="file" accept="audio/*" hidden />
+        <span class="muted" style="font-size:.82rem">or a sample:</span>
+        <span class="sample-row" id="samples">
+          <button class="chip" type="button" data-src="jfk.wav" data-label="JFK — inaugural (11s)">JFK inaugural</button>
+          <button class="chip" type="button" data-src="ted.wav" data-label="TED talk clip (12s)">TED clip</button>
+        </span>
+      </div>
+
+      <div id="micFallback" class="fallback" hidden>
+        <strong>No microphone available here.</strong>
+        <p class="muted" style="margin:.3rem 0">
+          This context didn't grant mic access (common in headless / embedded views). Moonshine still
+          works — use a <em>sample</em> above or <em>Upload audio</em>. For live recording, open this in a
+          normal browser tab and allow the microphone when prompted.
+        </p>
+      </div>
+
+      <div class="audio-row">
+        <audio id="player" controls preload="metadata"></audio>
+        <span class="muted" id="clipLabel" style="font-size:.82rem">JFK — inaugural (11s)</span>
+      </div>
+      <div class="wave-wrap"><canvas id="wave" class="wave" aria-label="Audio waveform"></canvas></div>
+
+      <button id="run" type="button" disabled>Transcribe</button>
+
+      <h3>Transcript</h3>
+      <div class="transcript" id="transcript" aria-live="polite">Transcribe a clip to see the text here.</div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>audio length <b id="rDur">–</b></span>
+        <span>process time <b id="rMs">–</b></span>
+        <span>tokens <b id="rTok">–</b></span>
+        <span id="speedWrap"><span class="speed-badge" id="rSpeed">–</span></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside</h3>
+      <p class="muted">
+        The interesting number for Moonshine isn't just the text — it's how <em>fast</em> it got there.
+        Below is the real-time factor (process time ÷ audio length) and the derived speed-up. Whisper
+        pads short clips to a fixed 30 s window; Moonshine's compute scales with the actual audio, so
+        short utterances finish much sooner. Everything here is measured on this device.
+      </p>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Transcribe a clip to see its speed profile.</div>
+      <div class="readout" id="insideStats" hidden>
+        <span>real-time factor <b id="iRtf">–</b></span>
+        <span>faster than real time <b id="iSpeed">–</b></span>
+        <span>audio <b id="iDur">–</b></span>
+        <span>process <b id="iMs">–</b></span>
+        <span>tok/s <b id="iTps">–</b></span>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        On-device transcription used to force a trade-off: Whisper is accurate but pads and chunks, which
+        adds latency on short inputs. Moonshine is tuned for the <em>interactive</em> case — voice
+        commands, live dictation, short replies — where a snappy response matters more than transcribing
+        an hour of audio. It's a free, private, offline capability of your page.
+      </p>
+      <ul>
+        <li><strong>Fast voice commands</strong> — a hands-free control layer that feels instant, with no per-request inference cost.</li>
+        <li><strong>Live dictation</strong> — transcribe short utterances as the user speaks, segment by segment, entirely client-side.</li>
+        <li><strong>Real-time captions</strong> — caption a mic or media stream with low latency, nothing uploaded.</li>
+        <li><strong>Edge &amp; offline</strong> — a small model that runs where bandwidth or privacy rules out a cloud API.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">One clip in, a transcript out — with the speed readout front and centre.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Fast voice commands: speak a phrase, match it to an action, instantly.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Real-time streaming captions: transcribe the mic in a rolling loop.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">Speak → Moonshine → an LLM answers your spoken question.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>Transcription is one pipeline call — Moonshine uses the standard ASR task:</p>
+      <pre><code>import { pipeline } from "@huggingface/transformers";
+
+const transcribe = await pipeline(
+  "automatic-speech-recognition",
+  "onnx-community/moonshine-base-ONNX",
+  { device: "wasm", dtype: "q8" }, // WebGPU when a real adapter exists
+);
+
+// audio = a 16 kHz mono Float32Array (decode with Web Audio, then resample)
+const out = await transcribe(audio);
+// out.text → the transcript
+// Moonshine has no timestamp tokens — it's built for fast short-form transcription.</code></pre>
+      <p class="muted">
+        This page decodes the mic/file/sample to 16 kHz mono with the Web Audio API on the main thread,
+        then transfers just the Float32 samples to a Web Worker where the pipeline runs — so the model
+        never blocks the interface. It times the call and divides by the clip length to show a real
+        real-time factor.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/onnx-community/moonshine-base-ONNX" target="_blank" rel="noopener">Model card — onnx-community/moonshine-base-ONNX</a></li>
+        <li><a href="https://huggingface.co/UsefulSensors/moonshine-base" target="_blank" rel="noopener">Original Moonshine-base (Useful Sensors)</a></li>
+        <li><a href="https://arxiv.org/abs/2410.15608" target="_blank" rel="noopener">Paper — "Moonshine: Speech Recognition for Live Transcription and Voice Commands" (2024)</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import {
+        MoonshineEngine, urlToMono16k, MicRecorder, blobToMono16k,
+        drawWaveform, fmtTime, MOONSHINE_CSS,
+      } from "./moonshine.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = MOONSHINE_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new MoonshineEngine();
+      let pcm = null, audioDur = 0;
+
+      async function useAudio(url, label, { revoke = false } = {}) {
+        $("player").src = url;
+        $("clipLabel").textContent = label;
+        $("transcript").textContent = "Transcribe a clip to see the text here.";
+        $("readout").hidden = true; $("insideStats").hidden = true; $("insideEmpty").hidden = false;
+        try {
+          const decoded = await urlToMono16k(url);
+          pcm = decoded.pcm; audioDur = decoded.duration;
+          drawWaveform($("wave"), pcm, 0);
+          $("run").disabled = !engine.ready;
+        } catch (err) {
+          $("status").hidden = false;
+          $("status").textContent = "Couldn't decode that audio: " + err.message;
+          $("status").classList.add("err");
+          pcm = null;
+        }
+        if (revoke) $("player").addEventListener("emptied", () => URL.revokeObjectURL(url), { once: true });
+      }
+
+      for (const chip of $("samples").children) {
+        chip.addEventListener("click", () => useAudio(chip.dataset.src, chip.dataset.label));
+      }
+      useAudio("jfk.wav", "JFK — inaugural (11s)");
+
+      $("upload").addEventListener("click", () => $("file").click());
+      $("file").addEventListener("change", async () => {
+        const f = $("file").files[0];
+        if (f) await useAudio(URL.createObjectURL(f), f.name, { revoke: true });
+      });
+
+      const mic = new MicRecorder();
+      let recording = false;
+      if (!MicRecorder.supported()) $("micFallback").hidden = false;
+      $("rec").addEventListener("click", async () => {
+        if (!recording) {
+          try {
+            await mic.start();
+          } catch {
+            $("micFallback").hidden = false;
+            $("status").hidden = false;
+            $("status").textContent = "Microphone unavailable — use a sample or upload.";
+            $("status").classList.add("err");
+            return;
+          }
+          recording = true;
+          $("rec").innerHTML = '<span class="rec-dot"></span>Stop';
+          $("rec").classList.remove("secondary");
+          $("status").hidden = false; $("status").classList.remove("err");
+          $("status").textContent = "Recording… click Stop when done.";
+        } else {
+          recording = false;
+          $("rec").textContent = "● Record";
+          $("rec").classList.add("secondary");
+          const { url } = await mic.stop();
+          await useAudio(url, "Your recording", { revoke: true });
+          $("status").textContent = "Recorded. Hit Transcribe.";
+        }
+      });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: {
+          modelId: "onnx-community/moonshine-base-ONNX",
+          runtime: "transformers.js",
+          dtype: "q8",
+          sizeMB: 65,
+          requiresWebGPU: false,
+        },
+        load: async (onProgress) => {
+          const device = await engine.load((p) => onProgress(p));
+          return { device };
+        },
+        onReady: () => {
+          $("rec").disabled = false; $("upload").disabled = false;
+          $("run").disabled = !pcm;
+        },
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!pcm) { $("status").hidden = false; $("status").textContent = "Pick or record some audio first."; return; }
+        $("run").disabled = true; $("status").hidden = false; $("status").classList.remove("err", "ok");
+        $("status").textContent = "Transcribing…";
+        try {
+          const r = await engine.transcribe(pcm, audioDur);
+          $("transcript").textContent = r.text || "(no speech detected)";
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rDur").textContent = fmtTime(r.audioSec);
+          $("rMs").textContent = (r.ms / 1000).toFixed(2) + " s";
+          $("rTok").textContent = r.tokens ?? "–";
+          $("rSpeed").textContent = r.speedup ? `${r.speedup.toFixed(1)}× real time` : "–";
+          $("insideEmpty").hidden = true; $("insideStats").hidden = false;
+          $("iRtf").textContent = r.rtf ? r.rtf.toFixed(2) : "–";
+          $("iSpeed").textContent = r.speedup ? r.speedup.toFixed(1) + "×" : "–";
+          $("iDur").textContent = r.audioSec.toFixed(2) + " s";
+          $("iMs").textContent = (r.ms / 1000).toFixed(2) + " s";
+          $("iTps").textContent = r.tokPerSec ? r.tokPerSec.toFixed(1) : "–";
+          $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (err) {
+          $("status").textContent = "Transcription failed: " + err.message;
+          $("status").classList.add("err");
+        } finally {
+          $("run").disabled = false;
+        }
+      });
+
+      addEventListener("resize", () => pcm && drawWaveform($("wave"), pcm, 0));
+    </script>
+  </body>
+</html>
