@@ -1,0 +1,307 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Nougat — transcribe a scanned academic page to Markdown + LaTeX in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run Nougat (small) locally in your browser: hand it a scanned research page and it generates the whole page back as Markdown — headings, paragraphs, tables, and LaTeX math preserved. No server, nothing leaves your device."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>📐</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">image-to-text · document page → Markdown+LaTeX · WASM · ~250 MB</p>
+      <h1>Nougat — read a whole research page into Markdown</h1>
+      <p class="lede">
+        Nougat is OCR done the way a person reads a paper: a vision transformer <em>looks</em> at an
+        entire scanned page and a text decoder <em>writes the page back out</em> as structured Markdown —
+        headings, prose, tables, and the <strong>equations preserved as LaTeX</strong> — one token at a
+        time, entirely on your device.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/Xenova/nougat-small" target="_blank" rel="noopener">Xenova/nougat-small</a> (ONNX of <a href="https://huggingface.co/facebook/nougat-small" target="_blank" rel="noopener">facebook/nougat-small</a>)</td></tr>
+          <tr><th>Task / pipeline</th><td><code>image-to-text</code></td></tr>
+          <tr><th>Architecture</th><td>Donut-Swin image encoder (896×672) → mBART-style text decoder — a VisionEncoderDecoder with cross-attention (~250M params)</td></tr>
+          <tr><th>Input</th><td>A <strong>whole document page</strong> image (a scanned/rendered research page works best)</td></tr>
+          <tr><th>Output</th><td>The full page as <strong>Markdown</strong>, with math kept as inline <code>\( … \)</code> / display <code>\[ … \]</code> LaTeX</td></tr>
+          <tr><th>Quantization</th><td>q8 (8-bit) ONNX — separate encoder + decoder graphs</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (runs anywhere; no WebGPU needed)</td></tr>
+          <tr><th>Download</th><td>~250 MB (77 MB encoder + 165 MB decoder), cached after first load</td></tr>
+          <tr><th>License</th><td>CC-BY-4.0 (facebook/nougat-small)</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers, Canvas, FileReader — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">
+        Pick a page below or drop your own, then hit <strong>Transcribe page</strong>. Nougat reads the
+        whole page at once (not a single line), so give it a full page image. Watch the Markdown form
+        token by token, then flip between the rendered view and the raw Markdown+LaTeX.
+      </p>
+
+      <div id="model-loader"></div>
+
+      <div class="field-row">
+        <div class="field-col">
+          <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop a document page image">
+            <span id="dropText">Drop a page image here, or click to choose</span>
+            <input type="file" id="file" accept="image/*" hidden />
+          </div>
+          <div class="sample-strip" id="samples" aria-label="Sample document pages">
+            <img class="sample-thumb active" src="sample-paper.png" data-src="sample-paper.png" alt="A research page: title, abstract, and a numbered equation" tabindex="0" role="button" />
+            <img class="sample-thumb" src="sample-equations.png" data-src="sample-equations.png" alt="A page dense with display equations" tabindex="0" role="button" />
+            <img class="sample-thumb" src="sample-table.png" data-src="sample-table.png" alt="A results section with a data table" tabindex="0" role="button" />
+          </div>
+          <div class="doc-wrap"><img class="doc-img" id="preview" src="sample-paper.png" alt="Selected document page" /></div>
+        </div>
+        <div class="field-col">
+          <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">
+            Max output length <span id="maxVal" style="font-family:var(--font-mono)">300 tokens</span>
+            <input type="range" id="maxtok" min="64" max="600" step="16" value="300" />
+          </label>
+          <p class="muted" style="font-size:.75rem;margin:.25rem 0 .5rem">A full page is long — more tokens transcribe more of it, but take longer.</p>
+          <div style="margin:.5rem 0">
+            <button id="run" type="button" disabled>Transcribe page</button>
+          </div>
+          <p class="status" id="runStatus" role="status" aria-live="polite"></p>
+
+          <div class="seg" role="group" aria-label="Output view">
+            <button id="viewRendered" type="button" aria-pressed="true">Rendered</button>
+            <button id="viewRaw" type="button" aria-pressed="false">Raw Markdown</button>
+          </div>
+          <div class="rendered" id="rendered" aria-live="polite"><span class="muted">The transcribed page will appear here.</span></div>
+          <pre class="raw-md" id="rawMd" hidden></pre>
+          <button id="copyBtn" class="chip" type="button" hidden>Copy Markdown</button>
+          <div class="readout" id="readout" hidden>
+            <span>backend <b id="rBackend">–</b></span>
+            <span>tokens <b id="rTok">–</b></span>
+            <span>math spans <b id="rMath">–</b></span>
+            <span>total <b id="rMs">–</b></span>
+            <span>speed <b id="rTps">–</b></span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside — the token stream and the structure it builds</h3>
+      <p class="muted">
+        Nougat is <strong>autoregressive generation</strong>, not character matching. The encoder reads
+        the page into patch embeddings once; then the decoder emits Markdown one token at a time, each
+        conditioned on the image <em>and</em> everything written so far — which is how it knows to open a
+        <code>#</code> heading, lay out a <code>|</code> table, or drop into <code>\( … \)</code> for
+        math. The trace shows every token as it arrived, with elapsed time; the panel beside it counts the
+        structure that emerged.
+      </p>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Transcribe a page to see the token-by-token trace.</div>
+      <div id="insideWrap" hidden>
+        <div class="field-row" style="margin-top:0">
+          <div class="field-col">
+            <p class="muted" style="font-size:.78rem;margin:.2rem 0">Decoded tokens (streamed):</p>
+            <div class="token-trace" id="trace"></div>
+          </div>
+          <div class="field-col">
+            <table class="inside-table">
+              <tbody>
+                <tr><th>First token</th><td id="iFirst">–</td></tr>
+                <tr><th>Tokens/sec</th><td id="iTps">–</td></tr>
+                <tr><th>Headings</th><td id="iHead">–</td></tr>
+                <tr><th>Display equations</th><td id="iDisp">–</td></tr>
+                <tr><th>Inline math</th><td id="iInline">–</td></tr>
+                <tr><th>Tables</th><td id="iTable">–</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        The world's science is locked in fixed-layout PDFs. Plain OCR can pull the words out, but it
+        destroys exactly what makes a paper a paper: the headings that give it structure, the tables that
+        hold the results, and the mathematics — which OCR turns into a soup of stray symbols. Nougat keeps
+        all of it, and running it locally means you can do that to a document you'd never upload.
+      </p>
+      <ul>
+        <li><strong>Make papers machine-readable</strong> — turn a scanned page into clean Markdown you can search, diff, index, or feed to an LLM.</li>
+        <li><strong>Rescue the math</strong> — recover equations as LaTeX you can paste straight into a paper, a notebook, or a renderer — not a mangled image caption.</li>
+        <li><strong>Accessibility</strong> — give screen readers real structure and real math instead of a flat image.</li>
+        <li><strong>Private by default</strong> — transcribe a confidential draft, a medical report, or an internal spec without it ever leaving the device.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Transcribe a research page and see the Markdown structure it recovers.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Pull a results table off a page into a real Markdown/CSV table you can copy.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Feed it a wall of equations and watch the LaTeX come back, math intact.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">Nougat → summariser: transcribe a page, then summarise it, all on-device.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>The base call is two lines with Transformers.js:</p>
+      <pre><code>import { pipeline } from "@huggingface/transformers";
+
+const nougat = await pipeline(
+  "image-to-text",
+  "Xenova/nougat-small",
+); // downloads + caches ~250 MB once
+
+const out = await nougat(pageImageURL, { max_new_tokens: 300 });
+// → [{ generated_text: "# Title\n\n## 1 Introduction\n\n… \\( \\mathcal{L} = -\\sum … \\)" }]</code></pre>
+      <p class="muted">
+        The important bit is the input: Nougat expects a <strong>whole page</strong>, not a single line —
+        its encoder is fixed at 896×672 and it's trained on full research pages. This page passes a
+        <code>TextStreamer</code> into the same call so "See inside" can render the Markdown as it forms
+        and time each token, and it does all of this off the main thread in a Web Worker. The raw output
+        is GitHub-flavoured Markdown with LaTeX math delimited by <code>\( … \)</code> and
+        <code>\[ … \]</code> — this page renders the structure and keeps the LaTeX verbatim.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/Xenova/nougat-small" target="_blank" rel="noopener">Model card — Xenova/nougat-small (ONNX)</a></li>
+        <li><a href="https://huggingface.co/facebook/nougat-small" target="_blank" rel="noopener">Original weights — facebook/nougat-small</a></li>
+        <li><a href="https://arxiv.org/abs/2308.13418" target="_blank" rel="noopener">Nougat paper (arXiv 2308.13418)</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { NougatEngine, fileToDataURL, renderMarkdown, countMath, escapeHTML, NOUGAT_CSS } from "./nougat.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = NOUGAT_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new NougatEngine();
+      let currentImageURL = null;
+      let lastMarkdown = "";
+
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        const blob = await (await fetch(el.dataset.src)).blob();
+        currentImageURL = await fileToDataURL(new File([blob], "s", { type: blob.type }));
+        $("preview").src = el.dataset.src;
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } });
+      }
+      pickSample($("samples").firstElementChild);
+
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      file.addEventListener("change", async () => { if (file.files[0]) await loadFile(file.files[0]); });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      drop.addEventListener("drop", async (e) => { const f = e.dataTransfer?.files?.[0]; if (f && f.type.startsWith("image/")) await loadFile(f); });
+      async function loadFile(f) {
+        for (const t of $("samples").children) t.classList.remove("active");
+        currentImageURL = await fileToDataURL(f);
+        $("preview").src = currentImageURL;
+        $("dropText").textContent = f.name;
+      }
+
+      const maxtok = $("maxtok");
+      maxtok.addEventListener("input", () => { $("maxVal").textContent = maxtok.value + " tokens"; });
+
+      // Rendered / Raw toggle.
+      function setView(raw) {
+        $("viewRendered").setAttribute("aria-pressed", String(!raw));
+        $("viewRaw").setAttribute("aria-pressed", String(raw));
+        $("rendered").hidden = raw;
+        $("rawMd").hidden = !raw;
+      }
+      $("viewRendered").addEventListener("click", () => setView(false));
+      $("viewRaw").addEventListener("click", () => setView(true));
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/nougat-small", runtime: "transformers.js", dtype: "q8", sizeMB: 250, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("run").disabled = false; },
+      });
+
+      $("copyBtn").addEventListener("click", async () => {
+        try { await navigator.clipboard.writeText(lastMarkdown); $("copyBtn").textContent = "Copied!"; setTimeout(() => $("copyBtn").textContent = "Copy Markdown", 1200); }
+        catch { $("copyBtn").textContent = "Copy failed"; }
+      });
+
+      $("run").addEventListener("click", transcribe);
+      async function transcribe() {
+        if (!currentImageURL) return;
+        $("runStatus").classList.remove("err", "ok"); $("run").disabled = true;
+        $("runStatus").textContent = "Transcribing the page…";
+        $("rendered").innerHTML = '<span class="muted">Reading…</span>';
+        $("copyBtn").hidden = true; $("readout").hidden = true;
+        $("trace").replaceChildren(); $("insideEmpty").hidden = true; $("insideWrap").hidden = false;
+        let firstT = null;
+        try {
+          const r = await engine.transcribe(currentImageURL, Number(maxtok.value), (m) => {
+            if (firstT === null) firstT = m.t;
+            const tok = document.createElement("span");
+            tok.className = "tok";
+            tok.innerHTML = escapeHTML(m.token) + `<small>${m.t}ms</small>`;
+            $("trace").append(tok);
+            $("trace").scrollTop = $("trace").scrollHeight;
+          });
+          lastMarkdown = r.markdown;
+          $("rendered").innerHTML = renderMarkdown(r.markdown) || '<span class="muted">(no text recovered)</span>';
+          $("rawMd").textContent = r.markdown || "(no text recovered)";
+          $("copyBtn").hidden = !r.markdown;
+          const mc = countMath(r.markdown);
+          const heads = (r.markdown.match(/^#{1,6}\s/gm) || []).length;
+          const tables = (r.markdown.match(/^\s*\|.*\|\s*$/gm) || []).length ? 1 : 0;
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rTok").textContent = r.tokens;
+          $("rMath").textContent = mc.total;
+          $("rMs").textContent = r.ms + " ms";
+          const tps = r.tokens > 0 ? (r.tokens / (r.ms / 1000)).toFixed(1) : "–";
+          $("rTps").textContent = tps + " tok/s";
+          $("iFirst").textContent = (firstT ?? r.firstT ?? r.ms) + " ms";
+          $("iTps").textContent = tps;
+          $("iHead").textContent = heads;
+          $("iDisp").textContent = mc.display;
+          $("iInline").textContent = mc.inline;
+          $("iTable").textContent = tables ? "yes" : "no";
+          $("runStatus").textContent = "Done."; $("runStatus").classList.add("ok");
+        } catch (err) {
+          $("runStatus").textContent = "Transcription failed: " + err.message; $("runStatus").classList.add("err");
+          $("rendered").innerHTML = "";
+        } finally { $("run").disabled = false; }
+      }
+
+      if ("serviceWorker" in navigator) navigator.serviceWorker.register("/web-ai-showcase/sw.js").catch(() => {});
+    </script>
+  </body>
+</html>

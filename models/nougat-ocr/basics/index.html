@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Nougat Basics — transcribe a research page to Markdown · Web AI Showcase</title>
+    <meta name="description" content="The fundamental capability: hand Nougat a scanned research page and watch it generate the whole page back as structured Markdown, token by token, in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>📐</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Nougat</a></p>
+
+    <header>
+      <p class="eyebrow">use case · basics</p>
+      <h1>Basics: transcribe a page to Markdown</h1>
+      <p class="lede">
+        The plain capability. Pick a research page, hit Transcribe, and watch Nougat rebuild it as
+        Markdown — a <code>#</code> title, section headings, prose — one token at a time, entirely on your
+        device.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+
+      <div class="field-row">
+        <div class="field-col">
+          <div class="sample-strip" id="samples" aria-label="Sample document pages">
+            <img class="sample-thumb active" src="../sample-paper.png" data-src="../sample-paper.png" alt="A research page with title, abstract, and an equation" tabindex="0" role="button" />
+            <img class="sample-thumb" src="../sample-table.png" data-src="../sample-table.png" alt="A results section with a table" tabindex="0" role="button" />
+          </div>
+          <div class="doc-wrap"><img class="doc-img" id="preview" src="../sample-paper.png" alt="Selected document page" /></div>
+        </div>
+        <div class="field-col">
+          <div style="margin:.2rem 0 .6rem"><button id="run" type="button" disabled>Transcribe page</button></div>
+          <p class="status" id="runStatus" role="status" aria-live="polite"></p>
+          <div class="rendered" id="rendered" aria-live="polite"><span class="muted">The transcribed page will appear here.</span></div>
+          <button id="copyBtn" class="chip" type="button" hidden>Copy Markdown</button>
+          <div class="readout" id="readout" hidden>
+            <span>backend <b id="rBackend">–</b></span>
+            <span>headings <b id="rHead">–</b></span>
+            <span>tokens <b id="rTok">–</b></span>
+            <span>total <b id="rMs">–</b></span>
+          </div>
+        </div>
+      </div>
+      <p class="muted" style="font-size:.85rem">
+        Notice what plain OCR would have thrown away: the heading levels and paragraph breaks. Nougat
+        generates them because it was trained on the Markdown of real papers, so it has learned what a
+        page's <em>structure</em> looks like — not just its characters.
+      </p>
+    </section>
+
+    <p class="crumbs"><a href="../">← Back to Nougat</a> · Next: <a href="../practical/">Practical →</a></p>
+
+    <script type="module">
+      import { NougatEngine, fileToDataURL, renderMarkdown, NOUGAT_CSS } from "../nougat.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = NOUGAT_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new NougatEngine();
+      let currentImageURL = null, lastMarkdown = "";
+
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        const blob = await (await fetch(el.dataset.src)).blob();
+        currentImageURL = await fileToDataURL(new File([blob], "s", { type: blob.type }));
+        $("preview").src = el.dataset.src;
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } });
+      }
+      pickSample($("samples").firstElementChild);
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/nougat-small", runtime: "transformers.js", dtype: "q8", sizeMB: 250, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("run").disabled = false; },
+      });
+
+      $("copyBtn").addEventListener("click", async () => {
+        try { await navigator.clipboard.writeText(lastMarkdown); $("copyBtn").textContent = "Copied!"; setTimeout(() => $("copyBtn").textContent = "Copy Markdown", 1200); }
+        catch { $("copyBtn").textContent = "Copy failed"; }
+      });
+
+      $("run").addEventListener("click", run);
+      async function run() {
+        if (!currentImageURL) return;
+        $("runStatus").classList.remove("err", "ok"); $("run").disabled = true;
+        $("runStatus").textContent = "Transcribing…"; $("rendered").innerHTML = '<span class="muted">Reading…</span>';
+        $("copyBtn").hidden = true; $("readout").hidden = true;
+        try {
+          const r = await engine.transcribe(currentImageURL, 300);
+          lastMarkdown = r.markdown;
+          $("rendered").innerHTML = renderMarkdown(r.markdown) || '<span class="muted">(no text recovered)</span>';
+          $("copyBtn").hidden = !r.markdown;
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rHead").textContent = (r.markdown.match(/^#{1,6}\s/gm) || []).length;
+          $("rTok").textContent = r.tokens;
+          $("rMs").textContent = r.ms + " ms";
+          $("runStatus").textContent = "Done."; $("runStatus").classList.add("ok");
+        } catch (err) {
+          $("runStatus").textContent = "Transcription failed: " + err.message; $("runStatus").classList.add("err");
+          $("rendered").innerHTML = "";
+        } finally { $("run").disabled = false; }
+      }
+      if ("serviceWorker" in navigator) navigator.serviceWorker.register("/web-ai-showcase/sw.js").catch(() => {});
+    </script>
+  </body>
+</html>

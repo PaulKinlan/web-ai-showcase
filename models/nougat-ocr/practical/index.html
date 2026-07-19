@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Nougat Practical — pull a results table off a page · Web AI Showcase</title>
+    <meta name="description" content="Turn a results table trapped in a scanned page into a real Markdown table and copyable CSV — Nougat reconstructs the grid, running locally in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>📐</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Nougat</a></p>
+
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Practical: pull a table off the page</h1>
+      <p class="lede">
+        A results table in a PDF is a picture of a grid — you can't sort it, sum it, or paste it into a
+        spreadsheet. Nougat reconstructs the actual <code>|</code>-delimited Markdown table, and this page
+        turns that into a rendered grid plus copyable CSV, all on your device.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+
+      <div class="field-row">
+        <div class="field-col">
+          <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop a page image with a table">
+            <span id="dropText">Drop a page with a table, or click to choose</span>
+            <input type="file" id="file" accept="image/*" hidden />
+          </div>
+          <div class="sample-strip" id="samples" aria-label="Sample pages">
+            <img class="sample-thumb active" src="../sample-table.png" data-src="../sample-table.png" alt="A results section with a data table" tabindex="0" role="button" />
+            <img class="sample-thumb" src="../sample-paper.png" data-src="../sample-paper.png" alt="A research page" tabindex="0" role="button" />
+          </div>
+          <div class="doc-wrap"><img class="doc-img" id="preview" src="../sample-table.png" alt="Selected document page" /></div>
+        </div>
+        <div class="field-col">
+          <div style="margin:.2rem 0 .6rem"><button id="run" type="button" disabled>Extract table</button></div>
+          <p class="status" id="runStatus" role="status" aria-live="polite"></p>
+          <div id="tableOut" class="rendered" aria-live="polite"><span class="muted">The extracted table will appear here.</span></div>
+          <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.5rem">
+            <button id="copyMd" class="chip" type="button" hidden>Copy Markdown</button>
+            <button id="copyCsv" class="chip" type="button" hidden>Copy CSV</button>
+          </div>
+          <div class="readout" id="readout" hidden>
+            <span>backend <b id="rBackend">–</b></span>
+            <span>rows <b id="rRows">–</b></span>
+            <span>columns <b id="rCols">–</b></span>
+            <span>total <b id="rMs">–</b></span>
+          </div>
+        </div>
+      </div>
+      <p class="muted" style="font-size:.85rem">
+        Because Nougat generates the grid rather than reading cells left-to-right, it keeps rows and
+        columns aligned even when the source has multi-word headers or blank cells — the structure survives
+        the transcription. If no table is found, you'll see the raw Markdown Nougat produced instead.
+      </p>
+    </section>
+
+    <p class="crumbs"><a href="../basics/">← Basics</a> · <a href="../">Back to Nougat</a> · Next: <a href="../wild/">Wild →</a></p>
+
+    <script type="module">
+      import { NougatEngine, fileToDataURL, renderMarkdown, parseLatexTable, latexTableToCsv, NOUGAT_CSS } from "../nougat.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = NOUGAT_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new NougatEngine();
+      let currentImageURL = null, mdTable = "", csv = "";
+
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        const blob = await (await fetch(el.dataset.src)).blob();
+        currentImageURL = await fileToDataURL(new File([blob], "s", { type: blob.type }));
+        $("preview").src = el.dataset.src;
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } });
+      }
+      pickSample($("samples").firstElementChild);
+
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      file.addEventListener("change", async () => { if (file.files[0]) await loadFile(file.files[0]); });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      drop.addEventListener("drop", async (e) => { const f = e.dataTransfer?.files?.[0]; if (f && f.type.startsWith("image/")) await loadFile(f); });
+      async function loadFile(f) {
+        for (const t of $("samples").children) t.classList.remove("active");
+        currentImageURL = await fileToDataURL(f); $("preview").src = currentImageURL; $("dropText").textContent = f.name;
+      }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/nougat-small", runtime: "transformers.js", dtype: "q8", sizeMB: 250, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("run").disabled = false; },
+      });
+
+      // Convert a parsed Nougat table into GitHub-flavoured Markdown pipe-table text (for copy).
+      function tableToPipeMarkdown(tbl) {
+        const esc = (c) => c.replace(/\|/g, "\\|");
+        const [header, ...body] = tbl.rows;
+        const cols = tbl.cols;
+        const pad = (r) => { const a = r.slice(); while (a.length < cols) a.push(""); return a.slice(0, cols); };
+        const lines = [];
+        lines.push("| " + pad(header).map(esc).join(" | ") + " |");
+        lines.push("| " + Array(cols).fill("---").join(" | ") + " |");
+        for (const r of body) lines.push("| " + pad(r).map(esc).join(" | ") + " |");
+        return lines.join("\n");
+      }
+
+      $("copyMd").addEventListener("click", () => copy($("copyMd"), mdTable, "Copy Markdown"));
+      $("copyCsv").addEventListener("click", () => copy($("copyCsv"), csv, "Copy CSV"));
+      async function copy(btn, text, label) {
+        try { await navigator.clipboard.writeText(text); btn.textContent = "Copied!"; setTimeout(() => btn.textContent = label, 1200); }
+        catch { btn.textContent = "Copy failed"; }
+      }
+
+      $("run").addEventListener("click", run);
+      async function run() {
+        if (!currentImageURL) return;
+        $("runStatus").classList.remove("err", "ok"); $("run").disabled = true;
+        $("runStatus").textContent = "Extracting…"; $("tableOut").innerHTML = '<span class="muted">Reading…</span>';
+        $("copyMd").hidden = true; $("copyCsv").hidden = true; $("readout").hidden = true;
+        try {
+          const r = await engine.transcribe(currentImageURL, 320);
+          const tbl = parseLatexTable(r.markdown);
+          if (tbl) {
+            mdTable = tableToPipeMarkdown(tbl);
+            csv = latexTableToCsv(tbl);
+            $("tableOut").innerHTML = renderMarkdown(r.markdown.match(/\\begin\{tabular\}[\s\S]*?\\end\{tabular\}/)[0]);
+            $("copyMd").hidden = false; $("copyCsv").hidden = false;
+            $("rRows").textContent = Math.max(0, tbl.rows.length - 1);
+            $("rCols").textContent = tbl.cols;
+          } else {
+            mdTable = r.markdown; csv = "";
+            $("tableOut").innerHTML = '<p class="muted">No table found — here is the raw Markdown Nougat produced:</p>' + renderMarkdown(r.markdown);
+            $("copyMd").hidden = false;
+            $("rRows").textContent = "0"; $("rCols").textContent = "0";
+          }
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = r.ms + " ms";
+          $("runStatus").textContent = "Done."; $("runStatus").classList.add("ok");
+        } catch (err) {
+          $("runStatus").textContent = "Extraction failed: " + err.message; $("runStatus").classList.add("err");
+          $("tableOut").innerHTML = "";
+        } finally { $("run").disabled = false; }
+      }
+      if ("serviceWorker" in navigator) navigator.serviceWorker.register("/web-ai-showcase/sw.js").catch(() => {});
+    </script>
+  </body>
+</html>

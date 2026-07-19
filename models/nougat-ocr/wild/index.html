@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Nougat Wild — recover a wall of equations as LaTeX · Web AI Showcase</title>
+    <meta name="description" content="Feed Nougat a page dense with display equations and watch it hand back the LaTeX, math intact — the thing plain OCR can never do. Runs locally in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>📐</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Nougat</a></p>
+
+    <header>
+      <p class="eyebrow">use case · wild</p>
+      <h1>Wild: pull the LaTeX out of the math</h1>
+      <p class="lede">
+        This is the trick nothing else does. Point Nougat at a page full of typeset equations and it
+        returns them as <strong>LaTeX source</strong> — fractions, sums, norms, subscripts and all —
+        that you can paste straight into a paper. Plain OCR turns the same page into a rubble of symbols.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+
+      <div class="field-row">
+        <div class="field-col">
+          <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop a page image with equations">
+            <span id="dropText">Drop an equation-heavy page, or click to choose</span>
+            <input type="file" id="file" accept="image/*" hidden />
+          </div>
+          <div class="sample-strip" id="samples" aria-label="Sample pages">
+            <img class="sample-thumb active" src="../sample-equations.png" data-src="../sample-equations.png" alt="A page dense with display equations" tabindex="0" role="button" />
+            <img class="sample-thumb" src="../sample-paper.png" data-src="../sample-paper.png" alt="A research page with one equation" tabindex="0" role="button" />
+          </div>
+          <div class="doc-wrap"><img class="doc-img" id="preview" src="../sample-equations.png" alt="Selected document page" /></div>
+        </div>
+        <div class="field-col">
+          <div style="margin:.2rem 0 .6rem"><button id="run" type="button" disabled>Recover the math</button></div>
+          <p class="status" id="runStatus" role="status" aria-live="polite"></p>
+          <div class="rendered" id="rendered" aria-live="polite"><span class="muted">The recovered page will appear here, math highlighted.</span></div>
+          <button id="copyTex" class="chip" type="button" hidden>Copy all LaTeX</button>
+          <div class="readout" id="readout" hidden>
+            <span>backend <b id="rBackend">–</b></span>
+            <span>display equations <b id="rDisp">–</b></span>
+            <span>inline math <b id="rInline">–</b></span>
+            <span>total <b id="rMs">–</b></span>
+          </div>
+          <div id="texList" hidden>
+            <p class="muted" style="font-size:.78rem;margin:.6rem 0 .3rem">Recovered LaTeX (each equation, ready to paste):</p>
+            <pre class="raw-md" id="texOut"></pre>
+          </div>
+        </div>
+      </div>
+      <p class="muted" style="font-size:.85rem">
+        Every highlighted span is real LaTeX the decoder generated from the pixels — not a lookup. Small
+        transcription slips happen (a symbol swapped, a subscript nudged), which is exactly why seeing the
+        raw LaTeX matters: you can check and fix it, instead of re-typing the whole equation.
+      </p>
+    </section>
+
+    <p class="crumbs"><a href="../practical/">← Practical</a> · <a href="../">Back to Nougat</a> · Next: <a href="../multi-model/">Multi-model →</a></p>
+
+    <script type="module">
+      import { NougatEngine, fileToDataURL, renderMarkdown, countMath, NOUGAT_CSS } from "../nougat.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = NOUGAT_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new NougatEngine();
+      let currentImageURL = null, allTex = "";
+
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        const blob = await (await fetch(el.dataset.src)).blob();
+        currentImageURL = await fileToDataURL(new File([blob], "s", { type: blob.type }));
+        $("preview").src = el.dataset.src;
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } });
+      }
+      pickSample($("samples").firstElementChild);
+
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      file.addEventListener("change", async () => { if (file.files[0]) await loadFile(file.files[0]); });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      drop.addEventListener("drop", async (e) => { const f = e.dataTransfer?.files?.[0]; if (f && f.type.startsWith("image/")) await loadFile(f); });
+      async function loadFile(f) {
+        for (const t of $("samples").children) t.classList.remove("active");
+        currentImageURL = await fileToDataURL(f); $("preview").src = currentImageURL; $("dropText").textContent = f.name;
+      }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/nougat-small", runtime: "transformers.js", dtype: "q8", sizeMB: 250, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("run").disabled = false; },
+      });
+
+      // Collect every LaTeX math span (display + inline) from Nougat's output.
+      function collectTex(md) {
+        const out = [];
+        for (const m of md.matchAll(/\\\[([\s\S]*?)\\\]/g)) out.push(m[1].trim());
+        for (const m of md.matchAll(/\\\(([\s\S]*?)\\\)/g)) out.push(m[1].trim());
+        return out;
+      }
+
+      $("copyTex").addEventListener("click", async () => {
+        try { await navigator.clipboard.writeText(allTex); $("copyTex").textContent = "Copied!"; setTimeout(() => $("copyTex").textContent = "Copy all LaTeX", 1200); }
+        catch { $("copyTex").textContent = "Copy failed"; }
+      });
+
+      $("run").addEventListener("click", run);
+      async function run() {
+        if (!currentImageURL) return;
+        $("runStatus").classList.remove("err", "ok"); $("run").disabled = true;
+        $("runStatus").textContent = "Recovering the math…"; $("rendered").innerHTML = '<span class="muted">Reading…</span>';
+        $("copyTex").hidden = true; $("readout").hidden = true; $("texList").hidden = true;
+        try {
+          const r = await engine.transcribe(currentImageURL, 400);
+          $("rendered").innerHTML = renderMarkdown(r.markdown) || '<span class="muted">(no math recovered)</span>';
+          const mc = countMath(r.markdown);
+          const tex = collectTex(r.markdown);
+          allTex = tex.join("\n\n");
+          $("texOut").textContent = allTex || "(no equations found)";
+          $("texList").hidden = tex.length === 0;
+          $("copyTex").hidden = tex.length === 0;
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rDisp").textContent = mc.display;
+          $("rInline").textContent = mc.inline;
+          $("rMs").textContent = r.ms + " ms";
+          $("runStatus").textContent = "Done."; $("runStatus").classList.add("ok");
+        } catch (err) {
+          $("runStatus").textContent = "Recovery failed: " + err.message; $("runStatus").classList.add("err");
+          $("rendered").innerHTML = "";
+        } finally { $("run").disabled = false; }
+      }
+      if ("serviceWorker" in navigator) navigator.serviceWorker.register("/web-ai-showcase/sw.js").catch(() => {});
+    </script>
+  </body>
+</html>
