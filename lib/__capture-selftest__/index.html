@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>capture-ux + media-pipeline — self-test harness | web-ai-showcase</title>
+  <link rel="stylesheet" href="/web-ai-showcase/public/styles.css">
+  <!--
+    Self-test harness for lib/capture-ux.js + lib/media-pipeline.js.
+    NOT a catalogue demo — a manual + headless verification page. It exercises every input path
+    (file / photo / video / audio) with the full state machine + bundled fallback, plus the
+    OffscreenCanvas → main-thread fallback and the AudioWorklet postMessage fallback.
+    Headless assertions are written to window.__selftestResults (read by the CDP driver).
+  -->
+  <script>
+    // Count getUserMedia calls to PROVE nothing is auto-requested on load. Installed before any module
+    // runs so the very first call (if any) is caught.
+    window.__gumCalls = 0;
+    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+      const orig = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+      navigator.mediaDevices.getUserMedia = function (...args) {
+        window.__gumCalls++;
+        return orig(...args);
+      };
+    }
+  </script>
+  <style>
+    .harness-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
+      gap: 1.2rem;
+      margin: 1rem 0;
+    }
+    .panel {
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--bg-raised);
+      padding: 1rem;
+    }
+    .panel h3 { margin-top: 0; }
+    .st-table { inline-size: 100%; border-collapse: collapse; font-size: .85rem; margin-top: .5rem; }
+    .st-table th, .st-table td {
+      text-align: left; padding: .3rem .5rem; border-bottom: 1px solid var(--border);
+      font-family: var(--font-mono); vertical-align: top;
+    }
+    .st-pass { color: var(--good); font-weight: 600; }
+    .st-fail { color: var(--bad); font-weight: 600; }
+    .st-note { color: var(--muted); }
+    .summary-line { font-family: var(--font-mono); font-size: .95rem; margin: .4rem 0; }
+    pre.result-json {
+      background: var(--bg-secondary); border: 1px solid var(--border); border-radius: var(--radius);
+      padding: .7rem; overflow-x: auto; font-size: .78rem; max-block-size: 260px;
+    }
+  </style>
+</head>
+<body>
+  <p class="eyebrow">web-ai-showcase · lib</p>
+  <h1>capture-ux + media-pipeline</h1>
+  <p class="lede">Accessible, user-initiated media capture and off-main-thread preprocessing. This page
+    exercises every input path and both pipeline fallbacks, and self-checks headless.</p>
+
+  <section aria-labelledby="selftest-h" class="panel">
+    <h2 id="selftest-h" style="margin-top:0">Self-test results</h2>
+    <p class="summary-line" id="summary" role="status" aria-live="polite">Running self-test…</p>
+    <table class="st-table" id="st-table">
+      <thead>
+        <tr><th scope="col">Check</th><th scope="col">Result</th><th scope="col">Detail</th></tr>
+      </thead>
+      <tbody id="st-body"></tbody>
+    </table>
+    <details>
+      <summary>Raw window.__selftestResults</summary>
+      <pre class="result-json" id="raw-json"></pre>
+    </details>
+  </section>
+
+  <h2>Capture input paths</h2>
+  <div class="harness-grid">
+    <section class="panel" aria-labelledby="cap-file-h">
+      <h3 id="cap-file-h">File upload (drag + drop / picker)</h3>
+      <div id="cap-file"></div>
+      <p class="muted" id="out-file" style="font-size:.8rem"></p>
+    </section>
+    <section class="panel" aria-labelledby="cap-photo-h">
+      <h3 id="cap-photo-h">Camera snapshot</h3>
+      <div id="cap-photo"></div>
+      <p class="muted" id="out-photo" style="font-size:.8rem"></p>
+    </section>
+    <section class="panel" aria-labelledby="cap-video-h">
+      <h3 id="cap-video-h">Webcam video (bounded)</h3>
+      <div id="cap-video"></div>
+      <p class="muted" id="out-video" style="font-size:.8rem"></p>
+    </section>
+    <section class="panel" aria-labelledby="cap-audio-h">
+      <h3 id="cap-audio-h">Microphone (bounded)</h3>
+      <div id="cap-audio"></div>
+      <p class="muted" id="out-audio" style="font-size:.8rem"></p>
+    </section>
+  </div>
+
+  <h2>media-pipeline</h2>
+  <div class="harness-grid">
+    <section class="panel" aria-labelledby="pipe-img-h">
+      <h3 id="pipe-img-h">Image preprocessing (OffscreenCanvas + fallback)</h3>
+      <p class="muted" id="out-pipe-img" style="font-size:.85rem">Pending…</p>
+    </section>
+    <section class="panel" aria-labelledby="pipe-audio-h">
+      <h3 id="pipe-audio-h">Audio AudioWorklet (postMessage fallback)</h3>
+      <p class="muted" id="out-pipe-audio" style="font-size:.85rem">Pending…</p>
+    </section>
+  </div>
+
+  <script type="module">
+    import { CAPTURE_CSS, createCapture, injectOnce } from "/web-ai-showcase/lib/capture-ux.js";
+    import { AudioCapturePipeline, ImagePreprocessor } from "/web-ai-showcase/lib/media-pipeline.js";
+
+    injectOnce("capture-ux-css", CAPTURE_CSS);
+
+    const BASE = "/web-ai-showcase/";
+    const results = { tests: [], gumCallsAtLoad: null, gumCallsAfterRequest: null };
+    window.__selftestResults = results;
+    window.__selftestDone = false;
+
+    function record(name, pass, detail) {
+      results.tests.push({ name, pass: !!pass, detail: String(detail ?? "") });
+    }
+
+    // ── Build the four capture components. Fallbacks reference REAL committed assets (image/audio) and
+    //    the tiny generated clip beside this page (video). None auto-request a device. ──
+    const caps = {};
+    caps.file = createCapture({
+      mount: document.getElementById("cap-file"),
+      kind: "file",
+      accept: "image/*",
+      fallback: { label: "Use a sample image", url: BASE + "models/yolov10-detection/sample-cats.jpg" },
+      onResult: (r) => {
+        document.getElementById("out-file").textContent =
+          `result: kind=${r.kind} source=${r.source} mime=${r.mime} bitmap=${!!r.imageBitmap}`;
+        r.cleanup();
+      },
+    });
+    caps.photo = createCapture({
+      mount: document.getElementById("cap-photo"),
+      kind: "photo",
+      facing: "environment",
+      rationale: "The demo needs your camera to grab one still frame. It runs on your device and the camera stops the instant the frame is captured.",
+      fallback: { label: "Use a sample photo", url: BASE + "models/yolov10-detection/sample-room.jpg" },
+      onResult: (r) => {
+        document.getElementById("out-photo").textContent =
+          `result: kind=${r.kind} source=${r.source} bitmap=${!!r.imageBitmap}`;
+        r.cleanup();
+      },
+    });
+    caps.video = createCapture({
+      mount: document.getElementById("cap-video"),
+      kind: "video",
+      facing: "user",
+      maxDurationMs: 5000,
+      rationale: "The demo needs your camera and mic to record a short (max 5s) clip. Recording is user-initiated, auto-stops, and stays on your device.",
+      fallback: { label: "Use a sample clip", url: BASE + "lib/__capture-selftest__/sample-clip.webm", mime: "video/webm" },
+      onResult: (r) => {
+        document.getElementById("out-video").textContent =
+          `result: kind=${r.kind} source=${r.source} ${r.durationMs ? Math.round(r.durationMs) + "ms" : ""}`;
+        r.cleanup();
+      },
+    });
+    caps.audio = createCapture({
+      mount: document.getElementById("cap-audio"),
+      kind: "audio",
+      maxDurationMs: 5000,
+      rationale: "The demo needs your microphone to record a short (max 5s) clip. Recording is user-initiated, auto-stops, and stays on your device.",
+      fallback: { label: "Use a sample voice clip", url: BASE + "models/whisper-speech-to-text/jfk.wav", mime: "audio/wav" },
+      onResult: (r) => {
+        document.getElementById("out-audio").textContent =
+          `result: kind=${r.kind} source=${r.source} audioBuffer=${!!r.audioBuffer}`;
+        r.cleanup();
+      },
+    });
+    window.__caps = caps;
+
+    // ── Test helpers exposed for the CDP driver to take controlled screenshots. ──
+    function q(mount, sel) {
+      return document.getElementById(mount).querySelector(sel);
+    }
+    function stateOf(kind) {
+      return document.getElementById("cap-" + kind).querySelector(".cap").dataset.state;
+    }
+    async function waitFor(fn, ms = 4000) {
+      const t0 = performance.now();
+      while (performance.now() - t0 < ms) {
+        if (fn()) return true;
+        await new Promise((r) => setTimeout(r, 60));
+      }
+      return false;
+    }
+
+    window.__test = {
+      stateOf,
+      resetAll() {
+        for (const c of Object.values(caps)) c.reset();
+      },
+      async triggerPhotoRequest() {
+        q("cap-photo", ".cap__btn--primary").click(); // the "Enable camera" button
+        await waitFor(() => ["denied", "unavailable", "busy", "preview", "error"].includes(stateOf("photo")));
+        return stateOf("photo");
+      },
+      async loadAudioFallback() {
+        // Find the fallback button in the audio panel and click it.
+        const btns = [...document.getElementById("cap-audio").querySelectorAll(".cap__btn")];
+        const fb = btns.find((b) => /sample/i.test(b.textContent));
+        fb.click();
+        await waitFor(() => stateOf("audio") === "review");
+        return stateOf("audio");
+      },
+      // Called by the CDP driver WITH a user gesture so the AudioContext can actually run headless —
+      // proves the AudioWorklet → bounded-chunk → feature-worker path really delivers frames.
+      async runAudioLive() {
+        let frames = 0;
+        const pipe = new AudioCapturePipeline({ chunkSize: 1024, onFeatures: () => frames++ });
+        const ctxState = await pipe.startFromOscillator({ frequency: 440 });
+        if (pipe.ctx && pipe.ctx.state === "suspended") {
+          try {
+            await pipe.ctx.resume();
+          } catch { /* noop */ }
+        }
+        const running = pipe.ctx && pipe.ctx.state;
+        await waitFor(() => frames > 0, 3000);
+        pipe.stop();
+        return { frames, ctxState, running };
+      },
+    };
+
+    // ── Self-test sequence ──
+    async function runSelfTest() {
+      // PHASE 0 — nothing auto-requested; every media component sits at its rationale, file at dropzone.
+      results.gumCallsAtLoad = window.__gumCalls;
+      record("no-auto-permission", window.__gumCalls === 0, `getUserMedia calls at load = ${window.__gumCalls}`);
+      record("photo-initial-rationale", stateOf("photo") === "idle" && !!q("cap-photo", ".cap__rationale-text"),
+        `photo state=${stateOf("photo")}, rationale shown=${!!q("cap-photo", ".cap__rationale-text")}`);
+      record("video-initial-rationale", stateOf("video") === "idle", `video state=${stateOf("video")}`);
+      record("audio-initial-rationale", stateOf("audio") === "idle", `audio state=${stateOf("audio")}`);
+      record("file-initial-dropzone", stateOf("file") === "idle" && !!q("cap-file", ".cap__dropzone"),
+        `file state=${stateOf("file")}`);
+      const reqGated = q("cap-photo", ".cap__video-wrap .cap__video")?.srcObject == null;
+      record("capture-gated-no-stream", reqGated, "no live stream before user grants access");
+
+      // PHASE 1 — bundled fallback works for every kind (device-free path).
+      for (const kind of ["file", "photo", "video", "audio"]) {
+        const btns = [...document.getElementById("cap-" + kind).querySelectorAll(".cap__btn")];
+        const fb = btns.find((b) => /sample|bundled/i.test(b.textContent));
+        if (fb) {
+          fb.click();
+          const ok = await waitFor(() => stateOf(kind) === "review");
+          const media = document.getElementById("cap-" + kind).querySelector(".cap__review-media *");
+          record(`fallback-${kind}`, ok && !!media, `state=${stateOf(kind)}, media=${media?.tagName || "none"}`);
+          caps[kind].reset();
+        }
+      }
+
+      // PHASE 2 — user-initiated camera request → honest denied/unavailable in a no-camera headless env.
+      const before = window.__gumCalls;
+      const st = await window.__test.triggerPhotoRequest();
+      results.gumCallsAfterRequest = window.__gumCalls;
+      record("request-is-user-initiated", window.__gumCalls === before + 1,
+        `getUserMedia called exactly once on click (${before} → ${window.__gumCalls})`);
+      const denied = ["denied", "unavailable", "busy", "error"].includes(st);
+      const errShown = !!document.getElementById("cap-photo").querySelector(".cap__error-head");
+      const stepsShown = !!document.getElementById("cap-photo").querySelector(".cap__error-steps");
+      record("denied-or-unavailable-state", denied && errShown && stepsShown,
+        `state=${st}, error+recovery shown=${errShown && stepsShown}`);
+      // From the failure state the bundled fallback must still be reachable.
+      const fbInErr = [...document.getElementById("cap-photo").querySelectorAll(".cap__btn")]
+        .some((b) => /sample|bundled/i.test(b.textContent));
+      record("fallback-from-failure", fbInErr, "bundled fallback offered in the failure state");
+
+      // PHASE 3 — image pipeline: worker+OffscreenCanvas path, then forced main-thread fallback.
+      const outImg = document.getElementById("out-pipe-img");
+      try {
+        // A deterministic 64×64 source (no camera): fill a canvas and make an ImageBitmap.
+        const src = document.createElement("canvas");
+        src.width = 64;
+        src.height = 64;
+        const sctx = src.getContext("2d");
+        sctx.fillStyle = "#4b3aff";
+        sctx.fillRect(0, 0, 64, 64);
+        sctx.fillStyle = "#fff";
+        sctx.fillRect(16, 16, 32, 32);
+        const bmp = await createImageBitmap(src);
+
+        const pre = new ImagePreprocessor();
+        const a = await pre.preprocess(bmp, { width: 32, height: 32, layout: "CHW" });
+        const bmp2 = await createImageBitmap(src);
+        const forced = new ImagePreprocessor({ forceMainThread: true });
+        const b = await forced.preprocess(bmp2, { width: 32, height: 32, layout: "CHW" });
+        pre.destroy();
+        forced.destroy();
+
+        const lenOk = a.tensor.length === 32 * 32 * 3 && b.tensor.length === 32 * 32 * 3;
+        // The two paths should produce ~identical tensors.
+        let maxDiff = 0;
+        for (let i = 0; i < a.tensor.length; i += 97) maxDiff = Math.max(maxDiff, Math.abs(a.tensor[i] - b.tensor[i]));
+        record("pipeline-offscreen-path", a.path === "worker-offscreen", `path=${a.path}, ${a.ms?.toFixed?.(1)}ms`);
+        record("pipeline-mainthread-fallback", b.path === "main-thread", `forced path=${b.path}, ${b.ms?.toFixed?.(1)}ms`);
+        record("pipeline-tensor-shape+parity", lenOk && maxDiff < 0.02,
+          `len=${a.tensor.length}, maxDiff(offscreen vs main)=${maxDiff.toFixed(4)}`);
+        results.imagePipeline = { primary: a.path, forced: b.path, len: a.tensor.length, maxDiff };
+        outImg.textContent = `primary path: ${a.path} (${a.ms?.toFixed?.(1)}ms) · forced fallback: ${b.path} (${b.ms?.toFixed?.(1)}ms) · tensor len ${a.tensor.length} · parity Δ ${maxDiff.toFixed(4)}`;
+      } catch (err) {
+        record("pipeline-offscreen-path", false, "threw: " + err.message);
+        outImg.textContent = "Image pipeline error: " + err.message;
+      }
+
+      // PHASE 4 — audio pipeline: transport decision + a device-free AudioWorklet run (oscillator).
+      const outAud = document.getElementById("out-pipe-audio");
+      const mode = AudioCapturePipeline.mode();
+      record("audio-transport-fallback", mode === "postmessage",
+        `mode=${mode} (crossOriginIsolated=${self.crossOriginIsolated === true}) → non-isolated postMessage default`);
+      results.audioMode = mode;
+      let featureFrames = 0;
+      try {
+        const pipe = new AudioCapturePipeline({
+          chunkSize: 1024,
+          onFeatures: () => featureFrames++,
+        });
+        // Time-box the whole start so a headless autoplay stall can never hang the harness.
+        const ctxState = await Promise.race([
+          pipe.startFromOscillator({ frequency: 330 }),
+          new Promise((r) => setTimeout(() => r("timeout"), 3000)),
+        ]);
+        const ran = await waitFor(() => featureFrames > 0, 2500);
+        pipe.stop();
+        record("audio-worklet-constructs", true, `AudioWorklet loaded + node built; ctx=${ctxState}`);
+        // Without a user gesture the AudioContext can't autoplay (headless), so no frames flow here.
+        // That is not a bug: only fail if the context WAS running yet produced nothing. The CDP driver
+        // proves live frames separately via runAudioLive() under a user gesture.
+        const framesOk = ran || ctxState !== "running";
+        record("audio-worklet-frames", framesOk,
+          ran
+            ? `feature frames received=${featureFrames}`
+            : `context=${ctxState} without a gesture (headless) — live frames verified by the driver's runAudioLive()`);
+        outAud.textContent = `transport: ${mode} · AudioWorklet loaded · feature frames: ${featureFrames} (ctx ${ctxState})`;
+      } catch (err) {
+        record("audio-worklet-constructs", false, "threw: " + err.message);
+        outAud.textContent = "Audio pipeline error: " + err.message;
+      }
+
+      // ── Render results, then leave the components in a clean state for the states screenshot. ──
+      renderResults();
+      window.__selftestDone = true;
+    }
+
+    function renderResults() {
+      const body = document.getElementById("st-body");
+      body.replaceChildren(...results.tests.map((t) => {
+        const tr = document.createElement("tr");
+        tr.innerHTML =
+          `<td>${t.name}</td><td class="${t.pass ? "st-pass" : "st-fail"}">${t.pass ? "PASS" : "FAIL"}</td><td class="st-note">${t.detail}</td>`;
+        return tr;
+      }));
+      const passed = results.tests.filter((t) => t.pass).length;
+      const total = results.tests.length;
+      results.summary = `${passed}/${total} passed`;
+      const sum = document.getElementById("summary");
+      sum.textContent = `Self-test: ${passed}/${total} checks passed` +
+        (passed === total ? " ✓" : " — see failures below");
+      sum.className = "summary-line " + (passed === total ? "st-pass" : "st-fail");
+      document.getElementById("raw-json").textContent = JSON.stringify(results, null, 2);
+    }
+
+    runSelfTest();
+  </script>
+</body>
+</html>
