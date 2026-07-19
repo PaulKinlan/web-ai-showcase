@@ -26,6 +26,15 @@ short version for tools that look for `AGENTS.md`.
   build wave; work against the real browser-runnable universe (Transformers.js/ONNX, WebLLM/MLC,
   MediaPipe) with family dedup; gated/too-large = blocked but still counted. Evidence in
   `inventory/`.
+- **Don't re-attempt known-blocked builds.** Before selecting a family, verify a REAL runnable build
+  exists (dynamic-import the exact CDN build; confirm inference returns) — not just that weights/an
+  ONNX folder exist. If a family is not browser-runnable today, set the catalogue entry
+  `status:"blocked"` with a concrete `blockedReason` (evidence + what would unblock it) so the routine
+  stops reselecting an impossible build. **Current known-blocked (re-check only when upstream changes):
+  pegasus** (transformers.js registers no `pegasus` model class in any version — `Unsupported model
+  type: pegasus` even with a full ONNX folder), **electra** (ONNX exports are encoder-only; the
+  replaced-token-detection discriminator head is absent), **blip** / **bark** (repos gated / no usable
+  ONNX). Never mislabel a substitute as the blocked family.
 - **Denominator discipline — report TWO metrics.** PRIMARY: the evidence-backed eligible catalogue
   (`inventory/summary.json` + `models.json`) — built / eligible + built / catalogued (+ pending);
   this is a refining LOWER BOUND (grows with scan depth — state the depth), keep the catalogue +

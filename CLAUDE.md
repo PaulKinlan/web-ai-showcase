@@ -122,7 +122,18 @@ The catalogue works against the **real browser-runnable universe**, not a hand-p
 inventory across every credible runtime (Transformers.js/ONNX, WebLLM/MLC, MediaPipe/TFLite,
 WebGPU-native) with explicit eligibility + **family deduplication** (fine-tunes/quants/sizes of one
 architecture collapse to one representative; gated/too-large = **blocked but still counted**). The
-evidence lives in `inventory/` (retained every run). Cover the full capability range —
+evidence lives in `inventory/` (retained every run).
+
+**Verify runnability before selecting; don't re-attempt known-blocked builds.** "Eligible" means a
+REAL build runs in the browser today — dynamic-import the exact CDN build and confirm inference
+returns, not just that an ONNX folder or weights exist. A family that cannot run gets
+`status:"blocked"` + a concrete `blockedReason` (evidence + what would unblock) so the routine stops
+reselecting it. **Known-blocked as of 2026-07-19 (re-check only on upstream change): pegasus**
+(transformers.js registers no `pegasus` model class in any version → `Unsupported model type:
+pegasus`), **electra** (ONNX exports encoder-only; RTD discriminator head absent), **blip** / **bark**
+(gated / no usable ONNX). Never mislabel a substitute as the blocked family.
+
+Cover the full capability range —
 classification, NER, embeddings/ reranking/search, summarisation/translation/generation, ASR, audio
 classification, TTS, image classification, zero-shot image, detection, segmentation, depth/normal,
 OCR/doc, captioning/VQA/VLM, background removal, pose/hand/face landmarks, browser-feasible
