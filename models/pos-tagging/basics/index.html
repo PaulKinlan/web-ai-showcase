@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>POS tagging — Basics: colour every word by its part of speech · Web AI Showcase</title>
+    <meta name="description" content="Type a French sentence and watch every word colour by its grammatical role — noun, verb, adjective, preposition — with the confidence the model produced. Real token-classification in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🏷️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">POS tagging</a></p>
+
+    <header>
+      <p class="eyebrow">Basics · token-classification · WASM</p>
+      <h1>Colour every word by its part of speech</h1>
+      <p class="lede">
+        The fundamental capability, felt directly: the model reads a French sentence and gives every word
+        one grammatical tag. Edit the text and watch the colours shift — a noun becomes a verb, an adjective
+        appears. Hover any word for its raw French TreeBank tag and confidence.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Tag a sentence</h3>
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.6rem 0" id="chips">
+        <button class="pos-chip" type="button" data-set="Le petit garçon lance la balle rouge dans le jardin." data-gloss="“The little boy throws the red ball in the garden.”">a boy plays</button>
+        <button class="pos-chip" type="button" data-set="Nous voyagerons demain vers une belle ville italienne." data-gloss="“We will travel tomorrow to a beautiful Italian city.”">travel plans</button>
+        <button class="pos-chip" type="button" data-set="Le café chaud sent incroyablement bon ce matin." data-gloss="“The hot coffee smells incredibly good this morning.”">morning coffee</button>
+        <button class="pos-chip" type="button" data-set="Ils ont vendu leur vieille maison très rapidement." data-gloss="“They sold their old house very quickly.”">a quick sale</button>
+      </div>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">
+        Votre phrase (your sentence)
+        <textarea id="text" class="pos-input" rows="2" disabled>Le petit garçon lance la balle rouge dans le jardin.</textarea>
+      </label>
+      <p class="gloss" id="gloss">“The little boy throws the red ball in the garden.”</p>
+
+      <div id="out" class="pos-out" aria-live="polite"></div>
+      <div class="pos-legend" id="legend" hidden></div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+        <span>words <b id="rWords">–</b></span>
+      </div>
+    </section>
+
+    <section aria-labelledby="next-h">
+      <h2 id="next-h">Keep going</h2>
+      <div class="model-grid">
+        <a class="model-card" href="../practical/"><h3>Practical →</h3><p class="muted">Extract keywords by POS and profile a text's writing style.</p></a>
+        <a class="model-card" href="../wild/"><h3>Wild →</h3><p class="muted">Mad-Libs: blank words by part of speech and fill the gaps.</p></a>
+        <a class="model-card" href="../multi-model/"><h3>Multi-model →</h3><p class="muted">POS + fill-mask reimagine the words into a new sentence.</p></a>
+      </div>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="../">Back to the model →</a>
+    </footer>
+
+    <script type="module">
+      import { PosEngine, POS_CSS, renderTagged, renderLegend, GROUPS, debounce } from "../pos.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = POS_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new PosEngine();
+      let loaded = false;
+
+      for (const c of document.querySelectorAll(".pos-chip")) {
+        c.addEventListener("click", () => {
+          $("text").value = c.dataset.set;
+          $("gloss").textContent = c.dataset.gloss || "";
+          schedule();
+        });
+      }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/french-camembert-postag-model", runtime: "transformers.js", dtype: "q8", sizeMB: 113, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("text").disabled = false; loaded = true; run(); },
+      });
+
+      const schedule = debounce(run, 350);
+      $("text").addEventListener("input", schedule);
+
+      async function run() {
+        if (!loaded) return;
+        const text = $("text").value.trim();
+        if (!text) { $("out").replaceChildren(); $("legend").hidden = true; $("readout").hidden = true; return; }
+        try {
+          const r = await engine.tag(text);
+          renderTagged($("out"), r.words);
+          const present = [...new Set(r.words.map((w) => w.group))];
+          renderLegend($("legend"), Object.keys(GROUPS).filter((g) => present.includes(g)));
+          $("legend").hidden = false;
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = r.ms + " ms";
+          $("rWords").textContent = r.words.length;
+        } catch (err) {
+          $("runStatus").hidden = false;
+          $("runStatus").textContent = "Tagging failed: " + err.message;
+          $("runStatus").classList.add("err");
+        }
+      }
+    </script>
+  </body>
+</html>
