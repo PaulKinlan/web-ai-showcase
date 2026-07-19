@@ -1,0 +1,276 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MobileCLIP — fast on-device zero-shot image classification · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run Apple's MobileCLIP locally: a mobile-optimised CLIP that encodes an image in a fraction of the time a ViT-B/16 takes, at similar zero-shot accuracy. Type any labels, watch it rank them, and see the real encode latency."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>⚡</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">zero-shot-image-classification · vision + language · WASM · ~66 MB</p>
+      <h1>MobileCLIP — zero-shot image classification, built for speed</h1>
+      <p class="lede">
+        MobileCLIP is Apple's mobile-optimised CLIP. Same trick as
+        <a href="/web-ai-showcase/models/clip-zero-shot-image/">the CLIP page</a> — score an image
+        against any labels you invent — but with a vision tower engineered to encode an image
+        <em>fast</em> on everyday hardware. Give it an image and a few made-up labels and watch it rank
+        them, entirely on your device, with the real encode time on screen.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/Xenova/mobileclip_s0" target="_blank" rel="noopener">Xenova/mobileclip_s0</a></td></tr>
+          <tr><th>Task / pipeline</th><td><code>zero-shot-image-classification</code> (two-tower, loaded by hand)</td></tr>
+          <tr><th>Architecture</th><td>MobileCLIP-S0: a fast hybrid CNN/transformer vision tower + text transformer → shared 512-d space</td></tr>
+          <tr><th>Quantization</th><td>vision <strong>fp16</strong>, text <strong>q8</strong> — quantising the vision tower to q8 measurably flips the ranking, so it stays fp16 (see "How the API works")</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (runs anywhere; no WebGPU needed)</td></tr>
+          <tr><th>Download</th><td>~66 MB (vision ~23 MB + text ~43 MB), cached after first load</td></tr>
+          <tr><th>License</th><td>Apple ML Research (MobileCLIP), Apache-2.0 export</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers, FileReader — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Pick or drop an image, type comma-separated labels, and hit Classify. The bars are a softmax over MobileCLIP's cosine similarity between the image and each label. Watch the vision vs text encode latency.</p>
+
+      <div id="model-loader"></div>
+
+      <div class="field-row">
+        <div class="field-col">
+          <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image">
+            <span id="dropText">Drop an image here, or click to choose</span>
+            <input type="file" id="file" accept="image/*" hidden />
+          </div>
+          <div class="sample-strip" id="samples" aria-label="Sample images">
+            <img class="sample-thumb active" src="sample-cats.jpg" data-src="sample-cats.jpg" alt="Two cats sleeping on a pink couch" tabindex="0" role="button" />
+            <img class="sample-thumb" src="sample-room.jpg" data-src="sample-room.jpg" alt="A cozy sunlit bedroom with a bookshelf" tabindex="0" role="button" />
+            <img class="sample-thumb" src="sample-river.jpg" data-src="sample-river.jpg" alt="A riverside at golden hour with a swan" tabindex="0" role="button" />
+          </div>
+          <div class="preview-wrap"><img class="preview-img" id="preview" src="sample-cats.jpg" alt="Selected image preview" /></div>
+        </div>
+        <div class="field-col">
+          <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">
+            Candidate labels (comma-separated)
+            <textarea id="labels" rows="4">a photo of two cats, a photo of a dog, a sleeping animal, a city street, a bowl of food</textarea>
+          </label>
+          <div style="margin:.5rem 0">
+            <button id="run" type="button" disabled>Classify</button>
+            <button id="clearLabels" type="button" class="secondary">Reset labels</button>
+          </div>
+          <p class="status" id="runStatus" role="status" aria-live="polite"></p>
+          <div class="latency-badges" id="latency" hidden>
+            <span class="lat-badge">vision encode <b id="rVision">–</b></span>
+            <span class="lat-badge">text encode <b id="rText">–</b></span>
+          </div>
+          <div class="bars" id="bars" aria-live="polite"></div>
+          <div class="readout" id="readout" hidden>
+            <span>backend <b id="rBackend">–</b></span>
+            <span>total <b id="rMs">–</b></span>
+            <span>labels <b id="rN">–</b></span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside</h3>
+      <p class="muted">
+        MobileCLIP turns your image into one 512-number vector and each label into its own 512-number
+        vector, then measures the <strong>cosine similarity</strong> between the image vector and every
+        label vector. Those similarities are scaled by CLIP's temperature (×100) into
+        <strong>logits</strong>, and a softmax turns them into the percentages above. The interesting
+        number here is the <strong>vision encode time</strong> — that's where MobileCLIP's mobile-tuned
+        architecture earns its name versus a full ViT.
+      </p>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Run a classification to see the raw numbers.</div>
+      <div id="insideWrap" hidden>
+        <div class="readout">
+          <span>image embedding <b id="iImg">–</b></span>
+          <span>text embeddings <b id="iTxt">–</b></span>
+          <span>vision encode <b id="iVision">–</b></span>
+          <span>text encode <b id="iText">–</b></span>
+        </div>
+        <table class="inside-table">
+          <thead><tr><th>Label</th><th>cosine sim</th><th>logit (×scale)</th><th>softmax</th></tr></thead>
+          <tbody id="insideRows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        Zero-shot image understanding is powerful, but a full CLIP vision encoder is heavy — too heavy
+        to run on every frame or every thumbnail on a phone. MobileCLIP keeps the "label set is an
+        input" superpower while making the image encode cheap enough to actually ship at scale, on
+        device.
+      </p>
+      <ul>
+        <li><strong>Fast tagging at volume</strong> — tag or search a whole photo library against your own vocabulary without a per-image server bill or a long wait.</li>
+        <li><strong>Moderation triage</strong> — score images against policy labels (<code>safe</code>, <code>weapon</code>, <code>graphic</code>) fast enough to gate an upload flow client-side.</li>
+        <li><strong>On-device, real-time</strong> — cheap enough per encode to run against a live camera or a scrolling feed.</li>
+        <li><strong>Private &amp; offline</strong> — the image and the labels never leave the tab; works on sensitive photos and with no network.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">One image, your labels, the encode latency — feel fast zero-shot classification first-hand.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Batch tagging &amp; moderation triage — score many images against a fixed label set, fast.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Live webcam "vibe check" — classify the camera against moods in real time.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">Speed race — run MobileCLIP and the full CLIP on the same image and compare encode times.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>MobileCLIP's Transformers.js repo ships the two towers separately, so we load them by hand and compute the cosine ourselves:</p>
+      <pre><code>import {
+  AutoTokenizer, AutoProcessor,
+  CLIPVisionModelWithProjection, CLIPTextModelWithProjection, RawImage,
+} from "@huggingface/transformers";
+
+const id = "Xenova/mobileclip_s0";
+const tokenizer = await AutoTokenizer.from_pretrained(id);
+const processor = await AutoProcessor.from_pretrained(id);
+const vision = await CLIPVisionModelWithProjection.from_pretrained(id, { dtype: "fp16" });
+const text   = await CLIPTextModelWithProjection.from_pretrained(id, { dtype: "q8" });
+
+const { image_embeds } = await vision(await processor(await RawImage.read(url)));
+const { text_embeds }  = await text(tokenizer(labels,
+  { padding: "max_length", max_length: 77, truncation: true })); // fixed 77-token context
+// cosine(image_embeds, text_embeds[i]) → similarity per label; softmax(×100) → the bars</code></pre>
+      <p class="muted">
+        Two honest details this page bakes in: the text tower needs a <strong>fixed 77-token
+        context</strong> (OpenCLIP positional embeddings), and the <strong>vision tower runs fp16, not
+        q8</strong> — 8-bit quantising the vision tower measurably flips the ranking on the reference
+        image, so only the larger text tower is quantised. Inference runs in a Web Worker so the page
+        never janks.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/Xenova/mobileclip_s0" target="_blank" rel="noopener">Model card — Xenova/mobileclip_s0</a></li>
+        <li><a href="https://machinelearning.apple.com/research/mobileclip" target="_blank" rel="noopener">Apple ML Research — MobileCLIP</a></li>
+        <li><a href="https://arxiv.org/abs/2311.17049" target="_blank" rel="noopener">Paper — Vasu et al., "MobileCLIP" (arXiv:2311.17049)</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { escapeHTML, fileToDataURL, MOBILECLIP_CSS, MobileClipEngine, parseLabels, renderBars, urlToDataURL } from "./mobileclip.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = MOBILECLIP_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new MobileClipEngine();
+      let currentImageURL = null;
+      const DEFAULT_LABELS = $("labels").value;
+
+      async function useURL(url, previewSrc) {
+        currentImageURL = url;
+        $("preview").src = previewSrc ?? url;
+      }
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        const src = el.dataset.src;
+        await useURL(await urlToDataURL(src), src);
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } });
+      }
+      pickSample($("samples").firstElementChild);
+
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      file.addEventListener("change", async () => { if (file.files[0]) await loadFile(file.files[0]); });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      drop.addEventListener("drop", async (e) => { const f = e.dataTransfer?.files?.[0]; if (f && f.type.startsWith("image/")) await loadFile(f); });
+      async function loadFile(f) { for (const t of $("samples").children) t.classList.remove("active"); await useURL(await fileToDataURL(f)); $("dropText").textContent = f.name; }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/mobileclip_s0", runtime: "transformers.js", dtype: "fp16/q8", sizeMB: 66, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("run").disabled = false; },
+      });
+
+      $("clearLabels").addEventListener("click", () => { $("labels").value = DEFAULT_LABELS; });
+      $("run").addEventListener("click", classify);
+      async function classify() {
+        const labels = parseLabels($("labels").value);
+        if (!currentImageURL) { $("runStatus").textContent = "Choose an image first."; return; }
+        if (labels.length < 2) { $("runStatus").textContent = "Give at least two labels."; $("runStatus").classList.add("err"); return; }
+        $("runStatus").classList.remove("err", "ok");
+        $("run").disabled = true;
+        $("runStatus").textContent = "Classifying…";
+        try {
+          const r = await engine.classify(currentImageURL, labels);
+          const items = r.labels.map((label, i) => ({ label, prob: r.probs[i], cosine: r.cosines[i] }));
+          renderBars($("bars"), items, { showCosine: true });
+          $("latency").hidden = false;
+          $("rVision").textContent = r.visionMs + " ms";
+          $("rText").textContent = r.textMs + " ms";
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = r.ms + " ms";
+          $("rN").textContent = labels.length;
+          renderInside(r);
+          $("runStatus").textContent = "Done.";
+          $("runStatus").classList.add("ok");
+        } catch (err) {
+          $("runStatus").textContent = "Classification failed: " + err.message;
+          $("runStatus").classList.add("err");
+        } finally {
+          $("run").disabled = false;
+        }
+      }
+
+      function renderInside(r) {
+        $("insideEmpty").hidden = true;
+        $("insideWrap").hidden = false;
+        $("iImg").textContent = r.imgDims ? `[${r.imgDims.join(" × ")}]` : "512-d";
+        $("iTxt").textContent = r.txtDims ? `[${r.txtDims.join(" × ")}]` : `${r.labels.length} × 512-d`;
+        $("iVision").textContent = r.visionMs + " ms";
+        $("iText").textContent = r.textMs + " ms";
+        const order = r.labels.map((_, i) => i).sort((a, b) => r.probs[b] - r.probs[a]);
+        $("insideRows").replaceChildren(...order.map((i) => {
+          const tr = document.createElement("tr");
+          tr.innerHTML = `<td>${escapeHTML(r.labels[i])}</td>
+            <td>${r.cosines[i].toFixed(4)}</td>
+            <td>${r.logits[i].toFixed(2)}</td>
+            <td>${(r.probs[i] * 100).toFixed(2)}%</td>`;
+          return tr;
+        }));
+      }
+    </script>
+  </body>
+</html>
