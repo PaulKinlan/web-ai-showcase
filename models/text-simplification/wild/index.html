@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Text simplification — Wild: untangle legalese and abstracts · Web AI Showcase</title>
+    <meta name="description" content="Throw the densest text you can find — legal clauses, academic abstracts, insurance small print — at a small FLAN-T5 simplifier and see how far it can plain-language it, honestly, in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>📖</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Text simplification</a></p>
+
+    <header>
+      <p class="eyebrow">Wild · text2text-generation · WASM</p>
+      <h1>Untangle the densest text you can find</h1>
+      <p class="lede">
+        Push it. Paste legal boilerplate, an academic abstract, insurance small print — the kind of writing
+        built to be impenetrable — and see how far a <strong>small</strong> (~80M) model can plain-language it.
+        This is the honest stress test: sometimes the reading-ease score jumps a long way, sometimes the model
+        is conservative or lightly paraphrases. You see the real output either way, with the before/after
+        numbers to judge it for yourself.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Try it</h3>
+      <div id="model-loader"></div>
+
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.6rem 0">
+        <button class="chip" type="button" data-set="legal">Legal clause</button>
+        <button class="chip" type="button" data-set="abstract">Academic abstract</button>
+        <button class="chip" type="button" data-set="insurance">Insurance small print</button>
+        <button class="chip" type="button" data-set="policy">Privacy policy</button>
+      </div>
+
+      <label style="display:flex;flex-direction:column;gap:.3rem;font-size:.82rem">
+        Dense text
+        <textarea id="passage" rows="5" disabled>The party of the first part hereby irrevocably covenants and agrees to indemnify, defend, and hold harmless the party of the second part from and against any and all claims, liabilities, and expenses arising out of or in connection with the aforementioned undertaking.</textarea>
+      </label>
+
+      <div style="margin:.6rem 0;display:flex;gap:.4rem;flex-wrap:wrap;align-items:center">
+        <button id="run" type="button" disabled>Simplify (sentence by sentence)</button>
+        <span class="status" id="status" role="status" aria-live="polite"></span>
+      </div>
+
+      <div class="grid-2">
+        <div>
+          <span style="font-size:.82rem;color:var(--muted)">Original</span>
+          <div class="simp-out" id="before" style="min-block-size:120px"></div>
+        </div>
+        <div>
+          <span style="font-size:.82rem;color:var(--muted)">Plain language (best effort)</span>
+          <div class="simp-out" id="after" aria-live="polite" style="min-block-size:120px"></div>
+        </div>
+      </div>
+
+      <div style="overflow-x:auto;margin-top:.6rem"><div id="readTable"></div></div>
+      <p class="muted" style="font-size:.78rem;margin-top:.5rem">A small model can misread very technical text —
+        always check the plain version against the original before relying on it. That honesty is the point:
+        no result here is faked.</p>
+
+      <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>sentences <b id="rN">–</b></span><span>total time <b id="rMs">–</b></span></div>
+    </section>
+
+    <p class="crumbs" style="margin-top:1.5rem"><a href="../multi-model/">Next: Multi-model — simplify then speak it aloud →</a></p>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via 🤗 Transformers.js.
+      <a href="../">← Back to Text simplification</a>
+    </footer>
+
+    <script type="module">
+      import { SimplifyEngine, readability, renderReadability, SIMPLIFY_CSS } from "../simplify.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = SIMPLIFY_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new SimplifyEngine();
+
+      const SETS = {
+        legal: "The party of the first part hereby irrevocably covenants and agrees to indemnify, defend, and hold harmless the party of the second part from and against any and all claims, liabilities, and expenses arising out of or in connection with the aforementioned undertaking.",
+        abstract: "This study investigates the efficacy of a novel intervention utilizing a randomized controlled methodology, demonstrating statistically significant amelioration in the target population relative to the control cohort across multiple validated outcome measures.",
+        insurance: "The insurer shall not be liable for any consequential loss howsoever arising, notwithstanding any prior representation to the contrary, where such loss is attributable to circumstances beyond the reasonable contemplation of the parties at the inception of the policy.",
+        policy: "We may collect, process, and disclose personal information to third-party affiliates and service providers for purposes including, but not limited to, the facilitation of transactions, analytics, and the enhancement of user experience, in accordance with applicable regulatory frameworks.",
+      };
+
+      for (const c of document.querySelectorAll(".chip")) {
+        c.addEventListener("click", () => { $("passage").value = SETS[c.dataset.set]; });
+      }
+
+      function splitSentences(text) {
+        return (text.match(/[^.!?]+[.!?]*/g) || []).map((s) => s.trim()).filter(Boolean);
+      }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "grazh/agentlans-flan-t5-small-simplifier-onnx-v2", runtime: "transformers.js", dtype: "q8", sizeMB: 98, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("passage").disabled = false; $("run").disabled = false; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        const passage = $("passage").value.trim();
+        if (!passage) { $("status").textContent = "Paste some dense text first."; return; }
+        const sentences = splitSentences(passage);
+        $("run").disabled = true; $("status").classList.remove("err");
+        $("before").textContent = passage; $("after").textContent = "";
+        try {
+          const outs = []; let totalMs = 0;
+          for (let i = 0; i < sentences.length; i++) {
+            $("status").textContent = `Simplifying sentence ${i + 1} of ${sentences.length}…`;
+            const r = await engine.simplify(sentences[i], {});
+            outs.push(r.output || sentences[i]);
+            totalMs += r.ms;
+            $("after").textContent = outs.join(" ");
+          }
+          const plain = outs.join(" ");
+          const before = readability(passage), after = readability(plain);
+          renderReadability($("readTable"), before, after);
+          $("readout").hidden = false;
+          $("rBackend").textContent = engine.device.toUpperCase();
+          $("rN").textContent = sentences.length;
+          $("rMs").textContent = (totalMs / 1000).toFixed(2) + " s";
+          $("status").textContent = `Done — reading ease ${before.fleschEase.toFixed(0)} → ${after.fleschEase.toFixed(0)}.`;
+          $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>

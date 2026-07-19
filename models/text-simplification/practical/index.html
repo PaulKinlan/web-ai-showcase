@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Text simplification — Practical: a plain-language rewriter · Web AI Showcase</title>
+    <meta name="description" content="Simplify a whole passage sentence by sentence for accessibility, with a running before/after readability delta for the full text — locally in your browser with a FLAN-T5 simplification model." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>📖</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Text simplification</a></p>
+
+    <header>
+      <p class="eyebrow">Practical · text2text-generation · WASM</p>
+      <h1>A plain-language rewriter for accessibility</h1>
+      <p class="lede">
+        The real use case: paste a whole passage and rewrite it into plain language, sentence by sentence.
+        Each sentence goes through the model separately (so long documents don't overflow the context), and
+        the panel reports the <strong>readability of the whole passage before and after</strong>. Copy the
+        plain version out when you're happy with it. Everything runs locally — safe for content you can't send
+        to a cloud service.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Try it</h3>
+      <div id="model-loader"></div>
+
+      <label style="display:flex;flex-direction:column;gap:.3rem;font-size:.82rem;margin-top:.4rem">
+        Complex passage
+        <textarea id="passage" rows="5" disabled>Applicants are hereby advised that the requisite documentation must be submitted in its entirety. Failure to comply with the aforementioned stipulations shall result in the forfeiture of eligibility. Subsequent appeals will be adjudicated at the sole discretion of the committee.</textarea>
+      </label>
+
+      <div style="margin:.6rem 0;display:flex;gap:.4rem;flex-wrap:wrap;align-items:center">
+        <button id="run" type="button" disabled>Simplify passage</button>
+        <button id="copy" type="button" class="secondary" disabled>Copy plain version</button>
+        <span class="status" id="status" role="status" aria-live="polite"></span>
+      </div>
+
+      <div class="grid-2">
+        <div>
+          <span style="font-size:.82rem;color:var(--muted)">Original</span>
+          <div class="simp-out" id="before" style="min-block-size:120px"></div>
+        </div>
+        <div>
+          <span style="font-size:.82rem;color:var(--muted)">Plain language</span>
+          <div class="simp-out" id="after" aria-live="polite" style="min-block-size:120px"></div>
+        </div>
+      </div>
+
+      <div style="overflow-x:auto;margin-top:.6rem"><div id="readTable"></div></div>
+
+      <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>sentences <b id="rN">–</b></span><span>total time <b id="rMs">–</b></span></div>
+    </section>
+
+    <p class="crumbs" style="margin-top:1.5rem"><a href="../wild/">Next: Wild — untangle legalese and abstracts →</a></p>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via 🤗 Transformers.js.
+      <a href="../">← Back to Text simplification</a>
+    </footer>
+
+    <script type="module">
+      import { SimplifyEngine, readability, renderReadability, SIMPLIFY_CSS } from "../simplify.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = SIMPLIFY_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new SimplifyEngine();
+      let plainText = "";
+
+      // Split a passage into sentences, keeping terminal punctuation.
+      function splitSentences(text) {
+        return (text.match(/[^.!?]+[.!?]*/g) || []).map((s) => s.trim()).filter(Boolean);
+      }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "grazh/agentlans-flan-t5-small-simplifier-onnx-v2", runtime: "transformers.js", dtype: "q8", sizeMB: 98, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("passage").disabled = false; $("run").disabled = false; },
+      });
+
+      $("copy").addEventListener("click", async () => {
+        try { await navigator.clipboard.writeText(plainText); $("status").textContent = "Copied plain version."; }
+        catch { $("status").textContent = "Copy failed — select the text manually."; }
+      });
+
+      $("run").addEventListener("click", async () => {
+        const passage = $("passage").value.trim();
+        if (!passage) { $("status").textContent = "Paste a passage first."; return; }
+        const sentences = splitSentences(passage);
+        $("run").disabled = true; $("copy").disabled = true; $("status").classList.remove("err");
+        $("before").textContent = passage; $("after").textContent = "";
+        try {
+          const outs = [];
+          let totalMs = 0;
+          for (let i = 0; i < sentences.length; i++) {
+            $("status").textContent = `Simplifying sentence ${i + 1} of ${sentences.length}…`;
+            const r = await engine.simplify(sentences[i], {});
+            outs.push(r.output || sentences[i]);
+            totalMs += r.ms;
+            $("after").textContent = outs.join(" ");
+          }
+          plainText = outs.join(" ");
+          const before = readability(passage), after = readability(plainText);
+          renderReadability($("readTable"), before, after);
+          $("readout").hidden = false;
+          $("rBackend").textContent = engine.device.toUpperCase();
+          $("rN").textContent = sentences.length;
+          $("rMs").textContent = (totalMs / 1000).toFixed(2) + " s";
+          $("copy").disabled = false;
+          $("status").textContent = `Done — reading ease ${before.fleschEase.toFixed(0)} → ${after.fleschEase.toFixed(0)}.`;
+          $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>

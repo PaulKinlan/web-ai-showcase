@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Text simplification — Basics: simplify one sentence · Web AI Showcase</title>
+    <meta name="description" content="Simplify a single complex sentence and watch the Flesch reading-ease score climb, with a word-level diff of exactly what the model changed — locally in your browser with a FLAN-T5 simplification model." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>📖</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Text simplification</a></p>
+
+    <header>
+      <p class="eyebrow">Basics · text2text-generation · WASM</p>
+      <h1>Simplify a sentence, watch the score climb</h1>
+      <p class="lede">
+        The fundamental capability: give one complex sentence, get one plainer sentence. The
+        <strong>reading-ease</strong> meters show the before and after, and the diff underneath shows every
+        word the model swapped or dropped — so you can see <em>what</em> made it simpler, measured, not just
+        claimed.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Try it</h3>
+      <div id="model-loader"></div>
+
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.6rem 0">
+        <button class="chip" type="button" data-t="The utilization of this methodology facilitates enhanced comprehension.">jargon</button>
+        <button class="chip" type="button" data-t="It is imperative that all personnel adhere to the aforementioned safety protocols.">officialese</button>
+        <button class="chip" type="button" data-t="The precipitation necessitated the cancellation of the outdoor festivities.">fancy words</button>
+        <button class="chip" type="button" data-t="Subsequent to the acquisition, the organization underwent substantial restructuring.">business</button>
+      </div>
+
+      <label style="display:flex;flex-direction:column;gap:.3rem;font-size:.82rem">
+        Your sentence
+        <textarea id="prompt" rows="2" disabled>The utilization of this methodology facilitates enhanced comprehension.</textarea>
+      </label>
+
+      <div style="margin:.6rem 0;display:flex;gap:.4rem;flex-wrap:wrap;align-items:center">
+        <button id="run" type="button" disabled>Simplify</button>
+        <span class="status" id="status" role="status" aria-live="polite"></span>
+      </div>
+
+      <div style="margin-top:.2rem"><span style="font-size:.82rem;color:var(--muted)">Simplified</span>
+        <div class="simp-out" id="out" aria-live="polite"></div>
+      </div>
+
+      <div class="ease-meters" id="meters" hidden>
+        <div class="ease-meter">
+          <div class="lbl">Before — reading ease</div>
+          <div class="big" id="beforeEase">–</div>
+          <div class="band" id="beforeBand"></div>
+          <div class="track"><div class="fill" id="beforeFill" style="inline-size:0"></div></div>
+        </div>
+        <div class="ease-meter">
+          <div class="lbl">After — reading ease</div>
+          <div class="big" id="afterEase">–</div>
+          <div class="band" id="afterBand"></div>
+          <div class="track"><div class="fill" id="afterFill" style="inline-size:0"></div></div>
+        </div>
+      </div>
+
+      <div style="margin-top:.7rem" id="diffSection" hidden>
+        <span style="font-size:.82rem;color:var(--muted)">What changed</span>
+        <div class="diff-box" id="diff"></div>
+        <div class="diff-legend">
+          <span class="k"><span class="sw" style="background:color-mix(in srgb, var(--good) 40%, transparent)"></span> added</span>
+          <span class="k"><span class="sw" style="background:var(--bad)"></span> removed</span>
+          <span class="k" id="editCount"></span>
+        </div>
+      </div>
+
+      <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>time <b id="rMs">–</b></span><span>tokens in→out <b id="rTok">–</b></span></div>
+    </section>
+
+    <p class="crumbs" style="margin-top:1.5rem"><a href="../practical/">Next: Practical — simplify a whole passage →</a></p>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via 🤗 Transformers.js.
+      <a href="../">← Back to Text simplification</a>
+    </footer>
+
+    <script type="module">
+      import { SimplifyEngine, readability, easeBand, diffWords, diffStats, renderDiff, SIMPLIFY_CSS } from "../simplify.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = SIMPLIFY_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new SimplifyEngine();
+
+      for (const c of document.querySelectorAll(".chip")) {
+        c.addEventListener("click", () => { $("prompt").value = c.dataset.t; });
+      }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "grazh/agentlans-flan-t5-small-simplifier-onnx-v2", runtime: "transformers.js", dtype: "q8", sizeMB: 98, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("prompt").disabled = false; $("run").disabled = false; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        const input = $("prompt").value.trim();
+        if (!input) { $("status").textContent = "Type a sentence first."; return; }
+        $("run").disabled = true; $("status").classList.remove("err"); $("status").textContent = "Simplifying…"; $("out").textContent = "";
+        try {
+          const r = await engine.simplify(input, {}, (p) => { $("out").textContent = p; });
+          $("out").textContent = r.output || "(empty output)";
+          const before = readability(r.input), after = readability(r.output);
+          $("meters").hidden = false;
+          $("beforeEase").textContent = before.fleschEase.toFixed(0);
+          $("afterEase").textContent = after.fleschEase.toFixed(0);
+          $("beforeBand").textContent = easeBand(before.fleschEase);
+          $("afterBand").textContent = easeBand(after.fleschEase);
+          $("beforeFill").style.inlineSize = Math.min(100, before.fleschEase) + "%";
+          $("afterFill").style.inlineSize = Math.min(100, after.fleschEase) + "%";
+          const ops = diffWords(r.input, r.output); const ds = diffStats(ops);
+          renderDiff($("diff"), ops); $("diffSection").hidden = false;
+          $("editCount").textContent = `${ds.changes} edit(s)`;
+          $("readout").hidden = false; $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = (r.ms / 1000).toFixed(2) + " s"; $("rTok").textContent = `${r.inTokens} → ${r.outTokens}`;
+          $("status").textContent = "";
+        } catch (err) { $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>
