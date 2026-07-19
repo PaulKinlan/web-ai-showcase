@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OCR Wild — live webcam OCR · Web AI Showcase</title>
+    <meta name="description" content="Point your camera at a line of text, line it up in the reticle, and read it on the fly — live webcam OCR with TrOCR, entirely on-device." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🔠</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">TrOCR</a></p>
+
+    <header>
+      <p class="eyebrow">use case · wild</p>
+      <h1>Wild: live webcam OCR</h1>
+      <p class="lede">
+        Point your camera at some text, line it up inside the reticle, and read it. The frame never
+        leaves your device — the camera feeds straight into the model. Great for grabbing a serial
+        number, a code, or a label off a real object.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+
+      <div class="field-row" style="align-items:stretch">
+        <div style="flex:1 1 320px">
+          <div style="margin:.4rem 0">
+            <button id="camBtn" type="button">Start camera</button>
+            <button id="shotBtn" type="button" disabled>Read framed line</button>
+          </div>
+          <p class="crop-hint">Fit one line of text between the guide lines, then read.</p>
+          <div class="crop-wrap" style="position:relative">
+            <video id="video" playsinline muted style="max-inline-size:100%;border-radius:8px;display:block;background:#000"></video>
+            <div id="reticle" aria-hidden="true" style="position:absolute;left:8%;right:8%;top:44%;height:12%;border:2px solid #6366f1;border-radius:4px;box-shadow:0 0 0 999px rgba(20,20,30,.35);pointer-events:none"></div>
+          </div>
+          <canvas id="canvas" hidden></canvas>
+        </div>
+        <div style="flex:1 1 240px">
+          <p class="status" id="runStatus" role="status" aria-live="polite"></p>
+          <div class="text-box" id="textOut" aria-live="polite"></div>
+          <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>tokens <b id="rTok">–</b></span><span>total <b id="rMs">–</b></span></div>
+        </div>
+      </div>
+    </section>
+
+    <p class="crumbs"><a href="../practical/">← Practical</a> · <a href="../">Back to TrOCR</a> · Next: <a href="../multimodel/">Multi-model →</a></p>
+
+    <script type="module">
+      import { OcrEngine, escapeHTML, OCR_CSS } from "../ocr.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = OCR_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new OcrEngine();
+      let stream = null, ready = false;
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/trocr-small-printed", runtime: "transformers.js", dtype: "q8", sizeMB: 185, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { ready = true; if (stream) $("shotBtn").disabled = false; },
+      });
+
+      $("camBtn").addEventListener("click", async () => {
+        $("runStatus").classList.remove("err", "ok");
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment", width: { ideal: 1280 } }, audio: false });
+          $("video").srcObject = stream; await $("video").play();
+          $("camBtn").textContent = "Camera on";
+          $("shotBtn").disabled = !ready;
+          $("runStatus").textContent = ready ? "Line up some text and read it." : "Camera on — waiting for the model to finish loading…";
+        } catch (err) {
+          $("runStatus").textContent = "Camera unavailable: " + err.message; $("runStatus").classList.add("err");
+        }
+      });
+
+      $("shotBtn").addEventListener("click", async () => {
+        const v = $("video");
+        if (!v.videoWidth) { $("runStatus").textContent = "Camera not ready yet."; return; }
+        $("shotBtn").disabled = true; $("runStatus").classList.remove("err", "ok"); $("runStatus").textContent = "Reading…";
+        $("textOut").innerHTML = '<span class="cursor">&nbsp;</span>';
+        // Crop the reticle band (left 8%..92%, top 44%..56%) from the live frame.
+        const vw = v.videoWidth, vh = v.videoHeight;
+        const sx = vw * 0.08, sw = vw * 0.84, sy = vh * 0.44, sh = vh * 0.12;
+        const c = $("canvas"); c.width = Math.round(sw); c.height = Math.round(sh);
+        c.getContext("2d").drawImage(v, sx, sy, sw, sh, 0, 0, c.width, c.height);
+        const url = c.toDataURL("image/png");
+        let text = "";
+        try {
+          const r = await engine.recognize(url, 48, (m) => { text += m.token; $("textOut").innerHTML = escapeHTML(text) + '<span class="cursor">&nbsp;</span>'; });
+          $("textOut").textContent = r.text || "(no text read — try steadier framing)";
+          $("readout").hidden = false; $("rBackend").textContent = r.device.toUpperCase(); $("rTok").textContent = r.tokens; $("rMs").textContent = r.ms + " ms";
+          $("runStatus").textContent = "Done."; $("runStatus").classList.add("ok");
+        } catch (err) { $("runStatus").textContent = "Failed: " + err.message; $("runStatus").classList.add("err"); $("textOut").textContent = ""; }
+        finally { $("shotBtn").disabled = false; }
+      });
+
+      addEventListener("pagehide", () => { stream?.getTracks().forEach((t) => t.stop()); });
+    </script>
+  </body>
+</html>

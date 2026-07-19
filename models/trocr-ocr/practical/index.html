@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OCR Practical — digitise a receipt · Web AI Showcase</title>
+    <meta name="description" content="Turn a photo of a receipt into an editable, copyable list of lines: box each line, read it, and build up the whole document — all locally with TrOCR." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🔠</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">TrOCR</a></p>
+
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Practical: digitise a receipt</h1>
+      <p class="lede">
+        A single-line reader becomes a document scanner when you feed it one line at a time. Box a line,
+        read it, and it drops into a list you can edit and copy — the workflow behind expense capture and
+        paperwork digitisation, running entirely on your device with nothing uploaded.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+
+      <div class="field-row" style="align-items:stretch">
+        <div style="flex:1 1 300px">
+          <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image">
+            <span id="dropText">Drop a receipt/document image, or click to choose</span>
+            <input type="file" id="file" accept="image/*" hidden />
+          </div>
+          <div class="sample-strip" id="samples">
+            <img class="sample-thumb active" src="../sample-receipt.png" data-src="../sample-receipt.png" alt="A small café receipt with several lines" tabindex="0" role="button" />
+            <img class="sample-thumb" src="../sample-total.png" data-src="../sample-total.png" alt="A receipt line reading Grand Total $42.99" tabindex="0" role="button" />
+          </div>
+          <p class="crop-hint">Drag a box around <strong>one line</strong>, then click Read line. Repeat down the receipt. <button id="resetCrop" class="chip" type="button">Reset selection</button></p>
+          <div class="crop-wrap"><canvas id="canvas" aria-label="Receipt — drag to box a line to read"></canvas></div>
+        </div>
+        <div style="flex:1 1 260px">
+          <button id="run" type="button" disabled>Read line ↓</button>
+          <button id="clear" class="chip" type="button">Clear list</button>
+          <p class="status" id="runStatus" role="status" aria-live="polite"></p>
+          <div class="rows-out" id="rows" aria-live="polite"></div>
+          <button id="copyAll" class="chip" type="button" hidden>Copy all lines</button>
+        </div>
+      </div>
+      <p class="muted" style="font-size:.85rem">
+        Why line-by-line? TrOCR reads one line per call, which keeps each read fast and lets you skip
+        noise. A full layout-aware document model (see <a href="../../donut-docvqa/">Donut</a>) takes the
+        whole page at once — different trade-off, same on-device privacy.
+      </p>
+    </section>
+
+    <p class="crumbs"><a href="../basics/">← Basics</a> · <a href="../">Back to TrOCR</a> · Next: <a href="../wild/">Wild →</a></p>
+
+    <script type="module">
+      import { OcrEngine, CropCanvas, fileToDataURL, escapeHTML, OCR_CSS } from "../ocr.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = OCR_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new OcrEngine();
+      const crop = new CropCanvas($("canvas"));
+      const lines = [];
+
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        const blob = await (await fetch(el.dataset.src)).blob();
+        crop.setSrc(await fileToDataURL(new File([blob], "s", { type: blob.type })));
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } });
+      }
+      pickSample($("samples").firstElementChild);
+
+      const file = $("file"), drop = $("drop");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) { for (const t of $("samples").children) t.classList.remove("active"); crop.setSrc(await fileToDataURL(f)); $("dropText").textContent = f.name; }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
+      $("resetCrop").addEventListener("click", () => crop.reset());
+
+      function renderRows() {
+        $("rows").replaceChildren(...lines.map((t, i) => {
+          const row = document.createElement("div"); row.className = "row-line";
+          row.innerHTML = `<b>line ${i + 1}</b>`;
+          const inp = document.createElement("input"); inp.type = "text"; inp.value = t;
+          inp.style.cssText = "flex:1;font:inherit;font-family:var(--font-mono);background:transparent;border:0;color:var(--color)";
+          inp.setAttribute("aria-label", `Line ${i + 1} transcription (editable)`);
+          inp.addEventListener("input", () => { lines[i] = inp.value; });
+          row.append(inp);
+          return row;
+        }));
+        $("copyAll").hidden = lines.length === 0;
+      }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/trocr-small-printed", runtime: "transformers.js", dtype: "q8", sizeMB: 185, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("run").disabled = false; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        $("run").disabled = true; $("runStatus").classList.remove("err", "ok"); $("runStatus").textContent = "Reading line…";
+        try {
+          const r = await engine.recognize(crop.crop(), 48);
+          if (r.text) { lines.push(r.text); renderRows(); }
+          $("runStatus").textContent = r.text ? `Added line ${lines.length} (${r.ms} ms).` : "No text in that box — try a tighter crop.";
+          $("runStatus").classList.add(r.text ? "ok" : "err");
+        } catch (err) { $("runStatus").textContent = "Failed: " + err.message; $("runStatus").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+      $("clear").addEventListener("click", () => { lines.length = 0; renderRows(); $("runStatus").textContent = ""; });
+      $("copyAll").addEventListener("click", async () => {
+        try { await navigator.clipboard.writeText(lines.join("\n")); $("copyAll").textContent = "Copied!"; setTimeout(() => $("copyAll").textContent = "Copy all lines", 1200); }
+        catch { $("copyAll").textContent = "Copy failed"; }
+      });
+    </script>
+  </body>
+</html>

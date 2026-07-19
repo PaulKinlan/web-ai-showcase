@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TrOCR — read printed text from an image in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run TrOCR (small, printed) locally in your browser: crop a line of text from a photo — a sign, a receipt, a label — and watch it transcribe token by token. No server, nothing leaves your device."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🔠</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">image-to-text · vision → text (OCR) · WASM · ~185 MB</p>
+      <h1>TrOCR — read the text out of a picture</h1>
+      <p class="lede">
+        TrOCR is a transformer that does OCR the modern way: no hand-built pipeline, just a Vision
+        Transformer that <em>looks</em> at a cropped line of text and a text decoder that
+        <em>writes it out</em>, one token at a time — <code>GRAND TOTAL: $42.99</code> — entirely on
+        your device.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/Xenova/trocr-small-printed" target="_blank" rel="noopener">Xenova/trocr-small-printed</a></td></tr>
+          <tr><th>Task / pipeline</th><td><code>image-to-text</code></td></tr>
+          <tr><th>Architecture</th><td>ViT-style image encoder → RoBERTa-style text decoder (VisionEncoderDecoder, cross-attention)</td></tr>
+          <tr><th>Input</th><td>A single <strong>line</strong> of printed text (crop to the line you want)</td></tr>
+          <tr><th>Output</th><td>The transcribed characters, generated token by token</td></tr>
+          <tr><th>Quantization</th><td>q8 (8-bit) ONNX — separate encoder + decoder graphs</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (runs anywhere; no WebGPU needed)</td></tr>
+          <tr><th>Download</th><td>~185 MB, cached after first load</td></tr>
+          <tr><th>License</th><td>MIT (microsoft/trocr-small-printed)</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers, Canvas, FileReader — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">
+        Pick or drop an image, then <strong>drag a box around one line of text</strong> and hit Read.
+        TrOCR is a single-line reader, so the crop is the point — it transcribes what's inside the box.
+      </p>
+
+      <div id="model-loader"></div>
+
+      <div class="field-row" style="align-items:stretch">
+        <div style="flex:1 1 300px">
+          <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image">
+            <span id="dropText">Drop an image here, or click to choose</span>
+            <input type="file" id="file" accept="image/*" hidden />
+          </div>
+          <div class="sample-strip" id="samples" aria-label="Sample text images">
+            <img class="sample-thumb active" src="sample-total.png" data-src="sample-total.png" alt="A receipt line reading Grand Total $42.99" tabindex="0" role="button" />
+            <img class="sample-thumb" src="sample-fox.png" data-src="sample-fox.png" alt="A printed line: The quick brown fox jumps" tabindex="0" role="button" />
+            <img class="sample-thumb" src="sample-sign.png" data-src="sample-sign.png" alt="A sign reading Platform 9" tabindex="0" role="button" />
+            <img class="sample-thumb" src="sample-serial.png" data-src="sample-serial.png" alt="A label reading SN 4B7X-9021-KD" tabindex="0" role="button" />
+            <img class="sample-thumb" src="sample-receipt.png" data-src="sample-receipt.png" alt="A small café receipt with several lines" tabindex="0" role="button" />
+          </div>
+          <p class="crop-hint">Drag on the image to select a line. <button id="resetCrop" class="chip" type="button">Reset selection</button></p>
+          <div class="crop-wrap"><canvas id="canvas" aria-label="Selected image — drag to box the line of text to read"></canvas></div>
+        </div>
+        <div style="flex:1 1 260px">
+          <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">
+            Max output length <span id="maxVal" style="font-family:var(--font-mono)">48 tokens</span>
+            <input type="range" id="maxtok" min="8" max="80" value="48" />
+          </label>
+          <div style="margin:.5rem 0">
+            <button id="run" type="button" disabled>Read text</button>
+          </div>
+          <p class="status" id="runStatus" role="status" aria-live="polite"></p>
+          <div class="text-box" id="textOut" aria-live="polite"></div>
+          <button id="copyBtn" class="chip" type="button" hidden>Copy text</button>
+          <div class="readout" id="readout" hidden>
+            <span>backend <b id="rBackend">–</b></span>
+            <span>tokens <b id="rTok">–</b></span>
+            <span>total <b id="rMs">–</b></span>
+            <span>speed <b id="rTps">–</b></span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside — the decode, token by token</h3>
+      <p class="muted">
+        OCR here is <strong>autoregressive generation</strong>, not template matching. The encoder reads
+        the cropped line into patch embeddings once; then the decoder emits the transcription one token
+        at a time, each conditioned on the image <em>and</em> everything decoded so far — which is why
+        TrOCR can fix its own spelling from context. The trace below shows every token as it arrived,
+        with the elapsed time. The first token is the slow one (it includes the image encode); the rest
+        come faster.
+      </p>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Read a line to see the token-by-token trace.</div>
+      <div id="insideWrap" hidden>
+        <div class="token-trace" id="trace"></div>
+        <div class="readout" style="margin-top:.6rem">
+          <span>first token <b id="iFirst">–</b></span>
+          <span>tokens/sec <b id="iTps">–</b></span>
+          <span>characters <b id="iChars">–</b></span>
+        </div>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        Text trapped in an image is invisible to everything that isn't a person looking at it — you
+        can't search it, copy it, translate it, or total it. OCR turns those pixels back into characters,
+        and doing it locally makes it free, private, and offline-capable.
+      </p>
+      <ul>
+        <li><strong>Digitise paper</strong> — pull totals and line items off receipts and invoices client-side, no OCR API and no upload.</li>
+        <li><strong>Capture the physical world</strong> — read a sign, a serial number, a meter, or a label straight from the camera.</li>
+        <li><strong>Accessibility</strong> — voice or magnify text that only exists as an image for low-vision users.</li>
+        <li><strong>Feed a pipeline</strong> — OCR is the front door to translation, extraction, and search; the text it produces is just more text to work with.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Crop a line — a sign or a receipt total — and read it, token by token.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Digitise a whole receipt: read every line into an editable, copyable list.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Live webcam OCR — point your camera at text and read it on the fly.</p></a>
+        <a class="model-card" href="multimodel/"><h3>Multi-model</h3><p class="muted">OCR → translation: read foreign text, then translate it locally.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>The base call is two lines with Transformers.js:</p>
+      <pre><code>import { pipeline } from "@huggingface/transformers";
+
+const reader = await pipeline(
+  "image-to-text",
+  "Xenova/trocr-small-printed",
+); // downloads + caches ~185 MB once
+
+const out = await reader(lineCropURL, { max_new_tokens: 48 });
+// → [{ generated_text: "GRAND TOTAL: $42.99" }]</code></pre>
+      <p class="muted">
+        The important bit is the input: TrOCR expects <strong>one line</strong> of text, so this page
+        crops the region you box before handing it over. For "See inside", it passes a
+        <code>TextStreamer</code> into the same call — the streamer fires once per decoded token, so the
+        page renders the transcription as it forms and records each token's arrival time, all off the
+        main thread in a Web Worker. <em>Note:</em> this SROIE-tuned checkpoint tends to normalise to
+        UPPERCASE — that's the model, not a bug.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/Xenova/trocr-small-printed" target="_blank" rel="noopener">Model card — Xenova/trocr-small-printed (ONNX)</a></li>
+        <li><a href="https://huggingface.co/microsoft/trocr-small-printed" target="_blank" rel="noopener">Original weights — microsoft/trocr-small-printed</a></li>
+        <li><a href="https://arxiv.org/abs/2109.10282" target="_blank" rel="noopener">TrOCR paper (arXiv 2109.10282)</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { OcrEngine, CropCanvas, fileToDataURL, escapeHTML, OCR_CSS } from "./ocr.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = OCR_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new OcrEngine();
+      const crop = new CropCanvas($("canvas"));
+
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        const blob = await (await fetch(el.dataset.src)).blob();
+        crop.setSrc(await fileToDataURL(new File([blob], "sample", { type: blob.type })));
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } });
+      }
+      pickSample($("samples").firstElementChild);
+
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      file.addEventListener("change", async () => { if (file.files[0]) await loadFile(file.files[0]); });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      drop.addEventListener("drop", async (e) => { const f = e.dataTransfer?.files?.[0]; if (f && f.type.startsWith("image/")) await loadFile(f); });
+      async function loadFile(f) { for (const t of $("samples").children) t.classList.remove("active"); crop.setSrc(await fileToDataURL(f)); $("dropText").textContent = f.name; }
+
+      $("resetCrop").addEventListener("click", () => crop.reset());
+
+      const maxtok = $("maxtok");
+      maxtok.addEventListener("input", () => { $("maxVal").textContent = maxtok.value + " tokens"; });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/trocr-small-printed", runtime: "transformers.js", dtype: "q8", sizeMB: 185, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("run").disabled = false; },
+      });
+
+      let lastText = "";
+      $("copyBtn").addEventListener("click", async () => {
+        try { await navigator.clipboard.writeText(lastText); $("copyBtn").textContent = "Copied!"; setTimeout(() => $("copyBtn").textContent = "Copy text", 1200); }
+        catch { $("copyBtn").textContent = "Copy failed"; }
+      });
+
+      $("run").addEventListener("click", read);
+      async function read() {
+        $("runStatus").classList.remove("err", "ok"); $("run").disabled = true;
+        $("runStatus").textContent = "Reading…"; $("textOut").innerHTML = '<span class="cursor">&nbsp;</span>';
+        $("copyBtn").hidden = true;
+        $("trace").replaceChildren(); $("insideEmpty").hidden = true; $("insideWrap").hidden = false;
+        let text = ""; let firstT = null;
+        try {
+          const cropURL = crop.crop();
+          const r = await engine.recognize(cropURL, Number(maxtok.value), (m) => {
+            if (firstT === null) firstT = m.t;
+            text += m.token;
+            $("textOut").innerHTML = escapeHTML(text) + '<span class="cursor">&nbsp;</span>';
+            const tok = document.createElement("span");
+            tok.className = "tok";
+            tok.innerHTML = escapeHTML(m.token) + `<small>${m.t}ms</small>`;
+            $("trace").append(tok);
+          });
+          lastText = r.text;
+          $("textOut").textContent = r.text || "(no text found in the selection)";
+          $("copyBtn").hidden = !r.text;
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rTok").textContent = r.tokens;
+          $("rMs").textContent = r.ms + " ms";
+          const tps = r.tokens > 0 ? (r.tokens / (r.ms / 1000)).toFixed(1) : "–";
+          $("rTps").textContent = tps + " tok/s";
+          $("iFirst").textContent = (firstT ?? r.ms) + " ms";
+          $("iTps").textContent = tps;
+          $("iChars").textContent = r.text.length;
+          $("runStatus").textContent = "Done."; $("runStatus").classList.add("ok");
+        } catch (err) {
+          $("runStatus").textContent = "Reading failed: " + err.message; $("runStatus").classList.add("err");
+          $("textOut").textContent = "";
+        } finally { $("run").disabled = false; }
+      }
+
+      if ("serviceWorker" in navigator) navigator.serviceWorker.register("/web-ai-showcase/sw.js").catch(() => {});
+    </script>
+  </body>
+</html>
