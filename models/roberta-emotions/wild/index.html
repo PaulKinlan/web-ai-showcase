@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Emotion Wild — the emotional arc of a story · Web AI Showcase</title>
+    <meta name="description" content="Paste a story and watch its emotional arc unfold sentence by sentence — a live curve of feeling from opening to ending, drawn entirely in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🌈</text></svg>" />
+    <style>
+      .arc-wrap { overflow-x:auto; margin-top:.6rem; }
+      #arcCanvas { inline-size:100%; min-inline-size:520px; block-size:200px; display:block; }
+      .arc-legend { display:flex; flex-wrap:wrap; gap:1rem; font-size:.76rem; color:var(--muted);
+        font-family:var(--font-mono); margin-top:.4rem; }
+      .arc-legend .swatch { display:inline-block; inline-size:.8rem; block-size:.8rem; border-radius:3px;
+        margin-inline-end:.3rem; vertical-align:-1px; }
+    </style>
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">RoBERTa GoEmotions</a></p>
+
+    <header>
+      <p class="eyebrow">use case · wild</p>
+      <h1>Wild: the emotional arc of a story</h1>
+      <p class="lede">
+        Stories move. Paste one and the model scores each sentence in turn, then plots the arc — a curve of
+        <span style="color:var(--good)">positive</span> and <span style="color:var(--bad)">negative</span>
+        feeling from the first line to the last, with the dominant emotion labelled at every step. Watch dread
+        build, break, and resolve — as a shape.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.6rem 0">
+        <button class="chip" type="button" data-key="dread">a night alone</button>
+        <button class="chip" type="button" data-key="triumph">the comeback</button>
+      </div>
+
+      <label style="display:flex;flex-direction:column;gap:.3rem;font-size:.82rem">
+        Your story
+        <textarea id="text" disabled style="inline-size:100%;min-block-size:150px;resize:vertical">The house was quiet when she got home. Too quiet. She called out, but no one answered. Her heart began to race as she climbed the stairs. Then the lights flew on and everyone shouted "Surprise!" She burst out laughing, tears in her eyes. It was the best birthday she could have imagined.</textarea>
+      </label>
+      <div class="controls-grid"><button id="run" type="button" disabled>Trace the arc</button></div>
+
+      <div class="arc-wrap"><canvas id="arcCanvas" aria-label="Emotional arc of the story"></canvas></div>
+      <div class="arc-legend">
+        <span><span class="swatch" style="background:var(--good)"></span>net positive</span>
+        <span><span class="swatch" style="background:var(--bad)"></span>net negative</span>
+        <span>height = intensity of the dominant emotion</span>
+      </div>
+
+      <div id="steps" style="margin-top:.8rem" aria-live="polite"></div>
+      <div class="readout" id="readout" hidden><span>sentences <b id="rN">–</b></span><span>backend <b id="rBackend">–</b></span><span>total time <b id="rMs">–</b></span></div>
+    </section>
+
+    <p class="muted" style="font-size:.85rem">
+      Because scoring is multi-label, each sentence carries its whole emotional chord, not a single note — the
+      arc traces the strongest one, but hover the steps below to see the runners-up. Plain reportage stays flat;
+      a good story swings.
+    </p>
+
+    <p class="crumbs"><a href="../">← Back to RoBERTa GoEmotions</a> · Next: <a href="../multi-model/">Multi-model →</a></p>
+
+    <script type="module">
+      import { EmotionEngine, splitSentences, escapeHTML, groupOf, colorOf, EMOTION_CSS } from "../emotions.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = EMOTION_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new EmotionEngine();
+      let loaded = false, lastPoints = null, lastLabels = null;
+
+      const SAMPLES = {
+        dread: `The house was quiet when she got home. Too quiet. She called out, but no one answered. Her heart began to race as she climbed the stairs. Then the lights flew on and everyone shouted "Surprise!" She burst out laughing, tears in her eyes. It was the best birthday she could have imagined.`,
+        triumph: `He had trained for two years for this race. At the halfway mark he stumbled and fell hard onto the track. The crowd went silent, and he felt like giving up. But he got to his feet, furious and shaking. Somehow he found a pace he'd never reached before. He crossed the line first, and the stadium erupted.`,
+      };
+      for (const c of document.querySelectorAll(".chip")) c.addEventListener("click", () => { $("text").value = SAMPLES[c.dataset.key]; });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "SamLowe/roberta-base-go_emotions-onnx", runtime: "transformers.js", dtype: "q8", sizeMB: 125, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("text").disabled = false; $("run").disabled = false; loaded = true; },
+      });
+
+      // Signed intensity: + for positive group, − for negative group, 0 for ambiguous/neutral.
+      function signed(top) {
+        const g = groupOf(top.label);
+        if (g === "pos") return top.score;
+        if (g === "neg") return -top.score;
+        return 0;
+      }
+
+      function draw(points, labels) {
+        const cv = $("arcCanvas");
+        const dpr = Math.min(2, self.devicePixelRatio || 1);
+        const w = cv.clientWidth, h = cv.clientHeight;
+        cv.width = w * dpr; cv.height = h * dpr;
+        const ctx = cv.getContext("2d"); ctx.scale(dpr, dpr);
+        ctx.clearRect(0, 0, w, h);
+        const cs = getComputedStyle(document.body);
+        const mid = h / 2, pad = 24;
+        // zero axis
+        ctx.strokeStyle = cs.getPropertyValue("--border") || "#ccc"; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(pad, mid); ctx.lineTo(w - pad, mid); ctx.stroke();
+        if (points.length < 1) return;
+        const n = points.length;
+        const x = (i) => pad + (n === 1 ? (w - 2 * pad) / 2 : (i * (w - 2 * pad)) / (n - 1));
+        const y = (v) => mid - v * (mid - pad);
+        // area + line
+        ctx.beginPath(); ctx.moveTo(x(0), y(points[0]));
+        for (let i = 1; i < n; i++) ctx.lineTo(x(i), y(points[i]));
+        ctx.strokeStyle = cs.getPropertyValue("--accent") || "#4b3aff"; ctx.lineWidth = 2; ctx.stroke();
+        // points
+        for (let i = 0; i < n; i++) {
+          ctx.beginPath(); ctx.fillStyle = colorOf(labels[i]);
+          ctx.arc(x(i), y(points[i]), 4, 0, Math.PI * 2); ctx.fill();
+        }
+      }
+
+      $("run").addEventListener("click", async () => {
+        if (!loaded) return;
+        const sentences = splitSentences($("text").value);
+        if (!sentences.length) { $("runStatus").hidden = false; $("runStatus").textContent = "Paste a story with a few sentences."; return; }
+        $("run").disabled = true; $("runStatus").hidden = false; $("runStatus").classList.remove("err"); $("runStatus").textContent = "Reading the arc…"; $("steps").replaceChildren();
+        try {
+          const r = await engine.classifyBatch(sentences);
+          const points = [], labels = [];
+          const stepEls = sentences.map((s, i) => {
+            const scores = r.results[i]; const top = scores[0];
+            points.push(signed(top)); labels.push(top.label);
+            const runners = scores.slice(1, 3).map((x) => `${escapeHTML(x.label)} ${(x.score * 100).toFixed(0)}%`).join(", ");
+            return `<div class="arc-step" style="border-inline-start-color:${colorOf(top.label)}" title="${escapeHTML(runners)}">
+              <div class="meta" style="color:${colorOf(top.label)}">${i + 1}. ${escapeHTML(top.label)} · ${(top.score * 100).toFixed(0)}% <span style="color:var(--muted)">(then ${escapeHTML(runners)})</span></div>
+              <div class="arc-sentence">${escapeHTML(s)}</div>
+            </div>`;
+          });
+          $("steps").innerHTML = stepEls.join("");
+          lastPoints = points; lastLabels = labels;
+          draw(points, labels);
+          $("rN").textContent = sentences.length; $("rBackend").textContent = r.device.toUpperCase(); $("rMs").textContent = (r.ms / 1000).toFixed(2) + " s";
+          $("readout").hidden = false; $("runStatus").textContent = "Traced."; $("runStatus").classList.add("ok");
+        } catch (err) { $("runStatus").textContent = "Failed: " + err.message; $("runStatus").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+      addEventListener("resize", () => { if (lastPoints) draw(lastPoints, lastLabels); });
+    </script>
+  </body>
+</html>
