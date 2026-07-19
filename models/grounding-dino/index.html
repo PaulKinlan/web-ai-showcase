@@ -1,0 +1,328 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Grounding DINO — ground a sentence to boxes in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run Grounding DINO locally: write a natural-language caption — 'a cat. a remote control. a laptop.' — and it grounds each phrase to boxes in the image. Open-vocabulary phrase grounding, no server, real inference you can see inside."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🦖</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">zero-shot-object-detection · vision + language · WASM · ~205 MB</p>
+      <h1>Grounding DINO — point at things by <em>describing them in a sentence</em></h1>
+      <p class="lede">
+        Grounding DINO is a <strong>phrase-grounding</strong> detector: instead of a fixed label list, you
+        give it a caption — <code>a cat. a remote control. a laptop.</code> — and it grounds each phrase
+        to the regions that match, with a score. It fuses a Swin vision backbone with a BERT text encoder
+        so the words and the image are compared in one model. New description, no retraining, on your
+        device.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/onnx-community/grounding-dino-tiny-ONNX" target="_blank" rel="noopener">onnx-community/grounding-dino-tiny-ONNX</a> (ONNX port of <a href="https://huggingface.co/IDEA-Research/grounding-dino-tiny" target="_blank" rel="noopener">IDEA-Research/grounding-dino-tiny</a>)</td></tr>
+          <tr><th>Task / pipeline</th><td><code>zero-shot-object-detection</code> — phrase grounding</td></tr>
+          <tr><th>Architecture</th><td>Grounding DINO — Swin-Tiny image backbone + BERT text encoder, cross-modality fusion, DINO detection head</td></tr>
+          <tr><th>Prompt</th><td>A caption of phrases separated by periods (lowercased); each phrase is grounded to boxes</td></tr>
+          <tr><th>Quantization</th><td>q8 (8-bit) ONNX</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (runs anywhere; no WebGPU needed)</td></tr>
+          <tr><th>Download</th><td>~205 MB, cached after first load</td></tr>
+          <tr><th>License</th><td>Apache-2.0 (IDEA-Research Grounding DINO)</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers, Canvas, FileReader — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+      <p class="muted" style="font-size:.85rem">
+        Grounding DINO is a sizeable model on the CPU here, so the first detect after loading can take a
+        few seconds — honest progress is shown, and it is genuinely running on your device.
+      </p>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Pick or drop an image, write a caption of phrases (separate them with periods), and hit Detect. Grounding DINO runs once at a low floor; the score slider then filters the boxes live without re-running the model.</p>
+
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image">
+        <span id="dropText">Drop an image here, or click to choose</span>
+        <input type="file" id="file" accept="image/*" hidden />
+      </div>
+      <div class="sample-strip" id="samples" aria-label="Sample images">
+        <img class="sample-thumb active" src="sample-cats.jpg" data-src="sample-cats.jpg" alt="Two cats sleeping on a pink couch" tabindex="0" role="button" />
+        <img class="sample-thumb" src="sample-room.jpg" data-src="sample-room.jpg" alt="A cozy sunlit bedroom with a bookshelf" tabindex="0" role="button" />
+        <img class="sample-thumb" src="sample-river.jpg" data-src="sample-river.jpg" alt="A riverside at golden hour with a swan" tabindex="0" role="button" />
+      </div>
+
+      <label class="query-field" for="queries">
+        Caption / prompt (phrases separated by periods)
+        <textarea id="queries" rows="2">a cat. a pink blanket. a remote control.</textarea>
+      </label>
+      <div class="preset-row" id="presets" aria-label="Prompt presets">
+        <button type="button" class="chip" data-q="a cat. a pink blanket. a remote control.">Cats scene</button>
+        <button type="button" class="chip" data-q="a book. a lamp. a plant. a window.">Room objects</button>
+        <button type="button" class="chip" data-q="a bird. water. a tree.">Riverside</button>
+        <button type="button" class="chip" data-q="something soft. something electronic.">Abstract</button>
+      </div>
+
+      <div style="margin:.6rem 0">
+        <button id="run" type="button" disabled>Detect</button>
+      </div>
+
+      <div class="slider-row">
+        <label for="thresh">Score threshold</label>
+        <input type="range" id="thresh" min="0.1" max="0.6" step="0.01" value="0.3" />
+        <output id="threshOut" for="thresh">0.30</output>
+      </div>
+
+      <div class="canvas-wrap">
+        <canvas id="stage" class="stage-canvas" aria-label="Detection result: image with labelled boxes"></canvas>
+      </div>
+      <div class="count-chips" id="countChips" aria-live="polite"></div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+        <span>phrases <b id="rQ">–</b></span>
+        <span>boxes shown <b id="rN">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside</h3>
+      <p class="muted">
+        Grounding DINO fuses your caption's tokens with image features, then decodes boxes and, for each,
+        a similarity to every phrase — the phrase it matches best becomes its label, and that score is
+        what the threshold filters. Below is the real output: a per-phrase summary (how many regions
+        grounded and the best score), then the raw boxes with their matched phrase and pixel coordinates.
+        This is what the model returned — no post-processing beyond the score filter.
+      </p>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Run detection to see per-phrase scores and the raw boxes.</div>
+      <div id="insideWrap" hidden>
+        <div class="readout">
+          <span>candidates above floor <b id="iTotal">–</b></span>
+          <span>shown at threshold <b id="iShown">–</b></span>
+          <span>phrases grounded <b id="iMatched">–</b></span>
+        </div>
+        <table class="inside-table">
+          <thead><tr><th>phrase</th><th>matches</th><th>best score</th></tr></thead>
+          <tbody id="queryRows"></tbody>
+        </table>
+        <p class="muted" style="font-size:.8rem;margin:.6rem 0 0">Raw boxes — the <code>grounded tokens</code> column is exactly what the model returned (a box can activate several phrase tokens at once), while <code>phrase</code> is the best-matching input phrase used for colouring.</p>
+        <table class="inside-table">
+          <thead><tr><th>#</th><th>phrase</th><th>grounded tokens</th><th>score</th><th>x</th><th>y</th><th>w</th><th>h</th></tr></thead>
+          <tbody id="insideRows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        Because the prompt is language, Grounding DINO detects things a fixed detector never learned — and
+        it reads referring phrases, not just nouns. "a person wearing red", "the empty shelf", "a dog on
+        the left" are all valid prompts. That turns bespoke detection from a training project into a
+        sentence, running client-side with nothing uploaded.
+      </p>
+      <ul>
+        <li><strong>Describe-to-find inventory / inspection</strong> — ground "a forklift", "a missing bolt", or "an empty pallet" by phrase, no per-site model, nothing leaves the device.</li>
+        <li><strong>Grounded captions &amp; alt-text</strong> — tie each phrase of a description to the exact region it refers to, for accessible, verifiable image text.</li>
+        <li><strong>Natural-language visual search</strong> — let users type what to find in their own photos ("my blue mug", "a bike") and box it locally.</li>
+        <li><strong>Open-vocabulary region proposals</strong> — Grounding DINO finds "where"; hand each region to a segmenter or captioner for "what exactly", chaining tiny local models.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Write a caption of phrases, hit detect, and watch Grounding DINO ground each phrase to boxes.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Describe-to-inspect — ground checklist phrases ("a helmet", "an exit sign") and count them, no training.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Ask for referring phrases — "something unusual", "the odd one out" — and see what grounds.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">Grounding DINO grounds a phrase → SlimSAM returns its exact pixel mask.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>Phrase grounding is a one-liner with Transformers.js — the caption's phrases are the argument:</p>
+      <pre><code>import { pipeline } from "@huggingface/transformers";
+
+const detect = await pipeline(
+  "zero-shot-object-detection",
+  "onnx-community/grounding-dino-tiny-ONNX",
+); // downloads + caches ~205 MB once
+
+// Each phrase should be lowercased and end with a period.
+const phrases = ["a cat.", "a remote control.", "a person wearing red."];
+const output = await detect(imageURL, phrases, { threshold: 0.3 });
+// → [{ label: "a cat", score: 0.45, box: { xmin, ymin, xmax, ymax } }, …]
+//   label is the matched phrase; boxes are in image pixel coordinates</code></pre>
+      <p class="muted">
+        This page runs the model once at a low floor threshold inside a Web Worker, caches every box, and
+        filters the cached list as you drag the slider — so the slider is instant and never re-runs
+        inference. Changing the caption re-runs the model (new text embeddings). The canvas is drawn at the
+        image's natural resolution and scaled by CSS, so boxes stay pixel-accurate.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/onnx-community/grounding-dino-tiny-ONNX" target="_blank" rel="noopener">Model card — onnx-community/grounding-dino-tiny-ONNX</a></li>
+        <li><a href="https://huggingface.co/docs/transformers/model_doc/grounding-dino" target="_blank" rel="noopener">Grounding DINO — model documentation</a></li>
+        <li><a href="https://arxiv.org/abs/2303.05499" target="_blank" rel="noopener">Paper — Grounding DINO: Marrying DINO with Grounded Pre-Training (Liu et al., 2023)</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import {
+        GroundingEngine, fileToDataURL, decodeImage, parseQueries, drawDetections,
+        summariseByQuery, colorForQuery, escapeHTML, GDINO_CSS,
+      } from "./grounding-dino.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = GDINO_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new GroundingEngine();
+      let currentImageURL = null;
+      let currentImg = null;      // decoded HTMLImageElement for drawing
+      let allDetections = [];     // everything above the floor, cached
+      let lastQueries = [];
+      let lastMs = 0;
+
+      async function useURL(url) {
+        currentImageURL = url;
+        currentImg = await decodeImage(url);
+        allDetections = [];
+        $("insideWrap").hidden = true;
+        $("insideEmpty").hidden = false;
+        $("countChips").replaceChildren();
+        $("readout").hidden = true;
+        const c = $("stage");
+        c.width = currentImg.naturalWidth; c.height = currentImg.naturalHeight;
+        c.getContext("2d").drawImage(currentImg, 0, 0);
+      }
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        const blob = await (await fetch(el.dataset.src)).blob();
+        await useURL(await fileToDataURL(new File([blob], "sample", { type: blob.type })));
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => {
+          if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); }
+        });
+      }
+      pickSample($("samples").firstElementChild);
+
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) {
+        for (const t of $("samples").children) t.classList.remove("active");
+        await useURL(await fileToDataURL(f));
+        $("dropText").textContent = f.name;
+      }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
+
+      // Presets fill the caption field.
+      for (const b of $("presets").children) {
+        b.addEventListener("click", () => { $("queries").value = b.dataset.q; });
+      }
+
+      // --- load model (shared auto-init architecture) ---
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/grounding-dino-tiny-ONNX", runtime: "transformers.js", dtype: "q8", sizeMB: 205, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: () => { $("run").disabled = false; if (new URLSearchParams(location.search).has("auto")) $("run").click(); },
+      });
+
+      // --- detect ---
+      $("run").addEventListener("click", async () => {
+        if (!currentImageURL) { $("status").textContent = "Pick an image first."; return; }
+        const queries = parseQueries($("queries").value);
+        if (queries.length < 1) { $("status").textContent = "Write at least one phrase."; $("status").classList.add("err"); return; }
+        $("run").disabled = true; $("status").classList.remove("err"); $("status").textContent = "Detecting… (Grounding DINO is large; first run takes a few seconds)";
+        try {
+          const r = await engine.detect(currentImageURL, queries);
+          allDetections = r.detections;
+          lastQueries = r.queries;
+          lastMs = r.ms;
+          $("rBackend").textContent = r.device.toUpperCase();
+          render();
+          $("status").textContent = `Grounded ${allDetections.length} candidate box(es) across ${queries.length} phrase${queries.length === 1 ? "" : "s"}.`;
+          $("status").classList.add("ok");
+        } catch (err) {
+          $("status").textContent = "Detection failed: " + err.message;
+          $("status").classList.add("err");
+        } finally { $("run").disabled = false; }
+      });
+
+      const thresh = $("thresh");
+      thresh.addEventListener("input", () => { $("threshOut").textContent = (+thresh.value).toFixed(2); if (allDetections.length) render(); });
+
+      function render() {
+        const t = +thresh.value;
+        const shown = allDetections.filter((d) => d.score >= t);
+        drawDetections($("stage"), currentImg, shown);
+        $("countChips").replaceChildren(...summariseByQuery(lastQueries, shown).filter((s) => s.count).map(({ query, count }) => {
+          const el = document.createElement("span");
+          el.className = "count-chip";
+          el.innerHTML = `<span class="swatch" style="background:${colorForQuery(query)}"></span>${escapeHTML(query)} <b>×${count}</b>`;
+          return el;
+        }));
+        $("readout").hidden = false;
+        $("rMs").textContent = lastMs + " ms";
+        $("rQ").textContent = lastQueries.length;
+        $("rN").textContent = shown.length;
+        renderInside(shown);
+      }
+
+      function renderInside(shown) {
+        $("insideEmpty").hidden = true;
+        $("insideWrap").hidden = false;
+        $("iTotal").textContent = allDetections.length;
+        $("iShown").textContent = shown.length;
+        const summary = summariseByQuery(lastQueries, shown);
+        $("iMatched").textContent = `${summary.filter((s) => s.count).length}/${lastQueries.length}`;
+        $("queryRows").replaceChildren(...summary.map((s) => {
+          const tr = document.createElement("tr");
+          tr.innerHTML = `<td>${escapeHTML(s.query)}</td><td>${s.count}</td><td>${s.count ? (s.top * 100).toFixed(1) + "%" : "–"}</td>`;
+          return tr;
+        }));
+        const rows = [...shown].sort((a, b) => b.score - a.score).map((d, i) => {
+          const { xmin, ymin, xmax, ymax } = d.box;
+          const tr = document.createElement("tr");
+          tr.innerHTML = `<td>${i + 1}</td><td>${escapeHTML(d.label)}</td><td>${escapeHTML(d.rawLabel || d.label)}</td><td>${(d.score * 100).toFixed(1)}%</td>
+            <td>${Math.round(xmin)}</td><td>${Math.round(ymin)}</td>
+            <td>${Math.round(xmax - xmin)}</td><td>${Math.round(ymax - ymin)}</td>`;
+          return tr;
+        });
+        $("insideRows").replaceChildren(...rows);
+      }
+    </script>
+  </body>
+</html>
