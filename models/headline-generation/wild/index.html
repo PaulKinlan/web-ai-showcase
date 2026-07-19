@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Headline generation — Wild: clickbait vs. neutral · Web AI Showcase</title>
+    <meta name="description" content="Same article, two temperatures: watch a low-temperature 'neutral' headline and a high-temperature 'wild' one diverge, generated locally in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>📰</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Headline generation</a></p>
+
+    <header>
+      <p class="eyebrow">Wild · text2text-generation · WASM</p>
+      <h1>Clickbait vs. neutral — the temperature dial</h1>
+      <p class="lede">
+        One article, two personalities. On the left, <strong>low temperature</strong> keeps the decoder on the
+        safe, likely path — a measured, neutral headline. On the right, <strong>high temperature</strong> lets
+        it take chancier tokens — punchier, weirder, more clickbait-shaped. Nothing about the model changes;
+        only how boldly it picks its next word. Generate both from the same text and watch them pull apart.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Set the dial</h3>
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+
+      <div class="sample-grid" id="samples" role="group" aria-label="Load an example article"></div>
+
+      <label class="hg-fields hg-io">
+        Article text
+        <textarea id="article" rows="6" disabled></textarea>
+      </label>
+
+      <div class="controls-grid">
+        <label>Neutral temperature
+          <input id="tLow" type="range" min="0.4" max="0.9" step="0.1" value="0.6" disabled />
+          <span class="val" id="tLowV">0.6</span>
+        </label>
+        <label>Wild temperature
+          <input id="tHigh" type="range" min="1.1" max="1.6" step="0.1" value="1.4" disabled />
+          <span class="val" id="tHighV">1.4</span>
+        </label>
+      </div>
+
+      <div style="margin:.6rem 0;display:flex;gap:.4rem;flex-wrap:wrap">
+        <button id="run" type="button" disabled>Generate both</button>
+      </div>
+
+      <div class="two-col" id="cols" hidden>
+        <div>
+          <p class="muted" style="font-size:.82rem;margin:0 0 .3rem">🧊 Neutral (low temp)</p>
+          <div class="cand-list" id="neutral"></div>
+        </div>
+        <div>
+          <p class="muted" style="font-size:.82rem;margin:0 0 .3rem">🌶️ Wild (high temp)</p>
+          <div class="cand-list" id="wild"></div>
+        </div>
+      </div>
+
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+      </div>
+    </section>
+
+    <section aria-labelledby="next-h">
+      <h2 id="next-h">Next</h2>
+      <div class="model-grid">
+        <a class="model-card" href="../multi-model/"><h3>Multi-model →</h3><p class="muted">Summarise a long article, then headline the summary.</p></a>
+        <a class="model-card" href="../practical/"><h3>← Practical</h3><p class="muted">Generate a batch of candidates to pick from.</p></a>
+        <a class="model-card" href="../"><h3>← Model page</h3><p class="muted">Sampling controls, tokens, and the decode timeline.</p></a>
+      </div>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+    </footer>
+
+    <script type="module">
+      import { HeadlineEngine, SAMPLES, HEADLINE_CSS, renderCandidates } from "../headline.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = HEADLINE_CSS + `.two-col{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:1rem;margin-top:.6rem}`;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new HeadlineEngine();
+      let loaded = false;
+
+      SAMPLES.forEach((s, i) => {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "sample-btn";
+        b.textContent = s.label;
+        b.addEventListener("click", () => { $("article").value = s.text; });
+        $("samples").append(b);
+        if (i === 0) $("article").value = s.text;
+      });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "ldenoue/Title_Generation_T5Small_Model", runtime: "transformers.js", dtype: "q8", sizeMB: 80, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { loaded = true; for (const id of ["article", "run", "tLow", "tHigh"]) $(id).disabled = false; run(); },
+      });
+
+      $("tLow").addEventListener("input", () => { $("tLowV").textContent = Number($("tLow").value).toFixed(1); });
+      $("tHigh").addEventListener("input", () => { $("tHighV").textContent = Number($("tHigh").value).toFixed(1); });
+      $("run").addEventListener("click", run);
+
+      async function run() {
+        if (!loaded) return;
+        const article = $("article").value.trim();
+        if (article.length < 20) {
+          $("status").hidden = false;
+          $("status").className = "status err";
+          $("status").textContent = "Paste a longer article (at least a sentence or two).";
+          return;
+        }
+        $("status").hidden = false;
+        $("status").className = "status";
+        $("status").textContent = "Generating neutral and wild headlines…";
+        $("run").disabled = true;
+        try {
+          const t0 = performance.now();
+          const [lo, hi] = await Promise.all([
+            engine.run(article, { maxNewTokens: 24, noRepeat: 2, numCandidates: 3, temperature: +$("tLow").value, topK: 40 }),
+            engine.run(article, { maxNewTokens: 24, noRepeat: 2, numCandidates: 3, temperature: +$("tHigh").value, topK: 80 }),
+          ]);
+          renderCandidates($("neutral"), lo.candidates);
+          renderCandidates($("wild"), hi.candidates);
+          $("cols").hidden = false;
+          $("readout").hidden = false;
+          $("rBackend").textContent = lo.device.toUpperCase();
+          $("rMs").textContent = ((performance.now() - t0) / 1000).toFixed(2) + " s";
+          $("status").className = "status ok";
+          $("status").textContent = "Done — compare the two columns.";
+        } catch (err) {
+          $("status").className = "status err";
+          $("status").textContent = "Generation failed: " + err.message;
+        } finally {
+          $("run").disabled = false;
+        }
+      }
+    </script>
+  </body>
+</html>

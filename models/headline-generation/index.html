@@ -1,0 +1,365 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Headline generation — write catchy titles from an article, in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Paste an article and a T5 title model writes a headline for it — one best beam-search line, or a spread of sampled candidates to pick from. Runs locally in your browser, no server."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>📰</text></svg>" />
+    <style>
+      /* The HF model id (ldenoue/Title_Generation_T5Small_Model) is a long unbreakable token; let the
+         at-a-glance cells wrap it so the table never forces horizontal overflow on narrow mobile
+         (css-layout: min-inline-size:0 + overflow-wrap on long content). */
+      .inside-table td, .inside-table th { overflow-wrap: anywhere; word-break: break-word; }
+      .inside-table td a { overflow-wrap: anywhere; }
+      .model-loader .loader-detail { overflow-wrap: anywhere; }
+    </style>
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">title generation (text2text-generation) · text · WASM · ~80 MB</p>
+      <h1>Headline generation — turn an article into a catchy title</h1>
+      <p class="lede">
+        Give it a paragraph or a whole article and this model writes a <strong>headline</strong> for it —
+        not a summary of every point, a single short line meant to make you click. Because writing a title is
+        <em>generation</em>, there is no one right answer: ask for the one best line and you get beam search;
+        turn on <strong>sampling</strong> and the same model on the same article proposes a whole set of
+        different candidate headlines to choose from. Nothing leaves your device.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/ldenoue/Title_Generation_T5Small_Model" target="_blank" rel="noopener">ldenoue/Title_Generation_T5Small_Model</a></td></tr>
+          <tr><th>Task / pipeline</th><td><code>text2text-generation</code> (seq2seq) — article in, headline out</td></tr>
+          <tr><th>Input convention</th><td>the article text, prepended with T5's <code>summarize:</code> task prefix (this fine-tune's training format)</td></tr>
+          <tr><th>Architecture</th><td>T5 (encoder–decoder) fine-tuned on the 190k Medium-articles title dataset</td></tr>
+          <tr><th>Quantization</th><td>q8 (8-bit) ONNX</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (runs anywhere; no WebGPU needed)</td></tr>
+          <tr><th>Download</th><td>~80 MB (quantized encoder + merged decoder), cached after first load</td></tr>
+          <tr><th>License</th><td>MIT</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+      <p class="hg-note" style="margin-top:.6rem">
+        This is <strong>title generation</strong>, a distinct text-to-text job from summarisation: it emits one
+        short catchy line, not a shrunk-down version of the text. It's also distinct from the instruction-tuned
+        <a href="/web-ai-showcase/models/flan-t5-instruct/">FLAN-T5</a> and the prefix-driven
+        <a href="/web-ai-showcase/models/t5-base-text2text/">T5-base</a> demos.
+      </p>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Paste an article or a paragraph. Pick <strong>Best</strong> for one beam-search headline, or
+        <strong>Candidates</strong> to sample several different options with the temperature / top-k controls.</p>
+
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <div class="sample-grid" id="samples" role="group" aria-label="Load an example article"></div>
+
+      <label class="hg-fields hg-io">
+        Article text
+        <textarea id="article" rows="7" disabled></textarea>
+      </label>
+
+      <div class="mode-toggle" role="group" aria-label="Generation mode">
+        <button type="button" class="mode-btn" id="modeBest" aria-pressed="true" disabled>Best headline (beam)</button>
+        <button type="button" class="mode-btn" id="modeCand" aria-pressed="false" disabled>Sampled candidates</button>
+      </div>
+
+      <div class="controls-grid" id="sampleControls" hidden>
+        <label>Candidates
+          <input id="nCand" type="range" min="2" max="6" step="1" value="4" />
+          <span class="val" id="nCandV">4</span>
+        </label>
+        <label>Temperature <span class="hg-note">(higher = wilder)</span>
+          <input id="temp" type="range" min="0.5" max="1.5" step="0.1" value="1.0" />
+          <span class="val" id="tempV">1.0</span>
+        </label>
+        <label>Top-k
+          <input id="topk" type="range" min="10" max="100" step="5" value="50" />
+          <span class="val" id="topkV">50</span>
+        </label>
+      </div>
+      <div class="controls-grid">
+        <label>Max headline length (tokens)
+          <input id="maxTok" type="range" min="8" max="48" step="2" value="24" disabled />
+          <span class="val" id="maxTokV">24</span>
+        </label>
+      </div>
+
+      <div style="margin:.5rem 0;display:flex;gap:.4rem;flex-wrap:wrap">
+        <button id="run" type="button" disabled>Write headline</button>
+      </div>
+
+      <p class="muted" style="font-size:.82rem;margin:.6rem 0 .2rem">Best headline</p>
+      <div class="hg-best" id="best" aria-live="polite"></div>
+
+      <div id="candWrap" hidden>
+        <p class="muted" style="font-size:.82rem;margin:.8rem 0 .2rem">Sampled candidates — same model, same article, different draws</p>
+        <div class="cand-list" id="cands" aria-live="polite"></div>
+      </div>
+
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>total latency <b id="rMs">–</b></span>
+        <span>input tokens <b id="rIn">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside — the fed string, the tokens, and the decode</h3>
+      <p class="muted">
+        The model never sees your article as words — it sees the exact string below (its <code>summarize:</code>
+        prefix highlighted) split into SentencePiece sub-word tokens. The best headline is then decoded one token
+        at a time; the timeline shows how long each output token took. Sampling doesn't change the input — it
+        changes which token the decoder <em>picks</em> at each step, which is why the candidates above diverge.
+      </p>
+      <p class="muted" style="font-size:.82rem;margin:.6rem 0 .2rem">Exact string fed to the model (prefix highlighted):</p>
+      <div class="fed-input" id="fedInput" aria-live="polite">–</div>
+
+      <p class="muted" style="font-size:.82rem;margin:.8rem 0 .2rem">Input tokens <span id="tokCount"></span></p>
+      <div class="tok-wrap" id="tokens"></div>
+
+      <p class="muted" style="font-size:.82rem;margin:.8rem 0 .2rem">Best-headline decode timeline (ms per output token)</p>
+      <canvas id="timeline" class="timeline" aria-label="Bar chart of the time taken to decode each token of the best headline"></canvas>
+
+      <div class="stat-row" id="stats" hidden>
+        <div class="stat"><div class="k">Best (beam)</div><div class="v" id="sBest">–</div></div>
+        <div class="stat"><div class="k">Output tokens</div><div class="v" id="sTok">–</div></div>
+        <div class="stat"><div class="k">Tok/s</div><div class="v" id="sTps">–</div></div>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        Every article, product, email and video needs a title, and a good one is the difference between being
+        read and being scrolled past. A title model turns that from a blank-page problem into a pick-from-a-list
+        problem — generate a handful of options in a tab, on-device, for free, and choose. At ~80 MB it runs
+        entirely in the browser, so a CMS, an email tool, or a note-taking app can offer headline suggestions with
+        no server, no per-call cost, and nothing about the draft ever leaving the writer's machine.
+      </p>
+      <ul>
+        <li><strong>Editorial CMS</strong> — suggest headline options as an author finishes a draft.</li>
+        <li><strong>A/B copy</strong> — generate several candidates and test which one earns more clicks.</li>
+        <li><strong>Email &amp; push</strong> — draft subject lines from the body, privately, at zero marginal cost.</li>
+        <li><strong>Feeds &amp; digests</strong> — auto-title user-generated posts or scraped articles for a listing.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">One article in, one headline out — the fundamental article→title job.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">A/B headline generator: sample a batch of candidates a copywriter can choose between.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Clickbait vs. neutral: contrast low- and high-temperature headlines from the same article.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">Summarise a long article first, then headline the summary — a two-model pipeline.</p></a>
+      </div>
+      <p class="muted" style="font-size:.85rem;margin-top:.6rem">Pairs naturally with the
+        <a href="/web-ai-showcase/models/distilbart-summarization/">DistilBART summariser</a> for the multi-model
+        summarise-then-title pipeline.</p>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>It's an ordinary <code>text2text-generation</code> pipeline; the only trick is the training prefix and the
+        choice of decoding strategy:</p>
+      <pre><code>import { pipeline } from "@huggingface/transformers";
+
+const generate = await pipeline(
+  "text2text-generation",
+  "ldenoue/Title_Generation_T5Small_Model",
+  { device: "wasm", dtype: "q8" },
+);
+
+const input = "summarize: " + article;            // this fine-tune's input convention
+
+// One "best" headline — beam search, deterministic:
+const [best] = await generate(input, { max_new_tokens: 24, num_beams: 4, no_repeat_ngram_size: 2 });
+
+// A spread of candidates — sampling, different every call:
+const [draw] = await generate(input, { max_new_tokens: 24, do_sample: true, temperature: 1.0, top_k: 50 });</code></pre>
+      <p class="muted">
+        All inference runs in a Web Worker so generating a batch of candidates never janks the page. The best
+        headline is streamed token-by-token via a <code>TextStreamer</code> for the decode timeline.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/ldenoue/Title_Generation_T5Small_Model" target="_blank" rel="noopener">Model card — ldenoue/Title_Generation_T5Small_Model (ONNX)</a></li>
+        <li><a href="https://huggingface.co/fabiochiu/t5-base-medium-title-generation" target="_blank" rel="noopener">Lineage — fabiochiu/t5-base-medium-title-generation (190k Medium articles)</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/api/generation/configuration_utils" target="_blank" rel="noopener">Transformers.js — generation config (beams, sampling, temperature, top-k)</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import {
+        HeadlineEngine,
+        SAMPLES,
+        HEADLINE_CSS,
+        renderCandidates,
+        renderTokens,
+        drawTimeline,
+        escapeHTML,
+      } from "./headline.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = HEADLINE_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new HeadlineEngine();
+      let loaded = false;
+      let mode = "best";
+      let lastIntervals = [];
+
+      // Sample chips.
+      SAMPLES.forEach((s, i) => {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "sample-btn";
+        b.textContent = s.label;
+        b.addEventListener("click", () => {
+          $("article").value = s.text;
+          updateFed();
+        });
+        $("samples").append(b);
+        if (i === 0) $("article").value = s.text;
+      });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: {
+          modelId: "ldenoue/Title_Generation_T5Small_Model",
+          runtime: "transformers.js",
+          dtype: "q8",
+          sizeMB: 80,
+          requiresWebGPU: false,
+        },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => {
+          loaded = true;
+          for (const id of ["article", "run", "maxTok", "modeBest", "modeCand", "nCand", "temp", "topk"]) {
+            const el = $(id);
+            if (el) el.disabled = false;
+          }
+          updateFed();
+          run();
+        },
+      });
+
+      // Live value labels for the sliders.
+      const bindVal = (slider, out, fmt = (v) => v) => {
+        const el = $(slider), o = $(out);
+        el.addEventListener("input", () => { o.textContent = fmt(el.value); });
+      };
+      bindVal("nCand", "nCandV");
+      bindVal("temp", "tempV", (v) => Number(v).toFixed(1));
+      bindVal("topk", "topkV");
+      bindVal("maxTok", "maxTokV");
+
+      // Mode toggle.
+      function setMode(m) {
+        mode = m;
+        $("modeBest").setAttribute("aria-pressed", String(m === "best"));
+        $("modeCand").setAttribute("aria-pressed", String(m === "candidates"));
+        $("sampleControls").hidden = m !== "candidates";
+        $("candWrap").hidden = m !== "candidates";
+      }
+      $("modeBest").addEventListener("click", () => setMode("best"));
+      $("modeCand").addEventListener("click", () => setMode("candidates"));
+
+      // Keep the "fed string" preview live as the user types.
+      function updateFed() {
+        const art = $("article").value.trim();
+        $("fedInput").innerHTML = `<span class="prefix">summarize: </span>${escapeHTML(art)}`;
+      }
+      let fedT;
+      $("article").addEventListener("input", () => {
+        clearTimeout(fedT);
+        fedT = setTimeout(updateFed, 120);
+      });
+
+      $("run").addEventListener("click", run);
+
+      globalThis.addEventListener("resize", () => {
+        if (lastIntervals.length) drawTimeline($("timeline"), lastIntervals);
+      });
+
+      async function run() {
+        if (!loaded) return;
+        const article = $("article").value.trim();
+        if (article.length < 20) {
+          $("runStatus").hidden = false;
+          $("runStatus").textContent = "Paste a longer article (at least a sentence or two).";
+          $("runStatus").className = "status err";
+          return;
+        }
+        updateFed();
+        $("runStatus").hidden = false;
+        $("runStatus").className = "status";
+        $("runStatus").textContent = mode === "candidates"
+          ? "Writing the best headline, then sampling candidates…"
+          : "Writing the best headline…";
+        $("run").disabled = true;
+        $("best").textContent = "";
+        if (mode === "candidates") $("cands").replaceChildren();
+        try {
+          const opts = {
+            maxNewTokens: +$("maxTok").value,
+            noRepeat: 2,
+            numCandidates: mode === "candidates" ? +$("nCand").value : 0,
+            temperature: +$("temp").value,
+            topK: +$("topk").value,
+          };
+          const r = await engine.run(article, opts, (partial) => { $("best").textContent = partial; });
+          $("best").textContent = r.best || "(empty headline)";
+          renderTokens($("tokens"), r.inTokenStrings);
+          $("tokCount").textContent = `(${r.inTokens})`;
+          lastIntervals = r.intervals || [];
+          drawTimeline($("timeline"), lastIntervals);
+          if (mode === "candidates") {
+            renderCandidates($("cands"), r.candidates);
+            $("candWrap").hidden = false;
+          }
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = (r.ms / 1000).toFixed(2) + " s";
+          $("rIn").textContent = r.inTokens;
+          $("stats").hidden = false;
+          $("sBest").textContent = r.bestMs + " ms";
+          $("sTok").textContent = r.bestTokens;
+          $("sTps").textContent = r.bestMs > 0 ? (r.bestTokens / (r.bestMs / 1000)).toFixed(1) : "–";
+          $("runStatus").textContent = "Done.";
+          $("runStatus").className = "status ok";
+        } catch (err) {
+          $("runStatus").textContent = "Generation failed: " + err.message;
+          $("runStatus").className = "status err";
+        } finally {
+          $("run").disabled = false;
+        }
+      }
+    </script>
+  </body>
+</html>

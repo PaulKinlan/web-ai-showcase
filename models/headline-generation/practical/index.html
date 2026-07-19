@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Headline generation — Practical: an A/B headline generator · Web AI Showcase</title>
+    <meta name="description" content="Generate a batch of candidate headlines from one article and pick the best — a copywriter's A/B tool, running locally in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>📰</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Headline generation</a></p>
+
+    <header>
+      <p class="eyebrow">Practical · text2text-generation · WASM</p>
+      <h1>An A/B headline generator</h1>
+      <p class="lede">
+        A real workflow: paste your draft, generate a batch of candidate headlines, then pick the one you'd
+        ship. Because titles come from <strong>sampling</strong>, every candidate is different — this is the
+        blank-page-to-shortlist tool a copywriter or editor actually wants. Click a candidate to select it and
+        copy it. Everything runs on your device, at no per-call cost.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Generate candidates</h3>
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+
+      <div class="sample-grid" id="samples" role="group" aria-label="Load an example article"></div>
+
+      <label class="hg-fields hg-io">
+        Your draft / article
+        <textarea id="article" rows="7" disabled></textarea>
+      </label>
+
+      <div class="controls-grid">
+        <label>How many candidates
+          <input id="nCand" type="range" min="3" max="6" step="1" value="5" disabled />
+          <span class="val" id="nCandV">5</span>
+        </label>
+        <label>Variety (temperature)
+          <input id="temp" type="range" min="0.7" max="1.4" step="0.1" value="1.1" disabled />
+          <span class="val" id="tempV">1.1</span>
+        </label>
+      </div>
+
+      <div style="margin:.6rem 0;display:flex;gap:.4rem;flex-wrap:wrap">
+        <button id="run" type="button" disabled>Generate candidates</button>
+      </div>
+
+      <p class="muted" style="font-size:.82rem;margin:.6rem 0 .2rem">Best (beam) — the safe default</p>
+      <div class="hg-best" id="best" aria-live="polite"></div>
+
+      <p class="muted" style="font-size:.82rem;margin:.8rem 0 .2rem">Candidates — click one to select &amp; copy</p>
+      <div class="cand-list" id="cands" role="listbox" aria-label="Candidate headlines"></div>
+      <p class="status ok" id="copied" role="status" aria-live="polite" hidden></p>
+
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+        <span>candidates <b id="rN">–</b></span>
+      </div>
+    </section>
+
+    <section aria-labelledby="next-h">
+      <h2 id="next-h">Next</h2>
+      <div class="model-grid">
+        <a class="model-card" href="../wild/"><h3>Wild →</h3><p class="muted">Clickbait vs. neutral from the same article.</p></a>
+        <a class="model-card" href="../multi-model/"><h3>Multi-model →</h3><p class="muted">Summarise a long article, then headline the summary.</p></a>
+        <a class="model-card" href="../basics/"><h3>← Basics</h3><p class="muted">One article, one headline.</p></a>
+      </div>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+    </footer>
+
+    <script type="module">
+      import { HeadlineEngine, SAMPLES, HEADLINE_CSS, escapeHTML } from "../headline.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = HEADLINE_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new HeadlineEngine();
+      let loaded = false;
+
+      SAMPLES.forEach((s, i) => {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "sample-btn";
+        b.textContent = s.label;
+        b.addEventListener("click", () => { $("article").value = s.text; });
+        $("samples").append(b);
+        if (i === 0) $("article").value = s.text;
+      });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "ldenoue/Title_Generation_T5Small_Model", runtime: "transformers.js", dtype: "q8", sizeMB: 80, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => {
+          loaded = true;
+          for (const id of ["article", "run", "nCand", "temp"]) $(id).disabled = false;
+          run();
+        },
+      });
+
+      $("nCand").addEventListener("input", () => { $("nCandV").textContent = $("nCand").value; });
+      $("temp").addEventListener("input", () => { $("tempV").textContent = Number($("temp").value).toFixed(1); });
+      $("run").addEventListener("click", run);
+
+      async function selectCandidate(text, row) {
+        for (const el of $("cands").querySelectorAll(".cand-row")) el.setAttribute("aria-selected", "false");
+        row.setAttribute("aria-selected", "true");
+        try {
+          await navigator.clipboard.writeText(text);
+          $("copied").hidden = false;
+          $("copied").textContent = "Copied: " + text;
+        } catch {
+          $("copied").hidden = false;
+          $("copied").textContent = "Selected: " + text + " (clipboard blocked — select the text to copy)";
+        }
+      }
+
+      function renderPickable(container, candidates) {
+        const seen = new Map();
+        for (const c of candidates) {
+          const k = c.text.toLowerCase();
+          if (seen.has(k)) seen.get(k).n++;
+          else seen.set(k, { ...c, n: 1 });
+        }
+        container.replaceChildren(...[...seen.values()].map((c, i) => {
+          const row = document.createElement("div");
+          row.className = "cand-row";
+          row.setAttribute("role", "option");
+          row.setAttribute("aria-selected", "false");
+          row.tabIndex = 0;
+          row.style.cursor = "pointer";
+          row.innerHTML = `<span class="cand-i">${i + 1}</span>` +
+            `<span class="cand-text">${escapeHTML(c.text) || "<em>(empty draw)</em>"}</span>` +
+            `<span class="cand-meta">${c.tokens} tok${c.n > 1 ? ` · ×${c.n}` : ""}</span>`;
+          const pick = () => selectCandidate(c.text, row);
+          row.addEventListener("click", pick);
+          row.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(); } });
+          return row;
+        }));
+      }
+
+      async function run() {
+        if (!loaded) return;
+        const article = $("article").value.trim();
+        if (article.length < 20) {
+          $("status").hidden = false;
+          $("status").className = "status err";
+          $("status").textContent = "Paste a longer draft (at least a sentence or two).";
+          return;
+        }
+        $("status").hidden = false;
+        $("status").className = "status";
+        $("status").textContent = "Generating candidate headlines…";
+        $("copied").hidden = true;
+        $("run").disabled = true;
+        $("best").textContent = "";
+        $("cands").replaceChildren();
+        try {
+          const r = await engine.run(article, {
+            maxNewTokens: 24,
+            noRepeat: 2,
+            numCandidates: +$("nCand").value,
+            temperature: +$("temp").value,
+            topK: 50,
+          }, (p) => { $("best").textContent = p; });
+          $("best").textContent = r.best || "(empty headline)";
+          renderPickable($("cands"), r.candidates);
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = (r.ms / 1000).toFixed(2) + " s";
+          $("rN").textContent = r.candidates.length;
+          $("status").className = "status ok";
+          $("status").textContent = "Done — pick a candidate.";
+        } catch (err) {
+          $("status").className = "status err";
+          $("status").textContent = "Generation failed: " + err.message;
+        } finally {
+          $("run").disabled = false;
+        }
+      }
+    </script>
+  </body>
+</html>
