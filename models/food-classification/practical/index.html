@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Food-101 Practical — menu &amp; nutrition tagger · Web AI Showcase</title>
+    <meta name="description" content="Classify a meal photo in the browser and attach an estimated calorie and macro card — a client-side food-diary / menu-tagging pipeline." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🍽️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Food-101</a></p>
+
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Practical: a menu &amp; nutrition tagger</h1>
+      <p class="lede">
+        The shape of a real food-diary feature. Drop a batch of meal photos; the model names each dish,
+        and the page attaches an estimated <strong>calorie &amp; macro card</strong> from a small reference
+        table — a "snap and log" flow where every pixel stays on your device and the user only confirms.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+
+      <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Add meal photos to the batch">
+        <span id="dropText">Drop several meal photos here, or click to add. The three samples are pre-loaded.</span>
+        <input type="file" id="file" accept="image/*" multiple hidden />
+      </div>
+      <div class="field-row" style="margin-top:.6rem">
+        <button id="run" type="button" disabled>Tag &amp; estimate the batch</button>
+        <p class="status" id="runStatus" role="status" aria-live="polite" style="margin:0"></p>
+      </div>
+      <div class="readout" id="totals" hidden><span>meals <b id="tCount">–</b></span><span>est. total <b id="tKcal">–</b></span></div>
+
+      <div id="grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:.8rem;margin-top:.8rem"></div>
+      <p class="muted" style="font-size:.8rem;margin-top:.6rem">
+        The dish name is real model output. The calorie/macro figures are rough per-serving reference
+        estimates from a small built-in table (not from the model, and not medical advice) — in a shipping
+        app you'd swap the table for a proper nutrition database keyed on the predicted dish.
+      </p>
+    </section>
+
+    <p class="crumbs"><a href="../">← Back to Food-101</a> · Next: <a href="../wild/">Wild →</a></p>
+
+    <style>
+      .tile { border:1px solid var(--border); border-radius:8px; overflow:hidden; background:var(--bg-raised); min-inline-size:0; }
+      .tile img { inline-size:100%; block-size:130px; object-fit:cover; display:block; }
+      .tile .body { padding:.5rem .6rem; }
+      .tile .dish { font-weight:600; font-size:.9rem; overflow-wrap:anywhere; }
+      .tile .conf { font-family:var(--font-mono); font-size:.72rem; color:var(--muted); }
+      .macros { display:flex; flex-wrap:wrap; gap:.3rem; margin-top:.4rem; font-family:var(--font-mono); font-size:.7rem; }
+      .macros span { background:var(--bg-secondary); border:1px solid var(--border); border-radius:999px; padding:.05rem .45rem; }
+      .kcal { color:var(--accent); font-weight:600; }
+    </style>
+
+    <script type="module">
+      import { FoodEngine, fileToDataURL, prettyDish, escapeHTML, FOOD_CSS } from "../food.js";
+      import { NUTRITION } from "./nutrition.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = FOOD_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new FoodEngine();
+
+      // Each item: { url, name, dish, prob, nutrition|null }
+      const items = [];
+
+      async function addSamples() {
+        for (const name of ["sample-pizza.jpg", "sample-sushi.jpg", "sample-salad.jpg"]) {
+          const blob = await (await fetch("../" + name)).blob();
+          items.push({ url: await fileToDataURL(new File([blob], name, { type: blob.type })), name, dish: null });
+        }
+        renderGrid();
+      }
+      addSamples();
+
+      const file = $("file"), drop = $("drop");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function addFiles(list) {
+        for (const f of list) if (f.type.startsWith("image/")) items.push({ url: await fileToDataURL(f), name: f.name, dish: null });
+        renderGrid();
+      }
+      file.addEventListener("change", () => addFiles(file.files));
+      drop.addEventListener("drop", (e) => addFiles(e.dataTransfer?.files ?? []));
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/swin-finetuned-food101-ONNX", runtime: "transformers.js", dtype: "q8", sizeMB: 93, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("run").disabled = false; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        $("run").disabled = true; $("runStatus").classList.remove("err");
+        try {
+          for (let i = 0; i < items.length; i++) {
+            $("runStatus").textContent = `Tagging ${i + 1}/${items.length}…`;
+            const r = await engine.classify(items[i].url, 1); // one image per worker round-trip — natural yield
+            const top = r.top[0];
+            items[i].dish = top.label;
+            items[i].prob = top.prob;
+            items[i].nutrition = NUTRITION[top.label] || null;
+            renderGrid();
+          }
+          $("runStatus").textContent = `Done — ${items.length} meal(s) tagged.`; $("runStatus").classList.add("ok");
+        } catch (err) { $("runStatus").textContent = "Failed: " + err.message; $("runStatus").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+
+      function renderGrid() {
+        let count = 0, kcal = 0;
+        $("grid").replaceChildren(...items.map((it) => {
+          const tile = document.createElement("div");
+          tile.className = "tile";
+          let body = `<div class="dish">${it.dish ? escapeHTML(prettyDish(it.dish)) : "<em style='font-weight:400;color:var(--muted)'>untagged</em>"}</div>`;
+          if (it.dish) {
+            body += `<div class="conf">${(it.prob * 100).toFixed(0)}% confident</div>`;
+            const n = it.nutrition;
+            if (n) {
+              count++; kcal += n.kcal;
+              body += `<div class="macros"><span class="kcal">${n.kcal} kcal</span><span>P ${n.p}g</span><span>C ${n.c}g</span><span>F ${n.f}g</span></div>`;
+              body += `<div class="conf" style="margin-top:.25rem">≈ per ${escapeHTML(n.serving)}</div>`;
+            } else {
+              body += `<div class="conf" style="margin-top:.3rem">no reference estimate for this dish</div>`;
+            }
+          }
+          tile.innerHTML = `<img src="${it.url}" alt="${escapeHTML(it.name)}" /><div class="body">${body}</div>`;
+          return tile;
+        }));
+        if (count) {
+          $("totals").hidden = false;
+          $("tCount").textContent = count;
+          $("tKcal").textContent = kcal + " kcal";
+        } else {
+          $("totals").hidden = true;
+        }
+      }
+    </script>
+  </body>
+</html>
