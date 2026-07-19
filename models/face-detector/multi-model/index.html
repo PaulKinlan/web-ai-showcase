@@ -50,7 +50,7 @@
     <p class="crumbs"><a href="../wild/">← Wild</a> · <a href="../">Back to FaceDetector</a></p>
 
     <script type="module">
-      import { FaceDetectorTask, MODEL_URL as DET_URL, drawDetections } from "../facedet.js";
+      import { loadFaceDetectorWorker, MODEL_URL as DET_URL, drawDetections } from "../facedet.js";
       import { FaceTask, MODEL_URL as FACE_URL, faceConnections, LANDMARK_CSS } from "../../face-landmarker/face.js";
       import { createVisionTask } from "/web-ai-showcase/lib/mediapipe.js";
       import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
@@ -66,13 +66,16 @@
       async function pickSample(el) { stopCam(); for (const t of $("samples").children) t.classList.toggle("active", t === el); await useURL(el.dataset.src); }
       for (const thumb of $("samples").children) { thumb.addEventListener("click", () => pickSample(thumb)); thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } }); }
 
+      // Detector runs OFF the main thread (worker); the landmarker stays on its own main-thread task
+      // (that model belongs to the face-landmarker demo — a separate retrofit wave).
       createModelLoader({ mount: $("det-loader"), model: { modelId: DET_URL, runtime: "mediapipe", sizeMB: 0.23, requiresWebGPU: false },
-        load: (op) => createVisionTask({ taskClass: "FaceDetector", modelUrl: DET_URL, options: { runningMode: "IMAGE" }, onProgress: op }),
-        onReady: (t) => { det = new FaceDetectorTask(t); maybeEnable(); } });
+        load: (op) => loadFaceDetectorWorker(op),
+        onReady: (d) => { det = d; maybeEnable(); } });
       createModelLoader({ mount: $("face-loader"), model: { modelId: FACE_URL, runtime: "mediapipe", sizeMB: 4, requiresWebGPU: false },
         load: (op) => createVisionTask({ taskClass: "FaceLandmarker", modelUrl: FACE_URL, options: { numFaces: 1, runningMode: "IMAGE" }, onProgress: op }),
         onReady: (t) => { face = new FaceTask(t); maybeEnable(); } });
       pickSample($("samples").firstElementChild);
+      addEventListener("pagehide", () => { stopCam(); det?.close?.(); }, { once: true });
 
       // Contour overlay (no full tesselation) drawn on top of the detector's boxes, keeping both visible.
       function meshOverlay(ctx, w, h, faceRes, mirror) {
@@ -106,8 +109,14 @@
           const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
           const v = $("video"); v.srcObject = stream; await v.play();
           camOn = true; $("camBtn").textContent = "Stop webcam"; $("camState").innerHTML = '<span class="rec-dot"></span>Live';
-          const loop = async () => { if (!camOn) return; try { const t0 = performance.now(); const [d, f] = await Promise.all([det.detectVideo(v, performance.now()), face.detectVideo(v, performance.now())]); composite(v, d, f, true); $("rDelegate").textContent = det.delegate; $("rBoxes").textContent = d.detections.length; $("rMesh").textContent = f.landmarks.length; $("rMs").textContent = Math.round(performance.now() - t0) + " ms"; $("readout").hidden = false; } catch (e) { setStatus("Webcam error: " + e.message, "err"); } rafId = requestAnimationFrame(loop); };
-          loop();
+          const nextFrame = (cb) => { if (v.requestVideoFrameCallback) v.requestVideoFrameCallback(() => cb()); else rafId = requestAnimationFrame(() => cb()); };
+          const loop = async () => {
+            if (!camOn) return;
+            try { const t0 = performance.now(); const [d, f] = await Promise.all([det.detectVideo(v, performance.now()), face.detectVideo(v, performance.now())]); if (!camOn) return; composite(v, d, f, true); $("rDelegate").textContent = det.delegate; $("rBoxes").textContent = d.detections.length; $("rMesh").textContent = f.landmarks.length; $("rMs").textContent = Math.round(performance.now() - t0) + " ms"; $("readout").hidden = false; }
+            catch (e) { if (e?.name === "AbortError" || e?.name === "SupersededError") return; setStatus("Webcam error: " + e.message, "err"); }
+            nextFrame(loop);
+          };
+          nextFrame(loop);
         } catch (e) { $("camState").textContent = "Camera blocked: " + e.message; }
       }
       $("camBtn").addEventListener("click", () => { camOn ? stopCam() : startCam(); });

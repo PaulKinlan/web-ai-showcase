@@ -158,8 +158,7 @@ const result = detector.detect(imageElement);
     </footer>
 
     <script type="module">
-      import { FaceDetectorTask, MODEL_URL, detScore, drawDetections, escapeHTML, LANDMARK_CSS } from "./facedet.js";
-      import { createVisionTask } from "/web-ai-showcase/lib/mediapipe.js";
+      import { loadFaceDetectorWorker, MODEL_URL, detScore, drawDetections, escapeHTML, LANDMARK_CSS } from "./facedet.js";
       import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
 
       const style = document.createElement("style"); style.textContent = LANDMARK_CSS; document.head.append(style);
@@ -184,10 +183,12 @@ const result = detector.detect(imageElement);
       createModelLoader({
         mount: $("model-loader"),
         model: { modelId: MODEL_URL, runtime: "mediapipe", sizeMB: 0.23, requiresWebGPU: false },
-        load: (onProgress) => createVisionTask({ taskClass: "FaceDetector", modelUrl: MODEL_URL, options: { runningMode: "IMAGE" }, onProgress }),
-        onReady: (task) => { det = new FaceDetectorTask(task); $("run").disabled = !currentImg; $("camBtn").disabled = false; setStatus("Model ready.", "ok"); },
+        load: (onProgress) => loadFaceDetectorWorker(onProgress),
+        onReady: (detector) => { det = detector; $("run").disabled = !currentImg; $("camBtn").disabled = false; setStatus("Model ready.", "ok"); },
       });
       pickSample($("samples").firstElementChild);
+      // Deterministic teardown: dispose the worker + its model when the page goes away.
+      addEventListener("pagehide", () => { stopCam(); det?.close?.(); }, { once: true });
 
       function renderResult(result, ms, source, mirror) {
         drawDetections($("stage"), source, result, { mirror });
@@ -211,14 +212,23 @@ const result = detector.detect(imageElement);
         finally { $("run").disabled = false; }
       });
 
+      // Schedule the next frame off the video's own cadence (requestVideoFrameCallback) when available —
+      // it only fires when a NEW frame is painted, so we never re-detect an unchanged frame. Falls back
+      // to rAF. The loop awaits each detect before scheduling the next → one frame in flight (backpressure).
+      function nextFrame(v, cb) { if (v.requestVideoFrameCallback) v.requestVideoFrameCallback(() => cb()); else rafId = requestAnimationFrame(() => cb()); }
       function stopCam() { if (!camOn) return; camOn = false; cancelAnimationFrame(rafId); const v = $("video"); v.srcObject?.getTracks().forEach(t => t.stop()); v.srcObject = null; v.hidden = true; $("camBtn").textContent = "Use webcam"; $("camState").textContent = ""; }
       async function startCam() {
         try {
           const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
           const v = $("video"); v.srcObject = stream; await v.play();
           camOn = true; $("camBtn").textContent = "Stop webcam"; $("camState").innerHTML = '<span class="rec-dot"></span>Live';
-          const loop = async () => { if (!camOn) return; try { const t0 = performance.now(); const r = await det.detectVideo(v, performance.now()); renderResult(r, Math.round(performance.now() - t0), v, true); } catch (e) { setStatus("Webcam detect error: " + e.message, "err"); } rafId = requestAnimationFrame(loop); };
-          loop();
+          const loop = async () => {
+            if (!camOn) return;
+            try { const t0 = performance.now(); const r = await det.detectVideo(v, performance.now()); if (!camOn) return; renderResult(r, Math.round(performance.now() - t0), v, true); }
+            catch (e) { if (e?.name === "AbortError" || e?.name === "SupersededError") return; setStatus("Webcam detect error: " + e.message, "err"); }
+            nextFrame(v, loop);
+          };
+          nextFrame(v, loop);
         } catch (e) { $("camState").textContent = "Camera blocked: " + e.message; }
       }
       $("camBtn").addEventListener("click", () => { camOn ? stopCam() : startCam(); });

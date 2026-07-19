@@ -5,6 +5,7 @@
 // privacy blur helper. The model loads through lib/model-loader.js via lib/mediapipe.js createVisionTask.
 
 export { escapeHTML, LANDMARK_CSS } from "/web-ai-showcase/models/hand-landmarker/hand.js";
+import { SupersededError, WorkerClient } from "/web-ai-showcase/lib/worker-protocol.js";
 
 // BlazeFace short-range ships as a .tflite asset (the .task variant 404s on Google storage).
 export const MODEL_URL =
@@ -52,6 +53,85 @@ export class FaceDetectorTask {
 
 function normalize(res) {
   return { detections: res.detections || [] };
+}
+
+// ── Off-main-thread detector ─────────────────────────────────────────────────
+// A drop-in for FaceDetectorTask whose detect() runs in models/face-detector/worker.js, so the
+// synchronous BlazeFace inference no longer blocks the main thread (invariant 15). The main thread
+// only snapshots the frame (createImageBitmap), TRANSFERS it, and later draws boxes (cheap).
+//
+// Interface parity with FaceDetectorTask: `detectImage(source)` / `detectVideo(source, tsMs)` →
+// { detections }, plus a `delegate` getter. `close()` disposes the worker + its model.
+
+/** Re-export so pages can ignore expected latest-wins drops in a live loop. */
+export { SupersededError };
+
+export class WorkerFaceDetector {
+  /** @param {WorkerClient} client */
+  constructor(client) {
+    this.client = client;
+    this._delegate = "CPU";
+  }
+  get delegate() {
+    return this._delegate;
+  }
+  async _detect(source, mode, tsMs, opts = {}) {
+    // Snapshot the current frame off the live element and hand ownership to the worker (transfer, not
+    // clone). createImageBitmap is async + cheap; the heavy detect happens in the worker.
+    const bitmap = await createImageBitmap(source);
+    const { result } = await this.client.request(
+      "detect",
+      { bitmap, mode, tsMs },
+      { transfer: [bitmap], channel: opts.channel, signal: opts.signal },
+    );
+    if (result.delegate) this._delegate = result.delegate;
+    return { detections: result.detections || [], ms: result.ms };
+  }
+  /** Detect on a still image (IMAGE running mode). */
+  detectImage(source) {
+    return this._detect(source, "IMAGE", 0);
+  }
+  /** Detect on a video frame (VIDEO running mode). channel:"live" supersedes stale in-flight frames. */
+  detectVideo(source, tsMs, opts = {}) {
+    return this._detect(source, "VIDEO", tsMs ?? performance.now(), { channel: "live", ...opts });
+  }
+  /** Deterministic teardown — dispose the worker's model + terminate it. */
+  async close() {
+    await this.client.terminate();
+  }
+}
+
+/**
+ * Spin up the FaceDetector worker and resolve to a ready WorkerFaceDetector. Used as the model-loader
+ * `load` fn so the shared auto-init / explicit-download UX (invariant 12) is UNCHANGED — the worker
+ * just replaces the main-thread task instance.
+ * @param {(p:{status:string})=>void} [onProgress]
+ * @param {(s:string)=>void} [onState]
+ * @returns {Promise<WorkerFaceDetector>}
+ */
+export async function loadFaceDetectorWorker(onProgress, onState) {
+  onProgress?.({ status: "initiate", file: MODEL_URL });
+  const client = new WorkerClient({
+    url: new URL("./worker.js", import.meta.url),
+    name: "face-detector",
+    module: false, // classic worker: MediaPipe's FilesetResolver needs importScripts (see worker.js).
+    maxInFlight: 1,
+    maxQueue: 1, // one frame in flight, one waiting; newer live frames supersede the waiter.
+    onState,
+  });
+  try {
+    await client.ready; // resolves once the worker has loaded the WASM + model and posted "ready".
+    const det = new WorkerFaceDetector(client);
+    try {
+      const { result } = await client.request("info");
+      if (result?.delegate) det._delegate = result.delegate;
+    } catch { /* delegate stays default until first detect fills it in */ }
+    onProgress?.({ status: "ready" });
+    return det;
+  } catch (err) {
+    await client.terminate().catch(() => {});
+    throw err;
+  }
 }
 
 /** Read a detection's confidence score (categories[0].score), 0..1. */

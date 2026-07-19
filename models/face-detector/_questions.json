@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "id": "face-detector",
-  "revision": 1,
+  "revision": 2,
   "reviewedAt": "2026-07-19T00:00:00Z",
-  "reviewer": "seed-critique (runner-evidenced, revision 1)",
+  "reviewer": "off-main-thread retrofit (runner-evidenced, revision 2)",
   "frontend": true,
   "rubric": [
     {
@@ -71,18 +71,32 @@
     },
     {
       "dimension": "performance",
-      "score": 4,
+      "score": 5,
       "severity": "info",
-      "evidence": "conformance (wasm, headless no-GPU): 0✓ 0✗ 0▨ 1◍ — inp-stays-low=manual. screenshots: reports/responsive/screens/face-detector/desktop.png, reports/responsive/screens/face-detector/mobile.png",
-      "notes": "auto-checkable parts pass; manual-evidenced parts need an agent to Read the screenshot and confirm real output / controls / parity."
+      "evidence": "OFF-MAIN-THREAD RETROFIT (headless Chrome, CPU/XNNPACK). BEFORE: BlazeFace detect() ran synchronously on the main thread — measured median ~5.5ms steady-state on this runner (first-run/loaded ~33-36ms; ~35ms on Paul's device) and blocked the frame every rAF/rVFC webcam tick. AFTER: inference runs in models/face-detector/worker.js (dedicated worker via lib/worker-protocol.js); worker-side inference median ~3ms is OFF the main thread. Main-thread per-detect slice = createImageBitmap median ~1.5ms + a cheap box draw; no main-thread inference (no task >8ms from inference). conformance worker-compliance=pass; inp-stays-low=manual (agent-confirmed via measurement). Verified: 5/5 pages load→download→ready→detect (8 faces boxed, inside table 8 rows), console clean, 0 net failures; light+dark+mobile screenshots clean.",
+      "notes": "worker-compliance conformance assertion added (source-kind, auto-pass). Inference moved off the main thread while route/slug/identity/controls/examples preserved (in-place perf fix, invariant 15)."
     }
   ],
   "guidanceConsulted": [
     {
+      "id": "performance",
+      "query": "offload inference to a web worker to keep INP low",
+      "recommendation": "INP & Main-Thread Unblocking: 'separate UI updates from heavy computations, then push background processing to a Web Worker.' The 50ms rule (>250ms offload; keep the main thread free for input + paint).",
+      "appliedOrException": "applied — the synchronous BlazeFace detect that used to block every webcam frame now runs in models/face-detector/worker.js; the main thread only snapshots the frame (createImageBitmap ~1.5ms) and paints boxes.",
+      "evidence": "worker-side inference median ~3ms off the main thread; conformance worker-compliance=pass; before ~5.5-35ms synchronous main-thread → after 0ms main-thread inference."
+    },
+    {
+      "id": "schedule-tasks-by-priority",
+      "query": "keep main thread frame budget for input and paint",
+      "recommendation": "Keep time-critical work (input/render) on the main thread; defer heavy work. Prioritized Task Scheduling for background work.",
+      "appliedOrException": "applied — heavy inference is off-thread in a worker; the main thread reserves its frame budget for input + the cheap box draw. Live loop is driven by requestVideoFrameCallback (one frame in flight → backpressure) so unchanged frames are never re-detected.",
+      "evidence": "requestVideoFrameCallback + one-in-flight worker request (maxInFlight 1, channel 'live' supersession); round-trip median ~4.9ms."
+    },
+    {
       "id": "break-up-long-tasks",
       "recommendation": "Break up long main-thread tasks / yield so inference doesn't spike INP.",
-      "appliedOrException": "applied — inference runs off the main thread via a Web Worker (or MediaPipe delegate); control UI stays responsive.",
-      "evidence": "conformance inference-off-main-thread / mediapipe-gpu-delegate = pass"
+      "appliedOrException": "applied — inference runs off the main thread via a dedicated Web Worker (lib/worker-protocol.js: request ids, transferred ImageBitmaps, AbortSignal cancel, stale-suppression, bounded queue); control UI stays responsive.",
+      "evidence": "conformance worker-compliance / mediapipe-gpu-delegate = pass; worker inference off-thread"
     },
     {
       "id": "cross-document-transitions",
@@ -108,5 +122,5 @@
       "priority": "medium"
     }
   ],
-  "summary": "Revision-1 seed for face-detector (face-detection, wasm) derived from the real conformance run + responsive screenshots. Auto-checkable assertions are recorded with their true pass/fail/blocked state; manual-evidenced dimensions await an agent verdict. Not a final review."
+  "summary": "Revision-2: off-main-thread retrofit for face-detector (face-detection, MediaPipe/wasm). BlazeFace inference moved off the main thread into a dedicated worker (lib/worker-protocol.js) — before it ran synchronously on the main thread (~5.5ms steady / ~33-36ms loaded / ~35ms on Paul's device) and blocked every webcam frame; after, worker-side inference (~3ms median) is off-thread and the main thread only does createImageBitmap (~1.5ms) + a cheap draw. Route/slug/identity/controls/examples/behaviour preserved (in-place perf fix, invariant 15). Added the worker-compliance conformance assertion (auto-pass). Verified across all 5 pages (main + 4 ladder rungs): download→ready→detect works, console clean, light+dark+mobile clean. Manual-evidenced dimensions still await a full device matrix verdict."
 }
