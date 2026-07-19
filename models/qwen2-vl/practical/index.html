@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Qwen2-VL Practical — document & screenshot Q&A · Web AI Showcase</title>
+    <meta name="description" content="Drop a receipt, invoice, form, or screenshot and ask Qwen2-VL a question — OCR with reasoning, entirely on your GPU." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>📖</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Qwen2-VL</a></p>
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Practical: read a document, answer a question</h1>
+      <p class="lede">
+        Qwen2-VL's strong suit is reading. Drop a receipt, invoice, form, or app screenshot and ask a
+        question — "what's the total?", "what's the due date?", "which field is empty?" — and it
+        transcribes <em>and</em> reasons over the text, on your device, with nothing uploaded.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="vlm-grid" style="margin-top:.6rem">
+        <div class="vlm-img-col">
+          <div class="sample-strip" id="samples">
+            <img class="sample-thumb active" src="../sample-invoice.png" data-src="../sample-invoice.png" alt="An invoice with line items and totals" tabindex="0" role="button" />
+            <img class="sample-thumb" src="../sample-form.png" data-src="../sample-form.png" alt="A printed form with fields" tabindex="0" role="button" />
+            <img class="sample-thumb" src="../sample-sign.png" data-src="../sample-sign.png" alt="A photographed sign with text" tabindex="0" role="button" />
+          </div>
+          <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image" style="margin-bottom:.5rem">
+            <span id="dropText">…or drop / choose your own document</span>
+            <input type="file" id="file" accept="image/*" hidden />
+          </div>
+          <img class="preview-img" id="preview" src="../sample-invoice.png" alt="Selected document" />
+        </div>
+        <div class="vlm-out-col">
+          <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">
+            Ask about the document
+            <input type="text" id="prompt" value="What is the total amount on this document?" />
+          </label>
+          <div class="chips" id="quick">
+            <button class="chip" type="button" data-p="What is the total amount on this document?">Find the total</button>
+            <button class="chip" type="button" data-p="Transcribe every line of text in this image exactly.">Transcribe it all</button>
+            <button class="chip" type="button" data-p="List each line item and its price.">List line items</button>
+            <button class="chip" type="button" data-p="What is the date on this document?">Find the date</button>
+            <button class="chip" type="button" data-p="Summarise this document in one sentence.">One-line summary</button>
+          </div>
+          <button id="run" type="button" disabled style="margin-top:.2rem">Answer</button>
+          <div class="answer" id="answer" style="margin-top:.5rem" aria-live="polite"><span class="muted">The answer streams here.</span></div>
+          <div style="margin-top:.4rem"><button id="copy" class="secondary" type="button" disabled>Copy answer</button></div>
+          <div class="readout" id="readout" hidden><span>tokens <b id="rTok">–</b></span><span>time <b id="rMs">–</b></span><span>tok/s <b id="rTps">–</b></span></div>
+        </div>
+      </div>
+      <p class="muted" style="margin-top:.8rem;font-size:.82rem">
+        Tip: photographed documents work too — Qwen2-VL handles perspective and varied fonts far better
+        than a classic OCR pipeline because it reasons about layout, not just characters.
+      </p>
+    </section>
+
+    <p class="crumbs"><a href="../basics/">← Basics</a> · <a href="../">Qwen2-VL</a> · Next: <a href="../wild/">Wild →</a></p>
+
+    <script type="module">
+      import { Qwen2VLEngine, fileToDataURL, escapeHTML, QWEN_CSS } from "../qwen2vl.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = QWEN_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new Qwen2VLEngine();
+      let currentImageURL = null, lastAnswer = "";
+
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        const blob = await (await fetch(el.dataset.src)).blob();
+        currentImageURL = await fileToDataURL(new File([blob], "s", { type: blob.type }));
+        $("preview").src = el.dataset.src;
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } });
+      }
+      pickSample($("samples").firstElementChild);
+
+      const file = $("file"), drop = $("drop");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) {
+        for (const t of $("samples").children) t.classList.remove("active");
+        currentImageURL = await fileToDataURL(f); $("preview").src = currentImageURL; $("dropText").textContent = f.name;
+      }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
+
+      for (const c of $("quick").children) c.addEventListener("click", () => { $("prompt").value = c.dataset.p; });
+      $("copy").addEventListener("click", async () => {
+        try { await navigator.clipboard.writeText(lastAnswer); $("copy").textContent = "Copied!"; setTimeout(() => $("copy").textContent = "Copy answer", 1200); }
+        catch { $("status").textContent = "Clipboard blocked — select and copy manually."; }
+      });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/Qwen2-VL-2B-Instruct", runtime: "transformers.js", dtype: "q4f16", sizeMB: 2700, requiresWebGPU: true },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: () => { $("run").disabled = false; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!currentImageURL) { $("status").textContent = "Pick a document first."; return; }
+        const prompt = $("prompt").value.trim() || "What does this document say?";
+        $("run").disabled = true; $("copy").disabled = true; $("status").classList.remove("err"); $("status").textContent = "Reading…";
+        $("answer").innerHTML = '<span class="caret">&nbsp;</span>'; let text = "";
+        try {
+          const res = await engine.generate(currentImageURL, prompt, { maxTokens: 300, onToken: (tok) => { text += tok; $("answer").innerHTML = escapeHTML(text) + '<span class="caret">&nbsp;</span>'; } });
+          lastAnswer = text.trim(); $("answer").textContent = lastAnswer || "(no text)"; $("copy").disabled = !lastAnswer; $("readout").hidden = false;
+          $("rTok").textContent = res.tokens; $("rMs").textContent = res.ms + " ms"; $("rTps").textContent = (res.tokens / (res.ms / 1000)).toFixed(1);
+          $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (err) { $("answer").innerHTML = '<span class="muted">Failed.</span>'; $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>
