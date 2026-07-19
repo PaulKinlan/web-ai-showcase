@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Practical — enterprise document extraction to JSON · Web AI Showcase</title>
+    <meta name="description" content="A shippable enterprise use case: turn a business record — invoice, contract clause, support ticket — into strict, schema-shaped JSON with IBM Granite 3.0 2B running on-device, parsed and validated in the page." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🪨</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/models/granite/">← IBM Granite 3.0 2B Instruct</a></p>
+
+    <header>
+      <p class="eyebrow">Practical · text-generation · on-device</p>
+      <h1>Enterprise document → structured JSON</h1>
+      <p class="lede">
+        The task Granite was tuned for: read a business record — an invoice, a contract clause, a support
+        ticket — and emit clean, schema-shaped JSON your ERP, CRM or workflow can consume, with nothing
+        leaving the device. Pick a document type, paste your own, and extract it. The page then parses the
+        JSON to prove it's real, machine-readable output. This is on-device document processing for data
+        that can't go to a third-party API.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="chips" id="samples" aria-label="Document types">
+        <button type="button" class="chip" data-k="invoice">Invoice</button>
+        <button type="button" class="chip" data-k="contract">Contract clause</button>
+        <button type="button" class="chip" data-k="ticket">Support ticket</button>
+      </div>
+
+      <label for="src"><strong>Document text</strong></label>
+      <textarea id="src" rows="6" style="inline-size:100%;resize:vertical" disabled></textarea>
+
+      <fieldset class="schema" id="schema">
+        <legend>Target schema</legend>
+        <p class="muted" id="schema-desc">Changes with the document type — the system prompt fixes the exact keys.</p>
+      </fieldset>
+
+      <div class="composer">
+        <button id="extract" type="button" disabled>Extract to JSON</button>
+        <button id="stop" type="button" class="secondary" hidden>Stop</button>
+      </div>
+
+      <h4 style="font-family:var(--font-body);font-size:.85rem;margin:.8rem 0 .2rem">Raw model output</h4>
+      <pre class="out" id="raw"><span class="muted">The model's JSON appears here as it streams.</span></pre>
+
+      <h4 style="font-family:var(--font-body);font-size:.85rem;margin:.8rem 0 .2rem">Parsed <code>JSON.parse()</code> result</h4>
+      <pre class="out parsed" id="parsed"><span class="muted">If the output is valid JSON, the parsed object shows here.</span></pre>
+
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>valid JSON <b id="rValid">–</b></span>
+        <span>tokens <b id="rTok">–</b></span>
+        <span>tok/s <b id="rTps">–</b></span>
+      </div>
+    </section>
+
+    <section aria-labelledby="how-h">
+      <h2 id="how-h">Why this pattern works</h2>
+      <p>
+        A system prompt fixes the exact schema for each document type and demands "JSON only, no prose";
+        greedy decoding keeps the output deterministic — important for a governed pipeline. The page
+        strips any stray code fences and runs <code>JSON.parse()</code> — the honest test of whether the
+        model produced machine-readable output. Granite's enterprise tuning shows up here as reliable
+        adherence to the requested keys. In production you'd validate against a real JSON Schema and
+        re-prompt on a miss; the shape is the same.
+      </p>
+      <p class="muted">Next rung: <a href="../wild/">Wild — the synthetic data factory →</a></p>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      🤗 Transformers.js. <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <style>
+      .out { font-family:var(--font-mono); font-size:.8rem; white-space:pre-wrap; overflow-wrap:anywhere;
+        background:var(--bg-raised); border:1px solid var(--border); border-radius:var(--radius); padding:.6rem; min-block-size:2.6rem; }
+      .out.parsed.ok { border-color:var(--accent); }
+      .out.parsed.bad { border-color:var(--warn); }
+      .schema { border:1px solid var(--border); border-radius:var(--radius); padding:.5rem .8rem; margin:.6rem 0; }
+      .schema legend { font-size:.8rem; color:var(--muted); padding:0 .3rem; }
+      .composer { display:flex; gap:.5rem; flex-wrap:wrap; margin-top:.6rem; }
+      .composer button { min-block-size:44px; }
+    </style>
+
+    <script type="module">
+      import { GraniteEngine, escapeHTML, GRANITE_CSS } from "../engine.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = GRANITE_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new GraniteEngine();
+      let loaded = false, backend = "WASM", generating = false;
+
+      const DOCS = {
+        invoice: {
+          text: "INVOICE #INV-2043\nBill to: Northwind Traders, 12 Harbour Rd, Bristol\nDate: 2026-03-14  Due: 2026-04-13\nLine items: 3x Widget Pro @ £120; 1x Onboarding @ £400\nSubtotal £760, VAT 20% £152, Total £912. Payment terms: net 30.",
+          keys: 'invoice_number, bill_to, date, due_date, currency, total, payment_terms, line_items[] (each {description, qty, unit_price})',
+          desc: "invoice_number · bill_to · date · due_date · currency · total · payment_terms · line_items[]",
+        },
+        contract: {
+          text: "This Agreement renews automatically for successive one-year terms unless either party gives written notice of non-renewal at least 60 days before the end of the current term. Fees are due within 30 days of invoice and are non-refundable. Either party may terminate for material breach not cured within 15 days.",
+          keys: 'renewal_term, notice_period_days, payment_due_days, refundable (boolean), termination_conditions (array of strings)',
+          desc: "renewal_term · notice_period_days · payment_due_days · refundable · termination_conditions[]",
+        },
+        ticket: {
+          text: "URGENT: I was charged twice for my subscription this month and the duplicate hasn't been refunded. I've emailed twice with no reply. This affects my whole team's access. — Sam Rivera, Acme Corp, account #88231.",
+          keys: 'category (one of billing/bug/account/feature), priority (one of low/medium/high/urgent), customer_name, account_id, summary (one sentence)',
+          desc: "category · priority · customer_name · account_id · summary",
+        },
+      };
+      let current = DOCS.invoice;
+      function applyDoc(doc) {
+        current = doc; $("src").value = doc.text; $("schema-desc").textContent = doc.desc;
+      }
+      for (const chip of document.querySelectorAll("#samples .chip")) {
+        chip.addEventListener("click", () => applyDoc(DOCS[chip.dataset.k] || DOCS.invoice));
+      }
+      applyDoc(DOCS.invoice);
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/granite-3.0-2b-instruct", runtime: "transformers.js", dtype: "q8", sizeMB: 2540, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: (device) => { loaded = true; backend = String(device || "wasm").toUpperCase(); $("src").disabled = false; $("extract").disabled = false; },
+      });
+
+      function extractJSON(text) {
+        let t = text.replace(/```(?:json)?/gi, "").trim();
+        const start = t.indexOf("{");
+        const end = t.lastIndexOf("}");
+        if (start !== -1 && end > start) t = t.slice(start, end + 1);
+        return JSON.parse(t);
+      }
+
+      async function extract() {
+        if (!loaded || generating) return;
+        const src = $("src").value.trim();
+        if (!src) return;
+        generating = true;
+        $("extract").disabled = true; $("src").disabled = true; $("stop").hidden = false;
+        $("status").classList.remove("err"); $("status").textContent = "Extracting on the " + backend + "…";
+        $("raw").textContent = ""; $("parsed").textContent = ""; $("parsed").className = "out parsed"; $("readout").hidden = true;
+        const messages = [
+          { role: "system", content: `You are a precise enterprise information-extraction engine. Read the user's document and reply with ONLY a JSON object, no prose, no code fences. Use exactly these keys: ${current.keys}. If a field has no value use null or an empty array.` },
+          { role: "user", content: src },
+        ];
+        let acc = "";
+        try {
+          const res = await engine.chat(messages, {
+            maxTokens: 380, doSample: false,
+            onToken: (tok) => { acc += tok; $("raw").textContent = acc; },
+          });
+          const finalText = (res.text && res.text.trim()) ? res.text : acc;
+          $("raw").textContent = finalText;
+          backend = String(res.device || backend).toUpperCase();
+          let valid = false;
+          try {
+            const obj = extractJSON(finalText);
+            $("parsed").textContent = JSON.stringify(obj, null, 2);
+            $("parsed").className = "out parsed ok";
+            valid = true;
+          } catch (e) {
+            $("parsed").textContent = "JSON.parse failed: " + e.message + "\n(small models sometimes drop a brace — try again or shorten the document)";
+            $("parsed").className = "out parsed bad";
+          }
+          $("readout").hidden = false;
+          $("rBackend").textContent = backend; $("rValid").textContent = valid ? "yes" : "no";
+          $("rTok").textContent = res.tokens; $("rTps").textContent = res.ms ? (res.tokens / (res.ms / 1000)).toFixed(1) : "–";
+          $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (err) {
+          $("status").textContent = "Extraction failed: " + err.message; $("status").classList.add("err");
+        } finally {
+          generating = false; $("extract").disabled = false; $("src").disabled = false; $("stop").hidden = true;
+        }
+      }
+      $("extract").addEventListener("click", extract);
+      $("stop").addEventListener("click", () => engine.stop());
+
+      if ("serviceWorker" in navigator) navigator.serviceWorker.register("/web-ai-showcase/sw.js").catch(() => {});
+    </script>
+  </body>
+</html>

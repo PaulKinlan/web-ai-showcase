@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Wild — the synthetic data factory · Web AI Showcase</title>
+    <meta name="description" content="Describe a schema in plain English and IBM Granite 3.0 2B invents a batch of realistic fake records as JSON — synthetic test data generated entirely on-device, parsed and rendered as a table." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🪨</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/models/granite/">← IBM Granite 3.0 2B Instruct</a></p>
+
+    <header>
+      <p class="eyebrow">Wild · text-generation · on-device</p>
+      <h1>The synthetic data factory</h1>
+      <p class="lede">
+        Describe the records you want in plain English — "customers with a name, country, plan tier and
+        signup date" — and Granite invents a batch of realistic, structurally-consistent fake rows as a
+        JSON array. It's a genuinely useful enterprise trick (seed a demo, fill a test database, mock an
+        API) turned into a playground: the page parses the JSON and renders it as a table, live, entirely
+        on your device. No real customer data anywhere.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="chips" id="presets" aria-label="Schema presets">
+        <button type="button" class="chip" data-k="customers">Customers</button>
+        <button type="button" class="chip" data-k="products">Products</button>
+        <button type="button" class="chip" data-k="employees">Employees</button>
+      </div>
+
+      <div class="sysrow">
+        <label for="spec"><strong>Describe the records</strong> — fields and any constraints</label>
+        <textarea id="spec" rows="3" disabled></textarea>
+      </div>
+
+      <div class="controls">
+        <label>How many rows
+          <input type="number" id="count" min="1" max="10" value="5" style="inline-size:5rem" />
+        </label>
+      </div>
+
+      <div class="composer">
+        <button id="gen" type="button" disabled>Generate records</button>
+        <button id="stop" type="button" class="secondary" hidden>Stop</button>
+      </div>
+
+      <h4 style="font-family:var(--font-body);font-size:.85rem;margin:.8rem 0 .2rem">Raw model output</h4>
+      <pre class="out" id="raw"><span class="muted">The JSON array streams here.</span></pre>
+
+      <h4 style="font-family:var(--font-body);font-size:.85rem;margin:.8rem 0 .2rem">Parsed table</h4>
+      <div id="table"><span class="muted" style="font-size:.8rem">If the output parses as a JSON array of objects, it renders here.</span></div>
+
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>valid JSON <b id="rValid">–</b></span>
+        <span>rows <b id="rRows">–</b></span>
+        <span>tok/s <b id="rTps">–</b></span>
+      </div>
+    </section>
+
+    <section aria-labelledby="how-h">
+      <h2 id="how-h">What to notice</h2>
+      <p>
+        The system prompt asks for a JSON array only, with consistent keys across every object; a modest
+        temperature keeps the rows varied but well-formed. Because it runs on-device, you can generate
+        seed data for a prototype with zero privacy risk and no API cost. Ask for a constraint ("emails at
+        example.com", "dates in 2025") and watch it hold across the batch.
+      </p>
+      <p class="muted">Next rung: <a href="../multi-model/">Multi-model — on-device RAG over a policy handbook →</a></p>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      🤗 Transformers.js. <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <style>
+      .visually-hidden { position:absolute; width:1px; height:1px; margin:-1px; padding:0; overflow:hidden; clip:rect(0 0 0 0); border:0; }
+      .out { font-family:var(--font-mono); font-size:.8rem; white-space:pre-wrap; overflow-wrap:anywhere;
+        background:var(--bg-raised); border:1px solid var(--border); border-radius:var(--radius); padding:.6rem; min-block-size:2.6rem; }
+      .composer { display:flex; gap:.5rem; flex-wrap:wrap; margin-top:.6rem; }
+      .composer button { min-block-size:44px; }
+      .tblwrap { overflow-x:auto; border:1px solid var(--border); border-radius:var(--radius); }
+      table.data { border-collapse:collapse; font-size:.82rem; inline-size:100%; }
+      table.data th, table.data td { text-align:left; padding:.35rem .6rem; border-bottom:1px solid var(--border); white-space:nowrap; }
+      table.data th { color:var(--muted); font-weight:600; background:var(--bg-raised); position:sticky; top:0; }
+    </style>
+
+    <script type="module">
+      import { GraniteEngine, escapeHTML, GRANITE_CSS } from "../engine.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = GRANITE_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new GraniteEngine();
+      let loaded = false, backend = "WASM", generating = false;
+
+      const PRESETS = {
+        customers: "Customers, each with: name, country, plan_tier (free/pro/enterprise), monthly_spend (number), signup_date (2025).",
+        products: "Products, each with: sku, name, category, price (number), in_stock (boolean).",
+        employees: "Employees, each with: full_name, department, title, start_date, email (at example.com).",
+      };
+      for (const chip of document.querySelectorAll("#presets .chip")) {
+        chip.addEventListener("click", () => { $("spec").value = PRESETS[chip.dataset.k] || ""; });
+      }
+      $("spec").value = PRESETS.customers;
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/granite-3.0-2b-instruct", runtime: "transformers.js", dtype: "q8", sizeMB: 2540, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: (device) => { loaded = true; backend = String(device || "wasm").toUpperCase(); $("spec").disabled = false; $("gen").disabled = false; },
+      });
+
+      function extractArray(text) {
+        let t = text.replace(/```(?:json)?/gi, "").trim();
+        const start = t.indexOf("[");
+        const end = t.lastIndexOf("]");
+        if (start !== -1 && end > start) t = t.slice(start, end + 1);
+        const parsed = JSON.parse(t);
+        if (!Array.isArray(parsed)) throw new Error("not a JSON array");
+        return parsed;
+      }
+      function renderTable(rows) {
+        $("table").replaceChildren();
+        if (!rows.length) { $("table").innerHTML = '<span class="muted">Empty array.</span>'; return; }
+        const cols = [...new Set(rows.flatMap((r) => Object.keys(r || {})))];
+        const wrap = document.createElement("div"); wrap.className = "tblwrap";
+        const t = document.createElement("table"); t.className = "data";
+        const thead = document.createElement("thead"); const htr = document.createElement("tr");
+        for (const c of cols) { const th = document.createElement("th"); th.textContent = c; htr.append(th); }
+        thead.append(htr); t.append(thead);
+        const tb = document.createElement("tbody");
+        for (const r of rows) {
+          const tr = document.createElement("tr");
+          for (const c of cols) { const td = document.createElement("td"); const v = r?.[c]; td.textContent = v == null ? "" : (typeof v === "object" ? JSON.stringify(v) : String(v)); tr.append(td); }
+          tb.append(tr);
+        }
+        t.append(tb); wrap.append(t); $("table").append(wrap);
+      }
+
+      async function gen() {
+        if (!loaded || generating) return;
+        const spec = $("spec").value.trim(); if (!spec) return;
+        const n = Math.max(1, Math.min(10, +$("count").value || 5));
+        generating = true;
+        $("gen").disabled = true; $("spec").disabled = true; $("stop").hidden = false;
+        $("status").classList.remove("err"); $("status").textContent = "Generating on the " + backend + "…";
+        $("raw").textContent = ""; $("table").innerHTML = '<span class="muted" style="font-size:.8rem">Waiting for output…</span>'; $("readout").hidden = true;
+        const messages = [
+          { role: "system", content: `You are a synthetic-data generator. Output ONLY a JSON array (no prose, no code fences) of exactly ${n} objects. Every object MUST use the same keys. Make the values realistic and varied. This is fake data for testing.` },
+          { role: "user", content: spec },
+        ];
+        let acc = "";
+        try {
+          const res = await engine.chat(messages, {
+            maxTokens: 480, doSample: true, temperature: 0.7, topP: 0.95,
+            onToken: (tok) => { acc += tok; $("raw").textContent = acc; },
+          });
+          const finalText = (res.text && res.text.trim()) ? res.text : acc;
+          $("raw").textContent = finalText;
+          backend = String(res.device || backend).toUpperCase();
+          let valid = false, rows = [];
+          try { rows = extractArray(finalText); renderTable(rows); valid = true; }
+          catch (e) { $("table").innerHTML = `<span class="status err">Couldn't parse a JSON array: ${escapeHTML(e.message)} — try again or ask for fewer rows.</span>`; }
+          $("readout").hidden = false;
+          $("rBackend").textContent = backend; $("rValid").textContent = valid ? "yes" : "no";
+          $("rRows").textContent = rows.length; $("rTps").textContent = res.ms ? (res.tokens / (res.ms / 1000)).toFixed(1) : "–";
+          $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (err) {
+          $("status").textContent = "Generation failed: " + err.message; $("status").classList.add("err");
+        } finally {
+          generating = false; $("gen").disabled = false; $("spec").disabled = false; $("stop").hidden = true;
+        }
+      }
+      $("gen").addEventListener("click", gen);
+      $("stop").addEventListener("click", () => engine.stop());
+
+      if ("serviceWorker" in navigator) navigator.serviceWorker.register("/web-ai-showcase/sw.js").catch(() => {});
+    </script>
+  </body>
+</html>
