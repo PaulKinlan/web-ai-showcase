@@ -40,23 +40,29 @@ short version for tools that look for `AGENTS.md`.
   **vilt** (no `vilt` class / no `visual-question-answering` pipeline / no ONNX), **kosmos-2** (no
   `kosmos` class in transformers.js; no browser ONNX), **mask2former** (no `Mask2Former...` class in
   transformers.js 3.7.5/4.2 — only the image processor; no browser ONNX), **internvl** (no
-  `internvl` class → `Unsupported model type: internvl`), **marigold** (latent-diffusion depth
-  pipeline — diffusers/VAE/UNet/DDIM, no transformers.js class; the one ONNX is a 3.46GB SD
-  pipeline; don't relabel a regression depth model), **places365 / scene-classification** (no
-  Places365/scene model ships a transformers.js-loadable ONNX — only .pt/.tflite/Caffe; don't
-  relabel ImageNet ViT), **legal-bert / legal fill-mask** (no legal-domain fill-mask ships a browser
-  ONNX with a real MLM head — exports are NSP-only [logits [1,2]] or feature-extraction-only),
-  **tapas** (no `tapas` class + no `table-question-answering` pipeline in transformers.js 3.7.5/4.2;
-  no browser ONNX; needs its own TapasTokenizer table-encoding + cell-selection/aggregation head),
-  **question-generation** (no QG model has a v3-loadable ONNX: the family is safetensors-only, the
-  one merged-decoder export is a degenerate quantized build that emits repeated-token garbage, and
-  the genuine <hl> QG model uses the pre-v3 separate-decoder layout 3.7.5 can't load), **scibert /
-  domain-MLM** (SciBERT scivocab ONNX is feature-extraction only — no MLM head; BioBERT's head is
-  broken near-uniform; use a working domain MLM like Bio_ClinicalBERT instead, don't relabel),
-  **keyphrase-extraction** (no token-classification keyphrase model has a browser ONNX — only
-  seq2seq generators; don't mislabel a generator/NER as keyphrase spans), **electra** (ONNX exports
-  are encoder-only; the replaced-token-detection discriminator head is absent), **blip** / **bark**
-  (repos gated / no usable ONNX). Never mislabel a substitute as the blocked family.
+  `internvl` class → `Unsupported model type: internvl`), **aimv2** (no `aimv2`/`Aimv2VisionModel`
+  class in transformers.js 3.7.5 or 4.2; Apple repos safetensors/custom-code no ONNX; community ONNX
+  lacks config — don't relabel DINOv2/CLIP), **image-quality/aesthetic-assessment** (no honest
+  browser IQA: aesthetic-predictor repos are safetensors-only custom classes or configless 1.7GB
+  ONNX; the loadable swin 'quality' ONNX doesn't track degradation [sharp≈blur≈noise] and the
+  aesthetic-shadow ONNX is anime-only/rights-unclear — measured, blocked not faked), **marigold**
+  (latent-diffusion depth pipeline — diffusers/VAE/UNet/DDIM, no transformers.js class; the one ONNX
+  is a 3.46GB SD pipeline; don't relabel a regression depth model), **places365 /
+  scene-classification** (no Places365/scene model ships a transformers.js-loadable ONNX — only
+  .pt/.tflite/Caffe; don't relabel ImageNet ViT), **legal-bert / legal fill-mask** (no legal-domain
+  fill-mask ships a browser ONNX with a real MLM head — exports are NSP-only [logits [1,2]] or
+  feature-extraction-only), **tapas** (no `tapas` class + no `table-question-answering` pipeline in
+  transformers.js 3.7.5/4.2; no browser ONNX; needs its own TapasTokenizer table-encoding +
+  cell-selection/aggregation head), **question-generation** (no QG model has a v3-loadable ONNX: the
+  family is safetensors-only, the one merged-decoder export is a degenerate quantized build that
+  emits repeated-token garbage, and the genuine <hl> QG model uses the pre-v3 separate-decoder
+  layout 3.7.5 can't load), **scibert / domain-MLM** (SciBERT scivocab ONNX is feature-extraction
+  only — no MLM head; BioBERT's head is broken near-uniform; use a working domain MLM like
+  Bio_ClinicalBERT instead, don't relabel), **keyphrase-extraction** (no token-classification
+  keyphrase model has a browser ONNX — only seq2seq generators; don't mislabel a generator/NER as
+  keyphrase spans), **electra** (ONNX exports are encoder-only; the replaced-token-detection
+  discriminator head is absent), **blip** / **bark** (repos gated / no usable ONNX). Never mislabel
+  a substitute as the blocked family.
 - **Version-pin escape hatch (isolated).** If a model's class exists only in a transformers.js newer
   than the shared 3.7.5 pin (e.g. SAM2's `Sam2Model` needs 4.2.0), pin the newer version LOCALLY in
   that one model's `worker.js` only — never bump shared `lib/webai.js`. `lib/model-cache.js` is
