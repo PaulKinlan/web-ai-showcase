@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>mxbai-embed — Practical: prompted search &amp; near-duplicate detection · Web AI Showcase</title>
+    <meta name="description" content="Two shippable retrieval jobs over your own text with mxbai-embed-large-v1: prompted semantic search and near-duplicate detection, all in the browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🍞</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">mxbai-embed</a></p>
+
+    <header>
+      <p class="eyebrow">Practical · feature-extraction · WASM</p>
+      <h1>Two jobs you'd actually ship</h1>
+      <p class="lede">
+        Once text is a vector, features become arithmetic. Here are two, running entirely on your device with mxbai:
+        <strong>prompted semantic search</strong> (the retrieval-prompt convention, done right) and
+        <strong>near-duplicate detection</strong> (collapse "same thing, different words"). Both are the backbone of
+        real search and data-cleaning pipelines.
+      </p>
+    </header>
+
+    <div id="model-loader"></div>
+
+    <section class="panel" aria-labelledby="corpus-h">
+      <h3 id="corpus-h">Your text (one item per line)</h3>
+      <p class="muted">Everything below runs on these lines. Documents are embedded plain; only the query gets the retrieval prompt.</p>
+      <textarea id="corpus" rows="10" disabled>My password reset email never arrived.
+I can't log into my account.
+Two-factor authentication is blocking me.
+How do I get a refund for my order?
+The item arrived damaged, I want my money back.
+Can I return this within 30 days?
+The mobile app crashes when I open settings.
+The app freezes on the loading screen.
+Your checkout page throws an error on payment.
+I love the new dashboard, it's beautiful.
+The onboarding flow was smooth and clear.
+Great product, works exactly as advertised.</textarea>
+    </section>
+
+    <section class="panel" aria-labelledby="search-h">
+      <h3 id="search-h">1 · Prompted semantic search</h3>
+      <p class="muted">Rank every line by meaning against a query — the query is embedded with the retrieval prompt, the documents plain.</p>
+      <div style="display:flex;gap:.4rem;flex-wrap:wrap;align-items:center;margin:.4rem 0">
+        <input id="q" type="text" value="I'm locked out and can't sign in" style="flex:1;min-inline-size:14rem" disabled />
+        <button id="searchBtn" type="button" disabled>Search</button>
+      </div>
+      <label style="display:flex;gap:.4rem;align-items:center;font-size:.8rem;margin:.2rem 0"><input type="checkbox" id="usePrefix" checked /> Use the retrieval prompt on the query</label>
+      <div class="sent-list" id="searchOut" aria-live="polite"></div>
+    </section>
+
+    <section class="panel" aria-labelledby="dedup-h">
+      <h3 id="dedup-h">2 · Near-duplicate detection</h3>
+      <p class="muted">Find every pair of lines whose cosine similarity is above the threshold — the "same intent, different
+        words" pairs a keyword match would miss. Drag the threshold to tighten or loosen what counts as a duplicate.</p>
+      <div class="slider-row">
+        <label for="dupT">Duplicate threshold</label>
+        <input type="range" id="dupT" min="0.5" max="0.98" step="0.01" value="0.72" />
+        <output id="dupOut" for="dupT">0.72</output>
+        <button id="dupBtn" type="button" disabled>Find duplicates</button>
+      </div>
+      <div class="sent-list" id="dupOutList" aria-live="polite"></div>
+    </section>
+
+    <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>last op <b id="rMs">–</b></span></div>
+
+    <p class="crumbs" style="margin-top:1.5rem"><a href="../wild/">Next: Wild — the Matryoshka explorer →</a></p>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via 🤗 Transformers.js.
+      <a href="../">← Back to mxbai-embed</a>
+    </footer>
+
+    <script type="module">
+      import { MxbaiEngine, asQuery, l2normalize, cosine, parseLines, renderRanked, escapeHTML, MXBAI_CSS } from "../mxbai.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = MXBAI_CSS + `.dup { border:1px solid var(--border); border-inline-start:4px solid var(--accent); border-radius:8px; background:var(--bg-raised); padding:.5rem .7rem; margin:.5rem 0; }
+        .dup .sc { font-family:var(--font-mono); color:var(--muted); font-size:.78rem; }`;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new MxbaiEngine();
+      let cache = null; // { key, texts, unit }
+
+      $("dupT").addEventListener("input", () => { $("dupOut").textContent = (+$("dupT").value).toFixed(2); });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "mixedbread-ai/mxbai-embed-large-v1", runtime: "transformers.js", dtype: "q8", sizeMB: 337, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { for (const id of ["corpus", "q", "searchBtn", "dupT", "dupBtn"]) $(id).disabled = false; },
+      });
+
+      async function embed(texts) { const r = await engine.embed(texts); return { ...r, unit: r.vectors.map(l2normalize) }; }
+      async function embedCorpus() {
+        if (cache && cache.key === $("corpus").value) return cache;
+        const r = await embed(parseLines($("corpus").value));
+        cache = { key: $("corpus").value, texts: r.texts, unit: r.unit };
+        $("readout").hidden = false; $("rBackend").textContent = r.device.toUpperCase(); $("rMs").textContent = r.ms + " ms";
+        return cache;
+      }
+
+      $("searchBtn").addEventListener("click", async () => {
+        $("searchBtn").disabled = true;
+        try {
+          const c = await embedCorpus();
+          const raw = $("q").value.trim() || "help";
+          const qr = await embed([$("usePrefix").checked ? asQuery(raw) : raw]);
+          const hits = c.texts.map((text, i) => ({ text, score: cosine(qr.unit[0], c.unit[i]) })).sort((a, b) => b.score - a.score);
+          renderRanked($("searchOut"), hits);
+        } catch (e) { $("searchOut").textContent = "Failed: " + e.message; }
+        finally { $("searchBtn").disabled = false; }
+      });
+
+      $("dupBtn").addEventListener("click", async () => {
+        $("dupBtn").disabled = true;
+        try {
+          const c = await embedCorpus();
+          const t = +$("dupT").value;
+          const pairs = [];
+          for (let i = 0; i < c.texts.length; i++) for (let j = i + 1; j < c.texts.length; j++) {
+            const s = cosine(c.unit[i], c.unit[j]);
+            if (s >= t) pairs.push({ i, j, s });
+          }
+          pairs.sort((a, b) => b.s - a.s);
+          if (!pairs.length) { $("dupOutList").innerHTML = `<p class="muted" style="font-size:.85rem">No pairs above ${t.toFixed(2)}. Lower the threshold.</p>`; return; }
+          $("dupOutList").innerHTML = pairs.map((p) => `<div class="dup"><span class="sc">cosine ${p.s.toFixed(3)}</span><br>${escapeHTML(c.texts[p.i])}<br>${escapeHTML(c.texts[p.j])}</div>`).join("");
+        } catch (e) { $("dupOutList").textContent = "Failed: " + e.message; }
+        finally { $("dupBtn").disabled = false; }
+      });
+    </script>
+  </body>
+</html>

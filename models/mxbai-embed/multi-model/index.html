@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>mxbai-embed × MS MARCO reranker — retrieve, then rerank · Web AI Showcase</title>
+    <meta name="description" content="The two-stage retrieval pattern that powers modern search: mxbai-embed fetches a shortlist by meaning, then a cross-encoder reranker re-scores the top few for precision — both running locally in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🔗</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">mxbai-embed</a> · <a href="/web-ai-showcase/models/ms-marco-reranker/">MS MARCO reranker</a></p>
+
+    <header>
+      <p class="eyebrow">use case · multi-model</p>
+      <h1>Retrieve with mxbai, then rerank with a cross-encoder</h1>
+      <p class="lede">
+        This is how production search actually works. Stage one: <strong>mxbai-embed</strong> is a <em>bi-encoder</em>
+        — it embeds the query and every document independently, so it's fast enough to scan a whole corpus and fetch
+        a shortlist. Stage two: an <strong>MS MARCO cross-encoder</strong> reads the query and each shortlisted
+        passage <em>together</em>, so it judges relevance more precisely — but is too slow to run over everything.
+        Retrieve wide and cheap, then rerank narrow and sharp. Both on your device.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="mxbai-loader"></div>
+      <div id="rerank-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">Corpus (one passage per line)
+        <textarea id="corpus" rows="9" disabled>To reset your password, open Settings and choose "Security", then "Reset password".
+Our return policy accepts unopened items within 30 days for a full refund.
+The mobile app requires iOS 15 or Android 11 and above.
+Two-factor authentication can be enabled under Settings → Security.
+If the checkout page errors, clear your cookies and retry the payment.
+Business-tier plans include priority support and a dedicated account manager.
+Downtime last Tuesday was caused by a database failover and has been resolved.
+You can export your data as CSV or JSON from the Account page.
+Gift cards are non-refundable but never expire.
+The referral programme credits $10 for each friend who signs up.</textarea>
+      </label>
+      <div style="display:flex;gap:.4rem;flex-wrap:wrap;align-items:center;margin:.5rem 0">
+        <input id="q" type="text" value="how do I turn on 2FA?" style="flex:1;min-inline-size:14rem" disabled />
+        <label style="font-size:.8rem">shortlist k <input type="number" id="k" value="4" min="2" max="8" style="inline-size:4rem" /></label>
+        <button id="run" type="button" disabled>Retrieve &amp; rerank</button>
+      </div>
+
+      <div class="grid-2">
+        <div>
+          <h4 style="margin:.4rem 0">Stage 1 — mxbai shortlist (bi-encoder, cosine)</h4>
+          <div class="sent-list" id="retrieveOut" aria-live="polite"></div>
+        </div>
+        <div>
+          <h4 style="margin:.4rem 0">Stage 2 — cross-encoder rerank of that shortlist</h4>
+          <div class="sent-list" id="rerankOut" aria-live="polite"></div>
+        </div>
+      </div>
+      <div class="readout" id="readout" hidden><span>retrieve <b id="rRet">–</b></span><span>rerank <b id="rRer">–</b></span><span>corpus <b id="rN">–</b></span><span>shortlist <b id="rK">–</b></span></div>
+    </section>
+
+    <section aria-labelledby="how-h">
+      <h2 id="how-h">How the two connect</h2>
+      <p>
+        mxbai's independent query/document vectors make stage one a cheap cosine scan — great recall, approximate
+        precision. The cross-encoder can't be precomputed (it needs the query and passage together), so you only run
+        it on mxbai's top-k. The reranker's output order is the final ranking; watch it promote a passage mxbai
+        ranked lower when the fine-grained query↔passage attention finds a better match. That's the recall-then-
+        precision division of labour behind modern retrieval and RAG.
+      </p>
+    </section>
+
+    <p class="crumbs" style="margin-top:1.5rem"><a href="../">← mxbai-embed</a> · <a href="/web-ai-showcase/models/ms-marco-reranker/">MS MARCO reranker →</a></p>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via 🤗 Transformers.js.
+      <a href="../">← Back to mxbai-embed</a>
+    </footer>
+
+    <script type="module">
+      import { MxbaiEngine, asQuery, l2normalize, cosine, parseLines, renderRanked, escapeHTML, MXBAI_CSS } from "../mxbai.js";
+      import { RerankEngine, renderResults, RERANK_CSS } from "/web-ai-showcase/models/ms-marco-reranker/rerank.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style"); style.textContent = MXBAI_CSS + RERANK_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const mxbai = new MxbaiEngine();
+      const reranker = new RerankEngine();
+      let mxReady = false, rrReady = false;
+
+      function maybeEnable() { if (mxReady && rrReady) { $("run").disabled = false; $("status").textContent = "Both models ready — retrieve & rerank."; $("status").classList.add("ok"); } }
+      createModelLoader({
+        mount: $("mxbai-loader"),
+        model: { modelId: "mixedbread-ai/mxbai-embed-large-v1", runtime: "transformers.js", dtype: "q8", sizeMB: 337, requiresWebGPU: false },
+        load: async (onProgress) => { await mxbai.load(onProgress); return mxbai; },
+        onReady: () => { mxReady = true; maybeEnable(); },
+      });
+      createModelLoader({
+        mount: $("rerank-loader"),
+        model: { modelId: "Xenova/ms-marco-MiniLM-L-6-v2", runtime: "transformers.js", dtype: "q8", sizeMB: 90, requiresWebGPU: false },
+        load: (onProgress) => reranker.load(onProgress),
+        onReady: () => { rrReady = true; maybeEnable(); },
+      });
+
+      async function embed(texts) { const r = await mxbai.embed(texts); return { ...r, unit: r.vectors.map(l2normalize) }; }
+
+      $("run").addEventListener("click", async () => {
+        const texts = parseLines($("corpus").value);
+        const q = $("q").value.trim();
+        const k = Math.max(2, Math.min(+$("k").value || 4, texts.length));
+        if (texts.length < 2 || !q) { $("status").textContent = "Add a query and at least two passages."; return; }
+        $("run").disabled = true; $("status").classList.remove("err"); $("status").textContent = "Stage 1 — retrieving with mxbai…";
+        try {
+          const [qr, dr] = await Promise.all([embed([asQuery(q)]), embed(texts)]);
+          const scored = dr.texts.map((text, i) => ({ text, score: cosine(qr.unit[0], dr.unit[i]) })).sort((a, b) => b.score - a.score);
+          const shortlist = scored.slice(0, k);
+          renderRanked($("retrieveOut"), shortlist);
+          $("status").textContent = "Stage 2 — reranking the shortlist with the cross-encoder…";
+          const rr = await reranker.rerank(q, shortlist.map((s) => s.text));
+          renderResults($("rerankOut"), rr.results);
+          $("readout").hidden = false; $("rRet").textContent = dr.ms + " ms"; $("rRer").textContent = rr.ms + " ms"; $("rN").textContent = texts.length; $("rK").textContent = k;
+          $("status").textContent = "Done — compare the two orders. The reranker's order is the final ranking."; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>

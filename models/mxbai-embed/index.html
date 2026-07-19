@@ -1,0 +1,349 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>mxbai-embed-large-v1 — high-quality retrieval embeddings in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run Mixedbread's mxbai-embed-large-v1 locally: a 1024-dimensional retrieval embedder trained with the AnglE loss. Build a cosine matrix, run semantic search, see the retrieval-prompt A/B, and explore Matryoshka truncation (1024→512→256) — quality vs size, all on your device."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🍞</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">feature-extraction · text · WASM · ~337 MB</p>
+      <h1>mxbai-embed-large-v1 — a large, high-quality retriever</h1>
+      <p class="lede">
+        Mixedbread's flagship embedder turns a sentence into <strong>1024 numbers</strong> — a big, expressive point
+        in meaning space — and was trained with the <strong>AnglE</strong> objective to rank near the top of the MTEB
+        retrieval benchmark. It brings two conventions worth knowing: a <strong>retrieval prompt</strong> you prepend
+        to queries, and <strong>Matryoshka</strong> vectors you can safely truncate to trade quality for size. Type a
+        few lines, search by meaning, and watch both levers move the results. Nothing leaves your device.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="ab-table" style="margin-top:0">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/mixedbread-ai/mxbai-embed-large-v1" target="_blank" rel="noopener">mixedbread-ai/mxbai-embed-large-v1</a></td></tr>
+          <tr><th>Task / pipeline</th><td><code>feature-extraction</code></td></tr>
+          <tr><th>Architecture</th><td>BERT-large encoder (~335M params) → 1024-dimensional sentence embedding</td></tr>
+          <tr><th>Pooling</th><td>mask-aware <strong>mean pooling</strong>, then <strong>L2-normalize</strong></td></tr>
+          <tr><th>Retrieval prompt</th><td><em>queries only</em>: “Represent this sentence for searching relevant passages: ”</td></tr>
+          <tr><th>Trained with</th><td><a href="https://arxiv.org/abs/2309.12871" target="_blank" rel="noopener">AnglE loss</a> · supports <strong>Matryoshka</strong> truncation (1024→512→256…) and binary quantization</td></tr>
+          <tr><th>Quantization</th><td>q8 (8-bit) ONNX</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (runs anywhere; no WebGPU needed)</td></tr>
+          <tr><th>Download</th><td>~337 MB, cached after first load</td></tr>
+          <tr><th>License</th><td>Apache-2.0 (Mixedbread AI)</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">One sentence per line, then embed. The matrix is the cosine similarity between every pair
+        (1.00 = identical direction); the map is a 2D PCA of the 1024-d vectors. Then query below to rank the lines
+        by meaning — with the retrieval prompt on the query, the way mxbai is meant to be used.</p>
+
+      <div id="model-loader"></div>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
+        Sentences (one per line)
+        <textarea id="sentences" rows="7">How do I reset my account password?
+The login page keeps rejecting my credentials.
+Our refund policy allows returns within 30 days.
+Money back is available for a month after purchase.
+The Eiffel Tower is a landmark in Paris.
+I planted tomatoes and basil in the garden this spring.</textarea>
+      </label>
+      <div style="margin:.5rem 0;display:flex;gap:.4rem;flex-wrap:wrap">
+        <button id="run" type="button" disabled>Embed &amp; compare</button>
+        <button id="reset" type="button" class="secondary">Reset examples</button>
+      </div>
+      <p class="status" id="rowStatus" role="status" aria-live="polite" hidden></p>
+
+      <div class="grid-2">
+        <div>
+          <h3 style="margin-top:.4rem">Cosine similarity matrix</h3>
+          <div class="matrix-scroll" id="matrix" aria-live="polite"></div>
+        </div>
+        <div>
+          <h3 style="margin-top:.4rem">2D map (PCA)</h3>
+          <div id="projection" aria-live="polite"></div>
+          <p class="muted" id="explained" style="font-size:.78rem;font-family:var(--font-mono)"></p>
+        </div>
+      </div>
+
+      <div style="margin-top:1rem">
+        <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;max-inline-size:34rem">
+          Semantic search — rank the lines above by meaning
+          <span style="display:flex;gap:.4rem;flex-wrap:wrap">
+            <input id="query" type="text" value="I can't sign in" style="flex:1;min-inline-size:12rem" disabled />
+            <button id="search" type="button" disabled>Search</button>
+          </span>
+        </label>
+        <label style="display:flex;gap:.4rem;align-items:center;font-size:.8rem;margin:.4rem 0">
+          <input type="checkbox" id="usePrefix" checked />
+          Prepend the retrieval prompt to the query (recommended for mxbai)
+        </label>
+        <div class="sent-list" id="ranked" aria-live="polite"></div>
+      </div>
+
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+        <span>sentences <b id="rN">–</b></span>
+        <span>dims <b id="rDim">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside — the 1024-d vector, the prompt A/B, and Matryoshka</h3>
+      <p class="muted">
+        The encoder emits one 1024-number vector <em>per token</em>; mean pooling (mask-aware) collapses them to one
+        per sentence, then L2-normalize makes it a unit arrow so cosine is a dot product. Pick a sentence to see its
+        real vector and pre-normalization magnitude.
+      </p>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Embed some sentences above to inspect a vector.</div>
+      <div id="insideWrap" hidden>
+        <label style="font-size:.82rem;display:flex;gap:.4rem;align-items:center;flex-wrap:wrap">Inspect sentence <select id="pick"></select></label>
+        <div class="readout">
+          <span>dimensions <b>1024</b></span>
+          <span>pre-norm ‖v‖ <b id="iNorm">–</b></span>
+          <span>post-norm ‖v‖ <b>1.000</b></span>
+        </div>
+        <p class="muted" style="font-size:.78rem;margin:.3rem 0">First 128 of 1024 dimensions (blue = positive, orange = negative, brighter = larger magnitude):</p>
+        <div class="vec-strip" id="vecStrip"></div>
+      </div>
+
+      <hr style="border:0;border-top:1px solid var(--border);margin:1.2rem 0" />
+      <h4 style="margin:.2rem 0">A/B — does the retrieval prompt help?</h4>
+      <p class="muted">Embed the query below both ways — plain, and with the “Represent this sentence for searching
+        relevant passages: ” prefix — and rank the sentences above with each. The prefix usually pushes the truly
+        relevant lines up and the irrelevant ones down, widening the gap that makes retrieval work.</p>
+      <div style="display:flex;gap:.4rem;flex-wrap:wrap;align-items:center;margin:.4rem 0">
+        <input id="abQuery" type="text" value="I can't sign in to my account" style="flex:1;min-inline-size:14rem" disabled />
+        <button id="abRun" type="button" class="secondary" disabled>Compare with / without prompt</button>
+      </div>
+      <div id="abWrap" hidden style="overflow-x:auto"></div>
+
+      <hr style="border:0;border-top:1px solid var(--border);margin:1.2rem 0" />
+      <h4 style="margin:.2rem 0">Matryoshka — quality vs size</h4>
+      <p class="muted">mxbai's vector is trained so a leading slice is still a good embedding. Truncate 1024 → 512 →
+        256 → 128 → 64 (re-normalized) and see how much of the full-precision ranking survives at a fraction of the
+        storage. This is how you cut a vector database's footprint without re-embedding.</p>
+      <div style="display:flex;gap:.4rem;flex-wrap:wrap;align-items:center;margin:.4rem 0">
+        <button id="matRun" type="button" class="secondary" disabled>Run the size/quality sweep</button>
+        <span class="status" id="matStatus" role="status" aria-live="polite"></span>
+      </div>
+      <div id="matWrap" hidden style="overflow-x:auto"></div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        Embeddings power search, recommendations, dedup, clustering and RAG. mxbai's pitch is <em>quality</em>: a
+        large, MTEB-strong retriever you can still run in a tab, with two production levers baked in — the retrieval
+        prompt that sharpens query/document matching, and Matryoshka truncation that shrinks your index on demand.
+        And because it runs locally, the corpus and the queries never leave the device.
+      </p>
+      <ul>
+        <li><strong>High-quality semantic search</strong> — rank a corpus by meaning with a top-tier retriever, client-side.</li>
+        <li><strong>Prompted retrieval</strong> — the query prefix consistently improves ranking over embedding query and doc identically.</li>
+        <li><strong>Right-sized vector stores</strong> — truncate to 512 or 256 dims to halve or quarter storage with graceful quality loss.</li>
+        <li><strong>Retrieve-then-rerank</strong> — mxbai fetches a shortlist, a cross-encoder re-scores the top few for precision.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Two lines, one cosine number — and the retrieval prompt's effect, felt directly.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Prompted semantic search plus near-duplicate detection over your own text.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">A Matryoshka explorer: slide the dimension and watch quality vs size trade off live.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">mxbai retrieves a shortlist by meaning, then a cross-encoder reranker re-scores the top hits.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>Feature-extraction with mean pooling — and the one thing to remember is the query prompt:</p>
+      <pre><code>import { pipeline } from "@huggingface/transformers";
+
+const extract = await pipeline(
+  "feature-extraction",
+  "mixedbread-ai/mxbai-embed-large-v1",
+); // downloads + caches ~337 MB once
+
+const PROMPT = "Represent this sentence for searching relevant passages: ";
+
+// Prompt the QUERY; embed documents plain:
+const q = await extract([PROMPT + "how do I sign in?"], { pooling: "mean", normalize: true });
+const d = await extract(["the login page rejects my password"], { pooling: "mean", normalize: true });
+
+const sim = q.tolist()[0].reduce((s, x, i) =&gt; s + x * d.tolist()[0][i], 0); // cosine
+
+// Matryoshka: keep the first N dims, then re-normalize.
+function truncate(vec, n) { const v = vec.slice(0, n); const m = Math.hypot(...v); return v.map(x =&gt; x / m); }</code></pre>
+      <p class="muted">This page asks the worker for the <em>un</em>-normalized pooled vectors so “See inside” can
+        show the true magnitude and do Matryoshka truncation in JS. Inference runs in a Web Worker, so the matrix,
+        projection, A/B and size sweep never jank the page.</p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/mixedbread-ai/mxbai-embed-large-v1" target="_blank" rel="noopener">Model card — mixedbread-ai/mxbai-embed-large-v1</a></li>
+        <li><a href="https://www.mixedbread.com/blog/mxbai-embed-large-v1" target="_blank" rel="noopener">Mixedbread — mxbai-embed-large-v1 announcement</a></li>
+        <li><a href="https://arxiv.org/abs/2309.12871" target="_blank" rel="noopener">Paper — AnglE-optimized text embeddings (Li &amp; Li, 2023)</a></li>
+        <li><a href="https://huggingface.co/spaces/mteb/leaderboard" target="_blank" rel="noopener">MTEB leaderboard — how embedders are benchmarked</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import {
+        MxbaiEngine, RETRIEVAL_PREFIX, asQuery, MATRYOSHKA_DIMS, l2normalize, truncate, cosine, simMatrix,
+        pca2d, parseLines, renderMatrix, renderProjection, renderRanked, escapeHTML, MXBAI_CSS,
+      } from "./mxbai.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style"); style.textContent = MXBAI_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new MxbaiEngine();
+      const DEFAULT = $("sentences").value;
+      let last = null; // { texts, raw:number[][], unit:number[][], norms, dim }
+
+      $("reset").addEventListener("click", () => { $("sentences").value = DEFAULT; });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "mixedbread-ai/mxbai-embed-large-v1", runtime: "transformers.js", dtype: "q8", sizeMB: 337, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { for (const id of ["run", "query", "search", "abQuery", "abRun", "matRun"]) $(id).disabled = false; },
+      });
+
+      // Embed helper → returns { texts, raw, unit, norms, dim, ms, device }
+      async function embed(texts) {
+        const r = await engine.embed(texts);
+        return { ...r, unit: r.vectors.map(l2normalize) };
+      }
+
+      $("run").addEventListener("click", run);
+      async function run() {
+        const texts = parseLines($("sentences").value);
+        if (texts.length < 2) { $("rowStatus").hidden = false; $("rowStatus").textContent = "Give at least two distinct sentences."; $("rowStatus").classList.add("err"); return; }
+        $("rowStatus").hidden = false; $("rowStatus").classList.remove("err"); $("rowStatus").textContent = "Embedding…"; $("run").disabled = true;
+        try {
+          const r = await embed(texts);
+          last = r;
+          renderMatrix($("matrix"), simMatrix(r.unit), r.texts);
+          const { points, explained } = pca2d(r.unit);
+          renderProjection($("projection"), points, r.texts);
+          $("explained").textContent = `PC1+PC2 explain ${(explained * 100).toFixed(0)}% of the variance`;
+          $("readout").hidden = false; $("rBackend").textContent = r.device.toUpperCase(); $("rMs").textContent = r.ms + " ms"; $("rN").textContent = r.texts.length; $("rDim").textContent = r.dim;
+          fillInside(r);
+          $("rowStatus").textContent = "Done."; $("rowStatus").classList.add("ok");
+        } catch (err) { $("rowStatus").textContent = "Embedding failed: " + err.message; $("rowStatus").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      }
+
+      $("search").addEventListener("click", search);
+      $("query").addEventListener("keydown", (e) => { if (e.key === "Enter") search(); });
+      async function search() {
+        const q = $("query").value.trim();
+        const texts = parseLines($("sentences").value);
+        if (!q || texts.length < 1) return;
+        $("search").disabled = true;
+        try {
+          const qText = $("usePrefix").checked ? asQuery(q) : q;
+          const [qr, dr] = await Promise.all([embed([qText]), embed(texts)]);
+          const qv = qr.unit[0];
+          const hits = dr.texts.map((text, i) => ({ text, score: cosine(qv, dr.unit[i]) })).sort((a, b) => b.score - a.score);
+          renderRanked($("ranked"), hits);
+        } catch (err) { $("ranked").textContent = "Search failed: " + err.message; }
+        finally { $("search").disabled = false; }
+      }
+
+      function fillInside(r) {
+        $("insideEmpty").hidden = true; $("insideWrap").hidden = false;
+        $("pick").replaceChildren(...r.texts.map((t, i) => { const o = document.createElement("option"); o.value = String(i); o.textContent = `S${i + 1} — ${t.length > 40 ? t.slice(0, 39) + "…" : t}`; return o; }));
+        showVector(0);
+      }
+      $("pick").addEventListener("change", (e) => showVector(+e.target.value));
+      function showVector(i) {
+        if (!last) return;
+        const v = last.unit[i];
+        $("iNorm").textContent = last.norms[i].toFixed(3);
+        const maxAbs = Math.max(...v.map(Math.abs)) || 1;
+        $("vecStrip").replaceChildren(...v.slice(0, 128).map((val) => {
+          const cell = document.createElement("span"); cell.className = "vec-cell";
+          const t = Math.abs(val) / maxAbs; const hue = val >= 0 ? "var(--accent)" : "var(--warn)";
+          cell.style.background = `color-mix(in srgb, ${hue} ${(t * 100).toFixed(0)}%, var(--bg-raised))`;
+          cell.title = val.toFixed(4);
+          return cell;
+        }));
+      }
+
+      // ---- A/B prompt ----
+      $("abRun").addEventListener("click", async () => {
+        const q = $("abQuery").value.trim();
+        const texts = parseLines($("sentences").value);
+        if (!q || texts.length < 2) return;
+        $("abRun").disabled = true;
+        try {
+          const [plain, prompted, dr] = await Promise.all([embed([q]), embed([asQuery(q)]), embed(texts)]);
+          const rank = (qv) => dr.texts.map((text, i) => ({ text, score: cosine(qv, dr.unit[i]) })).sort((a, b) => b.score - a.score);
+          const A = rank(plain.unit[0]), B = rank(prompted.unit[0]);
+          const rowFor = (t) => ({ a: A.find((x) => x.text === t).score, b: B.find((x) => x.text === t).score });
+          const body = dr.texts.map((t) => { const { a, b } = rowFor(t); const up = b > a; return `<tr><td>${escapeHTML(t.length > 46 ? t.slice(0, 45) + "…" : t)}</td><td>${a.toFixed(3)}</td><td class="${up ? "win" : ""}">${b.toFixed(3)} ${up ? "▲" : ""}</td></tr>`; }).join("");
+          $("abWrap").innerHTML = `<table class="ab-table"><thead><tr><th>Sentence</th><th>plain query</th><th>+ retrieval prompt</th></tr></thead><tbody>${body}</tbody></table>
+            <p class="muted" style="font-size:.76rem;margin-top:.4rem">Query: “${escapeHTML(q)}”. ▲ marks a score the prompt raised. A good prompt lifts the relevant lines relative to the noise.</p>`;
+          $("abWrap").hidden = false;
+        } catch (err) { $("abWrap").hidden = false; $("abWrap").textContent = "A/B failed: " + err.message; }
+        finally { $("abRun").disabled = false; }
+      });
+
+      // ---- Matryoshka sweep ----
+      $("matRun").addEventListener("click", async () => {
+        const texts = parseLines($("sentences").value);
+        const q = $("query").value.trim() || "I can't sign in";
+        if (texts.length < 2) { $("matStatus").textContent = "Add at least two sentences above."; return; }
+        $("matRun").disabled = true; $("matStatus").textContent = "Embedding at full size, then truncating…";
+        try {
+          const [qr, dr] = await Promise.all([embed([asQuery(q)]), embed(texts)]);
+          // Full-precision ranking is the reference order.
+          const full = dr.texts.map((text, i) => ({ i, text, score: cosine(qr.unit[0], dr.unit[i]) })).sort((a, b) => b.score - a.score);
+          const refOrder = full.map((h) => h.i);
+          const rows = MATRYOSHKA_DIMS.map((dim) => {
+            const qT = truncate(qr.vectors[0], dim);
+            const scored = dr.texts.map((text, i) => ({ i, score: cosine(qT, truncate(dr.vectors[i], dim)) })).sort((a, b) => b.score - a.score);
+            const order = scored.map((h) => h.i);
+            const topSame = order[0] === refOrder[0];
+            // Rank agreement: fraction of items whose position matches the full-size ranking.
+            let agree = 0; for (let k = 0; k < order.length; k++) if (order[k] === refOrder[k]) agree++;
+            const bytes = dim; // 1 byte/dim at int8 — the storage story
+            return { dim, topSame, agree: agree / order.length, topText: dr.texts[order[0]], bytesRel: dim / 1024 };
+          });
+          const body = rows.map((r) => `<tr><td>${r.dim}-d</td><td>${(r.bytesRel * 100).toFixed(0)}%</td><td class="${r.topSame ? "win" : ""}">${r.topSame ? "same ✓" : "changed"}</td><td>${(r.agree * 100).toFixed(0)}%</td><td>${escapeHTML(r.topText.length > 40 ? r.topText.slice(0, 39) + "…" : r.topText)}</td></tr>`).join("");
+          $("matWrap").innerHTML = `<table class="mat-table"><thead><tr><th>dims</th><th>rel. size</th><th>top hit vs full</th><th>rank agreement</th><th>top hit</th></tr></thead><tbody>${body}</tbody></table>
+            <p class="muted" style="font-size:.76rem;margin-top:.4rem">Query: “${escapeHTML(q)}”. Truncating to 512-d halves storage; watch how far you can cut before the top hit or the ordering changes.</p>`;
+          $("matWrap").hidden = false; $("matStatus").textContent = "";
+        } catch (err) { $("matStatus").textContent = "Sweep failed: " + err.message; $("matStatus").classList.add("err"); }
+        finally { $("matRun").disabled = false; }
+      });
+    </script>
+  </body>
+</html>
