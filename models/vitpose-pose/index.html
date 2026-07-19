@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ViTPose — transformer human pose estimation in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run ViTPose locally in your browser: give it a person and the plain-transformer pose estimator returns 17 COCO keypoints from per-joint heatmaps — with the heatmap → arg-max decode you can see inside."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🕺</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">keypoint-detection · vision · WASM · ~87 MB</p>
+      <h1>ViTPose — a plain transformer that finds 17 body keypoints</h1>
+      <p class="lede">
+        ViTPose skips the hand-built pose architecture: it's a plain Vision Transformer with a tiny
+        decoder head. Give it a person and it emits one <strong>heatmap per keypoint</strong> — the
+        joint is simply the hottest cell. This is a <em>top-down</em> estimator (a different design from
+        the <a href="/web-ai-showcase/models/pose-landmarker/">MediaPipe PoseLandmarker</a>): feed it a
+        person box, get back 17 COCO keypoints and a skeleton, all on your device.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/onnx-community/vitpose-base-simple" target="_blank" rel="noopener">onnx-community/vitpose-base-simple</a></td></tr>
+          <tr><th>Task / class</th><td><code>keypoint-detection</code> — <code>VitPoseForPoseEstimation</code></td></tr>
+          <tr><th>Architecture</th><td>ViT-Base backbone + classic decoder head → 17 keypoint heatmaps</td></tr>
+          <tr><th>Output</th><td>Per person: 17 COCO keypoints (x, y in image pixels) + a confidence each; raw 64×48 heatmaps</td></tr>
+          <tr><th>Approach</th><td>Top-down — needs a person box (a full-image box, or one per person from a detector)</td></tr>
+          <tr><th>Quantization</th><td>q8 (8-bit) ONNX</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (runs anywhere; no WebGPU needed)</td></tr>
+          <tr><th>Download</th><td>~87 MB, cached after first load</td></tr>
+          <tr><th>License</th><td>Apache-2.0 (ViTPose, usyd-community / onnx-community export)</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers, Canvas, FileReader — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Pick a sample or drop a photo of a person, hit Detect pose, and the 17-point skeleton is drawn straight onto the canvas. The slider hides low-confidence joints.</p>
+
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image of a person">
+        <span id="dropText">Drop a photo of a person here, or click to choose</span>
+        <input type="file" id="file" accept="image/*" hidden />
+      </div>
+      <div class="sample-strip" id="samples" aria-label="Sample photos">
+        <img class="sample-thumb active" src="sample-yoga.jpg" data-src="sample-yoga.jpg" alt="A person in a yoga warrior pose on a beach" tabindex="0" role="button" />
+        <img class="sample-thumb" src="sample-athlete.jpg" data-src="sample-athlete.jpg" alt="An athlete crouching to tie a shoe" tabindex="0" role="button" />
+        <img class="sample-thumb" src="sample-players.jpg" data-src="sample-players.jpg" alt="Football players on a pitch" tabindex="0" role="button" />
+      </div>
+
+      <div class="field-row">
+        <button id="run" type="button" disabled>Detect pose</button>
+      </div>
+
+      <div class="slider-row">
+        <label for="conf">Min confidence</label>
+        <input type="range" id="conf" min="0" max="0.9" step="0.05" value="0.3" />
+        <output id="confOut" for="conf">0.30</output>
+      </div>
+
+      <div class="canvas-wrap">
+        <canvas id="stage" class="stage-canvas" tabindex="0" aria-label="Result: the photo with the 17-point body skeleton drawn on it"></canvas>
+      </div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+        <span>people <b id="rPeople">–</b></span>
+        <span>visible joints <b id="rVisible">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside — heatmap → arg-max</h3>
+      <p class="muted">
+        ViTPose doesn't regress coordinates directly. For each of the 17 keypoints it outputs a small
+        <strong>64×48 heatmap</strong> — a probability surface over the person box — and the keypoint is
+        the <strong>arg-max</strong> (the single hottest cell), rescaled back to image pixels. The
+        confidence is that peak value. Pick a joint to see its real heatmap and where the peak landed.
+      </p>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Detect a pose to see its keypoint heatmaps.</div>
+      <div id="insideWrap" hidden>
+        <div class="field-row">
+          <label for="kpSel">Keypoint heatmap
+            <select id="kpSel"></select>
+          </label>
+        </div>
+        <div class="hm-wrap">
+          <div>
+            <canvas id="hm" class="hm-canvas" aria-label="Raw heatmap for the selected keypoint, with the arg-max peak circled"></canvas>
+            <p class="muted" id="hmNote" style="font-size:.78rem;margin-top:.3rem"></p>
+          </div>
+          <table class="inside-table" style="flex:1 1 260px">
+            <thead><tr><th>#</th><th>keypoint</th><th>confidence</th></tr></thead>
+            <tbody id="insideRows"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        Pose estimation used to mean a depth camera or a cloud vision API. ViTPose shows that a plain
+        transformer — the same ViT family behind image classification — is a state-of-the-art pose
+        estimator with almost no task-specific machinery. That makes "where is this person's body?" a
+        local function call, private and offline.
+      </p>
+      <ul>
+        <li><strong>Fitness &amp; physio</strong> — check squat depth, plank alignment, or arm angle from joint coordinates, with nothing uploaded.</li>
+        <li><strong>Sports &amp; dance analysis</strong> — compare a learner's joints to a target and score the match, frame by frame.</li>
+        <li><strong>Ergonomics &amp; safety</strong> — flag slouching or unsafe lifting posture from shoulder/hip/knee angles, on-device.</li>
+        <li><strong>Crowd pose</strong> — pair a person detector with ViTPose to estimate everyone in a scene, each from their own crop.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Pose a person and read all 17 COCO keypoints, confidences, and the box ViTPose worked from.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Form &amp; posture analysis — compute joint angles (elbow, knee, back) and get plain-language feedback.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">A stick-figure puppet: drop a photo and drive a clean skeleton avatar from the detected joints.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">Detector → ViTPose: find every person with an object detector, then estimate each one's pose from its own crop.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>ViTPose isn't a one-line pipeline — it's a model + image processor. You pass a person box; the processor crops and normalises, the model emits heatmaps, and the processor decodes them into keypoints:</p>
+      <pre><code>import { AutoModel, AutoImageProcessor, RawImage } from "@huggingface/transformers";
+
+const model = await AutoModel.from_pretrained(
+  "onnx-community/vitpose-base-simple", { dtype: "q8" });        // ~87 MB, cached once
+const processor = await AutoImageProcessor.from_pretrained(
+  "onnx-community/vitpose-base-simple");
+
+const image = await RawImage.read(url);
+const boxes = [[[0, 0, image.width, image.height]]];             // [image][person][x,y,w,h]
+const inputs = await processor(image, { boxes });
+const { heatmaps } = await model(inputs);                         // [1, 17, 64, 48]
+const [person] = processor.post_process_pose_estimation(heatmaps, boxes)[0];
+// person.keypoints → [[x,y] × 17] in image pixels · person.scores → 17 confidences</code></pre>
+      <p class="muted">This page runs exactly that in a Web Worker, and keeps the raw <code>heatmaps</code> tensor so "See inside" can show the arg-max decode. For multiple people, pass one box per person (see the multi-model demo).</p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/onnx-community/vitpose-base-simple" target="_blank" rel="noopener">Model card — onnx-community/vitpose-base-simple</a></li>
+        <li><a href="https://huggingface.co/docs/transformers/model_doc/vitpose" target="_blank" rel="noopener">ViTPose in Transformers</a></li>
+        <li><a href="https://arxiv.org/abs/2204.12484" target="_blank" rel="noopener">Paper — ViTPose: Simple Vision Transformer Baselines for Human Pose Estimation (arXiv:2204.12484)</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { VitPoseEngine, COCO_KEYPOINTS, drawPoses, drawHeatmap, decodeImage, fileToDataURL, escapeHTML, VITPOSE_CSS } from "./vitpose.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style"); style.textContent = VITPOSE_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new VitPoseEngine();
+      let currentImg = null, currentURL = null, lastResult = null;
+
+      function setStatus(msg, cls) { $("status").textContent = msg; $("status").classList.remove("err","ok"); if (cls) $("status").classList.add(cls); }
+      function minConf() { return +$("conf").value; }
+
+      // Populate the keypoint selector once.
+      $("kpSel").replaceChildren(...COCO_KEYPOINTS.map((n, i) => {
+        const o = document.createElement("option"); o.value = i; o.textContent = `${i} · ${n}`; return o;
+      }));
+
+      async function useURL(url, previewSrc) {
+        currentURL = url;
+        currentImg = await decodeImage(previewSrc ?? url);
+        lastResult = null;
+        const c = $("stage"); c.width = currentImg.naturalWidth; c.height = currentImg.naturalHeight;
+        c.getContext("2d").drawImage(currentImg, 0, 0);
+        $("readout").hidden = true; $("insideWrap").hidden = true; $("insideEmpty").hidden = false;
+        $("run").disabled = !engine.ready;
+      }
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        const src = el.dataset.src;
+        const blob = await (await fetch(src)).blob();
+        const url = await fileToDataURL(new File([blob], "sample", { type: blob.type }));
+        await useURL(url, src);
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } });
+      }
+
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover","dragenter"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave","drop"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) {
+        for (const t of $("samples").children) t.classList.remove("active");
+        $("dropText").textContent = f.name;
+        const url = await fileToDataURL(f);
+        await useURL(url);
+      }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", e => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
+
+      $("conf").addEventListener("input", () => {
+        $("confOut").textContent = minConf().toFixed(2);
+        if (lastResult) renderResult(lastResult);
+      });
+      $("kpSel").addEventListener("change", () => lastResult && renderHeatmap(lastResult));
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/vitpose-base-simple", runtime: "transformers.js", dtype: "q8", sizeMB: 87, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("run").disabled = !currentImg; setStatus("Model ready.", "ok"); },
+      });
+      pickSample($("samples").firstElementChild);
+
+      function renderHeatmap(r) {
+        const k = +$("kpSel").value;
+        const info = drawHeatmap($("hm"), r.heatmaps, r.heatmapDims, k);
+        const conf = r.persons[0]?.scores[k] ?? 0;
+        $("hmNote").textContent = `${COCO_KEYPOINTS[k]}: peak at heatmap cell (${info.argX}, ${info.argY}) · confidence ${conf.toFixed(3)}. The white circle is the arg-max ViTPose decodes into the joint.`;
+      }
+
+      function renderResult(r) {
+        lastResult = r;
+        drawPoses($("stage"), currentImg, r.persons, { minScore: minConf() });
+        const n = r.persons.length;
+        const visible = n ? r.persons[0].scores.filter(s => s >= minConf()).length : 0;
+        $("rBackend").textContent = r.device.toUpperCase();
+        $("rMs").textContent = r.ms + " ms";
+        $("rPeople").textContent = n;
+        $("rVisible").textContent = visible + " / 17";
+        $("readout").hidden = false;
+        if (n > 0) {
+          $("insideEmpty").hidden = true; $("insideWrap").hidden = false;
+          const scores = r.persons[0].scores;
+          $("insideRows").replaceChildren(...scores.map((s, i) => {
+            const tr = document.createElement("tr");
+            const dim = s < minConf();
+            tr.style.opacity = dim ? "0.45" : "1";
+            tr.innerHTML = `<td>${i}</td><td>${escapeHTML(COCO_KEYPOINTS[i])}</td>
+              <td class="conf-cell"><span class="conf-bar" style="inline-size:${(s*60).toFixed(0)}px"></span>${s.toFixed(3)}</td>`;
+            return tr;
+          }));
+          renderHeatmap(r);
+        } else {
+          $("insideEmpty").hidden = false; $("insideWrap").hidden = true;
+          $("insideEmpty").textContent = "No person found in this image.";
+        }
+      }
+
+      $("run").addEventListener("click", async () => {
+        if (!engine.ready || !currentURL) return;
+        $("run").disabled = true; setStatus("Estimating pose…");
+        try {
+          const r = await engine.estimate(currentURL);
+          renderResult(r);
+          setStatus(`Found ${r.persons.length} person(s).`, "ok");
+        } catch (e) { setStatus("Pose estimation failed: " + e.message, "err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>

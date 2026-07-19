@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ViTPose practical — form & posture analysis · Web AI Showcase</title>
+    <meta name="description" content="Turn ViTPose keypoints into joint angles: elbow, knee, hip, and back angles computed on-device, with plain-language form feedback — the kind of thing a fitness or physio app would ship." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🕺</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">ViTPose</a></p>
+
+    <header>
+      <p class="eyebrow">Practical · form &amp; posture analysis</p>
+      <h1>From keypoints to joint angles</h1>
+      <p class="lede">
+        Keypoints alone don't tell a coach much — <strong>angles</strong> do. This turns ViTPose's 17
+        points into the joint angles a fitness or physio app cares about (elbow, knee, hip, back), and
+        gives plain-language feedback. Everything is computed from the coordinates on your device.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Analyse a pose</h3>
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image of a person">
+        <span id="dropText">Drop a full-body photo, or click to choose</span>
+        <input type="file" id="file" accept="image/*" hidden />
+      </div>
+      <div class="sample-strip" id="samples" aria-label="Sample photos">
+        <img class="sample-thumb active" src="../sample-athlete.jpg" data-src="../sample-athlete.jpg" alt="An athlete crouching to tie a shoe" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-yoga.jpg" data-src="../sample-yoga.jpg" alt="A person in a yoga warrior pose" tabindex="0" role="button" />
+      </div>
+      <div class="field-row"><button id="run" type="button" disabled>Analyse form</button></div>
+
+      <div class="canvas-wrap">
+        <canvas id="stage" class="stage-canvas" tabindex="0" aria-label="The photo with the skeleton and measured joint angles drawn on it"></canvas>
+      </div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="ang-h">
+      <h3 id="ang-h">Measured angles &amp; feedback</h3>
+      <p class="muted">An angle is the turn at joint B in the chain A→B→C (e.g. shoulder→elbow→wrist). Low-confidence joints are skipped.</p>
+      <p class="muted" id="angEmpty" style="font-family:var(--font-mono);font-size:.8rem">Analyse a pose to compute joint angles.</p>
+      <div class="metric-grid" id="angGrid" hidden></div>
+      <ul id="feedback"></ul>
+    </section>
+
+    <section aria-labelledby="next-h">
+      <h2 id="next-h">Next</h2>
+      <div class="model-grid">
+        <a class="model-card" href="../basics/"><h3>← Basics</h3><p class="muted">Read the raw 17 keypoints.</p></a>
+        <a class="model-card" href="../wild/"><h3>Wild →</h3><p class="muted">Stick-figure puppet from the skeleton.</p></a>
+        <a class="model-card" href="../multi-model/"><h3>Multi-model →</h3><p class="muted">Detector → ViTPose for a crowd.</p></a>
+      </div>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="../">← Back to ViTPose</a>
+    </footer>
+
+    <script type="module">
+      import { VitPoseEngine, COCO_KEYPOINTS, drawPoses, decodeImage, fileToDataURL, escapeHTML, VITPOSE_CSS } from "../vitpose.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = VITPOSE_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new VitPoseEngine();
+      let currentImg = null, currentURL = null;
+      const MIN = 0.3;
+      function setStatus(m, c) { $("status").textContent = m; $("status").classList.remove("err","ok"); if (c) $("status").classList.add(c); }
+
+      // KP indices: 5 Lsho 6 Rsho 7 Lelb 8 Relb 9 Lwri 10 Rwri 11 Lhip 12 Rhip 13 Lknee 14 Rknee 15 Lank 16 Rank
+      function angle(a, b, c) { // degrees at b
+        const v1x = a[0]-b[0], v1y = a[1]-b[1], v2x = c[0]-b[0], v2y = c[1]-b[1];
+        const dot = v1x*v2x + v1y*v2y;
+        const m1 = Math.hypot(v1x,v1y), m2 = Math.hypot(v2x,v2y);
+        if (!m1 || !m2) return null;
+        return Math.acos(Math.max(-1, Math.min(1, dot/(m1*m2)))) * 180/Math.PI;
+      }
+      function ok(p, ...idx) { return idx.every(i => (p.scores[i] ?? 0) >= MIN); }
+
+      function analyse(p) {
+        const kp = p.keypoints, out = [];
+        const def = [
+          ["Left elbow", 5,7,9], ["Right elbow", 6,8,10],
+          ["Left knee", 11,13,15], ["Right knee", 12,14,16],
+          ["Left hip", 5,11,13], ["Right hip", 6,12,14],
+        ];
+        for (const [name, a,b,c] of def) {
+          if (!ok(p, a,b,c)) { out.push({ name, deg: null }); continue; }
+          out.push({ name, deg: angle(kp[a], kp[b], kp[c]) });
+        }
+        // Back lean: angle of the shoulder-midpoint→hip-midpoint line from vertical.
+        let back = null;
+        if (ok(p, 5,6,11,12)) {
+          const sx = (kp[5][0]+kp[6][0])/2, sy = (kp[5][1]+kp[6][1])/2;
+          const hx = (kp[11][0]+kp[12][0])/2, hy = (kp[11][1]+kp[12][1])/2;
+          back = Math.abs(Math.atan2(hx-sx, hy-sy) * 180/Math.PI); // 0 = perfectly upright
+        }
+        return { angles: out, back };
+      }
+      function feedback({ angles, back }) {
+        const msgs = [];
+        const knees = angles.filter(a => a.name.includes("knee") && a.deg != null);
+        for (const k of knees) {
+          if (k.deg < 100) msgs.push(`${k.name} is deeply bent (${k.deg.toFixed(0)}°) — a full squat / lunge depth.`);
+          else if (k.deg > 160) msgs.push(`${k.name} is nearly straight (${k.deg.toFixed(0)}°) — standing / locked out.`);
+          else msgs.push(`${k.name} is mid-bend (${k.deg.toFixed(0)}°).`);
+        }
+        const elbows = angles.filter(a => a.name.includes("elbow") && a.deg != null);
+        for (const e of elbows) {
+          if (e.deg < 90) msgs.push(`${e.name} is well flexed (${e.deg.toFixed(0)}°) — e.g. bottom of a curl / push-up.`);
+          else if (e.deg > 160) msgs.push(`${e.name} is extended (${e.deg.toFixed(0)}°).`);
+        }
+        if (back != null) {
+          if (back < 12) msgs.push(`Back is close to upright (${back.toFixed(0)}° lean) — good neutral posture.`);
+          else if (back > 35) msgs.push(`Torso is leaning ${back.toFixed(0)}° from vertical — a strong hip hinge or slouch.`);
+          else msgs.push(`Torso leans ${back.toFixed(0)}° from vertical.`);
+        }
+        if (!msgs.length) msgs.push("Not enough high-confidence joints to assess form — try a clearer full-body photo.");
+        return msgs;
+      }
+
+      async function useURL(url, previewSrc) {
+        currentURL = url; currentImg = await decodeImage(previewSrc ?? url);
+        const c = $("stage"); c.width = currentImg.naturalWidth; c.height = currentImg.naturalHeight;
+        c.getContext("2d").drawImage(currentImg, 0, 0);
+        $("readout").hidden = true; $("angGrid").hidden = true; $("angEmpty").hidden = false; $("feedback").replaceChildren();
+        $("run").disabled = !engine.ready;
+      }
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        const blob = await (await fetch(el.dataset.src)).blob();
+        await useURL(await fileToDataURL(new File([blob], "s", { type: blob.type })), el.dataset.src);
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } });
+      }
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover","dragenter"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave","drop"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) { for (const t of $("samples").children) t.classList.remove("active"); $("dropText").textContent = f.name; await useURL(await fileToDataURL(f)); }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", e => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/vitpose-base-simple", runtime: "transformers.js", dtype: "q8", sizeMB: 87, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("run").disabled = !currentImg; setStatus("Model ready.", "ok"); },
+      });
+      pickSample($("samples").firstElementChild);
+
+      $("run").addEventListener("click", async () => {
+        if (!engine.ready || !currentURL) return;
+        $("run").disabled = true; setStatus("Analysing form…");
+        try {
+          const r = await engine.estimate(currentURL);
+          drawPoses($("stage"), currentImg, r.persons, { minScore: MIN });
+          $("rBackend").textContent = r.device.toUpperCase(); $("rMs").textContent = r.ms + " ms"; $("readout").hidden = false;
+          const p = r.persons[0];
+          if (!p) { setStatus("No person found.", "err"); return; }
+          const res = analyse(p);
+          $("angEmpty").hidden = true; $("angGrid").hidden = false;
+          $("angGrid").replaceChildren(...res.angles.map(a => {
+            const d = document.createElement("div"); d.className = "metric";
+            d.innerHTML = `<div class="k">${escapeHTML(a.name)}</div><div class="v">${a.deg == null ? "—" : a.deg.toFixed(0) + "°"}</div>`;
+            return d;
+          }), (() => { const d = document.createElement("div"); d.className = "metric"; d.innerHTML = `<div class="k">Back lean</div><div class="v">${res.back == null ? "—" : res.back.toFixed(0) + "°"}</div>`; return d; })());
+          $("feedback").replaceChildren(...feedback(res).map(m => { const li = document.createElement("li"); li.textContent = m; return li; }));
+          setStatus("Form analysed.", "ok");
+        } catch (e) { setStatus("Analysis failed: " + e.message, "err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>

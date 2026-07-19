@@ -118,6 +118,8 @@ const IO_SHAPE = {
   "face-landmark-detection": "produces face landmark points overlaid live on the video/image",
   "hand-landmark-detection": "produces hand landmark points overlaid live on the video/image",
   "pose-landmark-detection": "produces body pose landmark points overlaid live on the video/image",
+  "keypoint-detection":
+    "produces per-person body keypoints (e.g. 17 COCO joints) with confidences, drawn as a skeleton on the image",
   "gesture-recognition": "produces recognised gesture labels with scores from the live video",
   "face-detection": "produces face bounding boxes overlaid on the video/image",
   "any-to-any":
