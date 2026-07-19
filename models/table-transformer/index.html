@@ -1,0 +1,421 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Table Transformer — find tables and read their structure in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run Microsoft's Table Transformer locally: drop a document or screenshot and it boxes every table, then a second model breaks the table into rows, columns, header and cells — a real two-stage table-extraction pipeline, entirely on your device."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>▦</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">object-detection · document AI · WASM · ~30 MB ×2</p>
+      <h1>Table Transformer — find tables, then read their structure</h1>
+      <p class="lede">
+        Tables are where documents hide their data, and they are notoriously hard to parse. Table Transformer
+        (Microsoft, trained on the million-table PubTables-1M set) turns this into two ordinary object-detection
+        passes: stage one boxes every <strong>table</strong> in a page; stage two takes that crop and boxes its
+        <strong>rows, columns, header and spanning cells</strong>. Drop a document or screenshot and watch a real
+        table-extraction pipeline run — no server, no upload.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Models</th><td><a href="https://huggingface.co/Xenova/table-transformer-detection" target="_blank" rel="noopener">Xenova/table-transformer-detection</a> + <a href="https://huggingface.co/Xenova/table-transformer-structure-recognition" target="_blank" rel="noopener">…-structure-recognition</a> (ONNX of <a href="https://huggingface.co/microsoft/table-transformer-detection" target="_blank" rel="noopener">microsoft/…</a>)</td></tr>
+          <tr><th>Task / pipeline</th><td><code>object-detection</code> (run twice — detection, then structure)</td></tr>
+          <tr><th>Architecture</th><td>DETR (ResNet-18 backbone + transformer encoder–decoder), fine-tuned on PubTables-1M</td></tr>
+          <tr><th>Classes</th><td>Detection: <code>table</code>, <code>table rotated</code>. Structure: <code>table row</code>, <code>table column</code>, <code>column header</code>, <code>projected row header</code>, <code>spanning cell</code></td></tr>
+          <tr><th>Quantization</th><td>q8 (8-bit) ONNX, both models</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (runs anywhere; no WebGPU needed)</td></tr>
+          <tr><th>Download</th><td>~30 MB detection · ~30 MB structure — cached after first load, structure only fetched when you use it</td></tr>
+          <tr><th>License</th><td>MIT (Microsoft Table Transformer)</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers, Canvas, FileReader — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it — detect tables, then recognise structure</h3>
+      <p class="muted">Pick or drop a document image and hit Detect tables. Then choose a detected table and hit
+        Recognise structure to break it into rows, columns and cells. The structure model loads the first time
+        you use it.</p>
+
+      <div id="det-loader"></div>
+
+      <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop a document image">
+        <span id="dropText">Drop a document/screenshot here, or click to choose</span>
+        <input type="file" id="file" accept="image/*" hidden />
+      </div>
+      <div class="sample-strip" id="samples" aria-label="Sample documents">
+        <img class="sample-thumb active" src="sample-invoice.png" data-src="sample-invoice.png" alt="An invoice with a line-items table" tabindex="0" role="button" />
+        <img class="sample-thumb" src="sample-report.png" data-src="sample-report.png" alt="A report page with two tables" tabindex="0" role="button" />
+        <img class="sample-thumb" src="sample-rotated.png" data-src="sample-rotated.png" alt="A slightly rotated screenshot of a table" tabindex="0" role="button" />
+        <img class="sample-thumb" src="sample-receipt.png" data-src="sample-receipt.png" alt="A grocery receipt table" tabindex="0" role="button" />
+      </div>
+
+      <div style="margin:.6rem 0;display:flex;gap:.4rem;flex-wrap:wrap;align-items:center">
+        <button id="run" type="button" disabled>Detect tables</button>
+        <button id="structBtn" type="button" class="secondary" disabled>Recognise structure of selected table</button>
+      </div>
+
+      <div class="slider-row">
+        <label for="thresh">Detection score threshold</label>
+        <input type="range" id="thresh" min="0.3" max="0.99" step="0.01" value="0.7" />
+        <output id="threshOut" for="thresh">0.70</output>
+      </div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="canvas-wrap">
+        <canvas id="stage" class="stage-canvas" tabindex="0" role="button" aria-label="Document with detected table boxes — click a table to select it, then recognise its structure"></canvas>
+      </div>
+      <div class="count-chips" id="tableChips" aria-live="polite"></div>
+
+      <div id="structPanel" hidden>
+        <h4 style="margin:.8rem 0 .2rem">Structure of the selected table</h4>
+        <p class="muted" style="font-size:.82rem">Toggle what the second model found. Rows span the table width, columns its height; a cell is where a row meets a column.</p>
+        <div class="toggle-row" id="toggles"></div>
+        <div class="grid-2">
+          <div>
+            <div class="canvas-wrap"><canvas id="structStage" class="stage-canvas" aria-label="Cropped table with row, column and cell overlays"></canvas></div>
+          </div>
+          <div>
+            <p class="muted" style="font-size:.8rem;margin:.2rem 0">Reconstructed grid (rows × columns from the row/column boxes):</p>
+            <div style="overflow:auto"><div id="gridOut"></div></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>detect <b id="rDetMs">–</b></span>
+        <span>structure <b id="rStrMs">–</b></span>
+        <span>tables <b id="rN">–</b></span>
+        <span>grid <b id="rGrid">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside — every box the two models returned</h3>
+      <p class="muted">
+        Both stages are just DETR object detectors: a fixed set of predictions, each a class and a box with a
+        softmax confidence. Below is the raw structure output for the selected table — the label, the score, and
+        the box in the crop's own pixels. No post-processing beyond a score floor; the grid on the right is the
+        one derived quantity (rows × columns → cells).
+      </p>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Detect a table and recognise its structure to see the raw boxes.</div>
+      <div id="insideWrap" hidden>
+        <div class="readout">
+          <span>rows <b id="iRows">–</b></span>
+          <span>columns <b id="iCols">–</b></span>
+          <span>reconstructed cells <b id="iCells">–</b></span>
+          <span>total boxes <b id="iTotal">–</b></span>
+        </div>
+        <table class="inside-table">
+          <thead><tr><th>#</th><th>label</th><th>score</th><th>x</th><th>y</th><th>w</th><th>h</th></tr></thead>
+          <tbody id="insideRows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        "Get the data out of this table" is one of the most common — and most brittle — document tasks. Cloud
+        document-AI APIs charge per page and want your documents uploaded. Table Transformer turns table extraction
+        into two local function calls: private, offline, free per call, and pointed at whatever the user just
+        dropped in.
+      </p>
+      <ul>
+        <li><strong>Table extraction pipelines</strong> — find each table, recover its grid, then read cells with OCR to rebuild a CSV/JSON from a scanned page.</li>
+        <li><strong>Screenshot-to-data</strong> — a user pastes a screenshot of a table; you turn it into structured rows without an upload.</li>
+        <li><strong>Document layout analysis</strong> — count and locate tables to route pages, trigger review, or index reports.</li>
+        <li><strong>Accessibility &amp; reflow</strong> — recover the row/column structure of a table baked into an image so it can be linearised for a screen reader.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Find every table in a document image — boxes, scores, a threshold slider.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">The full two-stage flow: detect a table, then extract its rows, columns and cells as a grid.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Busy, rotated and screenshot layouts — where "just crop the grid lines" falls apart.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">Table Transformer finds a cell → TrOCR reads it → a real value pops out of the image.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>Both stages are the same one-liner — <code>object-detection</code> — pointed at two checkpoints. The trick is the crop between them:</p>
+      <pre><code>import { pipeline } from "@huggingface/transformers";
+
+// Stage 1 — where are the tables?
+const detect = await pipeline("object-detection", "Xenova/table-transformer-detection");
+const tables = await detect(documentImage, { threshold: 0.7, percentage: false });
+// → [{ label: "table", score: 0.99, box: { xmin, ymin, xmax, ymax } }, …]
+
+// Crop the first table out of the page, with a little padding…
+const crop = cropToBox(documentImage, tables[0].box);
+
+// Stage 2 — what's the structure inside it?
+const structure = await pipeline("object-detection", "Xenova/table-transformer-structure-recognition");
+const parts = await structure(crop, { threshold: 0.25, percentage: false });
+// → rows, columns, "column header", "spanning cell" … as boxes.
+// A cell = where a "table row" band meets a "table column" band.</code></pre>
+      <p class="muted">
+        Each stage runs in its own Web Worker. Detection runs once at a low floor and the score slider filters the
+        cached boxes without re-running; structure runs on demand for the table you select. Canvases are drawn at
+        natural resolution and scaled by CSS, so every box stays pixel-accurate.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/Xenova/table-transformer-detection" target="_blank" rel="noopener">Model card — Xenova/table-transformer-detection (ONNX)</a></li>
+        <li><a href="https://huggingface.co/Xenova/table-transformer-structure-recognition" target="_blank" rel="noopener">Model card — Xenova/table-transformer-structure-recognition (ONNX)</a></li>
+        <li><a href="https://huggingface.co/microsoft/table-transformer-detection" target="_blank" rel="noopener">Original weights — microsoft/table-transformer (MIT)</a></li>
+        <li><a href="https://arxiv.org/abs/2110.00061" target="_blank" rel="noopener">Paper — PubTables-1M: Towards comprehensive table extraction (Smock et al., 2021)</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import {
+        TableDetector, TableStructure, fileToDataURL, decodeImage, cropTable, drawDetections,
+        drawStructure, countCells, reconstructGrid, structureColor, escapeHTML, TT_CSS,
+      } from "./tt.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = TT_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const detector = new TableDetector();
+      const structure = new TableStructure();
+      let structLoaded = false, structLoading = null;
+
+      let currentImg = null, currentURL = null;
+      let allTables = [];            // everything above the floor
+      let shownTables = [];          // filtered by slider
+      let selected = -1;             // index into shownTables
+      let lastCrop = null, lastCells = [], lastGrid = null;
+      let detMs = 0, strMs = 0;
+
+      const STRUCT_LABELS = ["table row", "table column", "table column header", "table projected row header", "table spanning cell"];
+      const shown = new Set(["table row", "table column", "table column header", "table spanning cell"]);
+
+      // ---------- image selection ----------
+      async function useURL(url) {
+        currentURL = url;
+        currentImg = await decodeImage(url);
+        allTables = []; shownTables = []; selected = -1;
+        lastCrop = null; lastCells = []; lastGrid = null;
+        $("structPanel").hidden = true;
+        $("insideWrap").hidden = true; $("insideEmpty").hidden = false;
+        $("tableChips").replaceChildren();
+        $("readout").hidden = true;
+        $("structBtn").disabled = true;
+        const c = $("stage");
+        c.width = currentImg.naturalWidth; c.height = currentImg.naturalHeight;
+        c.getContext("2d").drawImage(currentImg, 0, 0);
+      }
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        const blob = await (await fetch(el.dataset.src)).blob();
+        await useURL(await fileToDataURL(new File([blob], "sample", { type: blob.type })));
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } });
+      }
+      pickSample($("samples").firstElementChild);
+
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) {
+        for (const t of $("samples").children) t.classList.remove("active");
+        await useURL(await fileToDataURL(f));
+        $("dropText").textContent = f.name;
+      }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
+
+      // ---------- stage 1 loader (auto-init) ----------
+      createModelLoader({
+        mount: $("det-loader"),
+        model: { modelId: "Xenova/table-transformer-detection", runtime: "transformers.js", dtype: "q8", sizeMB: 30, requiresWebGPU: false },
+        load: (onProgress) => detector.load(onProgress),
+        onReady: () => { $("run").disabled = false; },
+      });
+
+      function ensureStructure() {
+        if (structLoaded) return Promise.resolve();
+        if (!structLoading) structLoading = structure.load().then(() => { structLoaded = true; });
+        return structLoading;
+      }
+
+      // ---------- detect ----------
+      $("run").addEventListener("click", async () => {
+        if (!currentURL) { $("status").textContent = "Pick a document first."; return; }
+        $("run").disabled = true; $("status").classList.remove("err"); $("status").textContent = "Detecting tables…";
+        try {
+          const r = await detector.detect(currentURL);
+          allTables = r.detections;
+          detMs = r.ms;
+          $("rBackend").textContent = r.device.toUpperCase();
+          selected = -1; $("structPanel").hidden = true;
+          renderDetections();
+          $("status").textContent = `Found ${allTables.length} table candidate(s) above the floor. Click one, then Recognise structure.`;
+          $("status").classList.add("ok");
+        } catch (err) {
+          $("status").textContent = "Detection failed: " + err.message; $("status").classList.add("err");
+        } finally { $("run").disabled = false; }
+      });
+
+      const thresh = $("thresh");
+      thresh.addEventListener("input", () => {
+        $("threshOut").textContent = (+thresh.value).toFixed(2);
+        if (allTables.length) renderDetections();
+      });
+
+      function renderDetections() {
+        const t = +thresh.value;
+        shownTables = allTables.filter((d) => d.score >= t).sort((a, b) => b.score - a.score);
+        if (selected >= shownTables.length) selected = -1;
+        drawDetections($("stage"), currentImg, shownTables, { highlightIndex: selected });
+        $("tableChips").replaceChildren(...shownTables.map((d, i) => {
+          const el = document.createElement("button");
+          el.type = "button"; el.className = "count-chip"; el.style.cursor = "pointer";
+          el.setAttribute("aria-pressed", String(i === selected));
+          el.innerHTML = `<span class="swatch" style="background:${d.label === "table rotated" ? "#a15c00" : "#1565c0"}"></span>Table ${i + 1} <b>${(d.score * 100).toFixed(0)}%</b>`;
+          el.addEventListener("click", () => selectTable(i));
+          return el;
+        }));
+        $("readout").hidden = false;
+        $("rDetMs").textContent = detMs + " ms";
+        $("rN").textContent = shownTables.length;
+        $("structBtn").disabled = shownTables.length === 0;
+        if (shownTables.length && selected < 0) selectTable(0);
+      }
+
+      function selectTable(i) {
+        selected = i;
+        drawDetections($("stage"), currentImg, shownTables, { highlightIndex: i });
+        for (const [j, chip] of [...$("tableChips").children].entries()) chip.setAttribute("aria-pressed", String(j === i));
+      }
+
+      // canvas click → select the smallest table box under the point
+      $("stage").addEventListener("click", (e) => {
+        if (!shownTables.length) return;
+        const rect = $("stage").getBoundingClientRect();
+        const px = (e.clientX - rect.left) / rect.width * currentImg.naturalWidth;
+        const py = (e.clientY - rect.top) / rect.height * currentImg.naturalHeight;
+        let best = -1, bestArea = Infinity;
+        shownTables.forEach((d, i) => {
+          const { xmin, ymin, xmax, ymax } = d.box;
+          if (px >= xmin && px <= xmax && py >= ymin && py <= ymax) {
+            const a = (xmax - xmin) * (ymax - ymin);
+            if (a < bestArea) { bestArea = a; best = i; }
+          }
+        });
+        if (best >= 0) selectTable(best);
+      });
+
+      // ---------- stage 2 ----------
+      $("structBtn").addEventListener("click", async () => {
+        if (selected < 0 || !shownTables[selected]) { $("status").textContent = "Select a table first."; return; }
+        $("structBtn").disabled = true; $("status").classList.remove("err"); $("status").textContent = "Loading structure model & recognising…";
+        try {
+          await ensureStructure();
+          lastCrop = cropTable(currentImg, shownTables[selected].box);
+          const cropImg = await decodeImage(lastCrop.url);
+          const r = await structure.recognize(lastCrop.url);
+          lastCells = r.cells; strMs = r.ms;
+          lastGrid = reconstructGrid(lastCells);
+          renderStructure(cropImg);
+          $("rStrMs").textContent = strMs + " ms";
+          $("rGrid").textContent = `${lastGrid.rows.length}×${lastGrid.cols.length}`;
+          $("status").textContent = `Structure: ${lastGrid.rows.length} rows × ${lastGrid.cols.length} columns → ${lastGrid.cells.length} cells.`;
+          $("status").classList.add("ok");
+        } catch (err) {
+          $("status").textContent = "Structure recognition failed: " + err.message; $("status").classList.add("err");
+        } finally { $("structBtn").disabled = false; }
+      });
+
+      let structCropImg = null;
+      function renderStructure(cropImg) {
+        structCropImg = cropImg;
+        $("structPanel").hidden = false;
+        buildToggles();
+        drawStructure($("structStage"), cropImg, lastCells, shown);
+        renderGrid();
+        renderInside();
+      }
+      function buildToggles() {
+        const present = new Set(lastCells.map((c) => c.label));
+        $("toggles").replaceChildren(...STRUCT_LABELS.filter((l) => present.has(l)).map((label) => {
+          const b = document.createElement("button");
+          b.type = "button"; b.className = "toggle-chip";
+          b.setAttribute("aria-pressed", String(shown.has(label)));
+          const n = lastCells.filter((c) => c.label === label).length;
+          b.innerHTML = `<span class="swatch" style="background:${structureColor(label)}"></span>${escapeHTML(label)} <b>${n}</b>`;
+          b.addEventListener("click", () => {
+            if (shown.has(label)) shown.delete(label); else shown.add(label);
+            b.setAttribute("aria-pressed", String(shown.has(label)));
+            if (structCropImg) drawStructure($("structStage"), structCropImg, lastCells, shown);
+          });
+          return b;
+        }));
+      }
+      function renderGrid() {
+        if (!lastGrid || !lastGrid.rows.length || !lastGrid.cols.length) { $("gridOut").textContent = "No row/column grid recovered."; return; }
+        const tbl = document.createElement("table");
+        tbl.className = "grid-tbl";
+        for (let r = 0; r < lastGrid.rows.length; r++) {
+          const tr = document.createElement("tr");
+          for (let c = 0; c < lastGrid.cols.length; c++) {
+            const td = document.createElement("td");
+            td.textContent = `${r + 1},${c + 1}`;
+            tr.appendChild(td);
+          }
+          tbl.appendChild(tr);
+        }
+        $("gridOut").replaceChildren(tbl);
+      }
+      function renderInside() {
+        $("insideEmpty").hidden = true; $("insideWrap").hidden = false;
+        $("iRows").textContent = lastGrid.rows.length;
+        $("iCols").textContent = lastGrid.cols.length;
+        $("iCells").textContent = lastGrid.cells.length;
+        $("iTotal").textContent = lastCells.length;
+        const rows = [...lastCells].sort((a, b) => b.score - a.score).map((d, i) => {
+          const { xmin, ymin, xmax, ymax } = d.box;
+          const tr = document.createElement("tr");
+          tr.innerHTML = `<td>${i + 1}</td><td>${escapeHTML(d.label)}</td><td>${(d.score * 100).toFixed(1)}%</td>
+            <td>${Math.round(xmin)}</td><td>${Math.round(ymin)}</td><td>${Math.round(xmax - xmin)}</td><td>${Math.round(ymax - ymin)}</td>`;
+          return tr;
+        });
+        $("insideRows").replaceChildren(...rows);
+      }
+    </script>
+  </body>
+</html>

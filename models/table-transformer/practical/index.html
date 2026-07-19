@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Table Transformer — Practical: detect a table, extract its cells · Web AI Showcase</title>
+    <meta name="description" content="The full two-stage pipeline you'd ship: detect a table, recognise its rows and columns, reconstruct the cell grid, and export the structure as JSON — all locally in the browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>▦</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Table Transformer</a></p>
+
+    <header>
+      <p class="eyebrow">Practical · two-stage · WASM</p>
+      <h1>Detect a table, then extract its structure</h1>
+      <p class="lede">
+        This is the flow you'd actually build a feature on. Stage one finds the tables; you pick one; stage two
+        decomposes it into <strong>rows</strong> and <strong>columns</strong>, from which we reconstruct the
+        <strong>cell grid</strong>. The result is exportable geometry — the coordinates every cell occupies — the
+        thing you'd feed to OCR to rebuild a spreadsheet. Both stages run on your device.
+      </p>
+    </header>
+
+    <div id="det-loader"></div>
+
+    <section class="panel" aria-labelledby="pick-h">
+      <h3 id="pick-h">1 · Pick a document and detect tables</h3>
+      <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop a document image">
+        <span id="dropText">Drop a document/screenshot here, or click to choose</span>
+        <input type="file" id="file" accept="image/*" hidden />
+      </div>
+      <div class="sample-strip" id="samples" aria-label="Sample documents">
+        <img class="sample-thumb active" src="../sample-invoice.png" data-src="../sample-invoice.png" alt="An invoice with a line-items table" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-report.png" data-src="../sample-report.png" alt="A report page with two tables" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-rotated.png" data-src="../sample-rotated.png" alt="A slightly rotated table screenshot" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-receipt.png" data-src="../sample-receipt.png" alt="A grocery receipt table" tabindex="0" role="button" />
+      </div>
+      <div style="margin:.6rem 0"><button id="run" type="button" disabled>Detect tables</button></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+      <div class="canvas-wrap"><canvas id="stage" class="stage-canvas" tabindex="0" role="button" aria-label="Document with detected tables — click one to extract it"></canvas></div>
+      <div class="count-chips" id="tableChips" aria-live="polite"></div>
+    </section>
+
+    <section class="panel" aria-labelledby="struct-h">
+      <h3 id="struct-h">2 · Structure of the selected table</h3>
+      <p class="muted" id="structHint">Detect and select a table above to extract its structure.</p>
+      <div class="toggle-row" id="toggles"></div>
+      <div class="grid-2">
+        <div><div class="canvas-wrap"><canvas id="structStage" class="stage-canvas" aria-label="Cropped table with row, column and cell overlays"></canvas></div></div>
+        <div>
+          <p class="muted" style="font-size:.8rem;margin:.2rem 0">Reconstructed grid — cell (row, column):</p>
+          <div style="overflow:auto"><div id="gridOut"></div></div>
+          <div style="margin-top:.6rem;display:flex;gap:.4rem;flex-wrap:wrap">
+            <button id="exportJson" type="button" class="secondary" disabled>Copy cell geometry (JSON)</button>
+            <span class="status" id="copyStatus" role="status" aria-live="polite"></span>
+          </div>
+        </div>
+      </div>
+      <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>detect <b id="rDetMs">–</b></span><span>structure <b id="rStrMs">–</b></span><span>grid <b id="rGrid">–</b></span><span>cells <b id="rCells">–</b></span></div>
+    </section>
+
+    <section aria-labelledby="how-h">
+      <h2 id="how-h">How the two stages connect</h2>
+      <p>
+        Stage one gives you a table box. You crop it (with a little padding) and hand the crop to stage two, which
+        returns row bands and column bands as separate detections. A cell is simply the rectangle where a row band
+        overlaps a column band — so <em>R</em> rows and <em>C</em> columns reconstruct an <em>R×C</em> grid of cell
+        boxes. Feed each of those crops to an OCR model and you have rebuilt the table as data. That last hop is the
+        <a href="../multi-model/">multi-model</a> demo.
+      </p>
+    </section>
+
+    <p class="crumbs" style="margin-top:1.5rem"><a href="../wild/">Next: Wild — busy, rotated and screenshot layouts →</a></p>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via 🤗 Transformers.js.
+      <a href="../">← Back to Table Transformer</a>
+    </footer>
+
+    <script type="module">
+      import {
+        TableDetector, TableStructure, fileToDataURL, decodeImage, cropTable, drawDetections,
+        drawStructure, reconstructGrid, structureColor, escapeHTML, TT_CSS,
+      } from "../tt.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style"); style.textContent = TT_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const detector = new TableDetector();
+      const structure = new TableStructure();
+      let detReady = false, strReady = false;
+      let currentImg = null, currentURL = null, tables = [], selected = -1;
+      let cropImg = null, cells = [], grid = null, detMs = 0, strMs = 0;
+
+      const STRUCT_LABELS = ["table row", "table column", "table column header", "table projected row header", "table spanning cell"];
+      const shown = new Set(["table row", "table column", "table column header", "table spanning cell"]);
+
+      async function useURL(url) {
+        currentURL = url; currentImg = await decodeImage(url); tables = []; selected = -1;
+        cropImg = null; cells = []; grid = null;
+        $("tableChips").replaceChildren(); $("toggles").replaceChildren(); $("gridOut").replaceChildren();
+        $("structHint").textContent = "Detect and select a table above to extract its structure.";
+        $("readout").hidden = true; $("exportJson").disabled = true;
+        const c = $("stage"); c.width = currentImg.naturalWidth; c.height = currentImg.naturalHeight; c.getContext("2d").drawImage(currentImg, 0, 0);
+        const sc = $("structStage"); sc.width = 8; sc.height = 8; sc.getContext("2d").clearRect(0, 0, 8, 8);
+      }
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        const blob = await (await fetch(el.dataset.src)).blob();
+        await useURL(await fileToDataURL(new File([blob], "s", { type: blob.type })));
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } });
+      }
+      pickSample($("samples").firstElementChild);
+
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) { for (const t of $("samples").children) t.classList.remove("active"); await useURL(await fileToDataURL(f)); $("dropText").textContent = f.name; }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
+
+      // Only the detection model auto-loads up front; the structure model is fetched lazily the first
+      // time you extract a table (keeps the loader state honest — see main page).
+      createModelLoader({
+        mount: $("det-loader"),
+        model: { modelId: "Xenova/table-transformer-detection", runtime: "transformers.js", dtype: "q8", sizeMB: 30, requiresWebGPU: false },
+        load: (onProgress) => detector.load(onProgress),
+        onReady: () => { detReady = true; $("run").disabled = false; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!currentURL) { $("status").textContent = "Pick a document first."; return; }
+        $("run").disabled = true; $("status").classList.remove("err"); $("status").textContent = "Detecting tables…";
+        try {
+          const r = await detector.detect(currentURL);
+          tables = r.detections.filter((d) => d.score >= 0.6).sort((a, b) => b.score - a.score);
+          detMs = r.ms; $("rBackend").textContent = r.device.toUpperCase();
+          drawDetections($("stage"), currentImg, tables);
+          $("tableChips").replaceChildren(...tables.map((d, i) => {
+            const b = document.createElement("button"); b.type = "button"; b.className = "count-chip"; b.style.cursor = "pointer";
+            b.setAttribute("aria-pressed", "false");
+            b.innerHTML = `<span class="swatch" style="background:${d.label === "table rotated" ? "#a15c00" : "#1565c0"}"></span>Table ${i + 1} <b>${(d.score * 100).toFixed(0)}%</b>`;
+            b.addEventListener("click", () => extract(i));
+            return b;
+          }));
+          $("status").textContent = tables.length ? `Found ${tables.length} table(s). Extracting the first…` : "No tables found."; $("status").classList.add("ok");
+          if (tables.length) extract(0);
+        } catch (err) { $("status").textContent = "Detection failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+
+      $("stage").addEventListener("click", (e) => {
+        if (!tables.length) return;
+        const rect = $("stage").getBoundingClientRect();
+        const px = (e.clientX - rect.left) / rect.width * currentImg.naturalWidth;
+        const py = (e.clientY - rect.top) / rect.height * currentImg.naturalHeight;
+        let best = -1, bestArea = Infinity;
+        tables.forEach((d, i) => { const { xmin, ymin, xmax, ymax } = d.box; if (px >= xmin && px <= xmax && py >= ymin && py <= ymax) { const a = (xmax - xmin) * (ymax - ymin); if (a < bestArea) { bestArea = a; best = i; } } });
+        if (best >= 0) extract(best);
+      });
+
+      async function extract(i) {
+        selected = i;
+        for (const [j, chip] of [...$("tableChips").children].entries()) chip.setAttribute("aria-pressed", String(j === i));
+        drawDetections($("stage"), currentImg, tables, { highlightIndex: i });
+        $("structHint").textContent = "Recognising structure…";
+        try {
+          if (!strReady) { $("structHint").textContent = "Loading the structure model…"; await structure.load(); strReady = true; }
+          const crop = cropTable(currentImg, tables[i].box);
+          cropImg = await decodeImage(crop.url);
+          const r = await structure.recognize(crop.url);
+          cells = r.cells; strMs = r.ms; grid = reconstructGrid(cells);
+          buildToggles(); drawStructure($("structStage"), cropImg, cells, shown); renderGrid();
+          $("structHint").textContent = `Table ${i + 1}: ${grid.rows.length} rows × ${grid.cols.length} columns → ${grid.cells.length} cells.`;
+          $("readout").hidden = false; $("rDetMs").textContent = detMs + " ms"; $("rStrMs").textContent = strMs + " ms";
+          $("rGrid").textContent = `${grid.rows.length}×${grid.cols.length}`; $("rCells").textContent = grid.cells.length;
+          $("exportJson").disabled = grid.cells.length === 0;
+        } catch (err) { $("structHint").textContent = "Structure recognition failed: " + err.message; }
+      }
+
+      function buildToggles() {
+        const present = new Set(cells.map((c) => c.label));
+        $("toggles").replaceChildren(...STRUCT_LABELS.filter((l) => present.has(l)).map((label) => {
+          const b = document.createElement("button"); b.type = "button"; b.className = "toggle-chip";
+          b.setAttribute("aria-pressed", String(shown.has(label)));
+          const n = cells.filter((c) => c.label === label).length;
+          b.innerHTML = `<span class="swatch" style="background:${structureColor(label)}"></span>${escapeHTML(label)} <b>${n}</b>`;
+          b.addEventListener("click", () => { if (shown.has(label)) shown.delete(label); else shown.add(label); b.setAttribute("aria-pressed", String(shown.has(label))); if (cropImg) drawStructure($("structStage"), cropImg, cells, shown); });
+          return b;
+        }));
+      }
+      function renderGrid() {
+        if (!grid || !grid.rows.length || !grid.cols.length) { $("gridOut").textContent = "No row/column grid recovered."; return; }
+        const tbl = document.createElement("table"); tbl.className = "grid-tbl";
+        for (let r = 0; r < grid.rows.length; r++) {
+          const tr = document.createElement("tr");
+          for (let c = 0; c < grid.cols.length; c++) { const td = document.createElement("td"); td.textContent = `${r + 1},${c + 1}`; tr.appendChild(td); }
+          tbl.appendChild(tr);
+        }
+        $("gridOut").replaceChildren(tbl);
+      }
+      $("exportJson").addEventListener("click", async () => {
+        if (!grid) return;
+        const payload = {
+          table: selected + 1,
+          rows: grid.rows.length, columns: grid.cols.length,
+          cells: grid.cells.map((c) => ({ row: c.r + 1, col: c.c + 1, box: { x: Math.round(c.box.xmin), y: Math.round(c.box.ymin), w: Math.round(c.box.xmax - c.box.xmin), h: Math.round(c.box.ymax - c.box.ymin) } })),
+        };
+        const text = JSON.stringify(payload, null, 2);
+        try { await navigator.clipboard.writeText(text); $("copyStatus").textContent = "Copied " + payload.cells.length + " cells to clipboard."; }
+        catch { $("copyStatus").textContent = "Clipboard blocked — JSON logged to console."; console.log(text); }
+      });
+    </script>
+  </body>
+</html>

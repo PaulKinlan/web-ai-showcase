@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Table Transformer — Basics: find every table in a document · Web AI Showcase</title>
+    <meta name="description" content="The fundamental capability: drop a document image and Table Transformer boxes every table it finds, with a confidence score and a live threshold slider. Runs locally in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>▦</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Table Transformer</a></p>
+
+    <header>
+      <p class="eyebrow">Basics · object-detection · WASM</p>
+      <h1>Find every table in a document</h1>
+      <p class="lede">
+        Stage one, on its own. Table Transformer looks at a whole page and answers one question — where are the
+        tables? — with a labelled box and a confidence score for each. Drop a document or screenshot, then drag the
+        threshold to watch weak candidates appear and disappear. Nothing leaves your device.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Detect tables</h3>
+      <div id="det-loader"></div>
+
+      <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop a document image">
+        <span id="dropText">Drop a document/screenshot here, or click to choose</span>
+        <input type="file" id="file" accept="image/*" hidden />
+      </div>
+      <div class="sample-strip" id="samples" aria-label="Sample documents">
+        <img class="sample-thumb active" src="../sample-invoice.png" data-src="../sample-invoice.png" alt="An invoice with a line-items table" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-report.png" data-src="../sample-report.png" alt="A report page with two tables" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-rotated.png" data-src="../sample-rotated.png" alt="A slightly rotated table screenshot" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-receipt.png" data-src="../sample-receipt.png" alt="A grocery receipt table" tabindex="0" role="button" />
+      </div>
+
+      <div style="margin:.6rem 0"><button id="run" type="button" disabled>Detect tables</button></div>
+      <div class="slider-row">
+        <label for="thresh">Score threshold</label>
+        <input type="range" id="thresh" min="0.3" max="0.99" step="0.01" value="0.7" />
+        <output id="threshOut" for="thresh">0.70</output>
+      </div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="canvas-wrap"><canvas id="stage" class="stage-canvas" aria-label="Document with detected table boxes"></canvas></div>
+      <div class="count-chips" id="tableChips" aria-live="polite"></div>
+      <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>latency <b id="rMs">–</b></span><span>tables shown <b id="rN">–</b></span></div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">The raw boxes</h3>
+      <p class="muted">Exactly what the detector returned above the current threshold — label, score, and box in image pixels.</p>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Detect to see the boxes.</div>
+      <table class="inside-table" id="insideTable" hidden>
+        <thead><tr><th>#</th><th>label</th><th>score</th><th>x</th><th>y</th><th>w</th><th>h</th></tr></thead>
+        <tbody id="insideRows"></tbody>
+      </table>
+    </section>
+
+    <p class="crumbs" style="margin-top:1.5rem"><a href="../practical/">Next: Practical — extract the rows, columns and cells →</a></p>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via 🤗 Transformers.js.
+      <a href="../">← Back to Table Transformer</a>
+    </footer>
+
+    <script type="module">
+      import { TableDetector, fileToDataURL, decodeImage, drawDetections, escapeHTML, TT_CSS } from "../tt.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style"); style.textContent = TT_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const detector = new TableDetector();
+      let currentImg = null, currentURL = null, allTables = [], lastMs = 0;
+
+      async function useURL(url) {
+        currentURL = url; currentImg = await decodeImage(url); allTables = [];
+        $("insideTable").hidden = true; $("insideEmpty").hidden = false; $("tableChips").replaceChildren(); $("readout").hidden = true;
+        const c = $("stage"); c.width = currentImg.naturalWidth; c.height = currentImg.naturalHeight; c.getContext("2d").drawImage(currentImg, 0, 0);
+      }
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        const blob = await (await fetch(el.dataset.src)).blob();
+        await useURL(await fileToDataURL(new File([blob], "s", { type: blob.type })));
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } });
+      }
+      pickSample($("samples").firstElementChild);
+
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) { for (const t of $("samples").children) t.classList.remove("active"); await useURL(await fileToDataURL(f)); $("dropText").textContent = f.name; }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
+
+      createModelLoader({
+        mount: $("det-loader"),
+        model: { modelId: "Xenova/table-transformer-detection", runtime: "transformers.js", dtype: "q8", sizeMB: 30, requiresWebGPU: false },
+        load: (onProgress) => detector.load(onProgress),
+        onReady: () => { $("run").disabled = false; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!currentURL) { $("status").textContent = "Pick a document first."; return; }
+        $("run").disabled = true; $("status").classList.remove("err"); $("status").textContent = "Detecting…";
+        try {
+          const r = await detector.detect(currentURL); allTables = r.detections; lastMs = r.ms;
+          $("rBackend").textContent = r.device.toUpperCase(); render();
+          $("status").textContent = `Found ${allTables.length} candidate(s) above the floor.`; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Detection failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+      const thresh = $("thresh");
+      thresh.addEventListener("input", () => { $("threshOut").textContent = (+thresh.value).toFixed(2); if (allTables.length) render(); });
+
+      function render() {
+        const t = +thresh.value;
+        const shown = allTables.filter((d) => d.score >= t).sort((a, b) => b.score - a.score);
+        drawDetections($("stage"), currentImg, shown);
+        $("tableChips").replaceChildren(...shown.map((d, i) => {
+          const el = document.createElement("span"); el.className = "count-chip";
+          el.innerHTML = `<span class="swatch" style="background:${d.label === "table rotated" ? "#a15c00" : "#1565c0"}"></span>${escapeHTML(d.label)} ${i + 1} <b>${(d.score * 100).toFixed(0)}%</b>`;
+          return el;
+        }));
+        $("readout").hidden = false; $("rMs").textContent = lastMs + " ms"; $("rN").textContent = shown.length;
+        $("insideEmpty").hidden = true; $("insideTable").hidden = false;
+        $("insideRows").replaceChildren(...shown.map((d, i) => {
+          const { xmin, ymin, xmax, ymax } = d.box; const tr = document.createElement("tr");
+          tr.innerHTML = `<td>${i + 1}</td><td>${escapeHTML(d.label)}</td><td>${(d.score * 100).toFixed(1)}%</td><td>${Math.round(xmin)}</td><td>${Math.round(ymin)}</td><td>${Math.round(xmax - xmin)}</td><td>${Math.round(ymax - ymin)}</td>`;
+          return tr;
+        }));
+      }
+    </script>
+  </body>
+</html>
