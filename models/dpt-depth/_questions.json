@@ -1,0 +1,103 @@
+{
+  "schemaVersion": 1,
+  "id": "dpt-depth",
+  "revision": 1,
+  "reviewedAt": "2026-07-19T00:00:00Z",
+  "reviewer": "off-main-thread depth-composite retrofit (headless Chrome, PerformanceObserver('longtask') + MessageChannel stall probe, 1080p/1440p synthetic depth buffers)",
+  "frontend": true,
+  "rubric": [
+    {
+      "dimension": "performance",
+      "score": 5,
+      "severity": "info",
+      "evidence": "MEASURED before→after with a MessageChannel main-thread stall probe (catches sub-50ms blocks a longtask entry misses) + PerformanceObserver('longtask'), colourising a synthetic depth buffer through the REAL dpt.js + worker.js path (no model download needed — the composite cost depends only on w×h). BEFORE (renderDepthColor per-pixel colour-map loop on the MAIN thread): 1920×1080 = 25.4ms composite / 28.9ms main-thread stall; 2560×1440 = 42.6ms / 48.5ms stall (matches invariant-15's ~40ms@1080p figure on a slower device). AFTER (worker OffscreenCanvas composite → transferToImageBitmap → drawImage): 1920×1080 = 0.1ms main-thread drawImage / 5.5ms stall (27ms composite now runs in the worker); 2560×1440 = 0.1ms drawImage / 7.0ms stall (40ms in worker). Main-thread composite is now UNDER the 8ms frame slice on both sizes. Colour-map switches recolour via engine.recolor (worker) too — no per-pixel loop left on the main thread.",
+      "notes": "The per-pixel getImageData→sampleMap→putImageData loop moved into models/dpt-depth/worker.js colorizeToBitmap() on an OffscreenCanvas; the ImageBitmap is transferred back and drawn with a single drawImage. Guidance: break-up-long-tasks / identify-inp-causes (move heavy main-thread work off-thread)."
+    },
+    {
+      "dimension": "io-shape",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Depth output is PIXEL-IDENTICAL before vs after: colourising the same 640×360 depth buffer with renderDepthColor (old main-thread path) vs engine.recolor (new worker path) and comparing the two RGBA buffers gave byteDiffs=0, maxChannelDelta=0 across all 230,400 pixels. The worker imports the SAME sampleMap ramp from dpt.js, so the composite is identical — only the thread it runs on changed. Raw-depth range/histogram 'See inside' numbers are unchanged (still computed in the worker and returned as small scalars).",
+      "notes": "The transferred depth Uint8Array is still returned for the parallax (wild) and depth×class (multi-model) maths — only the colourise composite moved."
+    },
+    {
+      "dimension": "real-inference",
+      "score": 5,
+      "severity": "info",
+      "evidence": "conformance calls-real-inference=pass, inference-off-main-thread=pass, worker-compliance=pass. Inference is unchanged real transformers.js depth-estimation in models/dpt-depth/worker.js; the retrofit only relocates the post-processing colour composite into the same worker.",
+      "notes": ""
+    },
+    {
+      "dimension": "cache-init",
+      "score": 5,
+      "severity": "info",
+      "evidence": "createModelLoader auto-init + explicit-download policy UNCHANGED — no code path in the loader was touched. conformance shared-auto-init-loader=pass. Fresh-profile headless load shows the Download state with no silent large download (the depth composite path needs no model to run, so the worker boots and can colourise independently of model presence).",
+      "notes": ""
+    },
+    {
+      "dimension": "states",
+      "score": 4,
+      "severity": "info",
+      "evidence": "conformance loads-clean=pass (no console errors/exceptions during load on either the index or ladder pages after the worker now imports dpt.js), errors-on-the-page=pass, live-status-region=pass. Worker/inference failures still surface through the existing .err status + loader Retry. A main-thread renderDepthColor fallback remains for browsers without OffscreenCanvas (paintDepth uses it when the worker returns no bitmap).",
+      "notes": ""
+    },
+    {
+      "dimension": "controls",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Every control preserved: sample thumbs, dropzone/file input, Run button, colour-map <select> (now recolours off-main via engine.recolor), and the ladder-page controls. No control added or removed — the retrofit sits behind the existing estimate()/paint surface. Route/slug/identity/examples all unchanged (invariant-15 in-place fix).",
+      "notes": ""
+    },
+    {
+      "dimension": "no-fake-output",
+      "score": 5,
+      "severity": "info",
+      "evidence": "All visible depth output is produced by the on-device run + the (now worker-side) colour composite; no canned result. Pixel-parity check confirms the composite is the genuine colour-mapped depth, not a placeholder.",
+      "notes": ""
+    },
+    {
+      "dimension": "accessibility",
+      "score": 5,
+      "severity": "info",
+      "evidence": "conformance images-have-alt=pass, buttons-have-names=pass. No DOM/ARIA changed by the retrofit — the depth canvas, status live region, and colour-map select keep their existing semantics.",
+      "notes": ""
+    },
+    {
+      "dimension": "responsive",
+      "score": 5,
+      "severity": "info",
+      "evidence": "conformance responsive-desktop=pass, responsive-mobile=pass (no horizontal overflow at 1280×800 and 360×740 DPR3). The retrofit touched no CSS/DOM/layout — only the JS thread the composite runs on.",
+      "notes": ""
+    }
+  ],
+  "guidanceConsulted": [
+    {
+      "id": "identify-inp-causes",
+      "query": "keep INP low by moving long main-thread work off the main thread into a web worker",
+      "recommendation": "Diagnose responsiveness via Event Timing / Long Animation Frames; long main-thread JavaScript during an interaction is the INP root cause to remove.",
+      "appliedOrException": "Applied — measured the composite as a ~25-43ms main-thread block (stall probe) and moved it off-thread so interactions (colour-map switch, run) no longer block the main thread."
+    },
+    {
+      "id": "break-up-long-tasks",
+      "query": "move canvas pixel composite off main thread with OffscreenCanvas and worker transferables",
+      "recommendation": "Break up / relocate heavy synchronous processing and long pixel loops so the browser can handle input and repaint.",
+      "appliedOrException": "Applied — the per-pixel colour-map loop now runs in the worker on an OffscreenCanvas; the main thread only does a transferable-backed drawImage (0.1ms)."
+    },
+    {
+      "id": "schedule-tasks-by-priority",
+      "query": "defer background composite work off the interaction path",
+      "recommendation": "Run non-critical work off the critical interaction path.",
+      "appliedOrException": "Applied by architecture — the composite is posted to a dedicated worker and returned via a transfer, off the interaction path entirely."
+    }
+  ],
+  "openQuestions": [
+    "The wild (parallax) per-frame warp still runs on the main thread; it is a separate hotspot out of scope for this composite retrofit — worth a follow-up measurement pass."
+  ],
+  "followUpGoals": [
+    {
+      "goal": "Measure and, if it exceeds the 8ms frame slice at full resolution, move the wild-page parallaxWarp per-frame loop off the main thread (worker or WebGL).",
+      "kind": "targeted-fix",
+      "priority": "low"
+    }
+  ]
+}

@@ -41,7 +41,13 @@ export class DepthEngine {
       if (p) {
         this._pending.delete(msg.id);
         msg.depth = new Uint8Array(msg.depth); // rehydrate the transferred buffer
-        p.resolve(msg);
+        p.resolve(msg); // msg.bitmap is a transferred ImageBitmap (or null) — draw with drawImage
+      }
+    } else if (msg.type === "colorized") {
+      const p = this._pending.get(msg.rid);
+      if (p) {
+        this._pending.delete(msg.rid);
+        p.resolve(msg.bitmap); // ImageBitmap or null (OffscreenCanvas unavailable → main-thread fallback)
       }
     } else if (msg.type === "error") {
       if (msg.id != null && this._pending.has(msg.id)) {
@@ -64,11 +70,30 @@ export class DepthEngine {
     });
   }
 
-  estimate(imageURL) {
+  // Run inference. When `map` is given the worker also composites the colourised depth ImageBitmap
+  // off the main thread and returns it as `result.bitmap`; pages that only need the raw depth buffer
+  // (parallax, depth-of-field) omit `map` so no needless composite runs.
+  estimate(imageURL, map = null) {
     const id = ++this._id;
     return new Promise((resolve, reject) => {
       this._pending.set(id, { resolve, reject });
-      this.worker.postMessage({ type: "run", id, image: imageURL });
+      this.worker.postMessage({ type: "run", id, image: imageURL, map });
+    });
+  }
+
+  // Recolour an existing depth buffer with a different colour map WITHOUT re-running inference — the
+  // per-pixel composite happens in the worker. We transfer a COPY of the depth buffer so the caller
+  // keeps its own (needed for parallax / raw-depth maths). Resolves to an ImageBitmap (or null when
+  // OffscreenCanvas is unavailable, signalling the caller to use the main-thread fallback).
+  recolor(depth, width, height, map) {
+    const rid = ++this._id;
+    const copy = depth.slice(); // cheap memcpy; keeps the caller's buffer intact after transfer
+    return new Promise((resolve, reject) => {
+      this._pending.set(rid, { resolve, reject });
+      this.worker.postMessage(
+        { type: "colorize", rid, gray: copy.buffer, width, height, map },
+        [copy.buffer],
+      );
     });
   }
 }
@@ -117,7 +142,32 @@ export function sampleMap(name, t) {
   return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f];
 }
 
-/** Draw a colourised depth map into a canvas. `depth` = Uint8Array (w*h), bright/warm = nearer. */
+/** Blit a worker-composited depth ImageBitmap into a canvas — a single GPU-friendly drawImage, no
+ * per-pixel loop on the main thread. Closes the bitmap afterwards to release its backing memory. */
+export function drawDepthBitmap(canvas, bitmap) {
+  canvas.width = bitmap.width;
+  canvas.height = bitmap.height;
+  canvas.getContext("2d").drawImage(bitmap, 0, 0);
+  bitmap.close?.();
+}
+
+/**
+ * Paint the colourised depth map into `canvas`. Prefers the worker-composited `bitmap` (the per-pixel
+ * colour-map loop already ran off the main thread — the main thread only does a drawImage). Falls back
+ * to the main-thread `renderDepthColor` composite only when no bitmap is available (OffscreenCanvas
+ * unsupported). `result` carries {width,height,depth}.
+ */
+export function paintDepth(canvas, result, mapName, bitmap) {
+  if (bitmap) {
+    drawDepthBitmap(canvas, bitmap);
+    return;
+  }
+  renderDepthColor(canvas, result.width, result.height, result.depth, mapName);
+}
+
+/** Draw a colourised depth map into a canvas. `depth` = Uint8Array (w*h), bright/warm = nearer.
+ * Main-thread composite — retained as the fallback for `paintDepth` when the worker can't build an
+ * ImageBitmap (no OffscreenCanvas). The worker uses the identical `sampleMap` ramp. */
 export function renderDepthColor(canvas, width, height, depth, mapName = "turbo") {
   canvas.width = width;
   canvas.height = height;

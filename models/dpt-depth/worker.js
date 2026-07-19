@@ -11,6 +11,9 @@
 // WebGPU fp16 with a WASM q8 fallback. Uses the SHARED loader from lib/webai.js.
 
 import { loadPipeline, TRANSFORMERS_URL } from "/web-ai-showcase/lib/webai.js";
+// Reuse the EXACT same perceptual colour ramp the front-end legend uses, so the worker-composited
+// depth map is pixel-identical to the old main-thread path — just built off the main thread.
+import { sampleMap } from "/web-ai-showcase/models/dpt-depth/dpt.js";
 
 let pipe = null;
 let device = "wasm";
@@ -60,7 +63,38 @@ function histogram(data, bins = 32) {
   return h;
 }
 
-async function run(id, imageURL) {
+// Colourise a single-channel 0–255 depth map into an RGBA ImageBitmap, OFF the main thread. This is
+// the dense-output composite that used to run on the main thread (getImageData → per-pixel colour-map
+// loop → putImageData, ~40ms at 1080p); doing it here in the worker keeps INP low. Returns an
+// ImageBitmap (transferable, GPU-friendly drawImage on the main thread) or null when OffscreenCanvas
+// isn't available, in which case the page falls back to the main-thread composite.
+function colorizeToBitmap(gray, w, h, map) {
+  if (typeof OffscreenCanvas === "undefined") return null;
+  const off = new OffscreenCanvas(w, h);
+  const ctx = off.getContext("2d");
+  const img = ctx.createImageData(w, h);
+  const px = img.data;
+  for (let i = 0; i < gray.length; i++) {
+    const [r, g, b] = sampleMap(map, gray[i] / 255);
+    const o = i * 4;
+    px[o] = r;
+    px[o + 1] = g;
+    px[o + 2] = b;
+    px[o + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+  return off.transferToImageBitmap();
+}
+
+// Recolour an already-computed depth buffer with a different colour map, still off the main thread —
+// used when the visitor switches the colour map without re-running inference. The page transfers a
+// copy of the depth buffer in; we return the composited ImageBitmap.
+function colorize(rid, gray, w, h, map) {
+  const bmp = colorizeToBitmap(gray, w, h, map);
+  post({ type: "colorized", rid, bitmap: bmp }, bmp ? [bmp] : []);
+}
+
+async function run(id, imageURL, map) {
   await ensureLoaded();
   const t0 = performance.now();
   const image = await RawImage.read(imageURL);
@@ -100,6 +134,10 @@ async function run(id, imageURL) {
   const hist = histogram(gray);
   const ms = Math.round(performance.now() - t0);
   const buf = gray.buffer.slice(0); // own copy so we can transfer without detaching library memory
+  // Composite the colourised depth map here (off the main thread) when the caller asked for a colour
+  // map. Pages that only need the raw depth buffer (parallax, depth-of-field) pass no map and skip it.
+  const bitmap = map ? colorizeToBitmap(gray, w, h, map) : null;
+  const transfer = bitmap ? [buf, bitmap] : [buf];
   post(
     {
       type: "result",
@@ -107,6 +145,7 @@ async function run(id, imageURL) {
       width: w,
       height: h,
       depth: buf,
+      bitmap,
       hist,
       rawMin,
       rawMax,
@@ -118,7 +157,7 @@ async function run(id, imageURL) {
       device,
       dtype,
     },
-    [buf],
+    transfer,
   );
 }
 
@@ -126,7 +165,10 @@ self.addEventListener("message", async (e) => {
   const { type } = e.data;
   try {
     if (type === "load") await ensureLoaded();
-    else if (type === "run") await run(e.data.id, e.data.image);
+    else if (type === "run") await run(e.data.id, e.data.image, e.data.map);
+    else if (type === "colorize") {
+      colorize(e.data.rid, new Uint8Array(e.data.gray), e.data.width, e.data.height, e.data.map);
+    }
   } catch (err) {
     post({ type: "error", id: e.data?.id, message: String(err?.message ?? err) });
   }
