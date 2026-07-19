@@ -45,6 +45,26 @@ function extractTile(rgba, W, sx, sy, sw, sh) {
   return out;
 }
 
+// Mean absolute Laplacian (high-frequency edge energy) over a flat RGBA buffer, on luma. Higher =
+// crisper edges. Runs HERE in the worker (over the output + the bicubic baseline) so the dense
+// per-pixel pass never lands on the main thread — the page just reads the two numbers.
+function sharpnessEnergyRGBA(rgba, w, h) {
+  const luma = new Float32Array(w * h);
+  for (let i = 0, p = 0; i < luma.length; i++, p += 4) {
+    luma[i] = 0.299 * rgba[p] + 0.587 * rgba[p + 1] + 0.114 * rgba[p + 2];
+  }
+  let sum = 0, n = 0;
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      const i = y * w + x;
+      const lap = 4 * luma[i] - luma[i - 1] - luma[i + 1] - luma[i - w] - luma[i + w];
+      sum += Math.abs(lap);
+      n++;
+    }
+  }
+  return n ? sum / n : 0;
+}
+
 // Blit a RawImage tile (RGB or RGBA) into the destination RGBA buffer, taking only its valid core
 // (dropping the upscaled overlap borders) and placing it at (dx,dy) in the output image.
 function blitCore(out, OW, tileImg, cropL, cropT, validW, validH, dx, dy) {
@@ -65,11 +85,28 @@ function blitCore(out, OW, tileImg, cropL, cropT, validW, validH, dx, dy) {
   }
 }
 
-async function run(id, rgba, W, H, tile) {
+async function run(id, bitmap, W, H, tile) {
   await ensureLoaded();
   const TILE = tile || 128;
   const OW = W * SCALE, OH = H * SCALE;
   const out = new Uint8ClampedArray(OW * OH * 4);
+
+  // INPUT read, off the main thread: decode the transferred ImageBitmap into pixels HERE (the yolov10
+  // pattern) instead of getImageData on the page. Also build the bicubic ×2 baseline + its sharpness
+  // in the worker, so the "before" layer and the sharpness delta cost the main thread nothing.
+  const inCanvas = new OffscreenCanvas(W, H);
+  const inCtx = inCanvas.getContext("2d", { willReadFrequently: true });
+  inCtx.drawImage(bitmap, 0, 0);
+  const rgba = inCtx.getImageData(0, 0, W, H).data;
+
+  const beforeCanvas = new OffscreenCanvas(OW, OH);
+  const beforeCtx = beforeCanvas.getContext("2d", { willReadFrequently: true });
+  beforeCtx.imageSmoothingEnabled = true;
+  beforeCtx.imageSmoothingQuality = "high";
+  beforeCtx.drawImage(bitmap, 0, 0, OW, OH);
+  const sharpBefore = sharpnessEnergyRGBA(beforeCtx.getImageData(0, 0, OW, OH).data, OW, OH);
+  const beforeBitmap = beforeCanvas.transferToImageBitmap();
+  bitmap.close?.();
 
   const xs = [];
   for (let x = 0; x < W; x += TILE) xs.push(x);
@@ -105,10 +142,31 @@ async function run(id, rgba, W, H, tile) {
       post({ type: "tile", id, done, total, tileMs });
     }
   }
+  // Dense-output composite, off the main thread: rasterise the finished upscaled RGBA into an
+  // OffscreenCanvas and transfer a ready ImageBitmap back. The page only does drawImage — no
+  // getImageData / putImageData / per-pixel loop on the main thread, so INP stays low at 1080p+.
+  const outCanvas = new OffscreenCanvas(OW, OH);
+  outCanvas.getContext("2d").putImageData(new ImageData(out, OW, OH), 0, 0);
+  const outputBitmap = outCanvas.transferToImageBitmap();
+  const sharpAfter = sharpnessEnergyRGBA(out, OW, OH);
+
   const ms = Math.round(performance.now() - t0);
   post(
-    { type: "result", id, rgba: out, width: OW, height: OH, tiles, ms, device, scale: SCALE },
-    [out.buffer],
+    {
+      type: "result",
+      id,
+      outputBitmap,
+      beforeBitmap,
+      sharpBefore,
+      sharpAfter,
+      width: OW,
+      height: OH,
+      tiles,
+      ms,
+      device,
+      scale: SCALE,
+    },
+    [outputBitmap, beforeBitmap],
   );
 }
 
@@ -118,7 +176,7 @@ self.addEventListener("message", async (e) => {
     if (type === "load") {
       await ensureLoaded();
     } else if (type === "run") {
-      await run(e.data.id, e.data.rgba, e.data.width, e.data.height, e.data.tile);
+      await run(e.data.id, e.data.bitmap, e.data.width, e.data.height, e.data.tile);
     }
   } catch (err) {
     post({ type: "error", id: e.data?.id, message: String(err?.message ?? err) });

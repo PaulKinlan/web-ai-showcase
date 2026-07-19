@@ -65,20 +65,32 @@ export class SuperResEngine {
     });
   }
 
-  /** Upscale a source canvas 2×. `onTile({done,total,tileMs})` fires per tile for honest progress. */
-  upscale(sourceCanvas, { tile = 128, onTile } = {}) {
+  /**
+   * Upscale a source canvas/image 2×. The INPUT read happens off the main thread: we hand the worker a
+   * transferred ImageBitmap (the yolov10 pattern) instead of doing getImageData on the page. Resolves
+   * with { outputBitmap, beforeBitmap, sharpBefore, sharpAfter, width, height, tiles, ms, device } —
+   * both the upscaled image AND the bicubic baseline arrive as ready-to-draw ImageBitmaps, so the page
+   * never runs a per-pixel composite. `onTile({done,total,tileMs})` fires per tile for honest progress.
+   */
+  async upscale(source, { tile = 128, onTile } = {}) {
     const id = ++this._id;
-    const ctx = sourceCanvas.getContext("2d", { willReadFrequently: true });
-    const img = ctx.getImageData(0, 0, sourceCanvas.width, sourceCanvas.height);
-    const rgba = img.data; // Uint8ClampedArray, transferred to the worker
+    const width = source.width, height = source.height;
+    const bitmap = await createImageBitmap(source);
     return new Promise((resolve, reject) => {
       this._pending.set(id, { resolve, reject, onTile });
-      this.worker.postMessage(
-        { type: "run", id, rgba, width: img.width, height: img.height, tile },
-        [rgba.buffer],
-      );
+      this.worker.postMessage({ type: "run", id, bitmap, width, height, tile }, [bitmap]);
     });
   }
+}
+
+/** Draw a worker-produced ImageBitmap into a fresh canvas (main thread does only drawImage). */
+export function bitmapToCanvas(bitmap) {
+  const canvas = document.createElement("canvas");
+  canvas.width = bitmap.width;
+  canvas.height = bitmap.height;
+  canvas.getContext("2d").drawImage(bitmap, 0, 0);
+  bitmap.close?.();
+  return canvas;
 }
 
 /** Read a File (from upload or drop) into a data URL. */

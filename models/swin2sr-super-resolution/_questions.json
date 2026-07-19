@@ -1,0 +1,112 @@
+{
+  "schemaVersion": 1,
+  "id": "swin2sr-super-resolution",
+  "revision": 1,
+  "reviewedAt": "2026-07-19T00:00:00Z",
+  "reviewer": "agent: off-main-thread dense-output composite retrofit (invariant 15)",
+  "frontend": true,
+  "rubric": [
+    {
+      "dimension": "real-inference",
+      "score": 5,
+      "severity": "info",
+      "evidence": "conformance (wasm, headless no-GPU): loads-clean=pass, calls-real-inference=pass. Inference path (tiled image-to-image pipeline in worker.js) UNCHANGED by the retrofit. screenshots: scratchpad/verify-screens/swin-*.png",
+      "notes": "Retrofit changed only I/O plumbing (input read + output composite), not the model call."
+    },
+    {
+      "dimension": "io-shape",
+      "score": 4,
+      "severity": "info",
+      "evidence": "io-shape-semantic=manual (image-to-image → 2× upscaled image). Composite pixel-equality proven: measure-swin harness reports pixelDiffCount=0 between the old main-thread putImageData output and the new worker-composited ImageBitmap at 2048×1536; worker sharpness 19.09 == main sharpness 19.09.",
+      "notes": "Same upscaled image + same sharpness numbers before/after the retrofit."
+    },
+    {
+      "dimension": "runtime-config",
+      "score": 5,
+      "severity": "info",
+      "evidence": "declares-model-id/task/backend/quantisation=pass; inference-off-main-thread=pass (new Worker). At-a-glance Web APIs row now also names OffscreenCanvas/ImageBitmap (input read + composite off main).",
+      "notes": ""
+    },
+    {
+      "dimension": "cache-init",
+      "score": 4,
+      "severity": "info",
+      "evidence": "shared-auto-init-loader=pass; auto-init-on-cached=manual. Fresh-profile verify: loader shows honest absent state 'Download model (~150 MB)' + '0 MB cached of 10737 MB', run disabled — createModelLoader auto-init policy UNCHANGED. screenshots: scratchpad/verify-screens/swin-basics-mobile-light.png",
+      "notes": ""
+    },
+    {
+      "dimension": "states",
+      "score": 4,
+      "severity": "info",
+      "evidence": "live-status-region=pass, errors-on-the-page=pass, honest-progress-retry-offline=manual, runs-without-webgpu-fallback=manual. verify: 0 console errors, 0 failed network requests across top/basics/practical/wild.",
+      "notes": ""
+    },
+    {
+      "dimension": "controls",
+      "score": 4,
+      "severity": "info",
+      "evidence": "controls-operable=manual. Tile-size select, Upscale button, wipe slider, sample strip, dropzone all preserved (identity unchanged); run button correctly gated on loader ready.",
+      "notes": ""
+    },
+    {
+      "dimension": "no-fake-output",
+      "score": 5,
+      "severity": "info",
+      "evidence": "no-fake-output=manual. Output is the real tiled Swin2SR result rasterised in-worker; the 'before' layer is a real bicubic ×2 of the same input. No canned result.",
+      "notes": ""
+    },
+    {
+      "dimension": "accessibility",
+      "score": 5,
+      "severity": "info",
+      "evidence": "images-have-alt=pass, buttons-have-names=pass. Compare slider keeps aria-valuetext; no control semantics changed by the retrofit.",
+      "notes": ""
+    },
+    {
+      "dimension": "responsive",
+      "score": 4,
+      "severity": "info",
+      "evidence": "responsive-desktop=pass, responsive-mobile=pass, parity-both-classes=manual. verify (DESKTOP 1280×800 + MOBILE 360×740 DPR3, light+dark): overflowDesktop=0px overflowMobile=0px on top/basics/wild. Layout/CSS untouched.",
+      "notes": ""
+    },
+    {
+      "dimension": "performance",
+      "score": 5,
+      "severity": "info",
+      "evidence": "dense-composite-off-main-thread=pass (source: transferToImageBitmap). MEASURED at 2048×1536 (PerformanceObserver('longtask') + MessageChannel stall probe, headless Chrome): BEFORE the composite ran ~52ms on the main thread as ONE 52ms long task (bicubic baseline + putImageData + two sharpness passes on main); AFTER the worker builds the upscaled image + bicubic baseline via OffscreenCanvas.transferToImageBitmap and computes sharpness off-thread, the page only does drawImage = ~2.3ms with ZERO long tasks. INPUT read also moved off main (transferred ImageBitmap → worker OffscreenCanvas, not getImageData on the page).",
+      "notes": "Composite main-thread cost 52ms → 2.3ms; crosses the 8ms frame slice before, well under it after."
+    }
+  ],
+  "guidanceConsulted": [
+    {
+      "id": "break-up-long-tasks",
+      "recommendation": "Heavy synchronous processing / long loops block the main thread; move them off-thread or yield so input + rendering stay responsive.",
+      "appliedOrException": "applied — the dense output composite (rasterise upscaled RGBA, build bicubic baseline, two sharpness passes) and the input pixel read were moved entirely into the Web Worker; results return as transferred ImageBitmaps so the main thread runs no per-pixel loop (no yielding needed — the work is off-thread).",
+      "evidence": "measure-swin: one 52ms main-thread long task before → 0 long tasks + 2.3ms drawImage after (2048×1536)."
+    },
+    {
+      "id": "identify-inp-causes",
+      "recommendation": "Measure INP / long tasks with real APIs (Long Animation Frames / Event Timing); don't infer responsiveness from 'uses a worker'.",
+      "appliedOrException": "applied — measured before/after with PerformanceObserver('longtask') + a MessageChannel main-thread stall probe on a 2048×1536 input, capturing the composite's real main-thread ms rather than assuming.",
+      "evidence": "scratchpad/measure.mjs output retained; before 52ms long task, after none."
+    },
+    {
+      "id": "cross-document-transitions",
+      "recommendation": "Use cross-document view transitions for catalogue↔page navigation.",
+      "appliedOrException": "applied — @view-transition navigation:auto in public/styles.css (invariant 6); untouched by this retrofit.",
+      "evidence": "shared design system."
+    }
+  ],
+  "openQuestions": [
+    "End-to-end real-inference visual diff on a large photo (model download required) — composite equality is proven synthetically (pixelDiffCount=0); a full on-device A/B would further confirm.",
+    "Are all controls keyboard-operable with visible focus on both classes (manual)?"
+  ],
+  "followUpGoals": [
+    {
+      "goal": "Agent matrix pass: Read the mobile+desktop screenshots, confirm real output + tap targets + focus, then flip support to ok in models.json.",
+      "kind": "targeted-fix",
+      "priority": "medium"
+    }
+  ],
+  "summary": "Revision-1 critique for swin2sr-super-resolution recording the off-main-thread dense-output-composite retrofit (invariant 15): input read + upscaled/bicubic composite + sharpness moved into the worker, transferred back as ImageBitmaps. Measured composite main-thread cost 52ms → 2.3ms with 0 long tasks after; output pixel-identical (diff 0). Route/slug/identity/controls preserved (in-place fix). Auto-init/download policy unchanged."
+}
