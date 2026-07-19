@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>StarCoder Multi-model — write, then find the nearest example · Web AI Showcase</title>
+    <meta name="description" content="A two-model pipeline in your browser: a StarCoder-family model fills in the middle of a function, then a code-embedding model (MiniLM) ranks a corpus to find the example it most resembles. Both local, both on WASM." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>⭐</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">StarCoder FIM</a></p>
+    <header>
+      <p class="eyebrow">use case · multi-model</p>
+      <h1>Multi-model: write, then find the nearest example</h1>
+      <p class="lede">
+        Two models, one pipeline, all local. First a StarCoder-family model fills in the middle of a
+        function. Then a code-embedding model —
+        <a href="https://huggingface.co/Xenova/all-MiniLM-L6-v2" target="_blank" rel="noopener">all-MiniLM-L6-v2</a> —
+        turns the finished function into a vector and ranks a small labelled corpus by cosine similarity, so
+        you can see which known example the generated code most resembles. Generation and retrieval, both on
+        your device, nothing uploaded.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="m-h">
+      <h3 id="m-h">Models</h3>
+      <div class="dual">
+        <div><p class="fieldlabel">1 · StarCoder (generation)</p><div id="loader-sc"></div></div>
+        <div><p class="fieldlabel">2 · MiniLM (code embeddings)</p><div id="loader-em"></div></div>
+      </div>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+
+      <div class="sc-wrap" style="margin-top:.6rem">
+        <div class="chips" id="examples" role="group" aria-label="Scenarios"></div>
+        <div class="fim-fields">
+          <div><label class="fieldlabel" for="prefix">Prefix</label>
+            <textarea id="prefix" class="code-input" spellcheck="false" disabled>def reverse_string(s):
+    </textarea></div>
+          <div><label class="fieldlabel" for="suffix">Suffix</label>
+            <textarea id="suffix" class="code-input" spellcheck="false" disabled>
+    return result</textarea></div>
+        </div>
+        <div class="actionbar">
+          <button id="send" type="button" disabled>Write → find nearest</button>
+          <button id="stop" type="button" class="secondary" hidden>Stop</button>
+        </div>
+
+        <label class="fieldlabel" style="margin-top:.3rem">1 · StarCoder's completion (middle highlighted)</label>
+        <div class="codeout">
+          <div class="codeout-bar"><span class="lang">python</span></div>
+          <pre><code id="output"><span class="muted">The generated function appears here.</span></code></pre>
+        </div>
+
+        <label class="fieldlabel" style="margin-top:.5rem">2 · Nearest examples by code embedding (cosine similarity)</label>
+        <div id="ranked"><span class="muted">Ranked matches appear here after generation.</span></div>
+      </div>
+    </section>
+
+    <section aria-labelledby="how-h">
+      <h2 id="how-h">How the two models connect</h2>
+      <p class="muted">
+        The hand-off is just a string and a vector. StarCoder produces the function text; MiniLM's
+        <code>feature-extraction</code> pipeline (mean-pooled, L2-normalised) maps that text — and every
+        corpus snippet — to a 384-dimension embedding. Because the vectors are normalised, cosine similarity
+        is a plain dot product, so ranking is a handful of multiplications. Each model runs in its own Web
+        Worker, so neither blocks the page or each other.
+      </p>
+    </section>
+
+    <p class="crumbs"><a href="../wild/">← Wild</a> · <a href="../">StarCoder FIM</a></p>
+
+    <style>
+      .dual { display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:1rem; }
+      .rank-row { display:flex; align-items:center; gap:.6rem; padding:.35rem 0; border-bottom:1px solid var(--border); }
+      .rank-row .label { flex:1 1 auto; min-inline-size:0; }
+      .rank-row .bar { flex:0 0 40%; block-size:.55rem; border-radius:999px; background:var(--bg-secondary); overflow:hidden; }
+      .rank-row .bar i { display:block; block-size:100%; background:var(--accent); }
+      .rank-row .score { font-family:var(--font-mono); font-size:.78rem; color:var(--muted); min-inline-size:3.2rem; text-align:right; }
+      .rank-row.top .label { font-weight:600; }
+    </style>
+
+    <script type="module">
+      import { StarCoderEngine, STARCODER_CSS, renderFilled } from "../starcoder-fim.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = STARCODER_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+
+      // Minimal embed-worker handshake.
+      class EmbedEngine {
+        constructor() {
+          this.worker = new Worker("/web-ai-showcase/models/starcoder-fim/embed-worker.js", { type: "module" });
+          this.ready = false; this.onProgress = null; this._loadWaiters = []; this._pending = new Map(); this._id = 0;
+          this.worker.addEventListener("message", (e) => this._msg(e.data));
+          this.worker.addEventListener("error", (e) => { const err = new Error(e.message || "embed worker failed"); for (const w of this._loadWaiters) w.reject(err); this._loadWaiters = []; });
+        }
+        _msg(m) {
+          if (m.type === "progress") this.onProgress?.(m.p);
+          else if (m.type === "ready") { this.ready = true; for (const w of this._loadWaiters) w.resolve(); this._loadWaiters = []; }
+          else if (m.type === "embedded") { const p = this._pending.get(m.id); if (p) { this._pending.delete(m.id); p.resolve(m); } }
+          else if (m.type === "error") { const p = this._pending.get(m.id); if (p) { this._pending.delete(m.id); p.reject(new Error(m.message)); } else { for (const w of this._loadWaiters) w.reject(new Error(m.message)); this._loadWaiters = []; } }
+        }
+        load(onProgress) { if (onProgress) this.onProgress = onProgress; if (this.ready) return Promise.resolve(); return new Promise((res, rej) => { this._loadWaiters.push({ resolve: res, reject: rej }); this.worker.postMessage({ type: "load" }); }); }
+        embed(texts) { const id = ++this._id; return new Promise((res, rej) => { this._pending.set(id, { resolve: res, reject: rej }); this.worker.postMessage({ type: "embed", id, texts }); }); }
+      }
+
+      const sc = new StarCoderEngine();
+      const em = new EmbedEngine();
+      let scReady = false, emReady = false, generating = false;
+
+      const CORPUS = [
+        { label: "Reverse a string", code: "def reverse_string(s):\n    return s[::-1]" },
+        { label: "Average of a list", code: "def average(nums):\n    return sum(nums) / len(nums)" },
+        { label: "Check primality", code: "def is_prime(n):\n    return n > 1 and all(n % i for i in range(2, int(n**0.5)+1))" },
+        { label: "Binary search", code: "def binary_search(a, t):\n    lo, hi = 0, len(a)-1\n    while lo <= hi:\n        mid = (lo+hi)//2\n        if a[mid] == t: return mid\n        if a[mid] < t: lo = mid+1\n        else: hi = mid-1\n    return -1" },
+        { label: "Fibonacci", code: "def fib(n):\n    a, b = 0, 1\n    for _ in range(n): a, b = b, a+b\n    return a" },
+        { label: "Word counts", code: "def word_counts(words):\n    counts = {}\n    for w in words: counts[w] = counts.get(w, 0) + 1\n    return counts" },
+      ];
+      let corpusVecs = null;
+
+      const SCEN = [
+        { label: "reverse a string", prefix: "def reverse_string(s):\n    ", suffix: "\n    return result" },
+        { label: "average", prefix: "def average(numbers):\n    total = 0\n    ", suffix: "\n    return total / len(numbers)" },
+        { label: "primality", prefix: "def is_prime(n):\n    if n < 2:\n        return False\n    ", suffix: "\n    return True" },
+      ];
+      $("examples").replaceChildren(...SCEN.map((s) => { const b = document.createElement("button"); b.type = "button"; b.className = "chip"; b.textContent = s.label; b.addEventListener("click", () => { $("prefix").value = s.prefix; $("suffix").value = s.suffix; maybeRun(); }); return b; }));
+
+      function maybeEnable() { if (scReady) $("send").disabled = false; }
+
+      createModelLoader({
+        mount: $("loader-sc"),
+        model: { modelId: "onnx-community/tiny_starcoder_py-ONNX", runtime: "transformers.js", dtype: "q8", sizeMB: 383, requiresWebGPU: false },
+        load: async (onProgress) => { await sc.load(onProgress); return sc; },
+        onReady: () => { scReady = true; $("prefix").disabled = false; $("suffix").disabled = false; maybeEnable(); },
+      });
+      createModelLoader({
+        mount: $("loader-em"),
+        model: { modelId: "Xenova/all-MiniLM-L6-v2", runtime: "transformers.js", dtype: "q8", sizeMB: 23, requiresWebGPU: false },
+        load: async (onProgress) => { await em.load(onProgress); return em; },
+        onReady: async () => {
+          emReady = true;
+          try { const r = await em.embed(CORPUS.map((c) => c.code)); corpusVecs = r.vecs; } catch (e) { /* surfaced on run */ }
+        },
+      });
+
+      function maybeRun() { if (scReady && emReady) run(); }
+
+      let rafPending = false, acc = "";
+      function scheduleRender() { if (rafPending) return; rafPending = true; requestAnimationFrame(() => { rafPending = false; renderFilled($("output"), $("prefix").value, acc, $("suffix").value, generating); }); }
+      const dot = (a, b) => { let s = 0; for (let i = 0; i < a.length; i++) s += a[i] * b[i]; return s; };
+
+      async function run() {
+        if (!scReady || generating) return;
+        const prefix = $("prefix").value, suffix = $("suffix").value;
+        generating = true; $("send").disabled = true; $("stop").hidden = false;
+        $("status").hidden = false; $("status").classList.remove("err", "ok"); $("status").textContent = "StarCoder writing…";
+        acc = ""; renderFilled($("output"), prefix, "", suffix, true);
+        $("ranked").innerHTML = '<span class="muted">Waiting for the embedding step…</span>';
+        try {
+          const res = await sc.run({ mode: "fim", prefix, suffix, maxTokens: 64, temperature: 0.2 }, { onToken: (d) => { acc += d; scheduleRender(); } });
+          renderFilled($("output"), prefix, res.middle || "", suffix, false);
+          const fullCode = prefix + (res.middle || "") + suffix;
+
+          if (!emReady) { await em.load(); emReady = true; }
+          if (!corpusVecs) { const r0 = await em.embed(CORPUS.map((c) => c.code)); corpusVecs = r0.vecs; }
+          $("status").textContent = "MiniLM ranking the corpus…";
+          const r = await em.embed([fullCode]);
+          const q = r.vecs[0];
+          const scored = CORPUS.map((c, i) => ({ label: c.label, sim: dot(q, corpusVecs[i]) })).sort((a, b) => b.sim - a.sim);
+          renderRanked(scored);
+          $("status").textContent = "Done — generated, embedded, and ranked locally."; $("status").classList.add("ok");
+        } catch (err) {
+          $("status").textContent = "Pipeline failed: " + err.message; $("status").classList.add("err");
+        } finally { generating = false; $("stop").hidden = true; maybeEnable(); }
+      }
+
+      function renderRanked(scored) {
+        const max = Math.max(1e-6, scored[0].sim);
+        $("ranked").replaceChildren(...scored.map((s, i) => {
+          const row = document.createElement("div"); row.className = "rank-row" + (i === 0 ? " top" : "");
+          const label = document.createElement("span"); label.className = "label"; label.textContent = s.label;
+          const bar = document.createElement("span"); bar.className = "bar"; const fill = document.createElement("i"); fill.style.inlineSize = Math.max(2, (s.sim / max) * 100) + "%"; bar.append(fill);
+          const score = document.createElement("span"); score.className = "score"; score.textContent = s.sim.toFixed(3);
+          row.append(label, bar, score); return row;
+        }));
+      }
+
+      $("send").addEventListener("click", run);
+      $("stop").addEventListener("click", () => { sc.stop(); $("status").textContent = "Stopping…"; });
+      if ("serviceWorker" in navigator) navigator.serviceWorker.register("/web-ai-showcase/sw.js").catch(() => {});
+    </script>
+  </body>
+</html>

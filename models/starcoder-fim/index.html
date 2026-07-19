@@ -1,0 +1,300 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>StarCoder fill-in-the-middle — code completion that reads both sides · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run a StarCoder-family code model in your browser and watch fill-in-the-middle (FIM): give it the code BEFORE and AFTER a gap and it writes the code in between, conditioned on both sides — with the exact <fim_prefix>…<fim_suffix>…<fim_middle> wire and live tok/s. All local, on WASM, nothing uploaded."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>⭐</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">text-generation · code · WASM · ~383 MB</p>
+      <h1>StarCoder — fill in the middle of your code</h1>
+      <p class="lede">
+        Most autocomplete only continues from the left. A <strong>fill-in-the-middle</strong> (FIM) code
+        model reads <em>both</em> sides — the code before a gap and the code after it — and writes what
+        belongs in between. This is the trick the BigCode <strong>StarCoder</strong> family pioneered, and
+        it runs here entirely in your browser on WebAssembly. You give it a prefix and a suffix; it
+        streams the middle, with the exact <code>&lt;fim_prefix&gt;…&lt;fim_suffix&gt;…&lt;fim_middle&gt;</code>
+        wire on show and live tokens-per-second. Nothing is uploaded and it works offline once cached.
+      </p>
+      <p class="lede" style="font-size:.92rem">
+        <strong>Which model runs here.</strong> StarCoder2-3B has no browser build today — no ONNX export
+        for the <code>starcoder2</code> architecture exists on the Hub, and MLC's WebLLM ships no
+        <code>starcoder2</code> weights — so this page runs the genuine same-family model that
+        <em>does</em> load in a browser: <a href="https://huggingface.co/onnx-community/tiny_starcoder_py-ONNX" target="_blank" rel="noopener">tiny_starcoder_py</a>
+        (164M, BigCode StarCoder lineage, Python-focused). Same FIM sentinels, same mechanism — a small
+        model, so its completions are modest, but every token you see is real and computed on your device.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="glance">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/onnx-community/tiny_starcoder_py-ONNX" target="_blank" rel="noopener">onnx-community/tiny_starcoder_py-ONNX</a> (ONNX of <a href="https://huggingface.co/bigcode/tiny_starcoder_py" target="_blank" rel="noopener">bigcode/tiny_starcoder_py</a>)</td></tr>
+          <tr><th>Family</th><td>BigCode <strong>StarCoder</strong> (architecture <code>gpt_bigcode</code>) — the same lineage as StarCoder2, which has no browser build yet</td></tr>
+          <tr><th>Task / pipeline</th><td><code>text-generation</code> — a causal LM, driven in fill-in-the-middle mode</td></tr>
+          <tr><th>FIM tokens</th><td><code>&lt;fim_prefix&gt;</code>, <code>&lt;fim_suffix&gt;</code>, <code>&lt;fim_middle&gt;</code>, <code>&lt;fim_pad&gt;</code></td></tr>
+          <tr><th>Params / dtype</th><td>164M · <code>q8</code> (8-bit) ONNX</td></tr>
+          <tr><th>Backend</th><td><strong>WebAssembly</strong> — runs anywhere, no WebGPU required</td></tr>
+          <tr><th>Download</th><td>~383 MB, cached after first load</td></tr>
+          <tr><th>Trained on</th><td>The Stack (Python subset) — this checkpoint is Python-specialised</td></tr>
+          <tr><th>License</th><td><a href="https://huggingface.co/bigcode/tiny_starcoder_py" target="_blank" rel="noopener">bigcode-openrail-m</a></td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers, ES module imports — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it — fill the gap</h3>
+      <p class="muted">
+        Put the code that comes <strong>before</strong> the gap in the first box and the code that comes
+        <strong>after</strong> it in the second. StarCoder writes what belongs between them, reading both
+        sides. Try an example, then edit either half and watch the middle change.
+      </p>
+
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+
+      <div class="sc-wrap" style="margin-top:.6rem">
+        <div class="chips" id="examples" role="group" aria-label="Examples"></div>
+
+        <div class="controls">
+          <label class="control">temperature
+            <span class="row"><input type="range" id="temp" min="0" max="1" step="0.05" value="0.2" aria-describedby="tempHint" /><b id="tempV">0.20</b></span>
+          </label>
+          <label class="control">max tokens
+            <span class="row"><input type="range" id="maxtok" min="16" max="160" step="8" value="80" /><b id="maxtokV">80</b></span>
+          </label>
+        </div>
+        <p class="muted" id="tempHint" style="font-size:.74rem;margin:.1rem 0 .3rem">Temperature 0 is greedy/deterministic; higher samples more varied completions.</p>
+
+        <div class="fim-fields">
+          <div>
+            <label class="fieldlabel" for="prefix">Code before the gap (prefix)</label>
+            <textarea id="prefix" class="code-input" spellcheck="false" disabled>def fibonacci(n):
+    """Return the nth Fibonacci number."""
+    a, b = 0, 1
+    </textarea>
+          </div>
+          <div>
+            <label class="fieldlabel" for="suffix">Code after the gap (suffix)</label>
+            <textarea id="suffix" class="code-input" spellcheck="false" disabled>
+    return a</textarea>
+          </div>
+        </div>
+
+        <div class="actionbar">
+          <button id="send" type="button" disabled>Fill the middle</button>
+          <button id="stop" type="button" class="secondary" hidden>Stop</button>
+        </div>
+
+        <label class="fieldlabel" style="margin-top:.3rem">Result — the model's middle is highlighted between your prefix and suffix</label>
+        <div class="codeout">
+          <div class="codeout-bar"><span class="lang">python</span><button class="copybtn" id="copy" type="button">Copy</button></div>
+          <pre><code id="output"><span class="muted">Your filled-in code appears here.</span></code></pre>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside — the FIM wire and the token stream</h3>
+      <p class="muted">
+        A FIM model isn't a different architecture — it's a normal left-to-right language model trained on
+        a rearranged input. Instead of feeding the code in order, training splices it as
+        <code>&lt;fim_prefix&gt;</code> BEFORE <code>&lt;fim_suffix&gt;</code> AFTER
+        <code>&lt;fim_middle&gt;</code>, and the model learns to continue from <code>&lt;fim_middle&gt;</code>
+        with the text that fits between the two halves. Because it's still ordinary next-token prediction,
+        it <em>streams</em> — the numbers below are measured live on your device. Here is the exact wire the
+        model received on the last run:
+      </p>
+      <div class="wire" id="wire"><span class="muted">Run something to see the FIM wire the model received.</span></div>
+      <div class="inside-grid" id="insideGrid" style="margin-top:.7rem">
+        <div class="stat"><div class="k">decode speed</div><div class="v" id="sTps">–</div></div>
+        <div class="stat"><div class="k">time to first token</div><div class="v" id="sTtft">–</div></div>
+        <div class="stat"><div class="k">generated</div><div class="v" id="sGen">–</div></div>
+        <div class="stat"><div class="k">total time</div><div class="v" id="sTotal">–</div></div>
+        <div class="stat"><div class="k">backend</div><div class="v" id="sBackend">–</div></div>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        Fill-in-the-middle is what turns a code model from a line-continuation toy into an editor-grade
+        assistant: real edits happen <em>inside</em> existing code, not just at the end. A FIM model that
+        runs locally makes that private by construction and free to run — the code around your cursor never
+        leaves the machine.
+      </p>
+      <ul>
+        <li><strong>Cursor-aware completion</strong> — complete a call in the middle of a function using the lines that follow it as context, not just the ones before.</li>
+        <li><strong>Fill a stub</strong> — write the body of a function whose signature and <code>return</code> you've already typed.</li>
+        <li><strong>Offline, private codegen</strong> — no API bill, no snippet uploaded, works on a plane once the weights are cached.</li>
+        <li><strong>A local codegen stage</strong> — pair it with a code-embedding model to find the nearest example to what it just wrote (see the multi-model demo).</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Complete a function from a comment — plain left-to-right generation, the fundamental move.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Fill a real gap between a prefix and a suffix — the FIM mechanism doing editor-style completion.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Push it across languages and watch where a Python-trained model shines and where it strains.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">StarCoder writes code → a code-embedding model finds the nearest example in a corpus.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>
+        There's nothing FIM-specific in the pipeline call — FIM lives entirely in how you assemble the
+        prompt string. You wrap the two halves in the sentinel tokens and let the code-tuned weights
+        continue from <code>&lt;fim_middle&gt;</code>:
+      </p>
+      <pre><code>import { pipeline } from "@huggingface/transformers";
+
+const gen = await pipeline("text-generation", "onnx-community/tiny_starcoder_py-ONNX", { dtype: "q8" });
+
+const prefix = "def fibonacci(n):\n    a, b = 0, 1\n    ";
+const suffix = "\n    return a";
+// Assemble the FIM wire: BEFORE, then AFTER, then ask for the MIDDLE.
+const wire = `&lt;fim_prefix&gt;${prefix}&lt;fim_suffix&gt;${suffix}&lt;fim_middle&gt;`;
+
+const [out] = await gen(wire, { max_new_tokens: 80, return_full_text: false });
+// out.generated_text is just the MIDDLE — splice it back: prefix + middle + suffix.</code></pre>
+      <p class="muted">
+        This page runs exactly that in <code>worker.js</code> (off the main thread), streaming each token
+        via a <code>TextStreamer</code> so the middle appears live, and reports the real tok/s and
+        time-to-first-token measured on your device. Plain completion (the Basics page) is the same call
+        without the sentinels.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/onnx-community/tiny_starcoder_py-ONNX" target="_blank" rel="noopener">Model card — tiny_starcoder_py (ONNX)</a></li>
+        <li><a href="https://huggingface.co/bigcode/tiny_starcoder_py" target="_blank" rel="noopener">Original model — bigcode/tiny_starcoder_py</a></li>
+        <li><a href="https://arxiv.org/abs/2305.06161" target="_blank" rel="noopener">Paper — StarCoder: may the source be with you! (Li et al., 2023)</a></li>
+        <li><a href="https://arxiv.org/abs/2207.14255" target="_blank" rel="noopener">Efficient Training of Language Models to Fill in the Middle (Bavarian et al., 2022) — the FIM method</a></li>
+        <li><a href="https://arxiv.org/abs/2402.19173" target="_blank" rel="noopener">StarCoder 2 and The Stack v2 (Lozhkov et al., 2024)</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <style>
+      .glance { inline-size:100%; max-inline-size:100%; border-collapse:collapse; font-size:.85rem; table-layout:fixed; }
+      .glance th, .glance td { text-align:left; padding:.3rem .5rem; border-bottom:1px solid var(--border); vertical-align:top; overflow-wrap:anywhere; word-break:break-word; }
+      .glance th { color:var(--muted); font-weight:600; inline-size:11rem; }
+      .glance td { font-family:var(--font-mono); }
+      @media (max-width:480px) { .glance th { inline-size:7rem; } }
+    </style>
+
+    <script type="module">
+      import { StarCoderEngine, STARCODER_CSS, renderFilled, renderWire, escapeHTML }
+        from "./starcoder-fim.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = STARCODER_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new StarCoderEngine();
+      let ready = false, generating = false;
+
+      const bind = (r, out, fmt) => { const el = $(r), o = $(out); const upd = () => o.textContent = fmt(el.value); el.addEventListener("input", upd); upd(); };
+      bind("temp", "tempV", (v) => (+v).toFixed(2));
+      bind("maxtok", "maxtokV", (v) => String(v));
+
+      const EXAMPLES = [
+        { label: "Fibonacci loop", prefix: "def fibonacci(n):\n    \"\"\"Return the nth Fibonacci number.\"\"\"\n    a, b = 0, 1\n    ", suffix: "\n    return a" },
+        { label: "average of a list", prefix: "def average(numbers):\n    total = ", suffix: "\n    return total / len(numbers)" },
+        { label: "guard clause", prefix: "def safe_divide(a, b):\n    ", suffix: "\n    return a / b" },
+        { label: "list comprehension", prefix: "def evens(items):\n    return [", suffix: " for x in items if x % 2 == 0]" },
+      ];
+      $("examples").replaceChildren(...EXAMPLES.map((ex) => {
+        const b = document.createElement("button");
+        b.type = "button"; b.className = "chip"; b.textContent = ex.label;
+        b.addEventListener("click", () => { $("prefix").value = ex.prefix; $("suffix").value = ex.suffix; if (ready) run(); });
+        return b;
+      }));
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/tiny_starcoder_py-ONNX", runtime: "transformers.js", dtype: "q8", sizeMB: 383, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => {
+          ready = true;
+          $("prefix").disabled = false; $("suffix").disabled = false; $("send").disabled = false;
+          run();
+        },
+      });
+
+      $("copy").addEventListener("click", async () => {
+        const text = $("prefix").value + (lastMiddle || "") + $("suffix").value;
+        try { await navigator.clipboard.writeText(text); $("copy").textContent = "Copied"; setTimeout(() => $("copy").textContent = "Copy", 1200); }
+        catch { $("copy").textContent = "—"; }
+      });
+
+      let lastMiddle = "";
+      let rafPending = false, accMiddle = "";
+      function scheduleRender() {
+        if (rafPending) return; rafPending = true;
+        requestAnimationFrame(() => { rafPending = false; renderFilled($("output"), $("prefix").value, accMiddle, $("suffix").value, generating); });
+      }
+
+      async function run() {
+        if (!ready || generating) return;
+        const prefix = $("prefix").value, suffix = $("suffix").value;
+        generating = true;
+        $("send").disabled = true; $("stop").hidden = false;
+        $("status").hidden = false; $("status").classList.remove("err", "ok"); $("status").textContent = "Generating…";
+        accMiddle = ""; renderFilled($("output"), prefix, "", suffix, true);
+        try {
+          const res = await engine.run(
+            { mode: "fim", prefix, suffix, maxTokens: +$("maxtok").value, temperature: +$("temp").value },
+            { onToken: (d) => { accMiddle += d; scheduleRender(); } },
+          );
+          lastMiddle = res.middle;
+          accMiddle = res.middle;
+          generating = false;
+          renderFilled($("output"), prefix, res.middle || "", suffix, false);
+          renderWire($("wire"), res.wire);
+          const decodeMs = Math.max(1, res.ms - res.ttft);
+          const tps = res.tokens > 0 ? (res.tokens / (decodeMs / 1000)) : 0;
+          $("sTps").innerHTML = tps.toFixed(1) + ' <small>tok/s</small>';
+          $("sTtft").innerHTML = res.ttft + ' <small>ms</small>';
+          $("sGen").innerHTML = res.tokens + ' <small>tok</small>';
+          $("sTotal").innerHTML = res.ms + ' <small>ms</small>';
+          $("sBackend").textContent = res.device.toUpperCase();
+          $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (err) {
+          generating = false;
+          $("status").textContent = "Generation failed: " + err.message; $("status").classList.add("err");
+        } finally {
+          generating = false; $("stop").hidden = true; $("send").disabled = false;
+        }
+      }
+
+      $("send").addEventListener("click", run);
+      $("stop").addEventListener("click", () => { engine.stop(); $("status").textContent = "Stopping…"; });
+
+      if ("serviceWorker" in navigator) navigator.serviceWorker.register("/web-ai-showcase/sw.js").catch(() => {});
+    </script>
+  </body>
+</html>

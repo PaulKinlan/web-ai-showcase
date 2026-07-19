@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>StarCoder Basics — complete a function · Web AI Showcase</title>
+    <meta name="description" content="The fundamental move: type a comment or a function signature and watch a StarCoder-family model continue it left-to-right, streaming on WebAssembly in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>⭐</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">StarCoder FIM</a></p>
+    <header>
+      <p class="eyebrow">use case · basics</p>
+      <h1>Basics: complete a function</h1>
+      <p class="lede">
+        The simplest thing a code model does: you start something — a comment, a signature, the first
+        line — and it continues. This is plain left-to-right generation (no fill-in-the-middle): the model
+        only sees what's before the cursor. Type or pick an example and watch it stream on your device.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+
+      <div class="sc-wrap" style="margin-top:.6rem">
+        <div class="chips" id="examples" role="group" aria-label="Examples"></div>
+        <div class="controls">
+          <label class="control">temperature
+            <span class="row"><input type="range" id="temp" min="0" max="1" step="0.05" value="0.2" /><b id="tempV">0.20</b></span>
+          </label>
+          <label class="control">max tokens
+            <span class="row"><input type="range" id="maxtok" min="16" max="160" step="8" value="88" /><b id="maxtokV">88</b></span>
+          </label>
+        </div>
+        <div>
+          <label class="fieldlabel" for="code">Start of your code (a comment or a signature)</label>
+          <textarea id="code" class="code-input" spellcheck="false" disabled># return the nth Fibonacci number, iteratively
+def fibonacci(n):
+</textarea>
+        </div>
+        <div class="actionbar">
+          <button id="send" type="button" disabled>Complete</button>
+          <button id="stop" type="button" class="secondary" hidden>Stop</button>
+        </div>
+        <label class="fieldlabel" style="margin-top:.3rem">Result — the model's continuation is highlighted</label>
+        <div class="codeout">
+          <div class="codeout-bar"><span class="lang">python</span><button class="copybtn" id="copy" type="button">Copy</button></div>
+          <pre><code id="output"><span class="muted">The completion streams here.</span></code></pre>
+        </div>
+        <div class="readout" id="readout" hidden><span>first token <b id="rTtft">–</b></span><span>decode <b id="rTps">–</b></span><span>total <b id="rMs">–</b></span></div>
+      </div>
+    </section>
+
+    <p class="crumbs"><a href="../">← StarCoder FIM</a> · Next: <a href="../practical/">Practical →</a></p>
+
+    <script type="module">
+      import { StarCoderEngine, STARCODER_CSS, renderFilled } from "../starcoder-fim.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = STARCODER_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new StarCoderEngine();
+      let ready = false, generating = false, lastCont = "";
+
+      const bind = (r, out, fmt) => { const el = $(r), o = $(out); const upd = () => o.textContent = fmt(el.value); el.addEventListener("input", upd); upd(); };
+      bind("temp", "tempV", (v) => (+v).toFixed(2));
+      bind("maxtok", "maxtokV", (v) => String(v));
+
+      const EXAMPLES = [
+        "# return the nth Fibonacci number, iteratively\ndef fibonacci(n):\n",
+        "# check whether two strings are anagrams of each other\ndef is_anagram(a, b):\n",
+        "def binary_search(arr, target):\n    \"\"\"Return the index of target, or -1.\"\"\"\n",
+        "# flatten an arbitrarily nested list into a flat list\ndef flatten(items):\n",
+      ];
+      $("examples").replaceChildren(...EXAMPLES.map((code) => {
+        const b = document.createElement("button"); b.type = "button"; b.className = "chip";
+        b.textContent = code.split("\n")[0].replace(/^#\s*/, "") || "example";
+        b.addEventListener("click", () => { $("code").value = code; if (ready) run(); });
+        return b;
+      }));
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/tiny_starcoder_py-ONNX", runtime: "transformers.js", dtype: "q8", sizeMB: 383, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { ready = true; $("code").disabled = false; $("send").disabled = false; run(); },
+      });
+
+      $("copy").addEventListener("click", async () => {
+        try { await navigator.clipboard.writeText($("code").value + (lastCont || "")); $("copy").textContent = "Copied"; setTimeout(() => $("copy").textContent = "Copy", 1200); } catch { $("copy").textContent = "—"; }
+      });
+
+      let rafPending = false, acc = "";
+      function scheduleRender() { if (rafPending) return; rafPending = true; requestAnimationFrame(() => { rafPending = false; renderFilled($("output"), $("code").value, acc, "", generating); }); }
+
+      async function run() {
+        if (!ready || generating) return;
+        const code = $("code").value;
+        generating = true; $("send").disabled = true; $("stop").hidden = false;
+        $("status").hidden = false; $("status").classList.remove("err", "ok"); $("status").textContent = "Generating…";
+        $("readout").hidden = true; acc = ""; renderFilled($("output"), code, "", "", true);
+        try {
+          const res = await engine.run(
+            { mode: "complete", code, maxTokens: +$("maxtok").value, temperature: +$("temp").value },
+            { onToken: (d) => { acc += d; scheduleRender(); } },
+          );
+          lastCont = res.middle; acc = res.middle; generating = false;
+          renderFilled($("output"), code, res.middle || "", "", false);
+          const decodeMs = Math.max(1, res.ms - res.ttft);
+          $("rTtft").textContent = res.ttft + " ms";
+          $("rTps").textContent = (res.tokens > 0 ? (res.tokens / (decodeMs / 1000)).toFixed(1) : "0") + " tok/s";
+          $("rMs").textContent = res.ms + " ms";
+          $("readout").hidden = false;
+          $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (err) { generating = false; $("status").textContent = "Generation failed: " + err.message; $("status").classList.add("err"); }
+        finally { generating = false; $("stop").hidden = true; $("send").disabled = false; }
+      }
+      $("send").addEventListener("click", run);
+      $("stop").addEventListener("click", () => { engine.stop(); $("status").textContent = "Stopping…"; });
+      if ("serviceWorker" in navigator) navigator.serviceWorker.register("/web-ai-showcase/sw.js").catch(() => {});
+    </script>
+  </body>
+</html>
