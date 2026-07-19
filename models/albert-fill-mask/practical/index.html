@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ALBERT fill-mask Practical — plausibility scoring · Web AI Showcase</title>
+    <meta name="description" content="Give ALBERT a blank and a shortlist of candidate words; it scores exactly how well each one fits the context, with real probabilities and logits. A grammar/plausibility check that runs on device." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🪆</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">ALBERT fill-mask</a></p>
+
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Practical: which word fits?</h1>
+      <p class="lede">
+        Fill-mask isn't only for generating guesses — because ALBERT scores <em>every</em> word in
+        context, you can hand it a shortlist and ask "which of these fits the blank best?". That's a
+        plausibility / grammar check you can ship: pick the right preposition, catch a word that doesn't
+        belong, rank synonyms by fit. Each candidate gets its real probability and logit at the mask.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.2rem 0 .6rem">
+        <button class="mask-chip" type="button" data-text="I am good [MASK] chess." data-cand="at, in, on, with, of">preposition</button>
+        <button class="mask-chip" type="button" data-text="The soup was absolutely [MASK]." data-cand="delicious, tasty, edible, food, eat">synonym fit</button>
+        <button class="mask-chip" type="button" data-text="She [MASK] to the store yesterday." data-cand="went, goes, going, gone, go">tense</button>
+        <button class="mask-chip" type="button" data-text="A group of wolves is called a [MASK]." data-cand="pack, herd, flock, swarm, school">collective noun</button>
+      </div>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">
+        Sentence with one <code>[MASK]</code>
+        <input id="text" class="mask-input" disabled value="I am good [MASK] chess." />
+      </label>
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.5rem">
+        Candidate words (comma-separated)
+        <input id="cand" class="mask-input" disabled value="at, in, on, with, of" />
+      </label>
+      <div style="margin:.5rem 0"><button id="go" type="button" disabled>Score candidates</button></div>
+
+      <div id="scores"></div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+        <span>best <b id="rBest">–</b></span>
+      </div>
+    </section>
+
+    <p class="muted" style="font-size:.85rem">
+      Candidates are compared by their leading sub-word token — a disclosed simplification, since some
+      words split into pieces under ALBERT's SentencePiece vocabulary. Probabilities are over the full
+      30,000-token distribution, so they won't sum to 100% across your shortlist; the ranking is the point.
+    </p>
+
+    <p class="crumbs"><a href="../basics/">← Basics</a> · <a href="../">Model</a> · Next: <a href="../wild/">Wild →</a></p>
+
+    <script type="module">
+      import { ALBERT_CSS, FillMaskEngine, MASK } from "../albert.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = ALBERT_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new FillMaskEngine();
+      let loaded = false;
+
+      for (const c of document.querySelectorAll(".mask-chip")) c.addEventListener("click", () => { $("text").value = c.dataset.text; $("cand").value = c.dataset.cand; run(); });
+      $("go").addEventListener("click", run);
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/albert-base-v2", runtime: "transformers.js", dtype: "q8", sizeMB: 45, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("text").disabled = false; $("cand").disabled = false; $("go").disabled = false; loaded = true; run(); },
+      });
+
+      async function run() {
+        if (!loaded) return;
+        const text = $("text").value;
+        if (!text.includes(MASK)) { setErr("Add a [MASK] token to your sentence."); return; }
+        const candidates = $("cand").value.split(",").map((s) => s.trim()).filter(Boolean);
+        if (candidates.length === 0) { setErr("Add at least one candidate word."); return; }
+        $("runStatus").hidden = true;
+        try {
+          const r = await engine.scoreCandidates(text, candidates);
+          const ranked = [...r.scores].sort((a, b) => b.prob - a.prob);
+          const maxProb = Math.max(1e-6, ...ranked.map((s) => s.prob));
+          $("scores").replaceChildren(...ranked.map((s, i) => {
+            const row = document.createElement("div"); row.className = "cand-row";
+            const w = document.createElement("span"); w.className = "cand-word"; w.textContent = (i === 0 ? "★ " : "") + s.word;
+            const barWrap = document.createElement("span"); barWrap.className = "cand-bar";
+            const fill = document.createElement("span"); fill.className = "cand-fill"; fill.style.inlineSize = (s.prob / maxProb * 100).toFixed(1) + "%"; barWrap.append(fill);
+            const num = document.createElement("span"); num.className = "cand-num"; num.textContent = s.logit == null ? "n/a" : (s.prob * 100).toFixed(2) + "%";
+            row.append(w, barWrap, num); return row;
+          }));
+          $("readout").hidden = false; $("rBackend").textContent = r.device.toUpperCase(); $("rMs").textContent = r.ms + " ms"; $("rBest").textContent = ranked[0]?.word ?? "–";
+        } catch (err) { setErr("Scoring failed: " + err.message); }
+      }
+      function setErr(m) { $("runStatus").hidden = false; $("runStatus").textContent = m; $("runStatus").classList.add("err"); $("scores").replaceChildren(); $("readout").hidden = true; }
+    </script>
+  </body>
+</html>

@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ALBERT fill-mask Basics — one mask, ranked predictions · Web AI Showcase</title>
+    <meta name="description" content="The fundamental move: put a [MASK] in a sentence and ALBERT ranks the words that fit, with the real probabilities and raw logits behind each. Runs locally in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🪆</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">ALBERT fill-mask</a></p>
+
+    <header>
+      <p class="eyebrow">use case · basics</p>
+      <h1>Basics: fill the blank</h1>
+      <p class="lede">
+        The one thing a masked language model does: you hide a word behind <code>[MASK]</code>, and it
+        ranks the whole vocabulary by what belongs there. Each row shows the word, the probability, and
+        the raw <em>logit</em> ALBERT actually computed — all on your device, no server.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.2rem 0 .6rem">
+        <button class="mask-chip" type="button" data-set="The capital of France is [MASK].">geography</button>
+        <button class="mask-chip" type="button" data-set="A [MASK] is a small furry animal that says meow.">definition</button>
+        <button class="mask-chip" type="button" data-set="I need to [MASK] the dishes before dinner.">verb slot</button>
+        <button class="mask-chip" type="button" data-set="The weather today is really [MASK].">adjective</button>
+      </div>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">
+        Your sentence (include one <code>[MASK]</code>)
+        <input id="text" class="mask-input" disabled value="The capital of France is [MASK]." />
+      </label>
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;align-items:center;margin:.5rem 0">
+        <button id="go" type="button" disabled>Predict</button>
+        <label style="font-size:.78rem;font-family:var(--font-mono);color:var(--muted);display:flex;align-items:center;gap:.4rem">
+          top-k <input id="topk" type="range" min="3" max="15" value="8" disabled /> <span id="topkVal">8</span>
+        </label>
+      </div>
+
+      <div id="filled" class="filled-sentence" hidden></div>
+      <div id="preds" class="pred-list"></div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+      </div>
+    </section>
+
+    <p class="muted" style="font-size:.85rem">
+      The probabilities come from softmax over 30,000 logits at the masked position. A confident slot
+      (a proper noun, a fixed idiom) puts most of the mass on one token; an open slot spreads it thin.
+      ALBERT is a tiny model, so it's often less peaked than BERT — informative in itself.
+    </p>
+
+    <p class="crumbs"><a href="../">Model</a> · Next: <a href="../practical/">Practical →</a></p>
+
+    <script type="module">
+      import { ALBERT_CSS, escapeHTML, FillMaskEngine, MASK, renderPredictions } from "../albert.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = ALBERT_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new FillMaskEngine();
+      let loaded = false;
+
+      for (const c of document.querySelectorAll(".mask-chip")) c.addEventListener("click", () => { $("text").value = c.dataset.set; run(); });
+      $("go").addEventListener("click", run);
+      $("topk").addEventListener("input", () => { $("topkVal").textContent = $("topk").value; run(); });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/albert-base-v2", runtime: "transformers.js", dtype: "q8", sizeMB: 45, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("text").disabled = false; $("go").disabled = false; $("topk").disabled = false; loaded = true; run(); },
+      });
+
+      async function run() {
+        if (!loaded) return;
+        const text = $("text").value;
+        if (!text.includes(MASK)) { setErr("Add a [MASK] token to your sentence."); return; }
+        $("runStatus").hidden = true;
+        try {
+          const r = await engine.fill(text, Number($("topk").value));
+          const m = r.masks[0];
+          $("filled").innerHTML = escapeHTML(r.text).replace("[MASK]", `<span class="slot">${escapeHTML(m.predictions[0].token)}</span>`);
+          $("filled").hidden = false;
+          renderPredictions($("preds"), m.predictions, (token) => { $("text").value = $("text").value.replace("[MASK]", token); });
+          $("readout").hidden = false; $("rBackend").textContent = r.device.toUpperCase(); $("rMs").textContent = r.ms + " ms";
+        } catch (err) { setErr("Prediction failed: " + err.message); }
+      }
+      function setErr(m) { $("runStatus").hidden = false; $("runStatus").textContent = m; $("runStatus").classList.add("err"); $("preds").replaceChildren(); $("filled").hidden = true; $("readout").hidden = true; }
+    </script>
+  </body>
+</html>

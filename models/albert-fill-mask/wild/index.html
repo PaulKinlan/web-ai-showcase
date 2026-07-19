@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ALBERT fill-mask Wild — the Mad-Libs machine · Web AI Showcase</title>
+    <meta name="description" content="Write a template full of [MASK] blanks and let ALBERT fill every one in a chain — a tiny on-device Mad-Libs / auto-story generator. Reroll for a new take. Runs in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🪆</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">ALBERT fill-mask</a></p>
+
+    <header>
+      <p class="eyebrow">use case · wild</p>
+      <h1>Wild: the Mad-Libs machine</h1>
+      <p class="lede">
+        Give ALBERT a template riddled with <code>[MASK]</code> blanks and it fills them one at a time,
+        each choice conditioned on the words it already committed to — so the sentence grows into
+        something coherent-ish and often funny. Set the <em>mischief</em> dial to sample from further
+        down the ranking for weirder results, and reroll for a new take. All on device.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.2rem 0 .6rem">
+        <button class="mask-chip" type="button" data-set="The [MASK] scientist built a [MASK] machine that could [MASK] the [MASK].">mad science</button>
+        <button class="mask-chip" type="button" data-set="On Monday I [MASK] a [MASK] and it made me feel very [MASK].">diary</button>
+        <button class="mask-chip" type="button" data-set="Breaking news: a [MASK] was seen [MASK] near the [MASK] this morning.">news</button>
+        <button class="mask-chip" type="button" data-set="The recipe calls for two [MASK], a pinch of [MASK], and a lot of [MASK].">recipe</button>
+      </div>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">
+        Template — use as many <code>[MASK]</code> blanks as you like
+        <input id="text" class="mask-input" disabled value="The [MASK] scientist built a [MASK] machine that could [MASK] the [MASK]." />
+      </label>
+      <div style="display:flex;flex-wrap:wrap;gap:.6rem;align-items:center;margin:.5rem 0">
+        <button id="go" type="button" disabled>Fill them all</button>
+        <label style="font-size:.78rem;font-family:var(--font-mono);color:var(--muted);display:flex;align-items:center;gap:.4rem">
+          mischief <input id="temp" type="range" min="1" max="8" value="3" disabled /> <span id="tempVal">3</span>
+        </label>
+      </div>
+
+      <div id="story" class="filled-sentence" hidden></div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+        <span>blanks <b id="rN">–</b></span>
+      </div>
+    </section>
+
+    <p class="muted" style="font-size:.85rem">
+      Each blank is filled left to right: ALBERT predicts the first <code>[MASK]</code>, we drop the word
+      in, then it predicts the next one <em>with that word already there</em>. The mischief dial picks
+      randomly from the top-<i>k</i> instead of always taking #1, so higher = stranger. That's autoregressive
+      decoding faked out of a bidirectional model — a genuinely wild use of fill-mask.
+    </p>
+
+    <p class="crumbs"><a href="../practical/">← Practical</a> · <a href="../">Model</a> · Next: <a href="../multi-model/">Multi-model →</a></p>
+
+    <script type="module">
+      import { ALBERT_CSS, escapeHTML, FillMaskEngine, MASK } from "../albert.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = ALBERT_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new FillMaskEngine();
+      let loaded = false;
+
+      for (const c of document.querySelectorAll(".mask-chip")) c.addEventListener("click", () => { $("text").value = c.dataset.set; run(); });
+      $("go").addEventListener("click", run);
+      $("temp").addEventListener("input", () => { $("tempVal").textContent = $("temp").value; });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/albert-base-v2", runtime: "transformers.js", dtype: "q8", sizeMB: 45, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("text").disabled = false; $("go").disabled = false; $("temp").disabled = false; loaded = true; run(); },
+      });
+
+      let busy = false;
+      async function run() {
+        if (!loaded || busy) return;
+        let text = $("text").value;
+        if (!text.includes(MASK)) { setErr("Add at least one [MASK] to your template."); return; }
+        busy = true; $("go").disabled = true; $("runStatus").hidden = true;
+        const mischief = Number($("temp").value); // 1 = always #1, higher = sample deeper into top-k
+        const t0 = performance.now();
+        let n = 0, device = "wasm";
+        try {
+          // Autoregressive-style: fill one [MASK] at a time, left to right, conditioning on prior fills.
+          while (text.includes(MASK)) {
+            const r = await engine.fill(text, Math.max(3, mischief + 1));
+            device = r.device;
+            const preds = r.masks[0].predictions;
+            const pick = preds[Math.min(preds.length - 1, Math.floor(Math.random() * mischief))];
+            text = text.replace(MASK, pick.token);
+            n++;
+            $("story").innerHTML = escapeHTML(text).replaceAll("[MASK]", '<span class="slot">…</span>');
+            $("story").hidden = false;
+          }
+          $("story").textContent = text;
+          $("readout").hidden = false; $("rBackend").textContent = device.toUpperCase();
+          $("rMs").textContent = Math.round(performance.now() - t0) + " ms"; $("rN").textContent = n;
+        } catch (err) { setErr("Generation failed: " + err.message); }
+        finally { busy = false; $("go").disabled = false; }
+      }
+      function setErr(m) { $("runStatus").hidden = false; $("runStatus").textContent = m; $("runStatus").classList.add("err"); $("story").hidden = true; $("readout").hidden = true; }
+    </script>
+  </body>
+</html>
