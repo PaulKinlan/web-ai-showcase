@@ -1,0 +1,297 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MusicGen — generate music from text, in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run Meta's MusicGen locally in your browser: type a prompt like 'lo-fi hip hop, chill' and it composes a short original music clip on-device — real audio-token generation, WebAssembly, nothing uploaded. Compute-heavy: keep clips short."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎵</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">text-to-audio · audio (music) · WebAssembly · ~656 MB</p>
+      <h1>MusicGen — turn a text prompt into music, on your device</h1>
+      <p class="lede">
+        MusicGen composes short, original <strong>music</strong> from a text description — "lo-fi hip
+        hop, chill" or "90s rock, loud guitars" — right in your browser. This is not text-to-speech: the
+        model predicts a stream of audio tokens and decodes them into a 32 kHz waveform. No server, no
+        upload, no per-clip bill. It is also <strong>genuinely compute-heavy</strong>, so keep clips
+        short and expect a real wait.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="seg-table" style="inline-size:100%;border-collapse:collapse">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/Xenova/musicgen-small" target="_blank" rel="noopener">Xenova/musicgen-small</a> <span class="muted">(Meta MusicGen, ONNX export)</span></td></tr>
+          <tr><th>Task / pipeline</th><td><code>text-to-audio</code> (music generation)</td></tr>
+          <tr><th>Architecture</th><td>T5 text encoder → autoregressive Transformer decoder over EnCodec audio tokens (4 codebooks, 50 Hz) → EnCodec decoder → 32 kHz waveform</td></tr>
+          <tr><th>Quantization</th><td>q8 text-encoder + q8 decoder, <strong>fp32 EnCodec decode</strong> (quantising the decoder garbles the audio)</td></tr>
+          <tr><th>Backend</th><td>WebAssembly — no reliable WebGPU path for this model; runs on CPU and is slow</td></tr>
+          <tr><th>Download</th><td>~656 MB (text encoder + decoder + fp32 EnCodec), cached after first load</td></tr>
+          <tr><th>License</th><td>CC-BY-NC-4.0 (research / non-commercial — the weights, not your prompts)</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers, Web Audio (playback), Blob URLs</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">
+        Describe some music, choose a length and a couple of sampling controls, then hit Generate.
+        Generation runs in a Web Worker with a <em>real</em> token-level progress bar — the model is
+        decoding audio frames one step at a time, and the bar reflects that, not a spinner.
+      </p>
+
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+
+      <div class="heavy-note">
+        <strong>Heads up — this is compute-heavy.</strong> MusicGen runs on the CPU (WASM). Even a few
+        seconds of music can take a while to generate, and generation time grows with the length. Start
+        with a short clip (3–5 s). The wait and the timing readout below are real; nothing here is
+        pre-baked.
+      </div>
+
+      <label for="prompt" style="display:block;font-size:.82rem;margin:.6rem 0 .2rem">Describe the music</label>
+      <textarea id="prompt">lo-fi hip hop, chill, mellow piano, soft drums, relaxed</textarea>
+      <div class="sample-row" id="presets">
+        <button class="chip" type="button" data-t="lo-fi hip hop, chill, mellow piano, soft drums, relaxed">lo-fi chill</button>
+        <button class="chip" type="button" data-t="80s synthwave, retro synths, driving bassline, neon">synthwave</button>
+        <button class="chip" type="button" data-t="epic orchestral cinematic score, strings and brass, dramatic">cinematic</button>
+        <button class="chip" type="button" data-t="upbeat acoustic folk, cheerful guitar, hand claps">acoustic folk</button>
+        <button class="chip" type="button" data-t="ambient drone, warm pads, slow, meditative, spacious">ambient</button>
+        <button class="chip" type="button" data-t="funky disco groove, wah guitar, tight bass, 120 bpm">disco funk</button>
+      </div>
+
+      <div class="mg-grid">
+        <label>Length <span class="muted" id="secVal">5 s</span>
+          <input type="range" id="seconds" min="2" max="15" step="1" value="5" />
+        </label>
+        <label>Guidance <span class="muted" id="gVal">3.0</span>
+          <input type="range" id="guidance" min="1" max="10" step="0.5" value="3" />
+        </label>
+        <label>Temperature <span class="muted" id="tVal">1.0</span>
+          <input type="range" id="temperature" min="0.1" max="1.5" step="0.1" value="1" />
+        </label>
+        <button id="run" type="button" disabled>Generate music</button>
+      </div>
+
+      <div class="gen-progress" id="genWrap" hidden>
+        <progress id="genProg" max="100" value="0" aria-label="Music generation progress"></progress>
+        <p class="status" id="genStatus" role="status" aria-live="polite"></p>
+      </div>
+
+      <div class="audio-row">
+        <audio id="player" controls preload="none"></audio>
+        <a id="download" class="button secondary" download="musicgen.wav" hidden>Download .wav</a>
+      </div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>gen time <b id="rMs">–</b></span>
+        <span>audio <b id="rDur">–</b></span>
+        <span>real-time factor <b id="rRtf">–</b></span>
+        <span>tokens <b id="rTok">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside</h3>
+      <p class="muted">
+        MusicGen doesn't produce sound directly — it predicts a sequence of <em>EnCodec audio tokens</em>
+        (about 50 per second of music), then a neural codec decodes those tokens into the waveform below
+        (the bar fills as it plays). The stats are all measured on this device: a real-time factor above
+        1.0× means it took longer to generate than the clip's own length — expected on CPU.
+      </p>
+      <div class="wave-wrap"><canvas id="wave" class="wave" aria-label="Generated music waveform"></canvas></div>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Generate a clip to see its waveform and token stats.</div>
+      <div class="readout" id="insideStats" hidden>
+        <span>audio tokens <b id="iTok">–</b></span>
+        <span>samples <b id="iSamples">–</b></span>
+        <span>sample rate <b id="iRate">–</b></span>
+        <span>guidance <b id="iG">–</b></span>
+        <span>temperature <b id="iT">–</b></span>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        Generative music used to mean a cloud API, a licence, and your prompt leaving the building.
+        MusicGen makes short original music a local capability of your page — the prompt never leaves the
+        tab, and there's no per-clip bill. It's slow on CPU today, but it proves the shape of what's
+        coming to the browser.
+      </p>
+      <ul>
+        <li><strong>Royalty-free background loops</strong> — generate a bespoke ambient bed for a video, game, or presentation, client-side, with no stock-music licence to clear.</li>
+        <li><strong>Generative UI &amp; game audio</strong> — mood-driven stingers and beds composed from a text description at runtime, unique per session.</li>
+        <li><strong>Prototyping &amp; sketching</strong> — musicians and designers audition ideas ("what would 80s synthwave here sound like?") without opening a DAW.</li>
+        <li><strong>Accessible, private creativity</strong> — anyone can make music from words, offline, with nothing uploaded and no account.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">A prompt in, a music clip out — presets, length, and the core move.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Royalty-free background loop &amp; UI-sound generator you can download.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Mood-to-music: blend two vibes into one prompt and hear the mix.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">A tiny LLM writes the music prompt from a one-word mood → MusicGen plays it.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>
+        MusicGen is a multi-part model, so we use the low-level classes (that's also the only way to get
+        token-level progress). Load once, then generate:
+      </p>
+      <pre><code>import {
+  MusicgenForConditionalGeneration,
+  AutoTokenizer,
+} from "@huggingface/transformers";
+
+const MODEL = "Xenova/musicgen-small";
+const model = await MusicgenForConditionalGeneration.from_pretrained(MODEL, {
+  dtype: {                         // the known-good config
+    text_encoder: "q8",
+    decoder_model_merged: "q8",
+    encodec_decode: "fp32",        // MUST stay fp32 — q8 here garbles the audio
+  },
+  device: "wasm",                  // no reliable WebGPU path for this model
+});
+const tokenizer = await AutoTokenizer.from_pretrained(MODEL);
+
+const inputs = tokenizer("lo-fi hip hop, chill");
+const out = await model.generate({
+  ...inputs,
+  max_length: 5 * 50 + 4,          // ~50 audio tokens per second of music
+  guidance_scale: 3,
+  temperature: 1,
+  do_sample: true,
+  // streamer: a BaseStreamer whose put() fires once per decoded token → real progress
+});
+// out.data → Float32Array waveform
+// model.config.audio_encoder.sampling_rate → 32000</code></pre>
+      <p class="muted">
+        This page runs all of that inside a Web Worker so the long decode never blocks the interface,
+        attaches a <code>BaseStreamer</code> for the real progress bar, encodes the Float32 samples to a
+        WAV blob for the <code>&lt;audio&gt;</code> element, and draws the same samples as the waveform.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/Xenova/musicgen-small" target="_blank" rel="noopener">Model card — Xenova/musicgen-small</a></li>
+        <li><a href="https://huggingface.co/facebook/musicgen-small" target="_blank" rel="noopener">Original MusicGen-small (Meta)</a></li>
+        <li><a href="https://arxiv.org/abs/2306.05284" target="_blank" rel="noopener">Paper — "Simple and Controllable Music Generation" (Copet et al., 2023)</a></li>
+        <li><a href="https://github.com/huggingface/transformers.js-examples/tree/main/musicgen-web" target="_blank" rel="noopener">Transformers.js musicgen-web example (the config this page follows)</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { MusicGenEngine, wavUrl, drawWaveform, MUSICGEN_CSS } from "./musicgen.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = MUSICGEN_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new MusicGenEngine();
+      let pcm = null, curUrl = null;
+
+      // Presets + slider labels.
+      for (const c of $("presets").children) {
+        c.addEventListener("click", () => { $("prompt").value = c.dataset.t; });
+      }
+      $("seconds").addEventListener("input", () => { $("secVal").textContent = $("seconds").value + " s"; });
+      $("guidance").addEventListener("input", () => { $("gVal").textContent = (+$("guidance").value).toFixed(1); });
+      $("temperature").addEventListener("input", () => { $("tVal").textContent = (+$("temperature").value).toFixed(1); });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: {
+          modelId: "Xenova/musicgen-small",
+          runtime: "transformers.js",
+          dtype: "q8",
+          sizeMB: 656,
+          requiresWebGPU: false,
+        },
+        load: async (onProgress) => {
+          const device = await engine.load((p) => onProgress(p));
+          return { device };
+        },
+        onReady: () => { $("run").disabled = false; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        const prompt = $("prompt").value.trim();
+        if (!prompt) { $("status").hidden = false; $("status").textContent = "Describe some music first."; return; }
+        $("run").disabled = true;
+        $("status").hidden = true; $("status").classList.remove("err", "ok");
+        $("genWrap").hidden = false; $("genProg").value = 0;
+        const seconds = +$("seconds").value;
+        $("genStatus").textContent = `Generating ~${seconds}s of music… this is compute-heavy, please wait.`;
+        try {
+          const r = await engine.generate(
+            prompt,
+            { seconds, guidanceScale: +$("guidance").value, temperature: +$("temperature").value },
+            (done, total) => {
+              const pct = total ? (100 * done / total) : 0;
+              $("genProg").value = pct;
+              $("genStatus").textContent = `Generating audio tokens… ${done}/${total} (${pct.toFixed(0)}%)`;
+            },
+          );
+          pcm = r.pcm;
+          if (curUrl) URL.revokeObjectURL(curUrl);
+          curUrl = wavUrl(r.wav);
+          $("player").src = curUrl;
+          $("download").href = curUrl; $("download").hidden = false;
+          drawWaveform($("wave"), pcm, 0);
+          $("insideEmpty").hidden = true; $("insideStats").hidden = false;
+          $("iTok").textContent = r.tokens.toLocaleString();
+          $("iSamples").textContent = pcm.length.toLocaleString();
+          $("iRate").textContent = r.rate + " Hz";
+          $("iG").textContent = r.guidanceScale;
+          $("iT").textContent = r.temperature;
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = (r.ms / 1000).toFixed(1) + " s";
+          $("rDur").textContent = r.durSec.toFixed(2) + " s";
+          $("rRtf").textContent = r.rtf ? r.rtf.toFixed(1) + "×" : "–";
+          $("rTok").textContent = r.tokens.toLocaleString();
+          $("genStatus").textContent = "Done — press play.";
+        } catch (err) {
+          $("genStatus").textContent = "";
+          $("status").hidden = false;
+          $("status").textContent = "Generation failed: " + err.message;
+          $("status").classList.add("err");
+        } finally {
+          $("run").disabled = false;
+        }
+      });
+
+      // Waveform playback progress.
+      $("player").addEventListener("timeupdate", () => {
+        if (pcm && $("player").duration) drawWaveform($("wave"), pcm, $("player").currentTime / $("player").duration);
+      });
+      $("player").addEventListener("ended", () => pcm && drawWaveform($("wave"), pcm, 1));
+      addEventListener("resize", () => pcm && drawWaveform($("wave"), pcm, 0));
+    </script>
+  </body>
+</html>

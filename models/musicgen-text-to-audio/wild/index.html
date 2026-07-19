@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MusicGen Wild — mood-to-music prompt mixing · Web AI Showcase</title>
+    <meta name="description" content="Blend two musical moods into one prompt with a slider and hear MusicGen mix them, in your browser. Something you could never do before this ran client-side." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎵</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">MusicGen</a></p>
+
+    <header>
+      <p class="eyebrow">use case · wild</p>
+      <h1>Wild: mix two moods into one track</h1>
+      <p class="lede">
+        Pick two vibes — say "rainy jazz café" and "8-bit arcade" — and slide between them. The page
+        composes a single blended prompt weighted by the slider and MusicGen generates the mash-up on
+        your device. There's no cloud "music blend" API; this only exists because the model runs here.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+
+      <div class="heavy-note">
+        <strong>Compute-heavy.</strong> Runs on the CPU (WASM). Keep it short to iterate on blends. The
+        progress bar tracks real audio-token decoding.
+      </div>
+
+      <div class="mg-grid">
+        <label style="flex:1;min-inline-size:200px">Mood A
+          <input type="text" id="moodA" value="rainy late-night jazz café, brushed drums, upright bass, warm" />
+        </label>
+        <label style="flex:1;min-inline-size:200px">Mood B
+          <input type="text" id="moodB" value="8-bit arcade chiptune, bright square-wave melody, energetic" />
+        </label>
+      </div>
+      <div class="sample-row" id="presets">
+        <button class="chip" type="button" data-a="rainy late-night jazz café, brushed drums, upright bass, warm" data-b="8-bit arcade chiptune, bright square-wave melody, energetic">jazz × arcade</button>
+        <button class="chip" type="button" data-a="epic orchestral cinematic score, strings and brass" data-b="lofi hip hop, mellow, soft drums, relaxed">cinematic × lofi</button>
+        <button class="chip" type="button" data-a="80s synthwave, neon, driving bass" data-b="acoustic folk, gentle guitar, cheerful">synthwave × folk</button>
+        <button class="chip" type="button" data-a="deep house, four-on-the-floor, pulsing bass, 124 bpm" data-b="ambient drone, warm pads, slow, meditative">house × ambient</button>
+      </div>
+
+      <div class="mg-grid">
+        <label style="flex:2;min-inline-size:240px">Blend <span class="muted" id="blendVal">50 / 50</span>
+          <input type="range" id="blend" min="0" max="100" step="10" value="50" style="inline-size:100%" />
+        </label>
+        <label>Length <span class="muted" id="secVal">5 s</span>
+          <input type="range" id="seconds" min="2" max="12" step="1" value="5" />
+        </label>
+        <button id="run" type="button" disabled>Generate blend</button>
+      </div>
+
+      <p class="muted" style="font-size:.82rem">Prompt sent to the model: <span id="promptPreview" style="font-family:var(--font-mono)"></span></p>
+
+      <div class="gen-progress" id="genWrap" hidden>
+        <progress id="genProg" max="100" value="0" aria-label="Generation progress"></progress>
+        <p class="status" id="genStatus" role="status" aria-live="polite"></p>
+      </div>
+
+      <div class="audio-row">
+        <audio id="player" controls preload="none"></audio>
+        <a id="download" class="button secondary" download="musicgen-blend.wav" hidden>Download .wav</a>
+      </div>
+      <div class="wave-wrap"><canvas id="wave" class="wave" aria-label="Generated music waveform"></canvas></div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span><span>gen time <b id="rMs">–</b></span>
+        <span>audio <b id="rDur">–</b></span><span>tokens <b id="rTok">–</b></span>
+      </div>
+    </section>
+
+    <p class="crumbs"><a href="../">← Back to MusicGen</a> · Next: <a href="../multi-model/">Multi-model →</a></p>
+
+    <script type="module">
+      import { MusicGenEngine, wavUrl, drawWaveform, escapeHTML, MUSICGEN_CSS } from "../musicgen.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = MUSICGEN_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new MusicGenEngine();
+      let pcm = null, curUrl = null;
+
+      // Build one blended prompt weighted by the slider (0 = all A, 100 = all B).
+      function blendedPrompt() {
+        const a = $("moodA").value.trim(), b = $("moodB").value.trim();
+        const w = +$("blend").value; // 0..100 toward B
+        if (w <= 10) return a;
+        if (w >= 90) return b;
+        const lead = w < 50 ? a : b;
+        const accent = w < 50 ? b : a;
+        const strength = w < 50 ? (50 - w) : (w - 50); // 0..40
+        const qual = strength >= 30 ? "a hint of" : "elements of";
+        return `mostly ${lead}, with ${qual} ${accent}`;
+      }
+      function refresh() {
+        const w = +$("blend").value;
+        $("blendVal").textContent = `${100 - w} / ${w}`;
+        $("promptPreview").textContent = blendedPrompt();
+      }
+      for (const c of $("presets").children) c.addEventListener("click", () => {
+        $("moodA").value = c.dataset.a; $("moodB").value = c.dataset.b; refresh();
+      });
+      $("moodA").addEventListener("input", refresh);
+      $("moodB").addEventListener("input", refresh);
+      $("blend").addEventListener("input", refresh);
+      $("seconds").addEventListener("input", () => { $("secVal").textContent = $("seconds").value + " s"; });
+      refresh();
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/musicgen-small", runtime: "transformers.js", dtype: "q8", sizeMB: 656, requiresWebGPU: false },
+        load: async (onProgress) => ({ device: await engine.load((p) => onProgress(p)) }),
+        onReady: () => { $("run").disabled = false; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        const prompt = blendedPrompt();
+        if (!prompt) { $("status").hidden = false; $("status").textContent = "Enter at least one mood."; return; }
+        $("run").disabled = true; $("status").hidden = true;
+        $("genWrap").hidden = false; $("genProg").value = 0;
+        const seconds = +$("seconds").value;
+        $("genStatus").textContent = `Generating ~${seconds}s blend… please wait.`;
+        try {
+          const r = await engine.generate(prompt, { seconds }, (done, total) => {
+            const pct = total ? 100 * done / total : 0;
+            $("genProg").value = pct;
+            $("genStatus").textContent = `Decoding audio tokens… ${done}/${total} (${pct.toFixed(0)}%)`;
+          });
+          pcm = r.pcm; if (curUrl) URL.revokeObjectURL(curUrl); curUrl = wavUrl(r.wav);
+          $("player").src = curUrl; $("download").href = curUrl; $("download").hidden = false;
+          drawWaveform($("wave"), pcm, 0);
+          $("readout").hidden = false; $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = (r.ms / 1000).toFixed(1) + " s"; $("rDur").textContent = r.durSec.toFixed(2) + " s";
+          $("rTok").textContent = r.tokens.toLocaleString();
+          $("genStatus").textContent = "Done — press play.";
+        } catch (err) {
+          $("genStatus").textContent = ""; $("status").hidden = false;
+          $("status").textContent = "Generation failed: " + err.message; $("status").classList.add("err");
+        } finally { $("run").disabled = false; }
+      });
+      $("player").addEventListener("timeupdate", () => { if (pcm && $("player").duration) drawWaveform($("wave"), pcm, $("player").currentTime / $("player").duration); });
+      $("player").addEventListener("ended", () => pcm && drawWaveform($("wave"), pcm, 1));
+      addEventListener("resize", () => pcm && drawWaveform($("wave"), pcm, 0));
+    </script>
+  </body>
+</html>
