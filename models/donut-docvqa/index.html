@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Donut — ask questions about a document in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run Donut (document VQA) locally in your browser: point it at a receipt, invoice, or form and ask a plain-English question — it answers directly, OCR-free, with nothing leaving your device."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🍩</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">document-question-answering · document → answer (VQA) · WASM · ~215 MB</p>
+      <h1>Donut — ask a document a question</h1>
+      <p class="lede">
+        Donut reads documents the <em>OCR-free</em> way: there's no separate text-extraction step. A
+        vision transformer looks at the whole page and a decoder writes the answer to your question
+        directly — <code>What is the total?</code> → <code>$65.40</code> — entirely on your device.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/Xenova/donut-base-finetuned-docvqa" target="_blank" rel="noopener">Xenova/donut-base-finetuned-docvqa</a></td></tr>
+          <tr><th>Task / pipeline</th><td><code>document-question-answering</code></td></tr>
+          <tr><th>Architecture</th><td>Swin Transformer image encoder → BART-style text decoder (VisionEncoderDecoder). No OCR engine.</td></tr>
+          <tr><th>Input</th><td>A document image + a natural-language question</td></tr>
+          <tr><th>Output</th><td>A short free-text answer, generated token by token</td></tr>
+          <tr><th>Quantization</th><td>q8 (8-bit) ONNX — separate encoder + decoder graphs</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (runs anywhere; no WebGPU needed)</td></tr>
+          <tr><th>Download</th><td>~215 MB, cached after first load</td></tr>
+          <tr><th>License</th><td>MIT (naver-clova-ix/donut-base-finetuned-docvqa)</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers, FileReader — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Pick a document, type a question (or tap a preset), and hit Ask. The answer streams in as the decoder generates it — that's the real model, not an animation.</p>
+
+      <div id="model-loader"></div>
+
+      <div class="field-row">
+        <div style="flex:1 1 280px">
+          <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop a document image">
+            <span id="dropText">Drop a document here, or click to choose</span>
+            <input type="file" id="file" accept="image/*" hidden />
+          </div>
+          <div class="sample-strip" id="samples" aria-label="Sample documents">
+            <img class="sample-thumb active" src="sample-invoice.png" data-src="sample-invoice.png" alt="An invoice from Acme Supplies Ltd" tabindex="0" role="button" />
+            <img class="sample-thumb" src="sample-receipt.png" data-src="sample-receipt.png" alt="A shop receipt from The Corner Store" tabindex="0" role="button" />
+            <img class="sample-thumb" src="sample-form.png" data-src="sample-form.png" alt="A membership form" tabindex="0" role="button" />
+          </div>
+          <div class="doc-wrap"><img class="doc-img" id="preview" src="sample-invoice.png" alt="Selected document preview" /></div>
+        </div>
+        <div style="flex:1 1 280px">
+          <div class="q-row">
+            <input type="text" id="question" value="What is the total due?" aria-label="Question about the document" placeholder="Ask a question about the document…" />
+          </div>
+          <div class="preset-qs" id="presets" aria-label="Example questions"></div>
+          <div style="margin:.5rem 0"><button id="run" type="button" disabled>Ask</button></div>
+          <p class="status" id="runStatus" role="status" aria-live="polite"></p>
+          <div class="answer-box" id="answer" aria-live="polite"></div>
+          <div class="readout" id="readout" hidden>
+            <span>backend <b id="rBackend">–</b></span>
+            <span>tokens <b id="rTok">–</b></span>
+            <span>total <b id="rMs">–</b></span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside — the task prompt &amp; the decode</h3>
+      <p class="muted">
+        Donut turns "answer this question" into <strong>text generation</strong>. Your question is
+        wrapped in a fixed task template and fed to the decoder as its starting prompt; the model then
+        generates the answer tokens that come after <code>&lt;s_answer&gt;</code>, each conditioned on the
+        image and everything decoded so far. Below is the <strong>exact prompt</strong> Donut receives and
+        the <strong>answer streaming out</strong>, token by token with timing. This is the real output, no
+        OCR step in sight.
+      </p>
+      <h4 style="font-family:var(--font-body);font-size:.85rem;margin:.8rem 0 .2rem">Constructed task prompt</h4>
+      <pre class="tmpl" id="promptOut"><span class="muted">Ask a question to see the prompt Donut builds.</span></pre>
+      <h4 style="font-family:var(--font-body);font-size:.85rem;margin:.8rem 0 .2rem">Answer tokens as they arrived</h4>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Ask a question to see the token-by-token trace.</div>
+      <div id="insideWrap" hidden>
+        <div class="token-trace" id="trace"></div>
+        <div class="readout" style="margin-top:.6rem">
+          <span>first token <b id="iFirst">–</b></span>
+          <span>tokens <b id="iTok">–</b></span>
+        </div>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        Most document automation is a brittle chain: OCR the page, then hunt through the raw text with
+        regexes and rules. Donut skips the OCR step — you ask for what you want in plain language and it
+        answers, which makes it robust to layout and doing it locally makes it free, private, and
+        offline-capable.
+      </p>
+      <ul>
+        <li><strong>Field extraction without templates</strong> — pull the total, the date, the invoice number by <em>asking</em>, not by writing a parser per document type.</li>
+        <li><strong>Private paperwork</strong> — process receipts, invoices, and forms client-side; sensitive documents never touch a server.</li>
+        <li><strong>Expense &amp; bookkeeping capture</strong> — snap a receipt and ask "how much?" and "what date?" to auto-fill an entry.</li>
+        <li><strong>Accessible documents</strong> — let someone query a scanned form by voice instead of reading dense layout.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Ask one question about a document and watch the answer stream in.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Extract a whole field set — total, date, number — from a receipt or invoice at once.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Have a back-and-forth "chat" with a document — ask follow-ups, build a Q&amp;A log.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">Donut answers → M2M100 translates the answer into another language.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>The base call is a couple of lines with Transformers.js:</p>
+      <pre><code>import { pipeline } from "@huggingface/transformers";
+
+const docqa = await pipeline(
+  "document-question-answering",
+  "Xenova/donut-base-finetuned-docvqa",
+); // downloads + caches ~215 MB once
+
+const out = await docqa(documentImageURL, "What is the total due?", {
+  max_new_tokens: 64,
+});
+// → [{ answer: "$65.40" }]</code></pre>
+      <p class="muted">
+        Under the hood Donut wraps your question in a task prompt —
+        <code>&lt;s_docvqa&gt;&lt;s_question&gt;…&lt;/s_question&gt;&lt;s_answer&gt;</code> — and generates
+        the answer that follows. For "See inside", this page passes a <code>TextStreamer</code> into the
+        same call so the answer renders as it forms and each token's arrival time is recorded, all off the
+        main thread in a Web Worker.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/Xenova/donut-base-finetuned-docvqa" target="_blank" rel="noopener">Model card — Xenova/donut-base-finetuned-docvqa (ONNX)</a></li>
+        <li><a href="https://huggingface.co/naver-clova-ix/donut-base-finetuned-docvqa" target="_blank" rel="noopener">Original weights — naver-clova-ix/donut-base-finetuned-docvqa</a></li>
+        <li><a href="https://arxiv.org/abs/2111.15664" target="_blank" rel="noopener">Donut paper — OCR-free Document Understanding (arXiv 2111.15664)</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { DonutEngine, fileToDataURL, escapeHTML, DONUT_CSS } from "./donut.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = DONUT_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new DonutEngine();
+      let currentImageURL = null;
+
+      const PRESETS = ["What is the total due?", "What is the date?", "What is the invoice number?", "Who is it from?"];
+      for (const q of PRESETS) {
+        const b = document.createElement("button");
+        b.className = "chip"; b.type = "button"; b.textContent = q;
+        b.addEventListener("click", () => { $("question").value = q; });
+        $("presets").append(b);
+      }
+
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        const src = el.dataset.src;
+        const blob = await (await fetch(src)).blob();
+        currentImageURL = await fileToDataURL(new File([blob], "sample", { type: blob.type }));
+        $("preview").src = src;
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } });
+      }
+      pickSample($("samples").firstElementChild);
+
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      file.addEventListener("change", async () => { if (file.files[0]) await loadFile(file.files[0]); });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      drop.addEventListener("drop", async (e) => { const f = e.dataTransfer?.files?.[0]; if (f && f.type.startsWith("image/")) await loadFile(f); });
+      async function loadFile(f) { for (const t of $("samples").children) t.classList.remove("active"); currentImageURL = await fileToDataURL(f); $("preview").src = currentImageURL; $("dropText").textContent = f.name; }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/donut-base-finetuned-docvqa", runtime: "transformers.js", dtype: "q8", sizeMB: 215, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("run").disabled = false; },
+      });
+
+      $("run").addEventListener("click", askDoc);
+      async function askDoc() {
+        const question = $("question").value.trim();
+        if (!currentImageURL) { $("runStatus").textContent = "Choose a document first."; return; }
+        if (!question) { $("runStatus").textContent = "Type a question first."; $("runStatus").classList.add("err"); return; }
+        $("runStatus").classList.remove("err", "ok"); $("run").disabled = true;
+        $("runStatus").textContent = "Reading the document…"; $("answer").innerHTML = '<span class="cursor">&nbsp;</span>';
+        $("trace").replaceChildren(); $("insideEmpty").hidden = true; $("insideWrap").hidden = false;
+        let text = ""; let firstT = null;
+        try {
+          const r = await engine.ask(currentImageURL, question, {
+            maxTokens: 64,
+            onPrompt: (p) => { $("promptOut").textContent = p; },
+            onToken: (m) => {
+              if (firstT === null) firstT = m.t;
+              text += m.token;
+              $("answer").innerHTML = escapeHTML(text) + '<span class="cursor">&nbsp;</span>';
+              const tok = document.createElement("span");
+              tok.className = "tok";
+              tok.innerHTML = escapeHTML(m.token) + `<small>${m.t}ms</small>`;
+              $("trace").append(tok);
+            },
+          });
+          $("answer").textContent = r.answer || "(no answer — try rephrasing the question)";
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rTok").textContent = r.tokens;
+          $("rMs").textContent = r.ms + " ms";
+          $("iFirst").textContent = (firstT ?? r.ms) + " ms";
+          $("iTok").textContent = r.tokens;
+          $("runStatus").textContent = "Done."; $("runStatus").classList.add("ok");
+        } catch (err) {
+          $("runStatus").textContent = "Failed: " + err.message; $("runStatus").classList.add("err");
+          $("answer").textContent = "";
+        } finally { $("run").disabled = false; }
+      }
+
+      if ("serviceWorker" in navigator) navigator.serviceWorker.register("/web-ai-showcase/sw.js").catch(() => {});
+    </script>
+  </body>
+</html>

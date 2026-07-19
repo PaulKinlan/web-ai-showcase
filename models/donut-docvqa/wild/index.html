@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Donut Wild — chat with a document · Web AI Showcase</title>
+    <meta name="description" content="Have a back-and-forth with a document: ask follow-up questions and build a running Q&A log, all answered on-device by Donut." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🍩</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Donut</a></p>
+
+    <header>
+      <p class="eyebrow">use case · wild</p>
+      <h1>Wild: chat with a document</h1>
+      <p class="lede">
+        Turn a static document into something you can interrogate. Ask a question, get an answer, ask a
+        follow-up — a running Q&amp;A log against the same page. Each answer is a fresh, real Donut call
+        on-device (Donut answers per-question; it doesn't carry conversation memory, so make each question
+        self-contained).
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+
+      <div class="field-row">
+        <div style="flex:1 1 260px">
+          <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop a document image">
+            <span id="dropText">Drop a document, or click to choose</span>
+            <input type="file" id="file" accept="image/*" hidden />
+          </div>
+          <div class="sample-strip" id="samples">
+            <img class="sample-thumb active" src="../sample-form.png" data-src="../sample-form.png" alt="A membership form" tabindex="0" role="button" />
+            <img class="sample-thumb" src="../sample-invoice.png" data-src="../sample-invoice.png" alt="An invoice" tabindex="0" role="button" />
+            <img class="sample-thumb" src="../sample-receipt.png" data-src="../sample-receipt.png" alt="A shop receipt" tabindex="0" role="button" />
+          </div>
+          <div class="doc-wrap"><img class="doc-img" id="preview" src="../sample-form.png" alt="Selected document" /></div>
+        </div>
+        <div style="flex:1 1 300px">
+          <form id="qform" class="q-row">
+            <input type="text" id="question" placeholder="Ask something about the document…" aria-label="Question about the document" />
+            <button id="run" type="submit" disabled>Ask</button>
+          </form>
+          <p class="status" id="runStatus" role="status" aria-live="polite"></p>
+          <div class="qa-log" id="log" aria-live="polite"></div>
+          <button id="clear" class="chip" type="button" hidden>Clear log</button>
+        </div>
+      </div>
+    </section>
+
+    <p class="crumbs"><a href="../practical/">← Practical</a> · <a href="../">Back to Donut</a> · Next: <a href="../multi-model/">Multi-model →</a></p>
+
+    <script type="module">
+      import { DonutEngine, fileToDataURL, escapeHTML, DONUT_CSS } from "../donut.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = DONUT_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new DonutEngine();
+      let currentImageURL = null, ready = false;
+
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        const blob = await (await fetch(el.dataset.src)).blob();
+        currentImageURL = await fileToDataURL(new File([blob], "s", { type: blob.type }));
+        $("preview").src = el.dataset.src;
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } });
+      }
+      pickSample($("samples").firstElementChild);
+
+      const file = $("file"), drop = $("drop");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) { for (const t of $("samples").children) t.classList.remove("active"); currentImageURL = await fileToDataURL(f); $("preview").src = currentImageURL; $("dropText").textContent = f.name; }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/donut-base-finetuned-docvqa", runtime: "transformers.js", dtype: "q8", sizeMB: 215, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { ready = true; $("run").disabled = false; },
+      });
+
+      $("qform").addEventListener("submit", async (e) => {
+        e.preventDefault();
+        if (!ready) return;
+        const question = $("question").value.trim();
+        if (!question) { $("runStatus").textContent = "Type a question first."; return; }
+        $("run").disabled = true; $("runStatus").classList.remove("err", "ok"); $("runStatus").textContent = "Thinking…";
+        const item = document.createElement("div"); item.className = "qa-item";
+        item.innerHTML = `<div class="q">Q: ${escapeHTML(question)}</div><div class="a">…</div>`;
+        $("log").prepend(item); $("clear").hidden = false;
+        try {
+          const r = await engine.ask(currentImageURL, question, { maxTokens: 64, onToken: (m) => { item.querySelector(".a").textContent = (item.querySelector(".a").textContent === "…" ? "" : item.querySelector(".a").textContent) + m.token; } });
+          item.querySelector(".a").textContent = r.answer || "(no answer — try rephrasing)";
+          $("question").value = ""; $("question").focus();
+          $("runStatus").textContent = `Answered in ${r.ms} ms.`; $("runStatus").classList.add("ok");
+        } catch (err) { item.querySelector(".a").textContent = "(failed)"; $("runStatus").textContent = "Failed: " + err.message; $("runStatus").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+      $("clear").addEventListener("click", () => { $("log").replaceChildren(); $("clear").hidden = true; $("runStatus").textContent = ""; });
+    </script>
+  </body>
+</html>
