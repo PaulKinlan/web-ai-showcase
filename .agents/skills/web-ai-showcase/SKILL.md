@@ -55,19 +55,25 @@ of every model you can genuinely run in a browser — not a token set. Read `CLA
   `visual-question-answering` pipeline / no ONNX), **kosmos-2** (no `kosmos` class in
   transformers.js; no browser ONNX), **mask2former** (no `Mask2Former...` class in transformers.js
   3.7.5/4.2 — only the image processor; no browser ONNX), **internvl** (no `internvl` class →
-  `Unsupported model type: internvl`), **aimv2** (no `aimv2`/`Aimv2VisionModel` class in
-  transformers.js 3.7.5 or 4.2; Apple repos safetensors/custom-code no ONNX; community ONNX lacks
-  config — don't relabel DINOv2/CLIP), **image-quality/aesthetic-assessment** (no honest browser
-  IQA: aesthetic-predictor repos are safetensors-only custom classes or configless 1.7GB ONNX; the
-  loadable swin 'quality' ONNX doesn't track degradation [sharp≈blur≈noise] and the aesthetic-shadow
-  ONNX is anime-only/rights-unclear — measured, blocked not faked), **marigold** (latent-diffusion
-  depth pipeline — diffusers/VAE/UNet/DDIM, no transformers.js class; the one ONNX is a 3.46GB SD
-  pipeline; don't relabel a regression depth model), **places365 / scene-classification** (no
-  Places365/scene model ships a transformers.js-loadable ONNX — only .pt/.tflite/Caffe; don't
-  relabel ImageNet ViT), **legal-bert / legal fill-mask** (no legal-domain fill-mask ships a browser
-  ONNX with a real MLM head — exports are NSP-only [logits [1,2]] or feature-extraction-only),
-  **tapas** (no `tapas` class + no `table-question-answering` pipeline in transformers.js 3.7.5/4.2;
-  no browser ONNX; needs its own TapasTokenizer table-encoding + cell-selection/aggregation head),
+  `Unsupported model type: internvl`), **videomae / video-classification** (no videomae class AND
+  `video-classification` is not a supported pipeline task in transformers.js 3.7.5/4.2; no browser
+  ONNX), **parler-tts** (no `parler_tts` class in 3.7.5/4.2 → `Unsupported model type: parler_tts`;
+  custom T5+DAC-codec+description-cross-attn unimplemented; no loadable ONNX), **layoutlmv3** (no
+  `layoutlmv3`/`layoutlm` class in 3.7.5/4.2 despite ONNX exports existing — the text+bbox+patch
+  token-classification path has no class/processor, same as gliner), **aimv2** (no
+  `aimv2`/`Aimv2VisionModel` class in transformers.js 3.7.5 or 4.2; Apple repos
+  safetensors/custom-code no ONNX; community ONNX lacks config — don't relabel DINOv2/CLIP),
+  **image-quality/aesthetic-assessment** (no honest browser IQA: aesthetic-predictor repos are
+  safetensors-only custom classes or configless 1.7GB ONNX; the loadable swin 'quality' ONNX doesn't
+  track degradation [sharp≈blur≈noise] and the aesthetic-shadow ONNX is anime-only/rights-unclear —
+  measured, blocked not faked), **marigold** (latent-diffusion depth pipeline —
+  diffusers/VAE/UNet/DDIM, no transformers.js class; the one ONNX is a 3.46GB SD pipeline; don't
+  relabel a regression depth model), **places365 / scene-classification** (no Places365/scene model
+  ships a transformers.js-loadable ONNX — only .pt/.tflite/Caffe; don't relabel ImageNet ViT),
+  **legal-bert / legal fill-mask** (no legal-domain fill-mask ships a browser ONNX with a real MLM
+  head — exports are NSP-only [logits [1,2]] or feature-extraction-only), **tapas** (no `tapas`
+  class + no `table-question-answering` pipeline in transformers.js 3.7.5/4.2; no browser ONNX;
+  needs its own TapasTokenizer table-encoding + cell-selection/aggregation head),
   **question-generation** (no QG model has a v3-loadable ONNX: the family is safetensors-only, the
   one merged-decoder export is a degenerate quantized build that emits repeated-token garbage, and
   the genuine <hl> QG model uses the pre-v3 separate-decoder layout 3.7.5 can't load), **scibert /
@@ -350,3 +356,7 @@ APIs.
 
 Source/version + update path recorded in `MODERN_WEB_GUIDANCE.md` (canonical skill + scripted
 fallback `npx -y modern-web-guidance@latest`; no vendored copies).
+
+- **After building a demo, regenerate lineage value-records** (`node scripts/lineage-value.mjs`) so
+  every built demo has a value record — `check-lineage` FAILS otherwise (agents rebase-then-push, so
+  a missing record lands on main). It's deterministic; run it before the lineage gate.
