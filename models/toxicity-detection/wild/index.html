@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Toxicity Wild — where the classifier breaks · Web AI Showcase</title>
+    <meta name="description" content="Probe the calibration limits of a toxicity classifier: sarcasm, reclaimed language, quoted abuse, and false positives — the hard cases moderation always gets wrong." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🛡️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">toxic-bert</a></p>
+
+    <header>
+      <p class="eyebrow">use case · wild</p>
+      <h1>Wild: the edges where it gets it wrong</h1>
+      <p class="lede">
+        A toxicity classifier is a pattern-matcher, not a mind-reader. It has no model of intent, context,
+        or who is speaking — so sarcasm, reclaimed slurs, quoted abuse, and neutral mentions of hard topics
+        all trip it up. Click each case and watch the scores: the point is to <em>see the calibration
+        limits</em>, so you never wire one of these straight to an automated ban.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.4rem">
+        Text to probe
+        <textarea id="text" rows="3" disabled>Oh brilliant, another meeting that could have been an email. Love that for us.</textarea>
+      </label>
+      <div id="cases" style="display:flex;flex-direction:column;gap:.4rem;margin:.6rem 0"></div>
+      <button id="run" type="button" disabled>Score it</button>
+      <div class="verdict-row" id="verdictRow" hidden><span class="verdict-label" id="vLabel">–</span><span class="verdict-sub" id="vSub"></span></div>
+      <div class="bars" id="bars" aria-live="polite"></div>
+      <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>latency <b id="rMs">–</b></span></div>
+      <p class="muted" id="note" style="font-size:.85rem;margin-top:.6rem"></p>
+    </section>
+
+    <p class="crumbs"><a href="../practical/">← Practical</a> · Next: <a href="../multimodel/">Multi-model →</a></p>
+
+    <script type="module">
+      import { ToxicityEngine, renderLabelBars, verdict, prettyLabel, TOXICITY_CSS } from "../toxicity.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = TOXICITY_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new ToxicityEngine();
+
+      const CASES = [
+        { t: "Oh brilliant, another meeting that could have been an email. Love that for us.",
+          why: "Sarcasm. Hostile in tone but lexically positive — the model reads the surface words, not the eye-roll, and usually scores it low. A human would clock the contempt." },
+        { t: "As a queer woman I have reclaimed that word and use it with pride.",
+          why: "Reclaimed language. Identity terms that are slurs in other mouths are affirming here — but the classifier has no speaker model, so it may still light up identity_hate. Context it cannot see." },
+        { t: "He literally told me to 'go kill yourself', which is why I reported him.",
+          why: "Quoted abuse. The toxic phrase is being reported, not directed — yet the model scores the surface string and can flag the victim's own report. Intent is invisible to it." },
+        { t: "The character in this horror novel is a violent, obscene murderer who threatens everyone.",
+          why: "Neutral description of dark content. Fiction and news routinely discuss violence without being toxic; the classifier keys on words like violent/threaten/obscene regardless." },
+        { t: "I could just kill for a coffee right now, this deadline is brutal.",
+          why: "Idiom. 'Kill for' and 'brutal' are figures of speech. False positives on threat/toxic here are exactly why a raw score should gate a human, not an automatic action." },
+        { t: "You did an amazing job on this, genuinely one of the best talks I have seen all year.",
+          why: "Clean control. Unambiguously kind — this should score near zero across every label, and it does. Your baseline for what 'allow' looks like." },
+      ];
+
+      const wrap = $("cases");
+      CASES.forEach((c, i) => {
+        const b = document.createElement("button");
+        b.type = "button"; b.className = "chip"; b.style.textAlign = "left";
+        b.textContent = c.t.length > 64 ? c.t.slice(0, 62) + "…" : c.t;
+        b.addEventListener("click", () => { $("text").value = c.t; $("note").textContent = c.why; });
+        wrap.append(b);
+      });
+      $("note").textContent = CASES[0].why;
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/toxic-bert", runtime: "transformers.js", dtype: "q8", sizeMB: 110, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("run").disabled = false; $("text").disabled = false; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        const text = $("text").value.trim();
+        if (!text) return;
+        $("run").disabled = true; $("runStatus").hidden = true;
+        try {
+          const r = await engine.classify(text);
+          renderLabelBars($("bars"), r.labels, 0.5);
+          const v = verdict(r.labels, 0.5);
+          $("verdictRow").hidden = false;
+          $("vLabel").textContent = v.flag ? "FLAG" : "ALLOW";
+          $("vLabel").className = "verdict-label " + (v.flag ? "flag" : "allow");
+          $("vSub").textContent = v.flag
+            ? v.labelsHit.map((l) => prettyLabel(l.label)).join(", ") + " ≥ 0.50"
+            : "all labels below 0.50";
+          $("readout").hidden = false; $("rBackend").textContent = r.device.toUpperCase(); $("rMs").textContent = r.ms + " ms";
+        } catch (err) { $("runStatus").hidden = false; $("runStatus").textContent = "Failed: " + err.message; $("runStatus").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>

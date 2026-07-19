@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>toxic-bert — content-moderation scoring in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Score any comment for toxicity across six independent labels — toxic, severe toxic, obscene, threat, insult, identity hate — locally in your browser. Set a moderation threshold and watch text get flagged or allowed. Nothing leaves the device."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🛡️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">text-classification · text · WASM · ~110 MB</p>
+      <h1>toxic-bert — score a comment for toxicity, privately</h1>
+      <p class="lede">
+        A BERT fine-tuned on the Jigsaw toxic-comment data. It reads any text and emits <strong>six
+        independent</strong> toxicity signals — <code>toxic</code>, <code>severe toxic</code>,
+        <code>obscene</code>, <code>threat</code>, <code>insult</code>, <code>identity hate</code> — each a
+        0–100% probability. This is defensive content-safety tooling: set a threshold, and triage what to
+        flag. Every score is computed on your device; no comment is ever sent to a server.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/Xenova/toxic-bert" target="_blank" rel="noopener">Xenova/toxic-bert</a> (ONNX of <a href="https://huggingface.co/unitary/toxic-bert" target="_blank" rel="noopener">unitary/toxic-bert</a>)</td></tr>
+          <tr><th>Task / pipeline</th><td><code>text-classification</code> · <strong>multi-label</strong> (per-label sigmoid, not softmax)</td></tr>
+          <tr><th>Labels</th><td><code>toxic</code> · <code>severe_toxic</code> · <code>obscene</code> · <code>threat</code> · <code>insult</code> · <code>identity_hate</code></td></tr>
+          <tr><th>Architecture</th><td>BERT-base (12-layer) fine-tuned on the Jigsaw Toxic Comment Classification corpus</td></tr>
+          <tr><th>Quantization</th><td>q8 (8-bit) ONNX</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (runs anywhere; no WebGPU needed)</td></tr>
+          <tr><th>Download</th><td>~110 MB, cached after first load</td></tr>
+          <tr><th>License</th><td>Apache-2.0</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Type or paste a comment; it re-scores automatically a moment after you stop typing.
+        The <strong>moderation threshold</strong> decides the verdict: if any label lands at or above it, the
+        comment is <span style="color:var(--bad)">flagged</span> for review — otherwise it's
+        <span style="color:var(--good)">allowed</span>. The samples below are deliberately hostile so you can
+        see the classifier separate them from the benign one.</p>
+
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
+        Comment to moderate
+        <textarea id="text" rows="3" disabled>You are a complete idiot and everyone can see how worthless you are.</textarea>
+      </label>
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.5rem 0">
+        <button class="chip" type="button" data-set="You are a complete idiot and everyone can see how worthless you are.">insult</button>
+        <button class="chip" type="button" data-set="I know where you live and I am going to make you regret this.">threat</button>
+        <button class="chip" type="button" data-set="Thanks so much for reviewing my pull request, this feedback is really helpful!">benign</button>
+        <button class="chip" type="button" data-set="This restaurant was fine but honestly the wait was way too long for the price.">mild criticism</button>
+      </div>
+
+      <div class="thresh-wrap">
+        <label for="thresh">Moderation threshold: <b id="threshVal">0.50</b> — flag a comment when any label ≥ this</label>
+        <input type="range" id="thresh" min="0.05" max="0.95" step="0.05" value="0.5" />
+      </div>
+
+      <div class="verdict-row" id="verdictRow" hidden>
+        <span class="verdict-label" id="vLabel">–</span>
+        <span class="verdict-sub" id="vSub"></span>
+      </div>
+      <div class="bars" id="bars" aria-live="polite"></div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+        <span>labels <b>6 (multi-label)</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside — six sigmoids, not one softmax</h3>
+      <p class="muted">
+        A sentiment model picks <em>one</em> winner with a softmax (the scores sum to 100%). Toxicity is
+        <strong>multi-label</strong>: the model's final layer produces six raw <strong>logits</strong>, and
+        each passes through its <em>own</em> <strong>sigmoid</strong> independently. So a single comment can
+        be 0.99 <code>toxic</code> <em>and</em> 0.95 <code>insult</code> at once — the columns below don't
+        add up to anything in particular, and that's the point. The table shows each label's raw logit next
+        to its sigmoid probability, so you can see exactly how the threshold turns numbers into a decision.
+      </p>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Score a comment to see the raw numbers.</div>
+      <div id="insideWrap" hidden>
+        <table class="inside-table">
+          <thead><tr><th>Label</th><th>logit</th><th>sigmoid</th><th>vs threshold</th></tr></thead>
+          <tbody id="insideRows"></tbody>
+        </table>
+        <p class="muted" style="font-size:.82rem;margin-top:.4rem">A softmax over these would force one
+          winner and hide the fact that this text is several kinds of bad at once. Independent sigmoids keep
+          every signal legible — the moderation queue can route a <code>threat</code> differently from an
+          <code>obscene</code>.</p>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        Moderation is a scale problem: no team can read every comment, DM, or review. A fast, private,
+        offline toxicity score is a first line of defence — it runs the instant someone hits submit, without
+        the text ever leaving the tab, and hands a human queue only what actually needs eyes.
+      </p>
+      <ul>
+        <li><strong>Pre-submit guardrails</strong> — warn a user their draft reads as an insult or threat <em>before</em> they post it, client-side.</li>
+        <li><strong>Moderation-queue triage</strong> — auto-sort a comment stream so the worst (threat, identity hate) rises to the top and the benign majority is auto-approved.</li>
+        <li><strong>Private-by-default safety</strong> — score sensitive user text (support tickets, health forums) without a server round-trip or third-party API.</li>
+        <li><strong>Cost control</strong> — gate an expensive human review or a big LLM behind a free on-device filter that clears the easy cases.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Score a single comment and read all six independent toxicity labels.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">A moderation queue: paste many comments, set a threshold, auto-sort into flag / allow.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Edge cases — sarcasm, reclaimed slurs, quoted abuse — where the classifier's calibration shows its limits.</p></a>
+        <a class="model-card" href="multimodel/"><h3>Multi-model</h3><p class="muted">A toxicity gate in front of a sentiment model: only clean comments pass through to analysis.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>The convenience path is one call; because the model is multi-label, ask for every label with <code>topk: null</code>:</p>
+      <pre><code>import { pipeline } from "@huggingface/transformers";
+
+const classify = await pipeline("text-classification", "Xenova/toxic-bert");
+const out = await classify("you are worthless", { topk: null });
+// → [{ label: "toxic", score: 0.98 }, { label: "insult", score: 0.64 }, …]  (independent sigmoids)</code></pre>
+      <p class="muted">
+        This page goes one level deeper for "See inside": instead of the pipeline it runs the
+        <code>tokenizer</code> then the <code>model()</code> in a single forward pass, reads the raw
+        six-value <code>logits</code> tensor, and applies the sigmoid itself — so it can show both the logit
+        and the probability, and apply <em>your</em> threshold. Same weights, same result. All of it runs in
+        a Web Worker so typing never janks.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/Xenova/toxic-bert" target="_blank" rel="noopener">Model card — Xenova/toxic-bert (ONNX)</a></li>
+        <li><a href="https://huggingface.co/unitary/toxic-bert" target="_blank" rel="noopener">Original weights — unitary/toxic-bert (Detoxify)</a></li>
+        <li><a href="https://www.kaggle.com/c/jigsaw-toxic-comment-classification-challenge" target="_blank" rel="noopener">Jigsaw Toxic Comment Classification Challenge (training data)</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { ToxicityEngine, renderLabelBars, verdict, prettyLabel, escapeHTML, debounce, TOXICITY_CSS }
+        from "./toxicity.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = TOXICITY_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new ToxicityEngine();
+      let loaded = false;
+      let lastLabels = null;
+
+      for (const c of document.querySelectorAll(".chip")) {
+        c.addEventListener("click", () => { $("text").value = c.dataset.set; scheduleScore(); });
+      }
+
+      const thresh = $("thresh");
+      thresh.addEventListener("input", () => {
+        $("threshVal").textContent = Number(thresh.value).toFixed(2);
+        if (lastLabels) render(lastLabels);
+      });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: {
+          modelId: "Xenova/toxic-bert",
+          runtime: "transformers.js",
+          dtype: "q8",
+          sizeMB: 110,
+          requiresWebGPU: false,
+        },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("text").disabled = false; loaded = true; score(); },
+      });
+
+      const scheduleScore = debounce(score, 350);
+      $("text").addEventListener("input", scheduleScore);
+
+      async function score() {
+        if (!loaded) return;
+        const text = $("text").value.trim();
+        if (!text) { $("verdictRow").hidden = true; $("bars").replaceChildren(); return; }
+        try {
+          const r = await engine.classify(text);
+          lastLabels = r.labels;
+          render(r.labels);
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = r.ms + " ms";
+        } catch (err) {
+          $("runStatus").hidden = false;
+          $("runStatus").textContent = "Scoring failed: " + err.message;
+          $("runStatus").classList.add("err");
+        }
+      }
+
+      function render(labels) {
+        const t = Number(thresh.value);
+        renderLabelBars($("bars"), labels, t);
+        const v = verdict(labels, t);
+        $("verdictRow").hidden = false;
+        $("vLabel").textContent = v.flag ? "FLAG" : "ALLOW";
+        $("vLabel").className = "verdict-label " + (v.flag ? "flag" : "allow");
+        $("vSub").textContent = v.flag
+          ? `${v.labelsHit.map((l) => prettyLabel(l.label)).join(", ")} ≥ ${t.toFixed(2)}`
+          : `top label ${prettyLabel(v.worst.label)} at ${(v.worst.score * 100).toFixed(1)}%, below ${t.toFixed(2)}`;
+        renderInside(labels, t);
+      }
+
+      function renderInside(labels, t) {
+        $("insideEmpty").hidden = true;
+        $("insideWrap").hidden = false;
+        $("insideRows").replaceChildren(...labels.map((l) => {
+          const tr = document.createElement("tr");
+          const over = l.score >= t;
+          tr.innerHTML = `<td>${escapeHTML(prettyLabel(l.label))}</td>
+            <td>${l.logit.toFixed(2)}</td>
+            <td>${(l.score * 100).toFixed(2)}%</td>
+            <td style="color:${over ? "var(--bad)" : "var(--muted)"}">${over ? "≥ flag ⚑" : "below"}</td>`;
+          return tr;
+        }));
+      }
+    </script>
+  </body>
+</html>
