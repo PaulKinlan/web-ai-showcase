@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Multi-model — detect → crop → embed · FaceNet · Web AI Showcase</title>
+    <meta name="description" content="Chain two on-device models: MediaPipe FaceDetector finds and boxes the face in a full photo, then FaceNet embeds only the aligned crop — robust face similarity on uncropped images." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🧑‍🤝‍🧑</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">FaceNet</a></p>
+    <header>
+      <p class="eyebrow">Multi-model · FaceDetector → FaceNet</p>
+      <h1>Detect → crop → embed</h1>
+      <p class="lede">FaceNet expects a tight, centred face crop. Real photos aren't cropped. So chain two
+        on-device models: MediaPipe's <strong>FaceDetector</strong> (BlazeFace) boxes the face first, we
+        crop to it, and only then does <strong>FaceNet</strong> embed — far more robust than feeding a
+        whole scene. Two models, one pipeline, nothing uploaded.</p>
+    </header>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Two photos in, one similarity out</h3>
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+      <p class="muted" id="detStatus" role="status" aria-live="polite" style="font-size:.8rem"></p>
+
+      <div class="pair-grid">
+        <div class="face-col">
+          <h4>Photo A → detected crop</h4>
+          <div class="face-frame"><canvas class="face-canvas" id="sceneA" width="240" height="180" aria-label="Photo A with detected face box"></canvas></div>
+          <div class="controls-row" style="gap:.4rem">
+            <span class="muted" style="font-size:.75rem">crop →</span>
+            <div class="face-frame" style="inline-size:64px;aspect-ratio:1/1;flex:0 0 auto"><canvas class="face-canvas" id="cropA" width="80" height="80" aria-label="Cropped face A"></canvas></div>
+          </div>
+          <div class="sample-strip" id="samplesA" aria-label="Choose Photo A">
+            <img class="sample-thumb active" src="../scene-a.jpg" data-src="../scene-a.jpg" alt="Scene with synthetic person A" tabindex="0" role="button" />
+            <img class="sample-thumb" src="../scene-c.jpg" data-src="../scene-c.jpg" alt="Scene with synthetic person C" tabindex="0" role="button" />
+          </div>
+          <div class="dropzone" id="dropA" tabindex="0" role="button" aria-label="Upload or drop a photo for A"><span id="dropTextA">Drop / choose your own</span><input type="file" id="fileA" accept="image/*" hidden /></div>
+        </div>
+        <div class="face-col">
+          <h4>Photo B → detected crop</h4>
+          <div class="face-frame"><canvas class="face-canvas" id="sceneB" width="240" height="180" aria-label="Photo B with detected face box"></canvas></div>
+          <div class="controls-row" style="gap:.4rem">
+            <span class="muted" style="font-size:.75rem">crop →</span>
+            <div class="face-frame" style="inline-size:64px;aspect-ratio:1/1;flex:0 0 auto"><canvas class="face-canvas" id="cropB" width="80" height="80" aria-label="Cropped face B"></canvas></div>
+          </div>
+          <div class="sample-strip" id="samplesB" aria-label="Choose Photo B">
+            <img class="sample-thumb active" src="../scene-c.jpg" data-src="../scene-c.jpg" alt="Scene with synthetic person C" tabindex="0" role="button" />
+            <img class="sample-thumb" src="../scene-a.jpg" data-src="../scene-a.jpg" alt="Scene with synthetic person A" tabindex="0" role="button" />
+          </div>
+          <div class="dropzone" id="dropB" tabindex="0" role="button" aria-label="Upload or drop a photo for B"><span id="dropTextB">Drop / choose your own</span><input type="file" id="fileB" accept="image/*" hidden /></div>
+        </div>
+      </div>
+
+      <div class="controls-row"><button id="run" type="button" disabled>Detect, crop &amp; compare</button></div>
+
+      <div id="resultWrap" hidden>
+        <p class="big-verdict"><span class="sim-num" id="simNum">–</span><span id="verdictText"></span></p>
+        <div class="gauge" id="gauge" role="img" aria-label="Similarity gauge with the same-person threshold marked"></div>
+        <div class="gauge-scale"><span>−0.2</span><span>threshold ≈0.50</span><span>1.0</span></div>
+        <div class="readout"><span>detector <b id="rDet">–</b></span><span>embed backend <b id="rBackend">–</b></span><span>faces found <b id="rFaces">–</b></span></div>
+      </div>
+      <p class="privacy-note">Both models run on-device (BlazeFace ~230 KB + FaceNet ~91 MB). The detector aligns the crop so FaceNet sees a consistent face; without it, background and framing pollute the embedding. Nothing is uploaded.</p>
+    </section>
+
+    <section aria-labelledby="learn-h">
+      <h2 id="learn-h">Why chain them</h2>
+      <p>Detection and embedding solve different problems: BlazeFace answers "where is the face?", FaceNet
+        answers "whose face pattern is this?". Feeding FaceNet a raw scene mixes in background and scale;
+        cropping to the detector's box first makes the similarity comparison stable across photos where the
+        face sits in a different place or size. This detect-then-embed shape underlies most real face
+        pipelines.</p>
+    </section>
+
+    <footer class="byline">Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via <a href="https://onnxruntime.ai/docs/tutorials/web/" target="_blank" rel="noopener">ONNX Runtime Web</a> + <a href="https://ai.google.dev/edge/mediapipe" target="_blank" rel="noopener">MediaPipe Tasks</a>. <a href="../">← FaceNet</a></footer>
+
+    <script type="module">
+      import { cosine, FACE_EMBED_CSS, FaceEmbedEngine, renderGauge, toBitmap, urlToBitmap, verdict }
+        from "../face-embed.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      import { createVisionTask } from "/web-ai-showcase/lib/mediapipe.js";
+      const style = document.createElement("style"); style.textContent = FACE_EMBED_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new FaceEmbedEngine();
+      const BLAZEFACE = "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite";
+      const state = { A: null, B: null };
+      let detector = null, detPromise = null;
+
+      function drawScene(canvasId, bmp, box) {
+        const c = $(canvasId); const ctx = c.getContext("2d");
+        const scale = Math.min(c.width / bmp.width, c.height / bmp.height);
+        const w = bmp.width * scale, h = bmp.height * scale, ox = (c.width - w) / 2, oy = (c.height - h) / 2;
+        ctx.clearRect(0, 0, c.width, c.height); ctx.drawImage(bmp, ox, oy, w, h);
+        if (box) {
+          ctx.strokeStyle = "#6c5ce7"; ctx.lineWidth = 2;
+          ctx.strokeRect(ox + box.originX * scale, oy + box.originY * scale, box.width * scale, box.height * scale);
+        }
+      }
+      async function setPhoto(side, bmp) { state[side] = { bmp, box: null }; drawScene("scene" + side, await createImageBitmap(bmp), null); $("crop" + side).getContext("2d").clearRect(0, 0, 80, 80); }
+      async function pickSample(side, el) { for (const t of $("samples" + side).children) t.classList.toggle("active", t === el); await setPhoto(side, await urlToBitmap(el.dataset.src)); }
+      for (const side of ["A", "B"]) {
+        for (const t of $("samples" + side).children) { t.addEventListener("click", () => pickSample(side, t)); t.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(side, t); } }); }
+        const drop = $("drop" + side), file = $("file" + side);
+        drop.addEventListener("click", () => file.click());
+        drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+        ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+        ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+        file.addEventListener("change", async () => { if (!file.files[0]) return; for (const t of $("samples" + side).children) t.classList.remove("active"); await setPhoto(side, await toBitmap(file.files[0])); $("dropText" + side).textContent = file.files[0].name; });
+        drop.addEventListener("drop", async (e) => { const f = e.dataTransfer?.files?.[0]; if (!f?.type.startsWith("image/")) return; for (const t of $("samples" + side).children) t.classList.remove("active"); await setPhoto(side, await toBitmap(f)); $("dropText" + side).textContent = f.name; });
+      }
+      pickSample("A", $("samplesA").firstElementChild); pickSample("B", $("samplesB").firstElementChild);
+
+      const autoRun = new URLSearchParams(location.search).has("auto");
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "astaileyyoung/facenet-onnx", runtime: "onnxruntime-web", dtype: "fp32", sizeMB: 91, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: () => { $("run").disabled = false; if (autoRun) $("run").click(); },
+      });
+
+      async function ensureDetector() {
+        if (detector) return detector;
+        detPromise ??= createVisionTask({ taskClass: "FaceDetector", modelUrl: BLAZEFACE, options: { runningMode: "IMAGE", minDetectionConfidence: 0.5 } });
+        $("detStatus").textContent = "Loading FaceDetector (BlazeFace, ~230 KB)…";
+        detector = await detPromise; $("detStatus").textContent = "FaceDetector ready (" + (detector.__delegate || "CPU") + ").";
+        return detector;
+      }
+
+      // Detect the largest face, crop to it (with margin), return an ImageBitmap of the crop + the box.
+      async function detectCrop(side) {
+        const det = await ensureDetector();
+        const bmp = state[side].bmp;
+        const res = det.detect(bmp);
+        const dets = res.detections || [];
+        if (!dets.length) { state[side].box = null; drawScene("scene" + side, await createImageBitmap(bmp), null); return { faces: 0, crop: null }; }
+        // Largest box.
+        let best = dets[0];
+        for (const d of dets) if (d.boundingBox.width * d.boundingBox.height > best.boundingBox.width * best.boundingBox.height) best = d;
+        const bb = best.boundingBox;
+        const m = 0.25; // margin so the crop includes the whole head
+        const cx = bb.originX + bb.width / 2, cy = bb.originY + bb.height / 2;
+        const side2 = Math.max(bb.width, bb.height) * (1 + m);
+        let sx = Math.max(0, cx - side2 / 2), sy = Math.max(0, cy - side2 / 2);
+        let sw = Math.min(bmp.width - sx, side2), sh = Math.min(bmp.height - sy, side2);
+        state[side].box = { originX: sx, originY: sy, width: sw, height: sh };
+        drawScene("scene" + side, await createImageBitmap(bmp), state[side].box);
+        // Draw the crop preview.
+        const cc = $("crop" + side); cc.getContext("2d").drawImage(bmp, sx, sy, sw, sh, 0, 0, cc.width, cc.height);
+        const cropBmp = await createImageBitmap(bmp, sx, sy, sw, sh);
+        return { faces: dets.length, crop: cropBmp, delegate: det.__delegate };
+      }
+
+      $("run").addEventListener("click", async () => {
+        if (!state.A?.bmp || !state.B?.bmp) return;
+        $("run").disabled = true; $("status").classList.remove("err", "ok"); $("status").textContent = "Detecting faces…";
+        try {
+          const dA = await detectCrop("A");
+          const dB = await detectCrop("B");
+          if (!dA.crop || !dB.crop) { $("status").textContent = "No face detected in one of the photos — try another."; $("status").classList.add("err"); return; }
+          $("status").textContent = "Embedding aligned crops…";
+          const [rA, rB] = await Promise.all([engine.embed(dA.crop), engine.embed(dB.crop)]);
+          const cos = cosine(rA.embedding, rB.embedding); const v = verdict(cos);
+          $("resultWrap").hidden = false;
+          $("simNum").textContent = cos.toFixed(3); $("simNum").className = "sim-num tone-" + v.tone;
+          $("verdictText").textContent = v.label; $("verdictText").className = "tone-" + v.tone;
+          renderGauge($("gauge"), cos);
+          $("rDet").textContent = (dA.delegate || "CPU"); $("rBackend").textContent = rA.device.toUpperCase(); $("rFaces").textContent = dA.faces + " / " + dB.faces;
+          $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Pipeline failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>

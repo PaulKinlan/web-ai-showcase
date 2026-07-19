@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>FaceNet — on-device face similarity in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run FaceNet locally via ONNX Runtime Web: turn two face photos into 128-D embeddings and measure how similar they are — a same/different-person SIGNAL computed entirely on your device. No image or embedding ever leaves the tab. Face similarity, not identity or surveillance."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🧑‍🤝‍🧑</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">image-feature-extraction · vision · WASM · ~91 MB</p>
+      <h1>FaceNet — how alike are two faces?</h1>
+      <p class="lede">
+        FaceNet turns a face crop into a <strong>128-number embedding</strong> — a point in "face space"
+        where the same person's photos land close together and different people land far apart. Compare
+        two faces and you get a <em>similarity signal</em>: likely the same person, or likely not. It runs
+        entirely on your device — the photos and the embeddings never leave the tab. This is face
+        <strong>similarity</strong>, not identification, lookup, or surveillance.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/astaileyyoung/facenet-onnx" target="_blank" rel="noopener">astaileyyoung/facenet-onnx</a> — InceptionResnetV1, VGGFace2</td></tr>
+          <tr><th>Task</th><td><code>image-feature-extraction</code> — run via raw ONNX Runtime Web (see note below)</td></tr>
+          <tr><th>Runtime</th><td>onnxruntime-web 1.21 (transformers.js has no FaceNet model class)</td></tr>
+          <tr><th>Input</th><td><code>[1, 160, 160, 3]</code> NHWC — a centred face crop, "prewhitened" (per-image standardization)</td></tr>
+          <tr><th>Output</th><td><code>[1, 128]</code> — the face embedding; L2-normalized, then compared by cosine similarity</td></tr>
+          <tr><th>Quantization</th><td>fp32 ONNX</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (runs anywhere; no WebGPU needed)</td></tr>
+          <tr><th>Download</th><td>~91 MB, cached after first load</td></tr>
+          <tr><th>License</th><td>MIT (ONNX export) · FaceNet weights via <code>facenet-pytorch</code> (MIT)</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers, OffscreenCanvas, Canvas — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Pick two faces (or upload your own), then compare. The model embeds each face and the
+        page measures the cosine similarity of the two embeddings — a same/different SIGNAL, not a verdict.</p>
+
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="pair-grid">
+        <div class="face-col">
+          <h4>Face A</h4>
+          <div class="face-frame"><canvas class="face-canvas" id="canvasA" width="240" height="240" aria-label="Face A preview"></canvas></div>
+          <div class="sample-strip" id="samplesA" aria-label="Sample faces for A (synthetic — StyleGAN2, not real people)">
+            <img class="sample-thumb active" src="person-a-1.jpg" data-src="person-a-1.jpg" alt="Synthetic person A, smiling" tabindex="0" role="button" />
+            <img class="sample-thumb" src="person-b.jpg" data-src="person-b.jpg" alt="Synthetic person B" tabindex="0" role="button" />
+            <img class="sample-thumb" src="person-c.jpg" data-src="person-c.jpg" alt="Synthetic person C" tabindex="0" role="button" />
+            <img class="sample-thumb" src="person-d.jpg" data-src="person-d.jpg" alt="Synthetic person D" tabindex="0" role="button" />
+          </div>
+          <div class="dropzone" id="dropA" tabindex="0" role="button" aria-label="Upload or drop a photo for Face A">
+            <span id="dropTextA">Drop / choose your own</span>
+            <input type="file" id="fileA" accept="image/*" hidden />
+          </div>
+        </div>
+        <div class="face-col">
+          <h4>Face B</h4>
+          <div class="face-frame"><canvas class="face-canvas" id="canvasB" width="240" height="240" aria-label="Face B preview"></canvas></div>
+          <div class="sample-strip" id="samplesB" aria-label="Sample faces for B (synthetic — StyleGAN2, not real people)">
+            <img class="sample-thumb active" src="person-a-2.jpg" data-src="person-a-2.jpg" alt="Synthetic person A again, re-shot" tabindex="0" role="button" />
+            <img class="sample-thumb" src="person-b.jpg" data-src="person-b.jpg" alt="Synthetic person B" tabindex="0" role="button" />
+            <img class="sample-thumb" src="person-c.jpg" data-src="person-c.jpg" alt="Synthetic person C" tabindex="0" role="button" />
+            <img class="sample-thumb" src="person-d.jpg" data-src="person-d.jpg" alt="Synthetic person D" tabindex="0" role="button" />
+          </div>
+          <div class="dropzone" id="dropB" tabindex="0" role="button" aria-label="Upload or drop a photo for Face B">
+            <span id="dropTextB">Drop / choose your own</span>
+            <input type="file" id="fileB" accept="image/*" hidden />
+          </div>
+        </div>
+      </div>
+
+      <div class="controls-row">
+        <button id="run" type="button" disabled>Compare faces</button>
+      </div>
+
+      <div id="resultWrap" hidden>
+        <p class="big-verdict"><span class="sim-num" id="simNum">–</span><span id="verdictText"></span></p>
+        <div class="gauge" id="gauge" role="img" aria-label="Similarity gauge with the same-person threshold marked"></div>
+        <div class="gauge-scale"><span>−0.2 (opposite)</span><span>threshold ≈0.50</span><span>1.0 (identical)</span></div>
+        <div class="readout" id="readout">
+          <span>backend <b id="rBackend">–</b></span>
+          <span>embed A <b id="rMsA">–</b></span>
+          <span>embed B <b id="rMsB">–</b></span>
+          <span>embedding dims <b id="rDims">–</b></span>
+        </div>
+      </div>
+      <p class="privacy-note">Everything runs on your device — the photos, the 160×160 crops, and the embeddings never leave the tab. Face similarity is a fuzzy signal that varies with pose, lighting, and expression; never treat it as identity or a security decision.</p>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside</h3>
+      <p class="muted">
+        The model doesn't decide "same or different" — it outputs a <strong>128-number vector</strong> per
+        face. All the page does is measure the <em>angle</em> between the two vectors (cosine similarity)
+        and compare it to a threshold. Below are the two real embeddings — bars up for positive dimensions,
+        down for negative. Similar faces have visibly similar bar patterns.
+      </p>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Compare two faces to see their embeddings.</div>
+      <div id="insideWrap" hidden>
+        <h4 style="font-family:var(--font-body);font-size:.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:.6rem 0 0">Face A embedding (128-D)</h4>
+        <div class="emb-strip" id="embA" role="img" aria-label="Face A embedding, 128 signed dimensions"></div>
+        <h4 style="font-family:var(--font-body);font-size:.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:.6rem 0 0">Face B embedding (128-D)</h4>
+        <div class="emb-strip" id="embB" role="img" aria-label="Face B embedding, 128 signed dimensions"></div>
+        <table class="inside-table">
+          <tbody>
+            <tr><th>cosine similarity</th><td id="iCos">–</td></tr>
+            <tr><th>Euclidean distance (L2)</th><td id="iL2">–</td></tr>
+            <tr><th>decision threshold</th><td id="iThresh">–</td></tr>
+            <tr><th>signal</th><td id="iSignal">–</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        A face embedding is the building block behind "is this the same person?" — and doing it on-device
+        means the biometric never touches a server. Once a face is a 128-number point you can compare,
+        cluster, and threshold, all client-side:
+      </p>
+      <ul>
+        <li><strong>Private photo organising</strong> — group a local gallery by who's in each shot without uploading a single face.</li>
+        <li><strong>Consent-first re-auth signal</strong> — a "does this look like the enrolled user?" hint that stays a signal, with the real decision made by a proper, liveness-checked system.</li>
+        <li><strong>De-duplication</strong> — spot the same face across a set of images (avatars, ID photos) locally.</li>
+        <li><strong>Look-alike & similarity search</strong> — rank a small gallery by how close each face is to a reference.</li>
+      </ul>
+      <p class="muted">These are similarity tools. Real identity, verification, or surveillance needs consent, liveness detection, bias auditing, and calibration this demo deliberately does not provide.</p>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Two faces in, one similarity number out — see same vs different in "face space".</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">On-device "unlock" concept — enrol a reference face, then check a probe against a threshold (a signal, never a verdict).</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Look-alike finder — rank a whole gallery of faces by how close each is to your reference.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">Detect → crop → embed: find the face in a full photo first, then compare only the aligned crop.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>transformers.js has no FaceNet class, so we run the ONNX graph directly with ONNX Runtime Web. The
+        two things a pipeline would normally hide — prewhiten preprocessing and L2-normalizing the output —
+        are a few lines:</p>
+      <pre><code>import * as ort from "onnxruntime-web";
+
+const session = await ort.InferenceSession.create(facenetBytes, { executionProviders: ["wasm"] });
+
+// face → [1,160,160,3] NHWC, prewhitened: (px - mean) / max(std, 1/sqrt(N))
+const input = new ort.Tensor("float32", prewhiten(faceCrop), [1, 160, 160, 3]);
+const { [session.outputNames[0]]: out } = await session.run({ [session.inputNames[0]]: input });
+
+const emb = l2normalize(out.data);         // 128-D unit vector
+const similarity = dot(embA, embB);        // cosine similarity ∈ [-1, 1]; higher = more alike</code></pre>
+      <p class="muted">
+        Both embeddings are computed in a Web Worker so the UI never blocks, and the model is fetched
+        through Cache Storage, so a returning visit auto-initialises with no re-download.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/astaileyyoung/facenet-onnx" target="_blank" rel="noopener">Model card — astaileyyoung/facenet-onnx</a></li>
+        <li><a href="https://arxiv.org/abs/1503.03832" target="_blank" rel="noopener">Paper — FaceNet: A Unified Embedding for Face Recognition and Clustering</a></li>
+        <li><a href="https://github.com/timesler/facenet-pytorch" target="_blank" rel="noopener">facenet-pytorch — InceptionResnetV1 (VGGFace2)</a></li>
+        <li><a href="https://onnxruntime.ai/docs/tutorials/web/" target="_blank" rel="noopener">ONNX Runtime Web documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://onnxruntime.ai/docs/tutorials/web/" target="_blank" rel="noopener">ONNX Runtime Web</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import {
+        cosine, drawSquare, escapeHTML, FACE_EMBED_CSS, FaceEmbedEngine, renderEmbeddingBars,
+        renderGauge, SAME_THRESHOLD, toBitmap, urlToBitmap, verdict,
+      } from "./face-embed.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = FACE_EMBED_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new FaceEmbedEngine();
+      const state = { A: { bmp: null }, B: { bmp: null } };
+
+      async function setFace(side, bitmap) {
+        // Keep a bitmap for inference AND draw a preview (drawImage consumes nothing).
+        state[side].bmp = bitmap;
+        drawSquare($("canvas" + side), await createImageBitmap(bitmap));
+      }
+      async function pickSample(side, el) {
+        for (const t of $("samples" + side).children) t.classList.toggle("active", t === el);
+        await setFace(side, await urlToBitmap(el.dataset.src));
+      }
+      for (const side of ["A", "B"]) {
+        for (const thumb of $("samples" + side).children) {
+          thumb.addEventListener("click", () => pickSample(side, thumb));
+          thumb.addEventListener("keydown", (e) => {
+            if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(side, thumb); }
+          });
+        }
+        const drop = $("drop" + side), file = $("file" + side);
+        drop.addEventListener("click", () => file.click());
+        drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+        ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+        ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+        file.addEventListener("change", async () => {
+          if (!file.files[0]) return;
+          for (const t of $("samples" + side).children) t.classList.remove("active");
+          await setFace(side, await toBitmap(file.files[0]));
+          $("dropText" + side).textContent = file.files[0].name;
+        });
+        drop.addEventListener("drop", async (e) => {
+          const f = e.dataTransfer?.files?.[0];
+          if (!f?.type.startsWith("image/")) return;
+          for (const t of $("samples" + side).children) t.classList.remove("active");
+          await setFace(side, await toBitmap(f));
+          $("dropText" + side).textContent = f.name;
+        });
+      }
+      // Default pair: same synthetic person, two "photos" (A) — a clear high-similarity start.
+      pickSample("A", $("samplesA").firstElementChild);
+      pickSample("B", $("samplesB").firstElementChild);
+
+      const autoRun = new URLSearchParams(location.search).has("auto");
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "astaileyyoung/facenet-onnx", runtime: "onnxruntime-web", dtype: "fp32", sizeMB: 91, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: () => { $("run").disabled = false; if (autoRun) $("run").click(); },
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!state.A.bmp || !state.B.bmp) { $("status").textContent = "Pick two faces first."; return; }
+        $("run").disabled = true; $("status").classList.remove("err", "ok"); $("status").textContent = "Embedding both faces…";
+        try {
+          // Fresh bitmaps for the worker (transfer detaches them); previews already drawn.
+          const [rA, rB] = await Promise.all([
+            engine.embed(await createImageBitmap(state.A.bmp)),
+            engine.embed(await createImageBitmap(state.B.bmp)),
+          ]);
+          const cos = cosine(rA.embedding, rB.embedding);
+          const v = verdict(cos);
+          $("resultWrap").hidden = false;
+          $("simNum").textContent = cos.toFixed(3);
+          $("simNum").className = "sim-num tone-" + v.tone;
+          $("verdictText").textContent = v.label;
+          $("verdictText").className = "tone-" + v.tone;
+          renderGauge($("gauge"), cos);
+          $("rBackend").textContent = rA.device.toUpperCase();
+          $("rMsA").textContent = rA.ms + " ms";
+          $("rMsB").textContent = rB.ms + " ms";
+          $("rDims").textContent = rA.dims;
+          // See inside
+          $("insideEmpty").hidden = true; $("insideWrap").hidden = false;
+          renderEmbeddingBars($("embA"), rA.embedding);
+          renderEmbeddingBars($("embB"), rB.embedding);
+          let l2 = 0;
+          for (let i = 0; i < rA.embedding.length; i++) { const d = rA.embedding[i] - rB.embedding[i]; l2 += d * d; }
+          $("iCos").textContent = cos.toFixed(4);
+          $("iL2").textContent = Math.sqrt(l2).toFixed(4);
+          $("iThresh").textContent = "≥ " + SAME_THRESHOLD + " → likely same person";
+          $("iSignal").textContent = v.label;
+          $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (err) {
+          $("status").textContent = "Comparison failed: " + err.message; $("status").classList.add("err");
+        } finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>

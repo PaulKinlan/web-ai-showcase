@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Basics — same person or not? · FaceNet · Web AI Showcase</title>
+    <meta name="description" content="The fundamental of face embeddings: turn two faces into 128-number vectors and read one similarity number. Try a same-person and a different-people pair and watch the number move." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🧑‍🤝‍🧑</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">FaceNet</a></p>
+    <header>
+      <p class="eyebrow">Basics · image-feature-extraction</p>
+      <h1>Same person, or not?</h1>
+      <p class="lede">The whole idea in one screen: each face becomes a 128-number embedding, and one cosine
+        number says how alike they are. Try the two presets — the same person shot twice lands high; two
+        different people land low.</p>
+    </header>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Compare two faces</h3>
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="controls-row" role="group" aria-label="Preset face pairs">
+        <button id="presetSame" type="button" class="chip">Same person (two photos)</button>
+        <button id="presetDiff" type="button" class="chip">Different people</button>
+      </div>
+
+      <div class="pair-grid">
+        <div class="face-col">
+          <h4>Face A</h4>
+          <div class="face-frame"><canvas class="face-canvas" id="canvasA" width="240" height="240" aria-label="Face A preview"></canvas></div>
+          <div class="sample-strip" id="samplesA" aria-label="Choose Face A (synthetic faces)">
+            <img class="sample-thumb active" src="../person-a-1.jpg" data-src="../person-a-1.jpg" alt="Synthetic person A" tabindex="0" role="button" />
+            <img class="sample-thumb" src="../person-b.jpg" data-src="../person-b.jpg" alt="Synthetic person B" tabindex="0" role="button" />
+            <img class="sample-thumb" src="../person-c.jpg" data-src="../person-c.jpg" alt="Synthetic person C" tabindex="0" role="button" />
+            <img class="sample-thumb" src="../person-d.jpg" data-src="../person-d.jpg" alt="Synthetic person D" tabindex="0" role="button" />
+          </div>
+        </div>
+        <div class="face-col">
+          <h4>Face B</h4>
+          <div class="face-frame"><canvas class="face-canvas" id="canvasB" width="240" height="240" aria-label="Face B preview"></canvas></div>
+          <div class="sample-strip" id="samplesB" aria-label="Choose Face B (synthetic faces)">
+            <img class="sample-thumb active" src="../person-a-2.jpg" data-src="../person-a-2.jpg" alt="Synthetic person A, re-shot" tabindex="0" role="button" />
+            <img class="sample-thumb" src="../person-b.jpg" data-src="../person-b.jpg" alt="Synthetic person B" tabindex="0" role="button" />
+            <img class="sample-thumb" src="../person-c.jpg" data-src="../person-c.jpg" alt="Synthetic person C" tabindex="0" role="button" />
+            <img class="sample-thumb" src="../person-d.jpg" data-src="../person-d.jpg" alt="Synthetic person D" tabindex="0" role="button" />
+          </div>
+        </div>
+      </div>
+
+      <div class="controls-row"><button id="run" type="button" disabled>Compare faces</button></div>
+
+      <div id="resultWrap" hidden>
+        <p class="big-verdict"><span class="sim-num" id="simNum">–</span><span id="verdictText"></span></p>
+        <div class="gauge" id="gauge" role="img" aria-label="Similarity gauge with the same-person threshold marked"></div>
+        <div class="gauge-scale"><span>−0.2</span><span>threshold ≈0.50</span><span>1.0</span></div>
+        <div class="readout"><span>backend <b id="rBackend">–</b></span><span>latency <b id="rMs">–</b></span></div>
+      </div>
+      <p class="privacy-note">Synthetic StyleGAN2 faces — no real people. Everything runs on-device; nothing is uploaded. Similarity is a fuzzy signal, never identity.</p>
+    </section>
+
+    <section aria-labelledby="learn-h">
+      <h2 id="learn-h">What just happened</h2>
+      <p>FaceNet maps each 160×160 face crop to a point in a 128-dimensional "face space". The training
+        objective pulled the same identity's photos together and pushed different identities apart, so the
+        <strong>angle</strong> between two embeddings (their cosine similarity) is a good "same person?"
+        signal. Nothing here is a database lookup — just two vectors and the angle between them.</p>
+      <p class="muted"><a href="../practical/">Practical → the on-device "unlock" concept</a> · <a href="../wild/">Wild → the look-alike finder</a></p>
+    </section>
+
+    <footer class="byline">Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via <a href="https://onnxruntime.ai/docs/tutorials/web/" target="_blank" rel="noopener">ONNX Runtime Web</a>. <a href="../">← FaceNet</a></footer>
+
+    <script type="module">
+      import { cosine, drawSquare, FACE_EMBED_CSS, FaceEmbedEngine, renderGauge, urlToBitmap, verdict }
+        from "../face-embed.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = FACE_EMBED_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new FaceEmbedEngine();
+      const state = { A: null, B: null };
+
+      async function setFace(side, src) { state[side] = await urlToBitmap(src); drawSquare($("canvas" + side), await createImageBitmap(state[side])); }
+      async function pickSample(side, el) { for (const t of $("samples" + side).children) t.classList.toggle("active", t === el); await setFace(side, el.dataset.src); }
+      for (const side of ["A", "B"]) {
+        for (const thumb of $("samples" + side).children) {
+          thumb.addEventListener("click", () => pickSample(side, thumb));
+          thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(side, thumb); } });
+        }
+      }
+      function selectBySrc(side, src) { for (const t of $("samples" + side).children) { const on = t.dataset.src === src; t.classList.toggle("active", on); } }
+      async function preset(aSrc, bSrc) {
+        selectBySrc("A", aSrc); selectBySrc("B", bSrc);
+        await Promise.all([setFace("A", aSrc), setFace("B", bSrc)]);
+        if (!$("run").disabled) $("run").click();
+      }
+      $("presetSame").addEventListener("click", () => preset("../person-a-1.jpg", "../person-a-2.jpg"));
+      $("presetDiff").addEventListener("click", () => preset("../person-b.jpg", "../person-d.jpg"));
+      pickSample("A", $("samplesA").firstElementChild); pickSample("B", $("samplesB").firstElementChild);
+
+      const autoRun = new URLSearchParams(location.search).has("auto");
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "astaileyyoung/facenet-onnx", runtime: "onnxruntime-web", dtype: "fp32", sizeMB: 91, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: () => { $("run").disabled = false; if (autoRun) $("run").click(); },
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!state.A || !state.B) return;
+        $("run").disabled = true; $("status").classList.remove("err", "ok"); $("status").textContent = "Embedding…";
+        try {
+          const [rA, rB] = await Promise.all([engine.embed(await createImageBitmap(state.A)), engine.embed(await createImageBitmap(state.B))]);
+          const cos = cosine(rA.embedding, rB.embedding); const v = verdict(cos);
+          $("resultWrap").hidden = false;
+          $("simNum").textContent = cos.toFixed(3); $("simNum").className = "sim-num tone-" + v.tone;
+          $("verdictText").textContent = v.label; $("verdictText").className = "tone-" + v.tone;
+          renderGauge($("gauge"), cos);
+          $("rBackend").textContent = rA.device.toUpperCase(); $("rMs").textContent = Math.max(rA.ms, rB.ms) + " ms";
+          $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Comparison failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>
