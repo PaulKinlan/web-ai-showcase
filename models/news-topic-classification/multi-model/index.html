@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Topic Multi-model — route then summarise · Web AI Showcase</title>
+    <meta name="description" content="Two models, one pipeline: a dedicated topic head routes an article to its desk, then DistilBART writes a short TL;DR — both running locally in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🗞️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">News topic classification</a></p>
+
+    <header>
+      <p class="eyebrow">use case · multi-model</p>
+      <h1>Multi-model: route an article, then summarise it</h1>
+      <p class="lede">
+        A newsroom assistant in two hops, both on-device. First the
+        <a href="../">dedicated topic head</a> routes an article to its desk. Then
+        <a href="/web-ai-showcase/models/distilbart-summarization/">DistilBART-CNN</a> writes a short
+        desk-ready TL;DR. Paste an article and watch the pipeline run — classification then summarisation —
+        with no text leaving the tab.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="muted" style="font-size:.8rem;margin-top:.3rem">Loads two models: the ~13 MB topic head and
+        the ~250 MB DistilBART summariser (cached after first use).</p>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
+        Article text
+        <textarea id="text" rows="8" disabled>The Federal Reserve raised its benchmark interest rate by half a percentage point on Wednesday, its largest increase in two decades, as policymakers intensified their fight against the fastest inflation in forty years. The central bank's chair said further increases were likely at coming meetings, and signalled that the Fed would begin shrinking its massive bond holdings in June. Stock markets initially rallied on the announcement before giving up their gains, as investors weighed the risk that aggressive tightening could tip the economy into recession.</textarea>
+      </label>
+      <button id="run" type="button" disabled style="margin:.5rem 0">Route &amp; summarise</button>
+
+      <div id="stage1" hidden style="margin-top:.6rem">
+        <h3 style="margin:.2rem 0;font-size:.9rem">1 · Routed to desk</h3>
+        <div class="verdict-row"><span class="verdict-topic" id="vTopic">–</span><span class="verdict-conf">confidence <b id="vConf">–</b></span></div>
+        <div class="dist-list" id="dist" style="margin-top:.4rem"></div>
+      </div>
+
+      <div id="stage2" hidden style="margin-top:1rem">
+        <h3 style="margin:.2rem 0;font-size:.9rem">2 · Desk-ready summary</h3>
+        <p class="status" id="sumStatus" role="status" aria-live="polite">Summarising…</p>
+        <blockquote id="summary" style="border-inline-start:4px solid var(--accent);padding-inline-start:.8rem;margin:.4rem 0;font-size:.95rem"></blockquote>
+      </div>
+
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>route <b id="rTopicMs">–</b></span>
+        <span>summary <b id="rSumMs">–</b></span>
+      </div>
+    </section>
+
+    <p class="muted" style="font-size:.85rem">
+      This is a real composition: the classifier's output (the desk) could pick which summariser prompt,
+      length, or downstream editor a story goes to. Here both models run in a single Web Worker, sequentially,
+      so the UI stays responsive and you see each stage land as it completes.
+    </p>
+
+    <p class="crumbs"><a href="../">← Back to the model</a> · <a href="/web-ai-showcase/models/distilbart-summarization/">DistilBART summariser →</a></p>
+
+    <script type="module">
+      import { renderDistribution, topicHue, TOPIC_CSS } from "../topic.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = TOPIC_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+
+      // Composite engine over route-worker.js (loads topic classifier + DistilBART, chains them).
+      class RouteEngine {
+        constructor() {
+          this.worker = new Worker("/web-ai-showcase/models/news-topic-classification/route-worker.js", { type: "module" });
+          this.ready = false; this._loadWaiters = []; this._pending = new Map(); this._id = 0;
+          this.onProgress = null; this.device = "wasm";
+          this.worker.addEventListener("message", (e) => this._onMessage(e.data));
+          this.worker.addEventListener("error", (e) => {
+            const err = new Error(e.message || "Worker failed to start");
+            for (const w of this._loadWaiters) w.reject(err); this._loadWaiters = [];
+            for (const [, p] of this._pending) p.reject(err); this._pending.clear();
+          });
+        }
+        _onMessage(msg) {
+          if (msg.type === "progress") this.onProgress?.(msg.p);
+          else if (msg.type === "ready") { this.ready = true; this.device = msg.device; for (const w of this._loadWaiters) w.resolve(msg.device); this._loadWaiters = []; }
+          else if (msg.type === "routed") { this._pending.get(msg.id)?.onRouted?.(msg); }
+          else if (msg.type === "summary") { const p = this._pending.get(msg.id); if (p) { this._pending.delete(msg.id); p.resolve(msg); } }
+          else if (msg.type === "error") {
+            if (msg.id != null && this._pending.has(msg.id)) { this._pending.get(msg.id).reject(new Error(msg.message)); this._pending.delete(msg.id); }
+            else { const err = new Error(msg.message); for (const w of this._loadWaiters) w.reject(err); this._loadWaiters = []; }
+          }
+        }
+        load(onProgress) {
+          if (onProgress) this.onProgress = onProgress;
+          if (this.ready) return Promise.resolve(this.device);
+          return new Promise((resolve, reject) => { this._loadWaiters.push({ resolve, reject }); this.worker.postMessage({ type: "load" }); });
+        }
+        route(text, onRouted) {
+          const id = ++this._id;
+          return new Promise((resolve, reject) => { this._pending.set(id, { resolve, reject, onRouted }); this.worker.postMessage({ type: "route", id, text }); });
+        }
+      }
+
+      const engine = new RouteEngine();
+      let loaded = false;
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/distilbart-cnn-6-6", runtime: "transformers.js", dtype: "q8", sizeMB: 263, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("text").disabled = false; $("run").disabled = false; loaded = true; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!loaded) return;
+        const text = $("text").value.trim();
+        if (!text) { $("runStatus").hidden = false; $("runStatus").textContent = "Paste an article first."; $("runStatus").classList.add("err"); return; }
+        $("run").disabled = true; $("runStatus").hidden = true;
+        $("stage1").hidden = true; $("stage2").hidden = true; $("readout").hidden = true;
+        try {
+          const res = await engine.route(text, (r) => {
+            // Stage 1 arrives first.
+            $("stage1").hidden = false;
+            $("vTopic").textContent = r.label; $("vTopic").style.setProperty("--vh", topicHue(r.label));
+            $("vConf").textContent = (r.score * 100).toFixed(1) + "%";
+            renderDistribution($("dist"), r.dist.slice(0, 5));
+            $("stage2").hidden = false; $("sumStatus").hidden = false; $("sumStatus").textContent = "Summarising on the " + r.label + " desk…"; $("sumStatus").classList.remove("err");
+            $("readout").hidden = false; $("rBackend").textContent = r.device.toUpperCase(); $("rTopicMs").textContent = r.topicMs + " ms";
+          });
+          $("summary").textContent = res.summary;
+          $("sumStatus").hidden = true;
+          $("rSumMs").textContent = res.sumMs + " ms";
+        } catch (err) {
+          $("runStatus").hidden = false; $("runStatus").textContent = "Pipeline failed: " + err.message; $("runStatus").classList.add("err");
+          $("sumStatus").hidden = true;
+        } finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>

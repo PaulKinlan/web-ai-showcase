@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Topic Wild — the ambiguity meter · Web AI Showcase</title>
+    <meta name="description" content="Write a headline that straddles two desks — a sports-business deal, a health-politics bill — and watch a real entropy meter show how genuinely torn the model is between topics." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🗞️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">News topic classification</a></p>
+
+    <header>
+      <p class="eyebrow">use case · wild</p>
+      <h1>Wild: the ambiguity meter</h1>
+      <p class="lede">
+        Real stories cross desks — a stadium financing bill is both <em>Sports</em> and
+        <em>Politics</em>; a biotech IPO is both <em>Health</em> and <em>Business</em>. Because this head is
+        multi-label, it can score several desks high at once. Craft a cross-topic headline and watch a live
+        <strong>ambiguity meter</strong> — the runner-up desk's score relative to the top one — swing from
+        confident to genuinely torn.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
+        Headline
+        <textarea id="text" rows="2" disabled>A new stadium financing bill sparked a political fight over public money for the team's owners.</textarea>
+      </label>
+      <div class="chip-row">
+        <button class="chip" type="button" data-set="A new stadium financing bill sparked a political fight over public money for the team's owners.">sports × politics</button>
+        <button class="chip" type="button" data-set="The biotech startup's IPO surged as investors bet on its new cancer drug.">health × business</button>
+        <button class="chip" type="button" data-set="A viral music video used AI to resurrect a late singer, raising legal questions.">music × tech × law</button>
+        <button class="chip" type="button" data-set="The team owner announced.">vague</button>
+      </div>
+
+      <div class="verdict-row" id="verdictRow" hidden>
+        <span class="verdict-topic" id="vTopic">–</span>
+        <span class="verdict-conf" id="vVerdict">–</span>
+      </div>
+
+      <div class="amb-meter" id="ambMeter" hidden aria-hidden="true"><div class="amb-needle" id="ambNeedle" style="inset-inline-start:0%"></div></div>
+      <div class="amb-labels" id="ambLabels" hidden><span>confident (one clear desk)</span><span>torn (spread across desks)</span></div>
+      <p class="status" id="ambText" role="status" aria-live="polite" hidden></p>
+
+      <div class="dist-list" id="dist" aria-live="polite" style="margin-top:.8rem"></div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>desks ≥50% <b id="rSecondary">–</b></span>
+        <span>top-2 margin <b id="rMargin">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+      </div>
+    </section>
+
+    <p class="muted" style="font-size:.85rem">
+      The meter is the runner-up desk's score divided by the top desk's (0 = one clearly dominant desk,
+      →100% = a close second). Because the head is multi-label, a genuine cross-topic headline pushes two or
+      more bars high and drives the meter right, while a single-topic headline pins it left. This is the
+      model's own scoring — not a heuristic layered on top.
+    </p>
+
+    <p class="crumbs"><a href="../">← Back to the model</a> · Next: <a href="../multi-model/">Multi-model →</a></p>
+
+    <script type="module">
+      import { TopicEngine, renderDistribution, topicHue, debounce, TOPIC_CSS } from "../topic.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = TOPIC_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new TopicEngine();
+      let loaded = false;
+
+      for (const c of document.querySelectorAll(".chip")) {
+        c.addEventListener("click", () => { $("text").value = c.dataset.set; scheduleScore(); });
+      }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "tarekziade/topic_classification", runtime: "transformers.js", dtype: "q8", sizeMB: 13, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("text").disabled = false; loaded = true; score(); },
+      });
+
+      const scheduleScore = debounce(score, 350);
+      $("text").addEventListener("input", scheduleScore);
+
+      function verdictWord(n) {
+        if (n < 0.25) return "confident — one clear desk";
+        if (n < 0.5) return "leaning, with a secondary desk";
+        if (n < 0.75) return "torn between desks";
+        return "very torn — a genuine cross-topic story";
+      }
+
+      async function score() {
+        if (!loaded) return;
+        const text = $("text").value.trim();
+        if (!text) { for (const id of ["verdictRow","ambMeter","ambLabels","ambText","readout"]) $(id).hidden = true; $("dist").replaceChildren(); return; }
+        try {
+          const r = await engine.classify(text);
+          $("verdictRow").hidden = false;
+          $("vTopic").textContent = r.label;
+          $("vTopic").style.setProperty("--vh", topicHue(r.label));
+          $("vVerdict").textContent = `${(r.score * 100).toFixed(0)}% · runner-up ${r.runnerUp ? r.runnerUp.label + " " + (r.runnerUp.score * 100).toFixed(0) + "%" : "–"}`;
+          $("ambMeter").hidden = false; $("ambLabels").hidden = false; $("ambText").hidden = false;
+          $("ambNeedle").style.insetInlineStart = (r.ambiguity * 100).toFixed(1) + "%";
+          $("ambText").textContent = `The model is ${verdictWord(r.ambiguity)} — ambiguity ${(r.ambiguity * 100).toFixed(0)}%.`;
+          renderDistribution($("dist"), r.dist);
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rSecondary").textContent = r.secondary;
+          $("rMargin").textContent = (r.margin * 100).toFixed(0) + " pts";
+          $("rMs").textContent = r.ms + " ms";
+        } catch (err) {
+          $("runStatus").hidden = false; $("runStatus").textContent = "Classification failed: " + err.message; $("runStatus").classList.add("err");
+        }
+      }
+    </script>
+  </body>
+</html>

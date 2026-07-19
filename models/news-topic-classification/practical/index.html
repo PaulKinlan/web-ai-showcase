@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Topic Practical — newsroom auto-tagging board · Web AI Showcase</title>
+    <meta name="description" content="Paste a feed of headlines, one per line, and watch them auto-sort onto newsroom desks — Sports, Business, Politics… — in one batched pass, entirely on-device." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🗞️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">News topic classification</a></p>
+
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Practical: a newsroom auto-tagging board</h1>
+      <p class="lede">
+        Wire feeds are a firehose. Paste a batch of headlines — one per line — and the model sorts each onto
+        its desk, so an editor sees the morning's stories already grouped by section. One batched pass through
+        the model; no story text leaves the tab.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
+        Headlines (one per line)
+        <textarea id="feed" rows="10" spellcheck="false">Manchester City clinched the title with a stoppage-time winner.
+The Federal Reserve raised interest rates by half a point.
+The Senate passed a sweeping immigration reform bill.
+NASA's Artemis II mission will carry four astronauts around the Moon.
+A new study links the Mediterranean diet to lower heart-disease risk.
+Apple unveiled a laptop with a faster neural engine.
+The Louvre opened a retrospective of a forgotten Impressionist.
+Regulators approved the merger of two regional banks.
+Parents push back against a new district homework policy.
+A hurricane strengthened to Category 4 off the coast.</textarea>
+      </label>
+      <button id="run" type="button" disabled style="margin:.5rem 0">Tag &amp; sort the feed</button>
+      <p class="status" id="rowStatus" role="status" aria-live="polite" hidden></p>
+
+      <div class="desk-grid" id="desks" hidden></div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>headlines <b id="rN">–</b></span>
+        <span>desks <b id="rDesks">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+      </div>
+    </section>
+
+    <p class="muted" style="font-size:.85rem">
+      Each headline is placed on the desk it scores highest for, and desks are ordered by how many stories
+      landed there. In a real CMS you'd pre-fill the section dropdown with this suggestion — the editor just
+      confirms or overrides, and the model gave the ordering for free, client-side.
+    </p>
+
+    <p class="crumbs"><a href="../">← Back to the model</a> · Next: <a href="../wild/">Wild →</a></p>
+
+    <script type="module">
+      import { TopicEngine, escapeHTML, topicHue, TOPIC_CSS } from "../topic.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = TOPIC_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new TopicEngine();
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "tarekziade/topic_classification", runtime: "transformers.js", dtype: "q8", sizeMB: 13, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("run").disabled = false; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        const lines = [...new Set($("feed").value.split(/\n/).map((s) => s.trim()).filter(Boolean))];
+        if (!lines.length) { $("rowStatus").hidden = false; $("rowStatus").textContent = "Add at least one headline."; $("rowStatus").classList.add("err"); return; }
+        $("rowStatus").hidden = false; $("rowStatus").classList.remove("err"); $("rowStatus").textContent = `Tagging ${lines.length}…`; $("run").disabled = true;
+        try {
+          const { rows, ms, device } = await engine.batch(lines);
+          // Group by winning desk.
+          const byDesk = new Map();
+          for (const r of rows) {
+            if (!byDesk.has(r.label)) byDesk.set(r.label, []);
+            byDesk.get(r.label).push(r);
+          }
+          const desks = [...byDesk.entries()].sort((a, b) => b[1].length - a[1].length);
+          $("desks").replaceChildren(...desks.map(([label, items]) => {
+            const el = document.createElement("div");
+            el.className = "desk";
+            el.style.setProperty("--h", topicHue(label));
+            items.sort((a, b) => b.score - a.score);
+            el.innerHTML = `<h4><span>${escapeHTML(label)}</span><span class="desk-count">${items.length}</span></h4>` +
+              items.map((r) => `<div class="desk-item">${escapeHTML(r.text)}<div class="meta">${(r.score * 100).toFixed(0)}% confidence</div></div>`).join("");
+            return el;
+          }));
+          $("desks").hidden = false;
+          $("readout").hidden = false;
+          $("rBackend").textContent = device.toUpperCase();
+          $("rN").textContent = rows.length;
+          $("rDesks").textContent = desks.length;
+          $("rMs").textContent = ms + " ms";
+          $("rowStatus").textContent = "Done."; $("rowStatus").classList.add("ok");
+        } catch (err) {
+          $("rowStatus").textContent = "Tagging failed: " + err.message; $("rowStatus").classList.add("err");
+        } finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>
