@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ModernBERT Practical — long-context masking &amp; knowledge probing · Web AI Showcase</title>
+    <meta name="description" content="Two shippable uses of ModernBERT: fill a [MASK] whose answer lives far away in a long document (the 8,192-token context earns its keep), and probe what facts and code patterns the encoder learned — all in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🧩</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">ModernBERT fill-mask</a></p>
+
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Practical: long-context masking &amp; knowledge probing</h1>
+      <p class="lede">
+        Two things a developer would actually ship. <strong>Long-context masking</strong> fills a blank
+        whose answer is stated far earlier in a long passage — the kind of distant dependency BERT's
+        512-token window simply can't see, but ModernBERT's 8,192-token context can. <strong>Knowledge
+        probing</strong> turns a fact or a code pattern into a fill-in-the-blank and reads out what the
+        model "knows" — and where it's unsure.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+    </section>
+
+    <section class="panel" aria-labelledby="lc-h">
+      <h3 id="lc-h">Long-context masking</h3>
+      <p class="muted">The blank is at the very end; the clue that resolves it sits near the top. The
+        <b id="lcTokens">–</b>-token passage is well past BERT's 512-token limit — pad it out with the button
+        and watch ModernBERT still track the dependency.</p>
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.3rem 0">
+        <button id="lcPad" type="button" class="secondary" disabled>Add ~400 tokens of filler in the middle</button>
+        <button id="lcReset" type="button" class="mask-chip" disabled>Reset passage</button>
+      </div>
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">
+        Passage (one <code>[MASK]</code>, answer stated earlier)
+        <textarea id="lcText" class="mask-input" rows="6" disabled></textarea>
+      </label>
+      <div class="tok-meter"><span>context</span><span class="track"><span id="lcBar" style="inline-size:0%"></span></span><span><b id="lcTok2">0</b> / 8192</span></div>
+      <div id="lcFilled" class="filled-sentence" hidden></div>
+      <div id="lcPreds" class="pred-list"></div>
+    </section>
+
+    <section class="panel" aria-labelledby="kp-h">
+      <h3 id="kp-h">Knowledge &amp; code probing</h3>
+      <p class="muted">Each template hides the key token behind <code>[MASK]</code>. A confident, correct
+        top guess means the pattern survived pre-training; a spread-out list means it didn't. ModernBERT
+        trained on ~2T tokens including a lot of code, so the code probes are fair game.</p>
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.3rem 0 .5rem">
+        <button class="mask-chip" type="button" data-set="The capital of France is [MASK].">capital</button>
+        <button class="mask-chip" type="button" data-set="The chemical symbol for gold is [MASK].">chemistry</button>
+        <button class="mask-chip" type="button" data-set="import numpy as [MASK]">python import</button>
+        <button class="mask-chip" type="button" data-set="for i in [MASK](len(items)):">code idiom</button>
+        <button class="mask-chip" type="button" data-set="The sun rises in the [MASK].">common sense</button>
+      </div>
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">
+        Probe template (one <code>[MASK]</code>)
+        <input id="kpText" class="mask-input" disabled value="import numpy as [MASK]" />
+      </label>
+      <div id="kpFilled" class="filled-sentence" hidden></div>
+      <div id="kpPreds" class="pred-list"></div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+      </div>
+    </section>
+
+    <p class="muted" style="font-size:.85rem">
+      Probing is a real research technique (the "LAMA" probe). Treat a base encoder as a fuzzy memory, not
+      a fact source — but the long-context masking is the genuinely new capability: the answer can live
+      thousands of tokens away and the model still finds it, locally.
+    </p>
+
+    <p class="crumbs"><a href="../basics/">← Basics</a> · <a href="../">Model</a> · Next: <a href="../wild/">Wild →</a></p>
+
+    <script type="module">
+      import { ModernBertEngine, MODERNBERT_CSS, MASK, renderPredictions, debounce, escapeHTML } from "../modernbert.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = MODERNBERT_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new ModernBertEngine();
+      let loaded = false;
+
+      const LC_INTRO = "Note for the reader: throughout this whole document, the secret passphrase you will be asked to recall at the very end is \"marmalade\". Keep reading.\n\n";
+      const LC_BODY = "The report continues with a long discussion of quarterly logistics, weather patterns, and the migratory habits of several unremarkable birds. None of it matters for the question.\n\n";
+      const LC_TAIL = "\n\nHaving read all of the above, please state it now. The secret passphrase mentioned at the start of this document was [MASK].";
+      function buildPassage(pads) { return LC_INTRO + LC_BODY + Array(pads).fill(LC_BODY).join("") + LC_TAIL; }
+      let lcPads = 0;
+
+      function setLC() {
+        $("lcText").value = buildPassage(lcPads);
+        lcRun();
+      }
+      $("lcPad").addEventListener("click", () => { lcPads += 3; setLC(); });
+      $("lcReset").addEventListener("click", () => { lcPads = 0; setLC(); });
+
+      // ---- Knowledge probe ----
+      for (const c of document.querySelectorAll("[data-set]")) c.addEventListener("click", () => { $("kpText").value = c.dataset.set; probeSched(); });
+      const probeSched = debounce(probe, 300);
+      $("kpText").addEventListener("input", probeSched);
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "answerdotai/ModernBERT-base", runtime: "transformers.js", dtype: "q8", sizeMB: 155, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => {
+          $("lcText").disabled = false; $("lcPad").disabled = false; $("lcReset").disabled = false;
+          $("kpText").disabled = false;
+          loaded = true; setLC(); probe();
+        },
+      });
+
+      const lcSched = debounce(lcRun, 350);
+      $("lcText").addEventListener("input", lcSched);
+      async function lcRun() {
+        if (!loaded) return;
+        const text = $("lcText").value;
+        if (!text.includes(MASK)) { setErr("Keep a [MASK] in the passage."); return; }
+        $("runStatus").hidden = true;
+        try {
+          const r = await engine.fill(text, 6);
+          const top = r.masks[0]?.predictions[0];
+          if (top) { $("lcFilled").innerHTML = "…the passphrase was <span class=\"slot\">" + escapeHTML(top.token) + "</span>"; $("lcFilled").hidden = false; }
+          renderPredictions($("lcPreds"), r.masks[0]?.predictions ?? []);
+          $("lcTokens").textContent = r.tokenCount; $("lcTok2").textContent = r.tokenCount;
+          $("lcBar").style.inlineSize = Math.min(100, (r.tokenCount / 8192) * 100) + "%";
+        } catch (err) { setErr("Long-context fill failed: " + err.message); }
+      }
+
+      async function probe() {
+        if (!loaded) return;
+        const text = $("kpText").value;
+        if (!text.includes(MASK)) { setErr("Add a [MASK] to the probe."); return; }
+        $("runStatus").hidden = true;
+        try {
+          const r = await engine.fill(text, 8);
+          const top = r.masks[0]?.predictions[0];
+          if (top) { $("kpFilled").innerHTML = escapeHTML(text).replace("[MASK]", `<span class="slot">${escapeHTML(top.token)}</span>`); $("kpFilled").hidden = false; }
+          renderPredictions($("kpPreds"), r.masks[0]?.predictions ?? []);
+          $("readout").hidden = false; $("rBackend").textContent = r.device.toUpperCase(); $("rMs").textContent = r.ms + " ms";
+        } catch (err) { setErr("Probe failed: " + err.message); }
+      }
+      function setErr(m) { $("runStatus").hidden = false; $("runStatus").textContent = m; $("runStatus").classList.add("err"); }
+    </script>
+  </body>
+</html>
