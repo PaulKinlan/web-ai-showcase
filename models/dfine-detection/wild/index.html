@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>D-FINE Wild — live crowd-density meter · Web AI Showcase</title>
+    <meta name="description" content="Point your webcam at a busy scene and D-FINE counts a crowded class (people, cars…) every frame, reporting a live density band — quiet, busy, packed — with the running peak and per-class breakdown. Still-image fallback. Nothing uploaded." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>👥</text></svg>" />
+    <style>
+      .stage { display:flex; flex-wrap:wrap; gap:1rem; align-items:flex-start; }
+      .cam-col { flex:1 1 340px; min-inline-size:0; max-inline-size:560px; }
+      .count-col { flex:1 1 240px; min-inline-size:0; }
+      .big-count { font-family:var(--font-display); font-size:2.6rem; line-height:1.05; margin:.1rem 0; }
+      .big-count small { font-size:1rem; color:var(--muted); }
+      .band { display:inline-block; font-weight:600; padding:.15rem .6rem; border-radius:999px; font-size:.9rem; margin:.2rem 0; }
+      .band.quiet { background:#1a7a3a; color:#fff; }
+      .band.busy { background:#a15c00; color:#fff; }
+      .band.packed { background:#b3261e; color:#fff; }
+      .gauge { block-size:12px; border-radius:999px; background:var(--bg-raised); border:1px solid var(--border); overflow:hidden; margin:.4rem 0; }
+      .gauge > i { display:block; block-size:100%; background:var(--accent); inline-size:0; transition:inline-size .2s; }
+    </style>
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">D-FINE</a></p>
+
+    <header>
+      <p class="eyebrow">use case · wild</p>
+      <h1>Wild: live crowd-density meter</h1>
+      <p class="lede">
+        Point your camera at a busy scene and watch D-FINE read the crowd. It counts a chosen class —
+        <em>people</em> by default — every frame, and turns the count into a live density band:
+        <strong>quiet</strong>, <strong>busy</strong>, or <strong>packed</strong>. A SOTA real-time
+        detector accurate enough to trust the count, running in a tab; every frame is detected and drawn
+        locally, nothing uploaded. No camera? Scan a sample instead.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="slider-row" style="margin-top:.6rem">
+        <label for="cls" style="font-size:.85rem">Crowd of</label>
+        <select id="cls" style="font:inherit;padding:.25rem .4rem;min-block-size:44px"></select>
+        <button id="startCam" type="button" disabled>Start webcam</button>
+        <button id="stopCam" type="button" class="secondary" hidden>Stop</button>
+        <button id="scanStill" type="button" class="secondary" disabled>No camera? Scan a sample</button>
+        <span style="flex:1"></span>
+        <label for="busyAt" style="font-size:.85rem">“busy” at ≥</label>
+        <input type="range" id="busyAt" min="2" max="20" step="1" value="4" style="flex:0 1 110px;accent-color:var(--accent)" />
+        <output id="busyOut" for="busyAt">4</output>
+      </div>
+
+      <div id="fallback" class="fallback" hidden>
+        <strong>No webcam available here.</strong>
+        <p class="muted" style="margin:.3rem 0">Camera access wasn't granted (common in headless / embedded views). Use <em>Scan a sample</em> to read density in a still image instead.</p>
+      </div>
+
+      <div class="stage" style="margin-top:.6rem">
+        <div class="cam-col">
+          <video id="cam" playsinline muted style="position:absolute;opacity:0;pointer-events:none;inline-size:1px;block-size:1px"></video>
+          <div class="canvas-wrap">
+            <canvas id="stage" class="stage-canvas" aria-label="Live detection: current frame with the crowd class boxed"></canvas>
+          </div>
+          <div class="sample-strip" id="samples" style="margin-top:.5rem">
+            <img class="sample-thumb active" src="../sample-cats.jpg" data-src="../sample-cats.jpg" alt="Two cats on a couch" tabindex="0" role="button" />
+            <img class="sample-thumb" src="../sample-room.jpg" data-src="../sample-room.jpg" alt="A cozy bedroom" tabindex="0" role="button" />
+            <img class="sample-thumb" src="../sample-river.jpg" data-src="../sample-river.jpg" alt="A riverside at golden hour" tabindex="0" role="button" />
+          </div>
+        </div>
+        <div class="count-col">
+          <p class="muted" style="font-size:.8rem;margin:0" id="countLabel">“person” in view</p>
+          <div class="big-count" id="bigCount">—</div>
+          <div><span class="band quiet" id="band">quiet</span></div>
+          <div class="gauge" role="img" aria-label="Crowd density gauge"><i id="gaugeFill"></i></div>
+          <p class="grand" style="font-family:var(--font-mono);color:var(--muted);font-size:.85rem" id="peak">peak 0 · frames 0</p>
+          <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>frame <b id="rMs">–</b></span><span>fps <b id="rFps">–</b></span></div>
+        </div>
+      </div>
+      <p class="muted" style="font-size:.85rem">
+        The loop grabs a frame, detects it, and schedules the next only after the last finishes — so it
+        never piles up work or blocks the page, and it pauses when the tab is hidden. All inference is in a
+        Web Worker.
+      </p>
+    </section>
+
+    <p class="crumbs"><a href="../practical/">← Practical</a> · <a href="../">D-FINE</a> · <a href="../multi-model/">Multi-model →</a></p>
+
+    <script type="module">
+      import { DFineEngine, fileToDataURL, drawDetections, DETR_CSS } from "../dfine.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = DETR_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new DFineEngine();
+      let stream = null, running = false, busy = false, lastT = 0;
+      let peak = 0, frames = 0;
+      const frameCanvas = document.createElement("canvas");
+
+      const COCO = ["person","bicycle","car","motorbike","bus","truck","boat","bird","sheep","cow","bottle","cup","chair","book","cell phone","apple","orange","banana"];
+      $("cls").replaceChildren(...COCO.map((c) => { const o = document.createElement("option"); o.value = c; o.textContent = c; if (c === "person") o.selected = true; return o; }));
+      $("cls").addEventListener("change", () => { $("countLabel").textContent = `“${$("cls").value}” in view`; resetStats(); });
+
+      const busyAt = $("busyAt");
+      busyAt.addEventListener("input", () => { $("busyOut").textContent = busyAt.value; });
+
+      function resetStats() { peak = 0; frames = 0; $("bigCount").textContent = "—"; $("peak").textContent = "peak 0 · frames 0"; }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/dfine_s_coco-ONNX", runtime: "transformers.js", dtype: "q8", sizeMB: 10, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: (device) => { $("startCam").disabled = false; $("scanStill").disabled = false; $("rBackend").textContent = device.toUpperCase(); if (!navigator.mediaDevices?.getUserMedia) $("fallback").hidden = false; },
+      });
+
+      function updateBand(n) {
+        const busyThresh = +busyAt.value;
+        const packedThresh = busyThresh * 2;
+        let cls = "quiet", label = "quiet";
+        if (n >= packedThresh) { cls = "packed"; label = "packed"; }
+        else if (n >= busyThresh) { cls = "busy"; label = "busy"; }
+        const b = $("band"); b.className = "band " + cls; b.textContent = label;
+        $("gaugeFill").style.inlineSize = Math.min(100, (n / packedThresh) * 100).toFixed(0) + "%";
+      }
+
+      async function scoreURL(url, imgEl, frameMs) {
+        const cls = $("cls").value;
+        const r = await engine.detect(url);
+        const of = r.detections.filter((d) => d.score >= 0.4 && d.label === cls);
+        drawDetections($("stage"), imgEl, of);
+        const n = of.length;
+        $("bigCount").innerHTML = `${n} <small>${cls}${n === 1 ? "" : "s"}</small>`;
+        updateBand(n);
+        peak = Math.max(peak, n); frames++;
+        $("peak").textContent = `peak ${peak} · frames ${frames}`;
+        $("readout").hidden = false; $("rMs").textContent = r.ms + " ms"; if (frameMs) $("rFps").textContent = (1000 / frameMs).toFixed(1);
+        return r;
+      }
+
+      $("startCam").addEventListener("click", async () => {
+        if (!engine.ready) return;
+        try { stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } }); }
+        catch (err) { $("fallback").hidden = false; $("status").textContent = "Camera unavailable — scan a sample instead."; $("status").classList.add("err"); return; }
+        const cam = $("cam"); cam.srcObject = stream; await cam.play();
+        $("startCam").hidden = true; $("stopCam").hidden = false; running = true; lastT = 0; resetStats(); loop();
+      });
+      $("stopCam").addEventListener("click", stopCam);
+      function stopCam() { running = false; stream?.getTracks().forEach((t) => t.stop()); stream = null; $("stopCam").hidden = true; $("startCam").hidden = false; }
+      async function loop() {
+        if (!running || busy) return; busy = true;
+        const cam = $("cam");
+        if (cam.videoWidth) {
+          frameCanvas.width = cam.videoWidth; frameCanvas.height = cam.videoHeight; frameCanvas.getContext("2d").drawImage(cam, 0, 0);
+          const url = frameCanvas.toDataURL("image/jpeg", 0.85); const now = performance.now();
+          try { await scoreURL(url, frameCanvas, lastT ? now - lastT : 0); } catch (e) { $("status").textContent = "Frame failed: " + e.message; }
+          lastT = now;
+        }
+        busy = false; if (running) setTimeout(loop, 0);
+      }
+
+      let stillURL = null, stillImg = null;
+      function decode(url) { return new Promise((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = () => rej(new Error("decode failed")); im.src = url; }); }
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        const blob = await (await fetch(el.dataset.src)).blob();
+        stillURL = await fileToDataURL(new File([blob], "s", { type: blob.type })); stillImg = await decode(stillURL);
+        const c = $("stage"); c.width = stillImg.naturalWidth; c.height = stillImg.naturalHeight; c.getContext("2d").drawImage(stillImg, 0, 0);
+      }
+      for (const thumb of $("samples").children) { thumb.addEventListener("click", () => pickSample(thumb)); thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } }); }
+      pickSample($("samples").firstElementChild);
+      $("scanStill").addEventListener("click", async () => {
+        if (!engine.ready || !stillURL) return;
+        $("scanStill").disabled = true; $("status").textContent = "Scanning sample…"; $("status").classList.remove("err");
+        try { resetStats(); await scoreURL(stillURL, stillImg, 0); $("status").textContent = "Done."; $("status").classList.add("ok"); }
+        catch (e) { $("status").textContent = "Failed: " + e.message; $("status").classList.add("err"); }
+        finally { $("scanStill").disabled = false; }
+      });
+
+      // Pause the loop when the tab/page is hidden (efficient-background-processing guidance).
+      addEventListener("pagehide", stopCam);
+      document.addEventListener("visibilitychange", () => { if (document.hidden) stopCam(); });
+    </script>
+  </body>
+</html>

@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>D-FINE × ViT — detect, crop, then classify · Web AI Showcase</title>
+    <meta name="description" content="Two models, one pipeline: D-FINE finds and boxes every object, then each crop is handed to a ViT image classifier that names it with a fine-grained ImageNet label — coarse detector class meets 1,000-way classifier, both running locally in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🔗</text></svg>" />
+    <style>
+      .two-up { display:flex; flex-wrap:wrap; gap:1rem; align-items:flex-start; }
+      .crop-list { display:flex; flex-direction:column; gap:.5rem; margin:.5rem 0; }
+      .crop-row { display:flex; gap:.6rem; align-items:center; border:1px solid var(--border); border-radius:8px; padding:.4rem .5rem; background:var(--bg-raised); }
+      .crop-row.sel { border-color:var(--accent); background:var(--bg-secondary); }
+      .crop-row canvas { inline-size:52px; block-size:52px; object-fit:cover; border-radius:6px; border:1px solid var(--border); flex:none; background:#0002; }
+      .crop-meta { min-inline-size:0; }
+      .crop-meta .coco { font-size:.72rem; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
+      .crop-meta .vit { font-size:.9rem; font-weight:600; overflow-wrap:anywhere; }
+      .crop-meta .sc { font-family:var(--font-mono); font-size:.75rem; color:var(--muted); }
+    </style>
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">D-FINE</a> · <a href="/web-ai-showcase/models/vit-image-classification/">ViT</a></p>
+
+    <header>
+      <p class="eyebrow">use case · multi-model</p>
+      <h1>D-FINE × ViT: detect, crop, then classify</h1>
+      <p class="lede">
+        Compose two models into one flow. <strong>D-FINE</strong> answers "what objects are here and
+        where" with labelled boxes across 80 COCO classes; then every box is cropped and handed to a
+        <strong>ViT image classifier</strong>, which names it with a fine-grained label from 1,000
+        ImageNet categories. So "dog" becomes "golden retriever", "bird" becomes a species — a coarse
+        detector feeding a fine-grained classifier, entirely on your device.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="dfine-loader"></div>
+      <div id="vit-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image">
+        <span id="dropText">Drop an image, or click to choose</span>
+        <input type="file" id="file" accept="image/*" hidden />
+      </div>
+      <div class="sample-strip" id="samples">
+        <img class="sample-thumb active" src="../sample-cats.jpg" data-src="../sample-cats.jpg" alt="Two cats on a couch" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-room.jpg" data-src="../sample-room.jpg" alt="A cozy bedroom" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-river.jpg" data-src="../sample-river.jpg" alt="A riverside at golden hour" tabindex="0" role="button" />
+      </div>
+
+      <div style="margin:.6rem 0"><button id="run" type="button" disabled>Detect &amp; classify</button></div>
+
+      <div class="two-up">
+        <div style="flex:2 1 340px;min-inline-size:0">
+          <div class="canvas-wrap">
+            <canvas id="stage" class="stage-canvas" aria-label="Image with D-FINE detection boxes"></canvas>
+          </div>
+        </div>
+        <div style="flex:1 1 240px;min-inline-size:0">
+          <p class="muted" style="font-size:.8rem;margin:.2rem 0">Each detected object, classified by ViT:</p>
+          <div class="crop-list" id="cropList"><span class="muted" style="font-size:.82rem">Run to detect objects and classify each crop.</span></div>
+        </div>
+      </div>
+      <div class="readout" id="readout" hidden><span>D-FINE <b id="rDfine">–</b></span><span>objects <b id="rN">–</b></span><span>ViT / crop <b id="rVit">–</b></span></div>
+      <p class="muted" style="font-size:.85rem">
+        D-FINE runs once to get the boxes; each box is cropped on a canvas and classified by ViT in its own
+        Web Worker. Both models run locally — nothing is uploaded.
+      </p>
+    </section>
+
+    <section aria-labelledby="how-h">
+      <h2 id="how-h">How the two connect</h2>
+      <p>
+        D-FINE's output is a list of boxes with coarse class labels and pixel coordinates. Each box is a
+        ready-made crop: cut it out and it becomes a single-object image — exactly what an image classifier
+        wants. The classifier then adds detail the detector doesn't carry (breed, species, model, variety).
+        No shared weights, no retraining — one model's output is the other's input. Detection localises;
+        classification specialises.
+      </p>
+    </section>
+
+    <p class="crumbs"><a href="../wild/">← Wild</a> · <a href="../">D-FINE</a> · <a href="/web-ai-showcase/models/vit-image-classification/">ViT →</a></p>
+
+    <script type="module">
+      import { DFineEngine, fileToDataURL, drawDetections, colorForLabel, escapeHTML, DETR_CSS } from "../dfine.js";
+      import { ViTEngine, cleanLabel } from "/web-ai-showcase/models/vit-image-classification/vit.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style"); style.textContent = DETR_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const dfine = new DFineEngine();
+      const vit = new ViTEngine();
+      let currentImg = null, currentURL = null, detections = [];
+      const THRESH = 0.5, MAX_CROPS = 10;
+
+      function decode(url) { return new Promise((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = () => rej(new Error("decode failed")); im.src = url; }); }
+      async function useURL(url) {
+        currentURL = url; currentImg = await decode(url); detections = [];
+        $("cropList").replaceChildren(Object.assign(document.createElement("span"), { className: "muted", textContent: "Run to detect objects and classify each crop.", style: "font-size:.82rem" }));
+        $("readout").hidden = true;
+        const c = $("stage"); c.width = currentImg.naturalWidth; c.height = currentImg.naturalHeight; c.getContext("2d").drawImage(currentImg, 0, 0);
+      }
+      async function pickSample(el) { for (const t of $("samples").children) t.classList.toggle("active", t === el); const blob = await (await fetch(el.dataset.src)).blob(); await useURL(await fileToDataURL(new File([blob], "s", { type: blob.type }))); }
+      for (const thumb of $("samples").children) { thumb.addEventListener("click", () => pickSample(thumb)); thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } }); }
+      pickSample($("samples").firstElementChild);
+
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) { for (const t of $("samples").children) t.classList.remove("active"); await useURL(await fileToDataURL(f)); $("dropText").textContent = f.name; }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
+
+      let dfineReady = false, vitReady = false;
+      function maybeEnable() {
+        if (dfineReady && vitReady) { $("run").disabled = false; $("status").textContent = "Both models ready — pick an image and run."; $("status").classList.add("ok"); }
+      }
+      createModelLoader({
+        mount: $("dfine-loader"),
+        model: { modelId: "onnx-community/dfine_s_coco-ONNX", runtime: "transformers.js", dtype: "q8", sizeMB: 10, requiresWebGPU: false },
+        load: (onProgress) => dfine.load(onProgress),
+        onReady: (dev) => { dfineReady = true; $("rDfine").textContent = dev.toUpperCase(); maybeEnable(); },
+      });
+      createModelLoader({
+        mount: $("vit-loader"),
+        model: { modelId: "Xenova/vit-base-patch16-224", runtime: "transformers.js", dtype: "q8", sizeMB: 88, requiresWebGPU: false },
+        load: (onProgress) => vit.load(onProgress),
+        onReady: () => { vitReady = true; maybeEnable(); },
+      });
+
+      // Crop a box (in source pixels) to its own canvas → data URL for the classifier.
+      function cropToURL(box) {
+        const pad = 0.06;
+        const w = currentImg.naturalWidth, h = currentImg.naturalHeight;
+        const bw = box.xmax - box.xmin, bh = box.ymax - box.ymin;
+        const x = Math.max(0, box.xmin - bw * pad), y = Math.max(0, box.ymin - bh * pad);
+        const x2 = Math.min(w, box.xmax + bw * pad), y2 = Math.min(h, box.ymax + bh * pad);
+        const cw = Math.max(1, Math.round(x2 - x)), ch = Math.max(1, Math.round(y2 - y));
+        const cv = document.createElement("canvas"); cv.width = cw; cv.height = ch;
+        cv.getContext("2d").drawImage(currentImg, x, y, cw, ch, 0, 0, cw, ch);
+        return { url: cv.toDataURL("image/jpeg", 0.9), thumb: cv };
+      }
+
+      $("run").addEventListener("click", async () => {
+        if (!currentURL) { $("status").textContent = "Pick an image first."; return; }
+        $("run").disabled = true; $("status").classList.remove("err"); $("status").textContent = "Detecting…";
+        try {
+          const r = await dfine.detect(currentURL);
+          detections = r.detections.filter((d) => d.score >= THRESH).sort((a, b) => b.score - a.score).slice(0, MAX_CROPS);
+          $("rDfine").textContent = r.device.toUpperCase();
+          drawDetections($("stage"), currentImg, detections);
+          $("rN").textContent = detections.length; $("readout").hidden = false;
+          if (!detections.length) { $("cropList").replaceChildren(Object.assign(document.createElement("span"), { className: "muted", textContent: "No objects above threshold.", style: "font-size:.82rem" })); $("status").textContent = "No objects detected."; return; }
+
+          // Build the list with placeholders, then classify each crop (worker keeps main thread free).
+          const rows = detections.map((d, i) => {
+            const { thumb } = cropToURL(d.box);
+            const row = document.createElement("div"); row.className = "crop-row";
+            const c = document.createElement("canvas"); c.width = 52; c.height = 52; c.getContext("2d").drawImage(thumb, 0, 0, 52, 52);
+            const meta = document.createElement("div"); meta.className = "crop-meta";
+            meta.innerHTML = `<div class="coco">D-FINE: ${escapeHTML(d.label)}</div><div class="vit" id="vit-${i}">classifying…</div><div class="sc" id="sc-${i}"></div>`;
+            row.append(c, meta); return row;
+          });
+          $("cropList").replaceChildren(...rows);
+
+          let totalVit = 0;
+          for (let i = 0; i < detections.length; i++) {
+            const { url } = cropToURL(detections[i].box);
+            try {
+              const res = await vit.classify(url, 1);
+              totalVit += res.ms;
+              const top = res.labels?.[0] ?? "?";
+              $(`vit-${i}`).textContent = cleanLabel(top);
+              $(`sc-${i}`).textContent = `${(res.probs?.[0] * 100 || 0).toFixed(1)}% · ViT`;
+            } catch (e) {
+              $(`vit-${i}`).textContent = "classify failed"; $(`sc-${i}`).textContent = String(e.message || e);
+            }
+          }
+          $("rVit").textContent = detections.length ? Math.round(totalVit / detections.length) + " ms" : "–";
+          $("status").textContent = `Classified ${detections.length} object crop(s).`; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>
