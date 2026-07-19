@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Paraphrase — Practical: copywriting A/B variants · Web AI Showcase</title>
+    <meta name="description" content="A copywriting helper: turn one headline or CTA into several A/B variants at a chosen boldness, each with a lexical-overlap read-out. Pick and copy the winner. On-device, nothing uploaded." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>♻️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Paraphrase generation</a></p>
+
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Copywriting A/B — variants to test</h1>
+      <p class="lede">
+        Turn one line — a headline, a CTA, a subject line — into several alternatives you can A/B test.
+        "Boldness" is temperature: <strong>safe</strong> stays close, <strong>bold</strong> ventures further.
+        Each variant shows how much the wording changed; pick and copy the one you like.
+        <strong>Nothing leaves your device</strong>, so it's safe to iterate on unreleased copy.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <label style="display:flex;flex-direction:column;gap:.3rem;font-size:.82rem;margin-top:.4rem">
+        Your line (headline / CTA / subject)
+        <textarea id="input" class="pp-input" rows="2" disabled>Sign up today and get your first month free.</textarea>
+      </label>
+      <div class="controls-grid">
+        <label>Variants <span class="val" id="nVal">5</span>
+          <input type="range" id="count" min="2" max="6" step="1" value="5" />
+        </label>
+        <div style="display:flex;flex-direction:column;gap:.3rem">
+          <span style="font-size:.82rem">Boldness</span>
+          <span class="seg" id="boldSeg" role="group" aria-label="Boldness">
+            <button type="button" data-t="0.6" aria-pressed="false">Safe</button>
+            <button type="button" data-t="0.9" aria-pressed="true">Balanced</button>
+            <button type="button" data-t="1.3" aria-pressed="false">Bold</button>
+          </span>
+        </div>
+      </div>
+      <div class="pp-actions">
+        <button id="run" type="button" disabled>Generate variants</button>
+        <span class="status" id="status" role="status" aria-live="polite"></span>
+      </div>
+      <div style="margin-top:.6rem"><span style="font-size:.82rem;color:var(--muted)">Original</span>
+        <div class="orig-box" id="origBox"></div></div>
+      <div class="pp-list" id="list" aria-live="polite" aria-label="Generated variants"></div>
+    </section>
+
+    <p class="crumbs"><a href="../basics/">← Basics</a> · <a href="../">Back to Paraphrase</a> · Next: <a href="../wild/">Wild →</a></p>
+
+    <script type="module">
+      import { ParaphraseEngine, lexicalOverlap, overlapLabel, PP_CSS } from "../pp.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = PP_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new ParaphraseEngine();
+      let temp = 0.9;
+
+      $("count").addEventListener("input", () => { $("nVal").textContent = $("count").value; });
+      for (const b of $("boldSeg").children) {
+        b.addEventListener("click", () => { temp = +b.dataset.t; for (const x of $("boldSeg").children) x.setAttribute("aria-pressed", String(x === b)); });
+      }
+      function setStatus(m, cls) { $("status").textContent = m || ""; $("status").classList.remove("err","ok"); if (cls) $("status").classList.add(cls); }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Felladrin/onnx-chatgpt_paraphraser_on_T5_base", runtime: "transformers.js", dtype: "q8", sizeMB: 235, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("input").disabled = false; $("run").disabled = false; },
+      });
+
+      function makeCard(i) {
+        const c = document.createElement("div"); c.className = "pp-card";
+        c.innerHTML = `<span class="n">variant ${String.fromCharCode(65 + i)}</span><div class="txt" id="txt-${i}"><span class="muted">…</span></div>
+          <div class="meta"><span id="ov-${i}"></span><span id="ms-${i}"></span>
+          <button type="button" class="pp-copy" id="cp-${i}" hidden aria-label="Copy variant ${String.fromCharCode(65 + i)}">Copy</button></div>`;
+        return c;
+      }
+
+      $("run").addEventListener("click", async () => {
+        const input = $("input").value.trim();
+        if (!input) { setStatus("Type a line first.", "err"); return; }
+        const n = +$("count").value;
+        $("run").disabled = true; setStatus(`Generating ${n} variant(s)…`); $("origBox").textContent = input;
+        $("list").replaceChildren(...Array.from({ length: n }, (_, i) => makeCard(i)));
+        try {
+          for (let i = 0; i < n; i++) {
+            const r = await engine.paraphrase(input, { maxNewTokens: 48, temperature: temp, topK: 60, topP: 0.95 }, (p) => { $("txt-" + i).textContent = p; });
+            const text = r.output || "(empty output)"; $("txt-" + i).textContent = text;
+            const ov = lexicalOverlap(input, text), lab = overlapLabel(ov);
+            $("ov-" + i).innerHTML = `<b style="color:var(${lab.varName})">${(ov * 100).toFixed(0)}% overlap</b> · ${lab.text}`;
+            $("ms-" + i).textContent = r.ms + " ms";
+            const cp = $("cp-" + i); cp.hidden = false;
+            cp.addEventListener("click", async () => { try { await navigator.clipboard.writeText(text); cp.textContent = "Copied ✓"; setTimeout(() => cp.textContent = "Copy", 1200); } catch { cp.textContent = "Copy failed"; } });
+          }
+          setStatus(`Done — ${n} variant(s) at temperature ${temp}.`, "ok");
+        } catch (e) { setStatus("Generation failed: " + e.message, "err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>

@@ -1,0 +1,304 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Paraphrase generation in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Rewrite a sentence, keep the meaning: a T5-base paraphraser runs locally and produces several diverse re-wordings via sampling. Side-by-side, each with a lexical-overlap read-out. See the sampling params, the input/output tokens, and the real decode timeline. Nothing is uploaded."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>♻️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">text2text-generation · text · paraphrasing · WASM · ~235 MB</p>
+      <h1>Paraphrase generation — same meaning, fresh words</h1>
+      <p class="lede">
+        A <strong>T5-base</strong> model fine-tuned to <strong>rewrite a sentence while preserving its
+        meaning</strong>. Not a summarizer, not a grammar fixer — a dedicated paraphraser. The encoder reads
+        your sentence, the decoder writes a re-worded version one token at a time. To get variety we run it
+        with <strong>sampling</strong> several times, so each pass takes a different path and you get
+        genuinely distinct re-wordings side by side. <strong>Nothing leaves your device.</strong>
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/Felladrin/onnx-chatgpt_paraphraser_on_T5_base" target="_blank" rel="noopener">Felladrin/onnx-chatgpt_paraphraser_on_T5_base</a> (ONNX of <a href="https://huggingface.co/humarin/chatgpt_paraphraser_on_T5_base" target="_blank" rel="noopener">humarin/chatgpt_paraphraser_on_T5_base</a>)</td></tr>
+          <tr><th>Task / pipeline</th><td><code>text2text-generation</code> (sequence-to-sequence)</td></tr>
+          <tr><th>Architecture</th><td>T5-base encoder-decoder (~223M params) — encoder reads the sentence, decoder generates a paraphrase</td></tr>
+          <tr><th>Training</th><td>Fine-tuned for paraphrasing (rewrite-preserving-meaning), no task prefix — the sentence is the whole input</td></tr>
+          <tr><th>Quantization</th><td>q8 (8-bit) ONNX — encoder + merged decoder</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (runs anywhere; no WebGPU needed)</td></tr>
+          <tr><th>Download</th><td>~235 MB (encoder ~110 MB + decoder ~123 MB), cached after first load</td></tr>
+          <tr><th>License</th><td>OpenRAIL (see model card — use-based restrictions apply)</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers, Clipboard — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Type a sentence and generate several paraphrases. Sampling makes each one different; the
+        "lexical overlap" chip shows how much the <em>wording</em> changed (lower = fresher phrasing). It is
+        a surface measure — meaning-preservation is what the model is trained for (measure it directly on the
+        <a href="multimodel/">multi-model</a> page).</p>
+
+      <div id="model-loader"></div>
+
+      <div class="preset-grid" id="presets"></div>
+
+      <label style="display:flex;flex-direction:column;gap:.3rem;font-size:.82rem;margin-top:.4rem">
+        Your sentence
+        <textarea id="input" class="pp-input" rows="3" disabled>The weather is lovely today, so I decided to take a long walk in the park.</textarea>
+      </label>
+
+      <div class="controls-grid">
+        <label>How many <span class="val" id="nVal">4</span>
+          <input type="range" id="count" min="1" max="6" step="1" value="4" />
+        </label>
+        <label>Creativity (temperature) <span class="val" id="tempVal">0.9</span>
+          <input type="range" id="temp" min="0.4" max="1.5" step="0.1" value="0.9" />
+        </label>
+        <label>Max new tokens <span class="val" id="maxVal">64</span>
+          <input type="range" id="maxTok" min="24" max="128" step="8" value="64" />
+        </label>
+        <div style="display:flex;flex-direction:column;gap:.3rem">
+          <span style="font-size:.82rem">Decode mode</span>
+          <span class="seg" id="modeSeg" role="group" aria-label="Decode mode">
+            <button type="button" data-mode="sampling" aria-pressed="true">Sampling</button>
+            <button type="button" data-mode="diverse" aria-pressed="false">Diverse beam</button>
+          </span>
+        </div>
+      </div>
+      <div class="pp-actions">
+        <button id="run" type="button" disabled>Paraphrase</button>
+        <span class="status" id="status" role="status" aria-live="polite"></span>
+      </div>
+
+      <div style="margin-top:.6rem">
+        <span style="font-size:.82rem;color:var(--muted)">Original</span>
+        <div class="orig-box" id="origBox"></div>
+      </div>
+      <div class="pp-list" id="list" aria-live="polite" aria-label="Generated paraphrases"></div>
+
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>total time <b id="rMs">–</b></span>
+        <span>mode <b id="rMode">–</b></span>
+        <span>avg overlap <b id="rOverlap">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside — sampling, tokens, and the rewrite</h3>
+      <p class="muted">
+        There's no hidden prompt: the encoder receives your sentence verbatim (T5 SentencePiece tokens
+        below; a leading <code>·</code> is a word boundary). In <strong>sampling</strong> mode the decoder
+        picks each next token by drawing from the probability distribution shaped by <em>temperature</em>
+        (higher = more adventurous), <em>top-k</em>, and <em>top-p</em> — which is exactly why re-running
+        yields different re-wordings. The timeline is the real per-token decode cadence of the last
+        paraphrase.
+      </p>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Generate paraphrases to inspect the tokens and decode timeline.</div>
+      <div id="insideWrap" hidden>
+        <div class="readout" style="margin-top:0">
+          <span>temperature <b id="iTemp">–</b></span>
+          <span>top-k <b id="iTopK">60</b></span>
+          <span>top-p <b id="iTopP">0.95</b></span>
+          <span>in→out tokens <b id="iTok">–</b></span>
+        </div>
+        <p class="muted" style="font-size:.8rem;margin:.6rem 0 .2rem">Input tokens (SentencePiece):</p>
+        <div class="tok-wrap" id="inTokens"></div>
+        <p class="muted" style="font-size:.8rem;margin:.6rem 0 .2rem">Last paraphrase's output tokens:</p>
+        <div class="tok-wrap" id="outTokens"></div>
+        <p class="muted" style="font-size:.82rem;margin:.8rem 0 .3rem">Per-token decode timeline (ms per token, last paraphrase):</p>
+        <canvas id="timeline" class="timeline" aria-label="Bar chart of milliseconds taken to generate each output token"></canvas>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        A paraphraser that runs in a tab — no API key, no per-call bill, no text leaving the device — turns
+        "say this differently" into a native browser capability. It's a rewrite engine you can put right next
+        to a text field.
+      </p>
+      <ul>
+        <li><strong>Copywriting variations</strong> — generate several headline or CTA options to A/B test, without a server round-trip.</li>
+        <li><strong>Tone &amp; freshness</strong> — offer a "reword this" button in an editor; the writer picks the version they like.</li>
+        <li><strong>De-duplication &amp; augmentation</strong> — expand a small dataset of prompts/FAQ entries with meaning-preserving variants, locally.</li>
+        <li><strong>Readability drafts</strong> — produce alternate phrasings to compare, entirely offline in a PWA.</li>
+      </ul>
+      <p class="muted" style="font-size:.85rem">
+        Honest limits: at T5-base size, paraphrases can occasionally drift or add a stray clause — always
+        the writer's call which to keep. It preserves meaning far better than it invents facts; don't use it
+        to rewrite claims you haven't checked.
+      </p>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">One sentence in, several re-wordings out — the fundamental rephrase, with variety from sampling.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Copywriting A/B: generate headline/CTA variants at a chosen "boldness", pick and copy the winner.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Telephone: feed each paraphrase back in, round after round, and watch meaning drift.</p></a>
+        <a class="model-card" href="multimodel/"><h3>Multi-model</h3><p class="muted">Paraphrase → embed (MiniLM): measure real <em>semantic</em> similarity, not just word overlap.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>No task prefix — the sentence is the whole input. Sampling gives you variety:</p>
+      <pre><code>import { pipeline } from "@huggingface/transformers";
+
+const paraphrase = await pipeline(
+  "text2text-generation",
+  "Felladrin/onnx-chatgpt_paraphraser_on_T5_base",
+); // downloads + caches ~235 MB once
+
+// run it a few times with sampling to get DISTINCT re-wordings:
+for (let i = 0; i &lt; 4; i++) {
+  const out = await paraphrase("Could you explain how this works?", {
+    max_new_tokens: 64, do_sample: true, temperature: 0.9, top_k: 60, top_p: 0.95,
+  });
+  console.log(out[0].generated_text);
+  // → "Can you walk me through how this operates?"  (varies each run)
+}</code></pre>
+      <p class="muted">
+        This page streams each sampled paraphrase with a <code>TextStreamer</code> and timestamps every
+        token for the decode timeline — all inside a Web Worker so the UI never janks. transformers.js 3.7.5
+        returns a single sequence per call, so N paraphrases = N calls; a "Diverse beam" mode uses grouped
+        beam search (humarin's recommended setup) for deterministic-but-varied alternatives.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/Felladrin/onnx-chatgpt_paraphraser_on_T5_base" target="_blank" rel="noopener">Model card — Felladrin/onnx-chatgpt_paraphraser_on_T5_base (ONNX / transformers.js)</a></li>
+        <li><a href="https://huggingface.co/humarin/chatgpt_paraphraser_on_T5_base" target="_blank" rel="noopener">Base model — humarin/chatgpt_paraphraser_on_T5_base</a></li>
+        <li><a href="https://arxiv.org/abs/1910.10683" target="_blank" rel="noopener">Paper — T5: the encoder-decoder text-to-text framework (Raffel et al., 2019)</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { ParaphraseEngine, renderTokens, drawTimeline, lexicalOverlap, overlapLabel, escapeHTML, PP_CSS } from "./pp.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style"); style.textContent = PP_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new ParaphraseEngine();
+      let mode = "sampling", last = null;
+
+      const PRESETS = [
+        "The weather is lovely today, so I decided to take a long walk in the park.",
+        "Our new app helps you track your spending and save money automatically.",
+        "Please let me know if you have any questions about the attached report.",
+        "The team worked late into the night to fix the bug before the release.",
+      ];
+      $("presets").replaceChildren(...PRESETS.map((p) => {
+        const b = document.createElement("button");
+        b.type = "button"; b.className = "preset"; b.textContent = p;
+        b.addEventListener("click", () => { $("input").value = p; });
+        return b;
+      }));
+
+      $("count").addEventListener("input", () => { $("nVal").textContent = $("count").value; });
+      $("temp").addEventListener("input", () => { $("tempVal").textContent = (+$("temp").value).toFixed(1); });
+      $("maxTok").addEventListener("input", () => { $("maxVal").textContent = $("maxTok").value; });
+      for (const b of $("modeSeg").children) {
+        b.addEventListener("click", () => {
+          mode = b.dataset.mode;
+          for (const x of $("modeSeg").children) x.setAttribute("aria-pressed", String(x === b));
+          $("temp").disabled = mode === "diverse";
+        });
+      }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Felladrin/onnx-chatgpt_paraphraser_on_T5_base", runtime: "transformers.js", dtype: "q8", sizeMB: 235, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("input").disabled = false; $("run").disabled = false; },
+      });
+
+      function setStatus(m, cls) { $("status").textContent = m || ""; $("status").classList.remove("err","ok"); if (cls) $("status").classList.add(cls); }
+
+      function makeCard(i) {
+        const card = document.createElement("div");
+        card.className = "pp-card";
+        card.innerHTML = `<span class="n">paraphrase ${i + 1}</span>
+          <div class="txt" id="txt-${i}"><span class="muted">…</span></div>
+          <div class="meta"><span id="ov-${i}"></span><span id="ms-${i}"></span>
+          <button type="button" class="pp-copy" id="cp-${i}" hidden aria-label="Copy paraphrase ${i + 1}">Copy</button></div>`;
+        return card;
+      }
+
+      $("run").addEventListener("click", async () => {
+        const input = $("input").value.trim();
+        if (!input) { setStatus("Type a sentence first.", "err"); return; }
+        const n = +$("count").value;
+        const temperature = +$("temp").value;
+        const maxNewTokens = +$("maxTok").value;
+        $("run").disabled = true; setStatus(`Generating ${n} paraphrase(s)…`);
+        $("origBox").textContent = input;
+        $("list").replaceChildren(...Array.from({ length: n }, (_, i) => makeCard(i)));
+        const overlaps = [];
+        const t0 = performance.now();
+        let device = "wasm", lastResult = null;
+        try {
+          for (let i = 0; i < n; i++) {
+            const opts = { maxNewTokens, temperature, topK: 60, topP: 0.95, diverse: mode === "diverse", numBeams: 4 };
+            const r = await engine.paraphrase(input, opts, (partial) => { $("txt-" + i).textContent = partial; });
+            lastResult = r; device = r.device;
+            const text = r.output || "(empty output)";
+            $("txt-" + i).textContent = text;
+            const ov = lexicalOverlap(input, text); overlaps.push(ov);
+            const lab = overlapLabel(ov);
+            $("ov-" + i).innerHTML = `<b style="color:var(${lab.varName})">${(ov * 100).toFixed(0)}% overlap</b> · ${lab.text}`;
+            $("ms-" + i).textContent = r.ms + " ms";
+            const cp = $("cp-" + i); cp.hidden = false;
+            cp.addEventListener("click", async () => {
+              try { await navigator.clipboard.writeText(text); cp.textContent = "Copied ✓"; setTimeout(() => cp.textContent = "Copy", 1200); }
+              catch { cp.textContent = "Copy failed"; }
+            });
+          }
+          last = lastResult;
+          const totalMs = Math.round(performance.now() - t0);
+          const avgOv = overlaps.reduce((a, b) => a + b, 0) / (overlaps.length || 1);
+          $("readout").hidden = false;
+          $("rBackend").textContent = device.toUpperCase();
+          $("rMs").textContent = (totalMs / 1000).toFixed(2) + " s";
+          $("rMode").textContent = mode;
+          $("rOverlap").textContent = (avgOv * 100).toFixed(0) + "%";
+          // See inside (from the last paraphrase)
+          if (lastResult) {
+            $("insideEmpty").hidden = true; $("insideWrap").hidden = false;
+            $("iTemp").textContent = mode === "diverse" ? "n/a (beam)" : temperature.toFixed(1);
+            $("iTok").textContent = `${lastResult.inTokens} → ${lastResult.outTokens}`;
+            renderTokens($("inTokens"), lastResult.inTokenStrings);
+            renderTokens($("outTokens"), lastResult.outTokenStrings);
+            drawTimeline($("timeline"), lastResult.intervals);
+          }
+          setStatus(`Done on ${device.toUpperCase()} — ${n} paraphrase(s).`, "ok");
+        } catch (err) { setStatus("Generation failed: " + err.message, "err"); }
+        finally { $("run").disabled = false; }
+      });
+
+      addEventListener("resize", () => { if (last) drawTimeline($("timeline"), last.intervals); });
+    </script>
+  </body>
+</html>

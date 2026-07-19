@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Paraphrase — Wild: telephone drift · Web AI Showcase</title>
+    <meta name="description" content="Chained paraphrase, like the game of telephone: feed each paraphrase back in, round after round, and watch how far the wording (and sometimes the meaning) drifts from the original. On-device." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>♻️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Paraphrase generation</a></p>
+
+    <header>
+      <p class="eyebrow">use case · wild</p>
+      <h1>Telephone — chained paraphrase drift</h1>
+      <p class="lede">
+        One paraphrase keeps the meaning. But feed the output back in as the next input, round after round,
+        and small changes compound — the classic game of <em>telephone</em>. Watch the wording pull away from
+        the original (the overlap-to-original line falls), and read each rung to see whether the <em>meaning</em>
+        survives the trip. All on-device.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <label style="display:flex;flex-direction:column;gap:.3rem;font-size:.82rem;margin-top:.4rem">
+        Starting sentence
+        <textarea id="input" class="pp-input" rows="2" disabled>The library will be closed on Monday for a public holiday.</textarea>
+      </label>
+      <div class="controls-grid">
+        <label>Rounds <span class="val" id="nVal">6</span>
+          <input type="range" id="rounds" min="2" max="10" step="1" value="6" />
+        </label>
+        <label>Creativity (temperature) <span class="val" id="tempVal">1.0</span>
+          <input type="range" id="temp" min="0.5" max="1.5" step="0.1" value="1.0" />
+        </label>
+      </div>
+      <div class="pp-actions">
+        <button id="run" type="button" disabled>Play telephone</button>
+        <span class="status" id="status" role="status" aria-live="polite"></span>
+      </div>
+
+      <ol class="chain" id="chain" aria-live="polite"></ol>
+      <div style="margin-top:.6rem">
+        <h4 style="margin:.2rem 0;font-size:.95rem">Overlap with the ORIGINAL, per round</h4>
+        <canvas id="chart" class="tl-chart" width="480" height="180" aria-label="Line chart of lexical overlap with the original sentence across rounds"></canvas>
+      </div>
+    </section>
+
+    <p class="crumbs"><a href="../practical/">← Practical</a> · <a href="../">Back to Paraphrase</a> · Next: <a href="../multimodel/">Multi-model →</a></p>
+
+    <style>
+      .chain { display:flex; flex-direction:column; gap:.4rem; margin:.6rem 0; padding-inline-start:1.4rem; }
+      .chain li { padding:.4rem .6rem; border:1px solid var(--border); border-radius:8px; background:var(--bg-raised); }
+      .chain li .rnd { font-family:var(--font-mono); font-size:.7rem; color:var(--muted); }
+      .chain li.orig { border-color:var(--accent); }
+      .tl-chart { inline-size:100%; block-size:auto; aspect-ratio:480/180; background:var(--bg-raised);
+        border:1px solid var(--border); border-radius:var(--radius); display:block; }
+    </style>
+
+    <script type="module">
+      import { ParaphraseEngine, lexicalOverlap, escapeHTML, PP_CSS } from "../pp.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = PP_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new ParaphraseEngine();
+      const overlaps = [];
+
+      $("rounds").addEventListener("input", () => { $("nVal").textContent = $("rounds").value; });
+      $("temp").addEventListener("input", () => { $("tempVal").textContent = (+$("temp").value).toFixed(1); });
+      function setStatus(m, cls) { $("status").textContent = m || ""; $("status").classList.remove("err","ok"); if (cls) $("status").classList.add(cls); }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Felladrin/onnx-chatgpt_paraphraser_on_T5_base", runtime: "transformers.js", dtype: "q8", sizeMB: 235, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("input").disabled = false; $("run").disabled = false; },
+      });
+
+      function addRung(round, text, overlap, isOrig) {
+        const li = document.createElement("li"); if (isOrig) li.className = "orig";
+        li.innerHTML = `<span class="rnd">${isOrig ? "original" : "round " + round + " · " + (overlap * 100).toFixed(0) + "% overlap w/ original"}</span><br>${escapeHTML(text)}`;
+        $("chain").append(li);
+      }
+
+      function draw() {
+        const c = $("chart"), ctx = c.getContext("2d"); const W = c.width, H = c.height, pad = 22;
+        ctx.clearRect(0, 0, W, H);
+        ctx.fillStyle = "rgba(128,128,128,.9)"; ctx.font = "11px system-ui, sans-serif";
+        ctx.strokeStyle = "rgba(128,128,128,.25)"; ctx.lineWidth = 1;
+        for (const f of [0, 0.5, 1]) { const y = pad + (1 - f) * (H - 2 * pad); ctx.beginPath(); ctx.moveTo(pad, y); ctx.lineTo(W - 4, y); ctx.stroke(); ctx.fillText((f * 100).toFixed(0) + "%", 2, y + 3); }
+        if (overlaps.length < 1) return;
+        const n = overlaps.length;
+        ctx.strokeStyle = getComputedStyle(document.body).getPropertyValue("--accent").trim() || "#4b3aff";
+        ctx.lineWidth = 2.5; ctx.beginPath();
+        for (let i = 0; i < n; i++) { const x = pad + (n === 1 ? 0 : (i / (n - 1)) * (W - pad - 4)); const y = pad + (1 - overlaps[i]) * (H - 2 * pad); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }
+        ctx.stroke();
+      }
+      draw();
+
+      $("run").addEventListener("click", async () => {
+        const original = $("input").value.trim();
+        if (!original) { setStatus("Type a sentence first.", "err"); return; }
+        const rounds = +$("rounds").value, temperature = +$("temp").value;
+        $("run").disabled = true; setStatus("Playing telephone…");
+        $("chain").replaceChildren(); overlaps.length = 0; draw();
+        addRung(0, original, 1, true);
+        let current = original;
+        try {
+          for (let round = 1; round <= rounds; round++) {
+            setStatus(`Round ${round} of ${rounds}…`);
+            const r = await engine.paraphrase(current, { maxNewTokens: 72, temperature, topK: 60, topP: 0.95 });
+            current = r.output || current;
+            const ov = lexicalOverlap(original, current);
+            overlaps.push(ov); addRung(round, current, ov, false); draw();
+          }
+          setStatus(`Done — ${rounds} rounds. Overlap with the original: ${(overlaps.at(-1) * 100).toFixed(0)}%.`, "ok");
+        } catch (e) { setStatus("Failed: " + e.message, "err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>
