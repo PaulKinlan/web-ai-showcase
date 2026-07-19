@@ -2,6 +2,8 @@
 // turns files/samples into data URLs, colourises the depth map, and does the per-pixel parallax warp.
 // All inference lives in worker.js (off the main thread).
 
+import { colorizeDepth, COLORMAPS, MAPS, sampleMap } from "./colormap.js";
+
 const WORKER_URL = "/web-ai-showcase/models/depth-anything-v2-large/worker.js";
 
 export class DepthEngine {
@@ -39,6 +41,12 @@ export class DepthEngine {
         msg.depth = new Uint8Array(msg.depth); // rehydrate the transferred buffer
         p.resolve(msg);
       }
+    } else if (msg.type === "recolor") {
+      const p = this._pending.get(msg.id);
+      if (p) {
+        this._pending.delete(msg.id);
+        p.resolve(msg); // { colorBitmap, mapName, width, height }
+      }
     } else if (msg.type === "error") {
       if (msg.id != null && this._pending.has(msg.id)) {
         this._pending.get(msg.id).reject(new Error(msg.message));
@@ -60,13 +68,38 @@ export class DepthEngine {
     });
   }
 
-  estimate(imageURL) {
+  /**
+   * Estimate depth. Resolves with { depth (Uint8Array), colorBitmap (ImageBitmap, colourised off the
+   * main thread), width, height, hist, raw*, ms, device, dtype }. Pass { colormap } to pick the ramp
+   * the worker colourises with (default "turbo").
+   */
+  estimate(imageURL, { colormap = "turbo" } = {}) {
     const id = ++this._id;
     return new Promise((resolve, reject) => {
       this._pending.set(id, { resolve, reject });
-      this.worker.postMessage({ type: "run", id, image: imageURL });
+      this.worker.postMessage({ type: "run", id, image: imageURL, colormap });
     });
   }
+
+  /**
+   * Re-colourise the most recent depth map with a new colour map — off the main thread, no
+   * re-inference. Resolves with { colorBitmap, mapName, width, height }.
+   */
+  recolor(colormap) {
+    const id = ++this._id;
+    return new Promise((resolve, reject) => {
+      this._pending.set(id, { resolve, reject });
+      this.worker.postMessage({ type: "recolor", id, colormap });
+    });
+  }
+}
+
+/** Draw a worker-produced depth ImageBitmap into a canvas (main thread does only drawImage). */
+export function drawDepthBitmap(canvas, bitmap, width, height) {
+  canvas.width = width ?? bitmap.width;
+  canvas.height = height ?? bitmap.height;
+  canvas.getContext("2d").drawImage(bitmap, 0, 0);
+  bitmap.close?.();
 }
 
 /** Read a File (upload or drop) into a data URL usable by the worker. */
@@ -85,50 +118,20 @@ export async function urlToDataURL(src) {
   return fileToDataURL(new File([blob], "sample", { type: blob.type }));
 }
 
-// --- Colour maps (perceptual ramps as control-point stops; interpolated in sRGB) ---------------
-const MAPS = {
-  turbo: [
-    [48, 18, 59],
-    [65, 69, 171],
-    [57, 118, 209],
-    [32, 163, 181],
-    [48, 196, 120],
-    [140, 208, 52],
-    [216, 182, 29],
-    [238, 116, 32],
-    [165, 20, 24],
-  ],
-  viridis: [[68, 1, 84], [59, 82, 139], [33, 145, 140], [94, 201, 98], [253, 231, 37]],
-  magma: [[0, 0, 4], [81, 18, 124], [183, 55, 121], [252, 137, 97], [252, 253, 191]],
-  gray: [[0, 0, 0], [255, 255, 255]],
-};
-export const COLORMAPS = Object.keys(MAPS);
+// --- Colour maps (perceptual ramps) — the ramp + colourise loop live in colormap.js so the worker's
+// off-main composite and any main-thread render share ONE implementation and can never drift. --------
+export { COLORMAPS, MAPS, sampleMap };
 
-/** Sample a named colour map at t∈[0,1] → [r,g,b]. */
-export function sampleMap(name, t) {
-  const stops = MAPS[name] ?? MAPS.turbo;
-  const x = Math.max(0, Math.min(1, t)) * (stops.length - 1);
-  const i = Math.floor(x), f = x - i;
-  const a = stops[i], b = stops[Math.min(stops.length - 1, i + 1)];
-  return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f];
-}
-
-/** Draw a colourised depth map into a canvas. `depth` = Uint8Array (w*h), bright/warm = nearer. */
+/**
+ * Draw a colourised depth map into a canvas. `depth` = Uint8Array (w*h), bright/warm = nearer.
+ * Retained for compatibility / non-worker callers; the built pages colourise in the worker and use
+ * drawDepthBitmap so the dense per-pixel loop never runs on the main thread.
+ */
 export function renderDepthColor(canvas, width, height, depth, mapName = "turbo") {
   canvas.width = width;
   canvas.height = height;
-  const ctx = canvas.getContext("2d");
-  const img = ctx.createImageData(width, height);
-  const px = img.data;
-  for (let i = 0; i < depth.length; i++) {
-    const [r, g, b] = sampleMap(mapName, depth[i] / 255);
-    const o = i * 4;
-    px[o] = r;
-    px[o + 1] = g;
-    px[o + 2] = b;
-    px[o + 3] = 255;
-  }
-  ctx.putImageData(img, 0, 0);
+  const rgba = colorizeDepth(depth, width, height, mapName);
+  canvas.getContext("2d").putImageData(new ImageData(rgba, width, height), 0, 0);
 }
 
 /** A small legend strip for the active colour map (far → near). */

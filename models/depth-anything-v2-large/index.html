@@ -37,7 +37,7 @@
           <tr><th>Backend</th><td>WebGPU (fp16); falls back to WebAssembly (q8) where WebGPU is absent</td></tr>
           <tr><th>Download</th><td>~347 MB (q8, WASM path) / ~669 MB (fp16, WebGPU) — cached after first load</td></tr>
           <tr><th>License</th><td><strong>CC-BY-NC-4.0</strong> (non-commercial) — note this differs from the Apache-2.0 <em>small</em> checkpoint</td></tr>
-          <tr><th>Web APIs</th><td>WebGPU, Web Workers, Canvas 2D, FileReader — WebGPU is the only non-Baseline piece, and the page says so if it's missing</td></tr>
+          <tr><th>Web APIs</th><td>WebGPU, Web Workers, OffscreenCanvas / ImageBitmap (depth colourise runs off the main thread), Canvas 2D, FileReader — WebGPU is the only non-Baseline piece, and the page says so if it's missing</td></tr>
         </tbody>
       </table>
       <p class="muted" style="font-size:.82rem;margin-top:.4rem">Because the Large checkpoint is licensed
@@ -193,7 +193,7 @@ const { depth, predicted_depth } = await estimator(imageURL);
     </footer>
 
     <script type="module">
-      import { DepthEngine, fileToDataURL, urlToDataURL, renderDepthColor, renderColorLegend, DEPTH_CSS }
+      import { DepthEngine, drawDepthBitmap, fileToDataURL, urlToDataURL, renderColorLegend, DEPTH_CSS }
         from "./depth.js";
       import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
 
@@ -235,9 +235,13 @@ const { depth, predicted_depth } = await estimator(imageURL);
       file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
       drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
 
-      $("cmap").addEventListener("change", () => {
+      $("cmap").addEventListener("change", async () => {
         renderColorLegend($("legend"), $("cmap").value);
-        if (lastResult) renderDepthColor($("depthCanvas"), lastResult.width, lastResult.height, lastResult.depth, $("cmap").value);
+        // Re-colourise off the main thread (no re-inference); the page only draws the returned bitmap.
+        if (lastResult) {
+          const rc = await engine.recolor($("cmap").value);
+          drawDepthBitmap($("depthCanvas"), rc.colorBitmap, rc.width, rc.height);
+        }
       });
 
       // Depth Anything V2 Large runs fp16 on WebGPU when there's a real adapter, else the q8 WASM build — an
@@ -256,9 +260,9 @@ const { depth, predicted_depth } = await estimator(imageURL);
         if (!currentImageURL) { $("status").textContent = "Pick a photo first."; return; }
         $("run").disabled = true; $("status").classList.remove("err"); $("status").textContent = "Estimating depth…";
         try {
-          const r = await engine.estimate(currentImageURL);
+          const r = await engine.estimate(currentImageURL, { colormap: $("cmap").value });
           lastResult = r;
-          renderDepthColor($("depthCanvas"), r.width, r.height, r.depth, $("cmap").value);
+          drawDepthBitmap($("depthCanvas"), r.colorBitmap, r.width, r.height);
           $("readout").hidden = false;
           $("rBackend").textContent = r.device.toUpperCase() + (r.dtype ? " · " + r.dtype : "");
           $("rMs").textContent = r.ms + " ms";

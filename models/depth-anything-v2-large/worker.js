@@ -10,6 +10,7 @@
 // { depth: RawImage (normalized 0–255 grayscale), predicted_depth: Tensor (raw relative depth) }.
 
 import { loadPipeline, TRANSFORMERS_URL } from "/web-ai-showcase/lib/webai.js";
+import { colorizeDepth } from "./colormap.js";
 
 const MODEL_ID = "onnx-community/depth-anything-v2-large";
 
@@ -18,8 +19,22 @@ let device = "wasm";
 let dtype = "q8";
 let RawImage = null;
 
+// Retained normalized depth of the most recent run so a colour-map change (a control) can re-colourise
+// off the main thread WITHOUT re-running inference. Detached buffers are never reused.
+let lastGray = null, lastW = 0, lastH = 0;
+
 function post(msg, transfer) {
   self.postMessage(msg, transfer || []);
+}
+
+// Dense-output composite, off the main thread: colourise a normalized depth buffer and hand the main
+// thread a finished ImageBitmap (transferred, zero-copy). The page only does drawImage — no per-pixel
+// loop, so the ~40ms @1080p colourise never lands on the main thread / spikes INP.
+function colourBitmap(gray, w, h, mapName) {
+  const rgba = colorizeDepth(gray, w, h, mapName);
+  const canvas = new OffscreenCanvas(w, h);
+  canvas.getContext("2d").putImageData(new ImageData(rgba, w, h), 0, 0);
+  return canvas.transferToImageBitmap();
 }
 
 // Honest device pick: navigator.gpu existing is NOT enough (headless exposes it with no adapter).
@@ -61,7 +76,7 @@ function histogram(data, bins = 32) {
   return h;
 }
 
-async function run(id, imageURL) {
+async function run(id, imageURL, mapName) {
   await ensureLoaded();
   const t0 = performance.now();
   const image = await RawImage.read(imageURL);
@@ -99,6 +114,12 @@ async function run(id, imageURL) {
   }
 
   const hist = histogram(gray);
+  // Retain this run's depth (worker-owned, never transferred) so recolour needs no re-inference.
+  lastGray = gray;
+  lastW = w;
+  lastH = h;
+  // Colourise off the main thread and transfer a finished ImageBitmap back (the dense composite).
+  const colorBitmap = colourBitmap(gray, w, h, mapName || "turbo");
   const ms = Math.round(performance.now() - t0);
   const buf = gray.buffer.slice(0); // own copy so we can transfer without detaching library memory
   post(
@@ -108,6 +129,8 @@ async function run(id, imageURL) {
       width: w,
       height: h,
       depth: buf,
+      colorBitmap,
+      mapName: mapName || "turbo",
       hist,
       rawMin,
       rawMax,
@@ -119,7 +142,20 @@ async function run(id, imageURL) {
       device,
       dtype,
     },
-    [buf],
+    [buf, colorBitmap],
+  );
+}
+
+// Re-colourise the most recent depth map with a new colour map — off the main thread, no re-inference.
+function recolor(id, mapName) {
+  if (!lastGray) {
+    post({ type: "error", id, message: "No depth map to recolour yet" });
+    return;
+  }
+  const colorBitmap = colourBitmap(lastGray, lastW, lastH, mapName || "turbo");
+  post(
+    { type: "recolor", id, colorBitmap, mapName: mapName || "turbo", width: lastW, height: lastH },
+    [colorBitmap],
   );
 }
 
@@ -127,7 +163,8 @@ self.addEventListener("message", async (e) => {
   const { type } = e.data;
   try {
     if (type === "load") await ensureLoaded();
-    else if (type === "run") await run(e.data.id, e.data.image);
+    else if (type === "run") await run(e.data.id, e.data.image, e.data.colormap);
+    else if (type === "recolor") recolor(e.data.id, e.data.colormap);
   } catch (err) {
     post({ type: "error", id: e.data?.id, message: String(err?.message ?? err) });
   }
