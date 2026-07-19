@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>BART Basics — summarize and dial the length · Web AI Showcase</title>
+    <meta name="description" content="The fundamental move: summarize a sample article with BART-large-CNN and dial the length budget up and down to feel the compression trade-off. Runs in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>📰</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">BART-large-CNN</a></p>
+
+    <header>
+      <p class="eyebrow">use case · basics</p>
+      <h1>Basics: summarize, and dial the length</h1>
+      <p class="lede">
+        The simplest thing BART-large-CNN does: read an article and write a shorter version in its own
+        words. Pick a sample, then drag the length budget up and down and re-summarize — short budgets give
+        a headline, longer ones keep more detail. The summary streams in as it generates.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.6rem 0">
+        <button class="chip" type="button" data-sample="space">Space news</button>
+        <button class="chip" type="button" data-sample="health">Health study</button>
+      </div>
+
+      <label style="display:flex;flex-direction:column;gap:.3rem;font-size:.82rem">
+        Source text
+        <textarea id="src" disabled style="min-block-size:160px;inline-size:100%;resize:vertical"></textarea>
+      </label>
+      <div style="display:flex;flex-direction:column;gap:.3rem;margin-top:.6rem">
+        <span style="font-size:.82rem">Summary</span>
+        <div class="sum-out" id="out" aria-live="polite"></div>
+      </div>
+      <div class="controls-grid">
+        <label>Max length <span class="val" id="maxVal">90 tokens</span>
+          <input type="range" id="maxLen" min="20" max="200" step="10" value="90" />
+        </label>
+        <button id="run" type="button" disabled>Summarize</button>
+      </div>
+      <div class="readout" id="readout" hidden><span>in→out <b id="rTok">–</b></span><span>backend <b id="rBackend">–</b></span><span>time <b id="rMs">–</b></span></div>
+    </section>
+
+    <p class="muted" style="font-size:.85rem">
+      Because BART-large runs the full 12+12 layers, each summary takes a little longer than the distilled
+      version — but the phrasing is usually cleaner and it drops fewer facts. Short budgets force harder
+      choices about what matters.
+    </p>
+
+    <p class="crumbs"><a href="../">← Back to BART-large-CNN</a> · Next: <a href="../practical/">Practical →</a></p>
+
+    <script type="module">
+      import { BartEngine, renderStats, BART_CSS } from "../bart.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = BART_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new BartEngine();
+      let loaded = false;
+
+      const SAMPLES = {
+        space: "NASA's Perseverance rover has collected and sealed its first sample of Martian rock that scientists believe could contain signs of ancient microbial life. The rock, drilled from an area of the Jezero Crater that was once a river delta, is rich in clay and organic molecules — the kinds of chemistry that, on Earth, are often associated with living things, though they can also form without life. Researchers were careful to stress that the presence of organic compounds is not proof of life, and that confirming any biological origin will require returning the samples to laboratories on Earth, where they can be studied with instruments far more sensitive than anything that can be flown to Mars. The sample is one of more than a dozen the rover has cached for a planned future mission to retrieve them, a complex and expensive undertaking that agencies are still working out how to fund and execute.",
+        health: "A large study following more than two hundred thousand adults over a decade has found that people who took a short daily walk had a noticeably lower risk of early death than those who were largely sedentary, even when the walk fell well short of official exercise guidelines. The researchers found that the steepest benefit came from simply moving from almost no activity to a modest amount, after which the gains continued but leveled off. The effect held across age groups and remained even after accounting for diet, smoking, and existing health conditions. The authors cautioned that observational studies like theirs cannot prove that walking directly causes longer life, since healthier people may simply be more inclined to walk, but they argued that the consistency of the finding across many previous studies makes a strong case. They suggested that public health messaging should emphasize that any movement is better than none, rather than intimidating people with high targets.",
+      };
+      for (const c of document.querySelectorAll(".chip")) c.addEventListener("click", () => { $("src").value = SAMPLES[c.dataset.sample]; });
+      $("maxLen").addEventListener("input", () => { $("maxVal").textContent = $("maxLen").value + " tokens"; });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/bart-large-cnn", runtime: "transformers.js", dtype: "q8", sizeMB: 460, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("src").disabled = false; $("run").disabled = false; loaded = true; if (!$("src").value) $("src").value = SAMPLES.space; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!loaded) return;
+        const text = $("src").value.trim();
+        if (!text) { $("runStatus").hidden = false; $("runStatus").textContent = "Pick or paste some text first."; return; }
+        $("run").disabled = true; $("out").textContent = "";
+        $("runStatus").hidden = false; $("runStatus").classList.remove("err"); $("runStatus").textContent = "Summarizing…";
+        try {
+          const maxLength = +$("maxLen").value;
+          const r = await engine.summarize(text, { maxLength, minLength: Math.min(20, maxLength - 5), numBeams: 1 }, (p) => $("out").textContent = p);
+          $("out").textContent = r.summary;
+          renderStats({ backend: $("rBackend"), ms: $("rMs") }, r);
+          $("rTok").textContent = `${r.inTokens} → ${r.outTokens}`;
+          $("readout").hidden = false;
+          $("runStatus").textContent = `Done on ${r.device.toUpperCase()}.`; $("runStatus").classList.add("ok");
+        } catch (err) { $("runStatus").textContent = "Summarization failed: " + err.message; $("runStatus").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>

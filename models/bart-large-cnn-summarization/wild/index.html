@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>BART Wild — collapse text to one sentence · Web AI Showcase</title>
+    <meta name="description" content="Recursively summarize a summary with BART-large-CNN — again and again — and watch a whole article collapse toward a single sentence, all locally in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>📰</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">BART-large-CNN</a></p>
+
+    <header>
+      <p class="eyebrow">use case · wild</p>
+      <h1>Wild: boil it down to one sentence</h1>
+      <p class="lede">
+        What happens if you summarize the summary — and keep going? Each pass feeds the previous result back
+        in with a smaller budget, so the text collapses round after round toward its single most essential
+        sentence. With BART-large's cleaner phrasing, the final line usually holds up as a real headline.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.6rem 0">
+        <button class="chip" type="button" data-sample="election">Election piece</button>
+        <button class="chip" type="button" data-sample="tech">Tech feature</button>
+      </div>
+
+      <label style="display:flex;flex-direction:column;gap:.3rem;font-size:.82rem">
+        Starting text
+        <textarea id="src" disabled style="min-block-size:160px;inline-size:100%;resize:vertical"></textarea>
+      </label>
+      <div class="controls-grid">
+        <button id="run" type="button" disabled>Distill to one sentence</button>
+      </div>
+
+      <div class="recap-chain" id="chain" aria-live="polite"></div>
+      <div class="readout" id="readout" hidden>
+        <span>rounds <b id="rRounds">–</b></span><span>start→end tokens <b id="rTok">–</b></span>
+        <span>backend <b id="rBackend">–</b></span><span>total time <b id="rMs">–</b></span>
+      </div>
+    </section>
+
+    <p class="muted" style="font-size:.85rem">
+      This is a genuine fixed-point search: the loop stops when a pass stops shrinking the text, or when
+      what's left is already a single short sentence. Some ideas resist compression — watch which details
+      survive to the end. Each round is a real, separate model call.
+    </p>
+
+    <p class="crumbs"><a href="../practical/">← Practical</a> · <a href="../">Back to BART-large-CNN</a> · Next: <a href="../multi-model/">Multi-model →</a></p>
+
+    <script type="module">
+      import { BartEngine, escapeHTML, BART_CSS } from "../bart.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = BART_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new BartEngine();
+      let loaded = false;
+
+      const SAMPLES = {
+        election: "Voters in the coastal region went to the polls on Sunday in an election widely seen as a referendum on the government's handling of the economy, and early results suggested a closer race than either major party had predicted. Turnout was reported to be unusually high, with long lines at polling stations in both the cities and the rural interior, a pattern analysts attributed to anger over rising prices and a series of corruption scandals that had dominated the campaign. The governing party, which has held power for eight years, ran on a message of stability and continuity, warning that a change of course would jeopardize a fragile recovery. The opposition, a coalition of smaller parties united mainly by their desire to unseat the incumbent, promised sweeping reforms to public services and a crackdown on graft, but struggled at times to explain how it would pay for its plans. International observers described the vote as broadly free and fair, though they noted isolated complaints about the distribution of ballots. A final result is not expected until later in the week, and both sides have already signaled that they will contest any narrow margin.",
+        tech: "For years, self-driving cars were sold as a technology perpetually just around the corner, and the gap between the confident promises and the messy reality became one of the defining stories of the modern tech industry. Companies poured tens of billions of dollars into the effort, convinced that whoever cracked full autonomy first would reshape transportation and reap enormous rewards. The early demonstrations were genuinely impressive, with cars navigating quiet suburban streets and highways with little human intervention. But the last few percent of reliability proved far harder than the first ninety, as engineers ran into an endless long tail of rare and unpredictable situations that human drivers handle almost without thinking. Progress slowed, timelines slipped, and several high-profile ventures shut down or were absorbed by rivals. Yet the technology did not disappear so much as narrow its ambitions, finding footholds in tightly controlled settings such as fixed shuttle routes, freight corridors, and a handful of city robotaxi services operating within carefully mapped zones. The grander vision of a car that can drive anywhere, in any conditions, remains unrealized, but the incremental advances have quietly filtered into ordinary vehicles as ever more capable driver-assistance features.",
+      };
+      for (const c of document.querySelectorAll(".chip")) c.addEventListener("click", () => { $("src").value = SAMPLES[c.dataset.sample]; });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/bart-large-cnn", runtime: "transformers.js", dtype: "q8", sizeMB: 460, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("src").disabled = false; $("run").disabled = false; loaded = true; if (!$("src").value) $("src").value = SAMPLES.election; },
+      });
+
+      function addStep(step) {
+        const div = document.createElement("div");
+        div.className = "recap-step";
+        div.innerHTML = `<div class="meta">round ${step.round} · ${step.inTokens} → ${step.outTokens} tokens · ${(step.ms / 1000).toFixed(1)} s</div><div class="txt">${escapeHTML(step.summary)}</div>`;
+        $("chain").append(div);
+      }
+
+      $("run").addEventListener("click", async () => {
+        if (!loaded) return;
+        const text = $("src").value.trim();
+        if (!text) { $("runStatus").hidden = false; $("runStatus").textContent = "Pick or paste some text first."; return; }
+        $("run").disabled = true; $("chain").replaceChildren();
+        $("runStatus").hidden = false; $("runStatus").classList.remove("err"); $("runStatus").textContent = "Distilling round by round…";
+        const t0 = performance.now();
+        try {
+          const r = await engine.recap(text, { maxRounds: 6, floor: 16, numBeams: 1 }, (step) => addStep(step));
+          const ms = Math.round(performance.now() - t0);
+          $("rRounds").textContent = r.rounds.length;
+          $("rTok").textContent = `${r.rounds[0]?.inTokens ?? "–"} → ${r.rounds.at(-1)?.outTokens ?? "–"}`;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = (ms / 1000).toFixed(1) + " s";
+          $("readout").hidden = false;
+          $("runStatus").textContent = `Collapsed in ${r.rounds.length} round(s).`; $("runStatus").classList.add("ok");
+        } catch (err) { $("runStatus").textContent = "Failed: " + err.message; $("runStatus").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>
