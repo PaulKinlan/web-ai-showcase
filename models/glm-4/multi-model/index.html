@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>GLM-Edge Multi-model — cross-lingual RAG · Web AI Showcase</title>
+    <meta name="description" content="Multilingual E5 retrieves from a mixed English+Chinese corpus, then GLM-Edge answers grounded in the retrieved chunks — cross-lingual retrieval-augmented generation, entirely in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🇨🇳</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">GLM-Edge 1.5B</a></p>
+    <header>
+      <p class="eyebrow">use case · multi-model</p>
+      <h1>Multi-model: cross-lingual RAG</h1>
+      <p class="lede">
+        Two models, one pipeline, both in your tab. <strong>Stage 1</strong>: multilingual E5 embeds a
+        mixed <strong>English + Chinese</strong> corpus and your question, and retrieves the most relevant
+        chunks — <em>across languages</em>. <strong>Stage 2</strong>: GLM-Edge answers your question
+        grounded only in those chunks, in the language you asked. Ask in English about a fact written in
+        Chinese and it still works.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <div id="fallback" class="fallback" hidden></div>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+
+      <label for="query" style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
+        Question (English or 中文)
+        <input id="query" type="text" disabled value="What time does the museum open on weekends?" style="font:inherit;padding:.4rem .5rem;border:1px solid var(--border);border-radius:6px;background:var(--bg-raised);color:var(--color)" />
+      </label>
+      <label for="passages" style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
+        Knowledge base (one passage per line — mixed EN/ZH)
+        <textarea id="passages" rows="8" disabled>博物馆周末上午9点开放，晚上8点闭馆。
+The museum café serves lunch from 11:30 until 14:00.
+门票成人50元，学生凭证件半价。
+Photography without flash is permitted in all galleries.
+地铁2号线可直达博物馆，从A出口步行五分钟。
+The gift shop closes 30 minutes before the museum.</textarea>
+      </label>
+      <div style="margin:.5rem 0;display:flex;gap:.6rem;align-items:center;flex-wrap:wrap">
+        <label style="font-size:.82rem;display:flex;gap:.4rem;align-items:center">Retrieve top-k
+          <input id="topk" type="number" min="1" max="6" value="3" disabled style="width:4rem;font:inherit;padding:.3rem;border:1px solid var(--border);border-radius:6px;background:var(--bg-raised);color:var(--color)" />
+        </label>
+        <button id="run" type="button" disabled>Retrieve &amp; answer</button>
+        <button id="stop" type="button" class="secondary" hidden>Stop</button>
+      </div>
+
+      <h4 style="font-size:.82rem;color:var(--muted);margin:.6rem 0 .3rem">Retrieved chunks</h4>
+      <div id="retrieved" class="ret-list"><span class="muted" style="font-size:.8rem">Retrieved passages appear here.</span></div>
+      <h4 style="font-size:.82rem;color:var(--muted);margin:.8rem 0 .3rem">Grounded answer</h4>
+      <pre id="answer" style="min-block-size:4rem;margin:0;white-space:pre-wrap;overflow-wrap:anywhere"><span class="muted">The answer appears here.</span></pre>
+      <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>retrieve <b id="rRet">–</b></span><span>generate <b id="rGen">–</b></span></div>
+    </section>
+
+    <p class="muted" style="font-size:.85rem">The retrieved chunk that answers the question is often in the <em>other</em> language from the question — that's the cross-lingual retrieval doing its job, and GLM still answers in your language.</p>
+
+    <p class="crumbs"><a href="../wild/">← Wild</a> · <a href="../">Back to GLM-Edge</a> · Related: <a href="/web-ai-showcase/models/multilingual-embeddings/">Multilingual embeddings →</a></p>
+
+    <style>
+      .ret-list { display:flex; flex-direction:column; gap:.4rem; }
+      .ret-item { display:grid; grid-template-columns:auto 1fr auto; gap:.5rem; align-items:center;
+        border:1px solid var(--border); border-radius:6px; background:var(--bg-raised); padding:.4rem .55rem; }
+      .ret-item.top { border-color:var(--accent); border-inline-start:4px solid var(--accent); }
+      .ret-rank { font-family:var(--font-mono); color:var(--muted); font-size:.76rem; }
+      .ret-text { font-size:.85rem; overflow-wrap:anywhere; }
+      .ret-score { font-family:var(--font-mono); font-size:.74rem; color:var(--muted); white-space:nowrap; }
+      .readout { display:flex; flex-wrap:wrap; gap:1rem; font-family:var(--font-mono); font-size:.78rem; color:var(--muted); margin-top:.6rem; }
+      .readout b { color:var(--color); font-weight:600; }
+    </style>
+
+    <script type="module">
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      import { probeWebGPUMain, webgpuFallbackHTML } from "../glm.js";
+      const $ = (id) => document.getElementById(id);
+      const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+      const worker = new Worker("./pipeline-worker.js", { type: "module" });
+      let ready = false, onProg = null, loadWaiters = [], pending = new Map(), gid = 0, device = "webgpu";
+      worker.addEventListener("message", (e) => {
+        const m = e.data;
+        if (m.type === "progress") onProg?.(m.p);
+        else if (m.type === "stage") { $("status").hidden = false; $("status").classList.remove("err"); $("status").textContent = m.stage; }
+        else if (m.type === "ready") { ready = true; device = m.device; onProg = null; loadWaiters.forEach((w) => w()); loadWaiters = []; }
+        else if (m.type === "retrieved") { renderRetrieved(m.retrieved); }
+        else if (m.type === "token") { const p = pending.get(m.id); if (p) { p.acc = (p.acc || "") + m.token; $("answer").textContent = p.acc; } }
+        else if (m.type === "result") { pending.get(m.id)?.resolve(m); pending.delete(m.id); }
+        else if (m.type === "error") { if (m.id != null && pending.has(m.id)) { pending.get(m.id).reject(new Error(m.message)); pending.delete(m.id); } else loadWaiters.forEach((w) => w(new Error(m.message))); }
+      });
+      const engine = {
+        load: (p) => { onProg = p; return new Promise((res, rej) => { if (ready) return res(); loadWaiters.push((err) => err ? rej(err) : res()); worker.postMessage({ type: "load" }); }); },
+        run: (query, passages, topK) => { const id = ++gid; return new Promise((resolve, reject) => { pending.set(id, { resolve, reject }); worker.postMessage({ type: "run", id, query, passages, topK }); }); },
+        stop: () => worker.postMessage({ type: "stop" }),
+      };
+
+      let loaded = false, generating = false;
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/glm-edge-1.5b-chat-ONNX", runtime: "transformers.js", dtype: "q4f16", sizeMB: 1120, requiresWebGPU: true },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("query").disabled = false; $("passages").disabled = false; $("topk").disabled = false; $("run").disabled = false; loaded = true; },
+        onError: async (err) => {
+          if (String(err?.message ?? err).includes("needs-webgpu")) {
+            const probe = await probeWebGPUMain(); $("fallback").hidden = false;
+            $("fallback").innerHTML = webgpuFallbackHTML(probe) + '<p class="muted" style="margin:.4rem 0 0">Generation needs WebGPU here; retrieval alone would still run, but this demo pairs both stages.</p>';
+          }
+        },
+      });
+
+      function renderRetrieved(retrieved) {
+        $("retrieved").innerHTML = retrieved.map((r, i) =>
+          `<div class="ret-item ${i === 0 ? "top" : ""}"><span class="ret-rank">${i + 1}</span>` +
+          `<span class="ret-text">${esc(r.passage)}</span>` +
+          `<span class="ret-score">cos ${r.cosine.toFixed(3)}</span></div>`
+        ).join("");
+      }
+
+      $("run").addEventListener("click", run);
+      $("query").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); run(); } });
+      async function run() {
+        if (!loaded || generating) return;
+        const query = $("query").value.trim();
+        const passages = [...new Set($("passages").value.split(/\n/).map((s) => s.trim()).filter(Boolean))];
+        if (!query || passages.length < 2) return;
+        const topK = Math.max(1, Math.min(6, parseInt($("topk").value) || 3));
+        generating = true; $("run").disabled = true; $("stop").hidden = false;
+        $("status").hidden = false; $("status").classList.remove("err", "ok"); $("status").textContent = "Retrieving, then answering…";
+        $("answer").textContent = ""; $("retrieved").innerHTML = '<span class="muted" style="font-size:.8rem">Retrieving…</span>';
+        try {
+          const r = await engine.run(query, passages, topK);
+          $("answer").textContent = r.answer || "(no answer)";
+          $("readout").hidden = false; $("rBackend").textContent = r.device.toUpperCase(); $("rRet").textContent = r.retrieveMs + " ms"; $("rGen").textContent = r.generateMs + " ms";
+          $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { generating = false; $("run").disabled = false; $("stop").hidden = true; }
+      }
+      $("stop").addEventListener("click", () => engine.stop());
+    </script>
+  </body>
+</html>

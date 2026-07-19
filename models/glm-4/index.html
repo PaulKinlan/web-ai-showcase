@@ -1,0 +1,378 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>GLM-Edge 1.5B — Zhipu's bilingual GLM-4 chat model in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run Zhipu AI's GLM-Edge-1.5B-Chat locally on WebGPU: a streaming, bilingual (English + Chinese) chat LLM from the GLM-4 architecture family, with real sampling controls and a look at the actual top-k next-token probabilities — entirely on your device, nothing uploaded."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🇨🇳</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">text-generation · bilingual chat LLM · WebGPU · ~1 GB</p>
+      <h1>GLM-Edge 1.5B — Zhipu's bilingual GLM-4 model, in a tab</h1>
+      <p class="lede">
+        GLM-Edge-1.5B-Chat is the browser-runnable member of <strong>Zhipu AI's GLM family</strong> — the
+        same <code>glm</code> architecture as GLM-4, shrunk to 1.5 billion parameters for on-device use.
+        It's genuinely <strong>bilingual</strong>: ask in English or Chinese (中文) and it answers in kind,
+        or translates between them. It streams tokens on your own GPU with sampling controls, and you can
+        open the hood on the real next-token probability distribution. No server, no API key, nothing
+        uploaded.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="glance">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/onnx-community/glm-edge-1.5b-chat-ONNX" target="_blank" rel="noopener">onnx-community/glm-edge-1.5b-chat-ONNX</a> (ONNX of <a href="https://huggingface.co/zai-org/glm-edge-1.5b-chat" target="_blank" rel="noopener">THUDM/GLM-Edge-1.5B-Chat</a>)</td></tr>
+          <tr><th>Task</th><td><code>text-generation</code> (causal LM, chat-tuned)</td></tr>
+          <tr><th>Architecture</th><td>GLM (model_type <code>glm</code> → <code>GlmForCausalLM</code>) — the GLM-4 architecture family, 1.5B params</td></tr>
+          <tr><th>Family</th><td>Zhipu AI / Z.ai GLM. Bilingual <strong>English + Chinese</strong>. GLM-4-9B and larger have no browser-feasible ONNX (9B q4 ≈ 5 GB); GLM-Edge-1.5B is the member that runs in a tab.</td></tr>
+          <tr><th>Params / dtype</th><td>1.5B · <code>q4f16</code> on WebGPU (4-bit weights, fp16 compute)</td></tr>
+          <tr><th>Backend</th><td>WebGPU (gates on a real GPU adapter; a slow WASM <code>q4</code> opt-in exists)</td></tr>
+          <tr><th>Download</th><td>~1 GB (<code>q4f16</code>), cached after first load — WASM <code>q4</code> is ~1.3 GB</td></tr>
+          <tr><th>License</th><td><a href="https://huggingface.co/zai-org/glm-edge-1.5b-chat/blob/main/LICENSE" target="_blank" rel="noopener">GLM-4 model license</a></td></tr>
+          <tr><th>Web APIs</th><td>WebGPU, Web Workers, ES module imports</td></tr>
+        </tbody>
+      </table>
+      <p class="muted" style="font-size:.82rem;margin-block-start:.6rem">
+        How it differs from the other chat pages: it's a <strong>GLM</strong> (Zhipu) architecture, distinct
+        from the Qwen (<a href="/web-ai-showcase/models/qwen-tiny-llm/">Qwen2.5 0.5B</a>), Llama
+        (<a href="/web-ai-showcase/models/llama-3-2-1b-webllm/">Llama 3.2 1B</a>) and SmolLM
+        (<a href="/web-ai-showcase/models/smollm2-chat/">SmolLM2</a>) models here — and it's built for
+        <strong>bilingual EN/ZH</strong> work out of one small model.
+      </p>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted" style="font-size:.82rem;margin:0 0 .4rem"><strong>Heads up:</strong> loading transfers ~1 GB the first time (then it's cached). WebGPU with ≥2 GB of GPU memory is the practical path.</p>
+      <div id="model-loader"></div>
+      <div id="fallback" class="fallback" hidden></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="chat" style="margin-top:.6rem">
+        <div class="sysrow">
+          <label for="system"><strong>System prompt</strong> — sets the assistant's persona and rules</label>
+          <textarea id="system" rows="2">You are a helpful, concise bilingual assistant. Answer in the language the user writes in.</textarea>
+        </div>
+
+        <div class="chips" id="starters" aria-label="Example prompts">
+          <button type="button" class="chip" data-p="Explain what WebGPU is in one sentence.">EN · Explain WebGPU</button>
+          <button type="button" class="chip" data-p="用一句话解释什么是 WebGPU。">中文 · 解释 WebGPU</button>
+          <button type="button" class="chip" data-p="Translate to Chinese: 'The cat sat quietly on the warm windowsill.'">EN→中 translate</button>
+          <button type="button" class="chip" data-p="把这句话翻译成英文：'知识就是力量。'">中→EN translate</button>
+        </div>
+
+        <div class="transcript" id="transcript" aria-live="polite" aria-label="Conversation">
+          <div class="bubble assistant"><span class="role">assistant</span>Load the model, then say hello — in English or 中文. I stream my reply token by token, right here on your device.</div>
+        </div>
+
+        <div class="composer">
+          <textarea id="input" rows="2" placeholder="Type a message… (English or 中文)" disabled></textarea>
+          <button id="send" type="button" disabled>Send</button>
+          <button id="stop" type="button" class="secondary" hidden>Stop</button>
+        </div>
+
+        <details>
+          <summary style="cursor:pointer;font-size:.85rem;color:var(--muted)">Sampling controls</summary>
+          <div class="controls">
+            <label>Temperature <b id="tVal">0.70</b>
+              <input type="range" id="temp" min="0" max="1.5" step="0.05" value="0.7" />
+            </label>
+            <label>top_p <b id="pVal">0.90</b>
+              <input type="range" id="topp" min="0.1" max="1" step="0.05" value="0.9" />
+            </label>
+            <label>Max new tokens
+              <input type="number" id="maxTok" min="16" max="1024" value="256" style="inline-size:6rem" />
+            </label>
+            <label style="flex-direction:row;align-items:center;gap:.4rem">
+              <input type="checkbox" id="greedy" /> Greedy (deterministic, no sampling)
+            </label>
+          </div>
+        </details>
+
+        <div class="readout" id="readout" hidden>
+          <span>backend <b id="rBackend">–</b></span>
+          <span>tokens <b id="rTok">–</b></span>
+          <span>first token <b id="rTtft">–</b></span>
+          <span>time <b id="rMs">–</b></span>
+          <span>tok/s <b id="rTps">–</b></span>
+        </div>
+        <button id="reset" type="button" class="secondary" style="align-self:flex-start;font-size:.78rem">Clear conversation</button>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside — the next-token distribution</h3>
+      <p class="muted">
+        An LLM never "chooses a word" — every step it produces a probability over its entire vocabulary,
+        and the sampler picks one. Below is the <strong>exact templated prompt</strong> the model receives
+        (GLM's chat markup with role tokens), and — from one real forward pass over the current
+        conversation — the <strong>actual top candidates for the very next token</strong>, with their
+        probabilities. Prompt it in Chinese and the top candidates become Chinese tokens; raise the
+        temperature and the tail fattens. This is the real distribution, computed on-device, not a mock-up.
+      </p>
+      <button id="peek" type="button" class="secondary" disabled>Show next-token distribution</button>
+      <h4 style="font-family:var(--font-body);font-size:.85rem;margin:.8rem 0 .2rem">Constructed chat template</h4>
+      <pre class="tmpl" id="tmpl"><span class="muted">Load the model and click "Show next-token distribution".</span></pre>
+      <h4 style="font-family:var(--font-body);font-size:.85rem;margin:.8rem 0 .2rem">Top candidates for the next token</h4>
+      <div class="topk" id="topk"><span class="muted" style="font-size:.8rem">The bars appear here.</span></div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        A bilingual instruct model that fits in a browser tab turns cross-language work into a client-side
+        primitive: private, offline-capable, and free to run. GLM-Edge is Zhipu's answer to on-device GLM —
+        the same family that powers GLM-4, sized down to reach real hardware. No inference bill, no data
+        leaving the device, no per-language service.
+      </p>
+      <ul>
+        <li><strong>Bilingual private chat</strong> — an assistant that handles English and Chinese equally, without sending a keystroke to a server.</li>
+        <li><strong>On-device translation &amp; localisation</strong> — draft, translate, and adapt copy between EN and ZH inside the page.</li>
+        <li><strong>Structured extraction</strong> — turn messy text (in either language) into clean JSON for a form or API.</li>
+        <li><strong>Offline &amp; edge</strong> — kiosks and field apps for bilingual audiences that must work with no network.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Ask a question in English or Chinese, watch the answer stream — the core chat loop.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Bilingual structured extraction: turn EN/ZH free text into schema-shaped JSON.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">A live bilingual translator &amp; language tutor that explains as it translates.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">Cross-lingual RAG: multilingual E5 retrieves from an EN+ZH corpus → GLM answers grounded in it.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>
+        GLM-Edge uses the standard <code>text-generation</code> pipeline. Pass a messages array (the
+        pipeline applies GLM's chat template for you), a <code>TextStreamer</code> for token-by-token
+        output, and your sampling settings:
+      </p>
+      <pre><code>import { pipeline, TextStreamer } from "@huggingface/transformers";
+
+const generator = await pipeline(
+  "text-generation",
+  "onnx-community/glm-edge-1.5b-chat-ONNX",
+  { dtype: "q4f16", device: "webgpu" },   // WebGPU path (~1 GB); WASM q4 is a slow opt-in
+);
+
+const messages = [
+  { role: "system", content: "You are a helpful bilingual assistant." },
+  { role: "user", content: "用一句话解释什么是 WebGPU。" },   // ask in Chinese…
+];
+
+const streamer = new TextStreamer(generator.tokenizer,
+  { skip_prompt: true, skip_special_tokens: true, callback_function: (t) =&gt; append(t) });
+
+await generator(messages, {
+  max_new_tokens: 256, do_sample: true, temperature: 0.7, top_p: 0.9, streamer,
+});   // …and it answers in Chinese</code></pre>
+      <p class="muted">
+        The "see inside" panel runs one raw forward pass —
+        <code>generator.model(generator.tokenizer(prompt))</code> — reads the last position's
+        <code>logits</code>, softmaxes them, and shows the real top-k. Everything runs in a Web Worker and
+        gates on a real WebGPU adapter first; with none, it shows a labelled needs-WebGPU state (plus an
+        opt-in WASM path) instead of faking tokens.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/onnx-community/glm-edge-1.5b-chat-ONNX" target="_blank" rel="noopener">Model card — GLM-Edge-1.5B-Chat (ONNX)</a></li>
+        <li><a href="https://huggingface.co/zai-org/glm-edge-1.5b-chat" target="_blank" rel="noopener">Base model — THUDM / Z.ai GLM-Edge-1.5B-Chat</a></li>
+        <li><a href="https://github.com/THUDM/GLM-Edge" target="_blank" rel="noopener">GLM-Edge — Zhipu AI's on-device GLM series</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a> on WebGPU.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <style>
+      .glance { inline-size:100%; border-collapse:collapse; font-size:.85rem; }
+      .glance th, .glance td { text-align:left; padding:.3rem .5rem; border-bottom:1px solid var(--border); vertical-align:top; }
+      .glance th { color:var(--muted); font-weight:600; inline-size:11rem; }
+      .glance td { font-family:var(--font-mono); }
+    </style>
+
+    <script type="module">
+      import { GLMEngine, escapeHTML, probeWebGPUMain, webgpuFallbackHTML, GLM_CSS } from "./glm.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = GLM_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new GLMEngine();
+      let loaded = false, backend = "WEBGPU";
+      const history = []; // excludes the system prompt, prepended fresh each turn
+
+      $("temp").addEventListener("input", () => $("tVal").textContent = (+$("temp").value).toFixed(2));
+      $("topp").addEventListener("input", () => $("pVal").textContent = (+$("topp").value).toFixed(2));
+      $("greedy").addEventListener("change", () => {
+        const g = $("greedy").checked;
+        $("temp").disabled = g; $("topp").disabled = g;
+      });
+      for (const chip of document.querySelectorAll("#starters .chip")) {
+        chip.addEventListener("click", () => { $("input").value = chip.dataset.p; $("input").focus(); });
+      }
+
+      function messages() {
+        return [{ role: "system", content: $("system").value.trim() || "You are a helpful assistant." }, ...history];
+      }
+      function samplingOpts() {
+        const greedy = $("greedy").checked;
+        return {
+          maxTokens: Math.max(16, Math.min(1024, +$("maxTok").value || 256)),
+          doSample: !greedy,
+          temperature: +$("temp").value,
+          topP: +$("topp").value,
+        };
+      }
+
+      function addBubble(role, text) {
+        const b = document.createElement("div");
+        b.className = "bubble " + role;
+        b.innerHTML = `<span class="role">${role}</span>`;
+        const span = document.createElement("span"); span.textContent = text; b.append(span);
+        $("transcript").append(b);
+        $("transcript").scrollTop = $("transcript").scrollHeight;
+        return span;
+      }
+
+      // Shared auto-init model loader: auto-inits an already-cached current model with no button, gates
+      // on a real WebGPU adapter (honest needs-WebGPU state when none), surfaces
+      // Download/Re-download/Update + clear-cache, and never fakes output.
+      createModelLoader({
+        mount: $("model-loader"),
+        model: {
+          modelId: "onnx-community/glm-edge-1.5b-chat-ONNX",
+          runtime: "transformers.js",
+          dtype: "q4f16",
+          sizeMB: 1000,
+          requiresWebGPU: true,
+        },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: (device) => {
+          loaded = true; backend = String(device || "webgpu").toUpperCase();
+          $("input").disabled = false; $("send").disabled = false; $("peek").disabled = false;
+        },
+        onError: async (err) => {
+          if (String(err?.message ?? err).includes("needs-webgpu")) {
+            const probe = await probeWebGPUMain();
+            $("fallback").hidden = false; $("fallback").innerHTML = webgpuFallbackHTML(probe);
+            const opt = document.createElement("button");
+            opt.textContent = "Run on WASM anyway (slow, ~1.3 GB)"; opt.className = "secondary";
+            opt.style.marginBlockStart = ".5rem";
+            opt.addEventListener("click", async () => {
+              opt.disabled = true; $("status").textContent = "Loading on WASM (this is slow)…";
+              try {
+                await engine.load((p) => {
+                  if (p.status === "progress" && typeof p.progress === "number") $("status").textContent = `Downloading… ${p.progress.toFixed(0)}%`;
+                }, { device: "wasm", dtype: "q4" });
+                loaded = true; backend = "WASM";
+                $("input").disabled = false; $("send").disabled = false; $("peek").disabled = false;
+                $("fallback").hidden = true; $("status").textContent = "Model ready on WASM (slow path)."; $("status").classList.add("ok");
+              } catch (e) { $("status").textContent = "WASM load failed: " + e.message; $("status").classList.add("err"); }
+            });
+            $("fallback").append(opt);
+          }
+        },
+      });
+
+      let generating = false;
+      async function send() {
+        if (!loaded || generating) return;
+        const text = $("input").value.trim();
+        if (!text) return;
+        $("input").value = "";
+        addBubble("user", text);
+        history.push({ role: "user", content: text });
+
+        generating = true;
+        $("send").disabled = true; $("input").disabled = true; $("stop").hidden = false;
+        $("status").classList.remove("err", "ok"); $("status").textContent = "Generating…";
+        const span = addBubble("assistant", "");
+        span.insertAdjacentHTML("beforeend", '<span class="caret"></span>');
+        let acc = "";
+        try {
+          const res = await engine.chat(messages(), {
+            ...samplingOpts(),
+            onToken: (tok) => {
+              acc += tok;
+              span.innerHTML = escapeHTML(acc) + '<span class="caret"></span>';
+              $("transcript").scrollTop = $("transcript").scrollHeight;
+            },
+          });
+          const finalText = (res.text && res.text.trim()) ? res.text : acc;
+          span.textContent = finalText || "(no output)";
+          history.push({ role: "assistant", content: finalText });
+          $("readout").hidden = false;
+          $("rBackend").textContent = backend; $("rTok").textContent = res.tokens;
+          $("rTtft").textContent = res.ttft + " ms";
+          $("rMs").textContent = res.ms + " ms";
+          const decodeMs = Math.max(1, res.ms - res.ttft);
+          $("rTps").textContent = res.tokens > 1 ? ((res.tokens - 1) / (decodeMs / 1000)).toFixed(1) : "–";
+          $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (err) {
+          span.textContent = acc || "(generation failed)";
+          $("status").textContent = "Generation failed: " + err.message; $("status").classList.add("err");
+        } finally {
+          generating = false;
+          $("send").disabled = false; $("input").disabled = false; $("stop").hidden = true; $("input").focus();
+        }
+      }
+      $("send").addEventListener("click", send);
+      $("input").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } });
+      $("stop").addEventListener("click", () => engine.stop());
+      $("reset").addEventListener("click", () => {
+        history.length = 0; $("transcript").replaceChildren();
+        addBubble("assistant", "Conversation cleared. Ask me something — 有什么问题?");
+        $("readout").hidden = true;
+      });
+
+      // See inside: real top-k next-token distribution for the current conversation.
+      $("peek").addEventListener("click", async () => {
+        if (!loaded) return;
+        $("peek").disabled = true; $("status").classList.remove("err", "ok"); $("status").textContent = "Running a forward pass…";
+        $("topk").innerHTML = '<span class="muted" style="font-size:.8rem">Computing…</span>';
+        try {
+          const { prompt, tokens } = await engine.topk(messages(), 12);
+          $("tmpl").textContent = prompt;
+          const max = Math.max(...tokens.map((t) => t.prob), 1e-6);
+          $("topk").replaceChildren();
+          for (const t of tokens) {
+            const row = document.createElement("div"); row.className = "topk-row";
+            const label = t.token === "\n" ? "\\n" : (t.token === "" ? "∅" : t.token);
+            row.innerHTML =
+              `<span class="topk-tok" title="token id ${t.id}, logit ${t.logit.toFixed(2)}">${escapeHTML(label)}</span>` +
+              `<span class="topk-bar" style="inline-size:${Math.max(2, (t.prob / max) * 100)}%"></span>` +
+              `<span class="topk-pct">${(t.prob * 100).toFixed(1)}%</span>`;
+            $("topk").append(row);
+          }
+          $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (err) {
+          $("topk").innerHTML = `<span class="status err">Couldn't compute the distribution: ${escapeHTML(err.message)}</span>`;
+          $("status").textContent = "Forward pass failed: " + err.message; $("status").classList.add("err");
+        } finally {
+          $("peek").disabled = false;
+        }
+      });
+
+      if ("serviceWorker" in navigator) navigator.serviceWorker.register("/web-ai-showcase/sw.js").catch(() => {});
+    </script>
+  </body>
+</html>
