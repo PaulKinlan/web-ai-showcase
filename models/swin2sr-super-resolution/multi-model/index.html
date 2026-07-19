@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Swin2SR Multi-model — RMBG cutout → super-res · Web AI Showcase</title>
+    <meta name="description" content="Chain two local models: RMBG-1.4 removes the background, then Swin2SR super-resolves just the isolated subject — a two-stage on-device pipeline, no server." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🔍</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Swin2SR</a></p>
+
+    <header>
+      <p class="eyebrow">use case · multi-model</p>
+      <h1>Multi-model: cut out the subject, then super-res it</h1>
+      <p class="lede">
+        Two tiny models, one pipeline, all on-device. <a href="../../rmbg-background-removal/">RMBG-1.4</a>
+        removes the background to isolate the subject; then Swin2SR upscales that clean cutout 2×. It's the
+        pattern behind "enhance just the product / the person" without a server ever seeing the image.
+      </p>
+    </header>
+
+    <section class="panel">
+      <h3>1 · Background removal (RMBG-1.4)</h3>
+      <div id="rmbg-loader"></div>
+      <div class="sample-strip" id="samples" aria-label="Sample images">
+        <img class="sample-thumb active" src="../sample-cats.jpg" data-src="../sample-cats.jpg" alt="Cats" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-room.jpg" data-src="../sample-room.jpg" alt="Room" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-river.jpg" data-src="../sample-river.jpg" alt="Riverside" tabindex="0" role="button" />
+      </div>
+      <div style="margin:.6rem 0"><button id="cut" type="button" disabled>Cut out subject</button></div>
+      <p class="status" id="status1" role="status" aria-live="polite"></p>
+      <canvas id="cutout" class="single-canvas" hidden aria-label="Subject with background removed"></canvas>
+    </section>
+
+    <section class="panel">
+      <h3>2 · Super-resolution (Swin2SR)</h3>
+      <div id="sr-loader"></div>
+      <div style="margin:.6rem 0"><button id="run" type="button" disabled>Super-res the cutout 2×</button></div>
+      <p class="status" id="status2" role="status" aria-live="polite"></p>
+      <div class="tile-grid" id="tileGrid" aria-live="polite"></div>
+
+      <div class="cmp" id="cmp" hidden>
+        <canvas id="afterCanvas" aria-label="Swin2SR upscaled cutout"></canvas>
+        <canvas id="beforeCanvas" aria-hidden="true"></canvas>
+        <span class="cmp-tag left">Bicubic ×2</span>
+        <span class="cmp-tag right">Swin2SR ×2</span>
+        <span class="cmp-divider" id="divider"></span>
+      </div>
+      <div class="slider-row" id="cmpRow" hidden>
+        <label for="wipe">Wipe: bicubic ↔ Swin2SR</label>
+        <input type="range" id="wipe" min="0" max="100" step="1" value="50" role="slider" aria-label="Comparison wipe" />
+        <output id="wipeOut" for="wipe">50%</output>
+      </div>
+      <div class="readout" id="readout" hidden>
+        <span>cutout <b id="rIn">–</b></span>
+        <span>upscaled <b id="rOut">–</b></span>
+        <span>time <b id="rMs">–</b></span>
+      </div>
+    </section>
+
+    <p class="crumbs"><a href="../wild/">← Wild</a> · <a href="../">Back to Swin2SR</a></p>
+
+    <script type="module">
+      import { RmbgEngine, urlToDataURL, loadImage, cutoutToPNG } from "../../rmbg-background-removal/rmbg.js";
+      import { SuperResEngine, toInputCanvas, bicubicUpscale, rgbaToCanvas, setupCompare, SUPERRES_CSS } from "../superres.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = SUPERRES_CSS;
+      document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const rmbg = new RmbgEngine();
+      const sr = new SuperResEngine();
+      let currentURL = null, cutoutCanvas = null;
+
+      async function useSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        currentURL = await urlToDataURL(el.dataset.src);
+        $("cutout").hidden = true; $("cmp").hidden = true; $("cmpRow").hidden = true; $("readout").hidden = true;
+        $("run").disabled = true; cutoutCanvas = null;
+        $("status1").textContent = "Ready — cut out the subject."; $("status1").classList.remove("err", "ok");
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => useSample(thumb));
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); useSample(thumb); } });
+      }
+      useSample($("samples").firstElementChild);
+
+      let rmbgReady = false, srReady = false;
+      createModelLoader({
+        mount: $("rmbg-loader"),
+        model: { modelId: "briaai/RMBG-1.4", runtime: "transformers.js", dtype: "q8", sizeMB: 44, requiresWebGPU: false },
+        load: (onProgress) => rmbg.load(onProgress),
+        onReady: () => { rmbgReady = true; $("cut").disabled = false; },
+      });
+      createModelLoader({
+        mount: $("sr-loader"),
+        model: { modelId: "Xenova/swin2SR-classical-sr-x2-64", runtime: "transformers.js", dtype: "q8", sizeMB: 150, requiresWebGPU: false },
+        load: (onProgress) => sr.load(onProgress),
+        onReady: () => { srReady = true; },
+      });
+
+      // Step 1 — RMBG cutout, composited onto white so super-res sees a clean subject.
+      $("cut").addEventListener("click", async () => {
+        if (!currentURL) return;
+        $("cut").disabled = true; $("status1").classList.remove("err"); $("status1").textContent = "Removing background…";
+        try {
+          const seg = await rmbg.segment(currentURL);
+          const img = await loadImage(currentURL);
+          const png = cutoutToPNG(img, seg.width, seg.height, seg.alpha); // subject on transparent
+          // Composite onto white for a clean super-res input.
+          const c = document.createElement("canvas"); c.width = seg.width; c.height = seg.height;
+          const ctx = c.getContext("2d"); ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, c.width, c.height); ctx.drawImage(png, 0, 0);
+          cutoutCanvas = c;
+          const disp = $("cutout"); disp.hidden = false; disp.width = c.width; disp.height = c.height; disp.getContext("2d").drawImage(c, 0, 0);
+          $("status1").textContent = `Subject isolated (${c.width}×${c.height}). Now super-res it below.`; $("status1").classList.add("ok");
+          $("run").disabled = !srReady;
+        } catch (err) { $("status1").textContent = "Background removal failed: " + err.message; $("status1").classList.add("err"); }
+        finally { $("cut").disabled = false; }
+      });
+
+      const wipe = $("wipe");
+      wipe.addEventListener("input", () => { $("wipeOut").textContent = wipe.value + "%"; });
+      // Step 2 — super-res the isolated subject.
+      $("run").addEventListener("click", async () => {
+        if (!cutoutCanvas) { $("status2").textContent = "Cut out a subject first."; return; }
+        $("run").disabled = true; $("status2").classList.remove("err"); $("status2").textContent = "Super-resolving…";
+        const input = toInputCanvas(cutoutCanvas).canvas;
+        const total = Math.ceil(input.width / 128) * Math.ceil(input.height / 128);
+        const dots = Array.from({ length: total }, (_, i) => { const d = document.createElement("span"); d.className = "tile-dot"; d.textContent = i + 1; return d; });
+        $("tileGrid").replaceChildren(...dots);
+        try {
+          const before = bicubicUpscale(input, 2);
+          const r = await sr.upscale(input, { tile: 128, onTile: ({ done }) => { dots[done - 1]?.classList.add("done"); $("status2").textContent = `Super-resolving… tile ${done}/${total}`; } });
+          const after = rgbaToCanvas(r.rgba, r.width, r.height);
+          const aC = $("afterCanvas"), bC = $("beforeCanvas");
+          aC.width = after.width; aC.height = after.height; aC.getContext("2d").drawImage(after, 0, 0);
+          bC.width = before.width; bC.height = before.height; bC.getContext("2d").drawImage(before, 0, 0);
+          $("cmp").hidden = false; $("cmpRow").hidden = false;
+          setupCompare({ container: $("cmp"), beforeCanvas: bC, afterCanvas: aC, slider: wipe, divider: $("divider") });
+          $("rIn").textContent = `${input.width}×${input.height}`; $("rOut").textContent = `${r.width}×${r.height}`; $("rMs").textContent = r.ms + " ms";
+          $("readout").hidden = false;
+          $("status2").textContent = `Pipeline done — background removed, then upscaled to ${r.width}×${r.height}.`; $("status2").classList.add("ok");
+        } catch (err) { $("status2").textContent = "Super-res failed: " + err.message; $("status2").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>

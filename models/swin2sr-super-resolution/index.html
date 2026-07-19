@@ -1,0 +1,346 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Swin2SR — 2× image super-resolution in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run Swin2SR locally in your browser: feed it a small or compressed image and it reconstructs a 2× sharper version — real pixels, a before/after slider, per-tile timing, all on your device with no server."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🔍</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">image-to-image · vision · WASM · ~150 MB</p>
+      <h1>Swin2SR — upscale an image 2× and reconstruct the detail</h1>
+      <p class="lede">
+        Swin2SR is a Swin-Transformer super-resolution model. Give it a small, soft, or compressed
+        picture and it predicts what a 2×-larger, sharper version should look like — inventing plausible
+        edges and texture, not just smoothing. It runs entirely on your device: the image never leaves
+        the tab.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/Xenova/swin2SR-classical-sr-x2-64" target="_blank" rel="noopener">Xenova/swin2SR-classical-sr-x2-64</a></td></tr>
+          <tr><th>Task / pipeline</th><td><code>image-to-image</code></td></tr>
+          <tr><th>Architecture</th><td>Swin2SR — Swin Transformer V2 blocks, classical ×2 super-resolution head</td></tr>
+          <tr><th>Upscale factor</th><td>2× (a 256×192 input becomes 512×384)</td></tr>
+          <tr><th>Quantization</th><td>q8 (8-bit) ONNX</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (runs anywhere; no WebGPU needed)</td></tr>
+          <tr><th>Download</th><td>~150 MB, cached after first load</td></tr>
+          <tr><th>License</th><td>Apache-2.0 (Swin2SR)</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers, Canvas / ImageData, FileReader — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+      <p class="muted" style="font-size:.85rem">
+        Swin2SR is heavy per pixel, so this page caps the input's long edge to 512&nbsp;px and processes
+        it in overlapping <strong>tiles</strong> — bounding memory and giving honest, incremental
+        progress. A bigger upload is shrunk to the cap first (noted below when it happens).
+      </p>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Pick or drop a small image and hit Upscale. When it finishes, drag the slider to wipe between the plain bicubic zoom (left) and Swin2SR's reconstruction (right).</p>
+
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image">
+        <span id="dropText">Drop an image here, or click to choose</span>
+        <input type="file" id="file" accept="image/*" hidden />
+      </div>
+      <div class="sample-strip" id="samples" aria-label="Sample images">
+        <img class="sample-thumb active" src="sample-cats.jpg" data-src="sample-cats.jpg" alt="Low-res photo of two cats" tabindex="0" role="button" />
+        <img class="sample-thumb" src="sample-room.jpg" data-src="sample-room.jpg" alt="Low-res photo of a bedroom" tabindex="0" role="button" />
+        <img class="sample-thumb" src="sample-river.jpg" data-src="sample-river.jpg" alt="Low-res riverside photo" tabindex="0" role="button" />
+        <img class="sample-thumb" src="sample-pixelart.png" data-src="sample-pixelart.png" alt="A tiny 32-pixel pixel-art mushroom" tabindex="0" role="button" />
+      </div>
+
+      <div class="slider-row">
+        <label for="tile">Tile size</label>
+        <select id="tile">
+          <option value="96">96 px (least memory)</option>
+          <option value="128" selected>128 px (balanced)</option>
+          <option value="160">160 px (fewer tiles)</option>
+        </select>
+        <button id="run" type="button" disabled>Upscale 2×</button>
+      </div>
+
+      <div class="tile-grid" id="tileGrid" aria-live="polite" aria-label="Tile progress"></div>
+
+      <div class="cmp" id="cmp" hidden>
+        <canvas id="afterCanvas" aria-label="Swin2SR upscaled result"></canvas>
+        <canvas id="beforeCanvas" aria-hidden="true"></canvas>
+        <span class="cmp-tag left">Bicubic ×2</span>
+        <span class="cmp-tag right">Swin2SR ×2</span>
+        <span class="cmp-divider" id="divider"></span>
+      </div>
+      <div class="slider-row" id="cmpRow" hidden>
+        <label for="wipe">Wipe: original ↔ upscaled</label>
+        <input type="range" id="wipe" min="0" max="100" step="1" value="50" role="slider" aria-label="Comparison wipe: percent original versus upscaled" />
+        <output id="wipeOut" for="wipe">50%</output>
+      </div>
+
+      <canvas id="preview" class="single-canvas" aria-label="Selected input image"></canvas>
+
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>input <b id="rIn">–</b></span>
+        <span>output <b id="rOut">–</b></span>
+        <span>tiles <b id="rTiles">–</b></span>
+        <span>total <b id="rMs">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside</h3>
+      <p class="muted">
+        Super-resolution isn't magic — it's a transformer predicting high-frequency detail one tile at a
+        time. Below are the real numbers from your run: how the input grew, how long each tile took, and
+        a <strong>sharpness delta</strong> — the mean high-frequency edge energy (an absolute-Laplacian
+        proxy) of Swin2SR's output versus a plain bicubic zoom of the same input. A positive delta means
+        the model added genuine edge detail a smooth resize can't.
+      </p>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Run an upscale to see the per-tile timing and sharpness delta.</div>
+      <div id="insideWrap" hidden>
+        <div class="readout">
+          <span>input px <b id="iIn">–</b></span>
+          <span>output px <b id="iOut">–</b></span>
+          <span>pixels reconstructed <b id="iGrow">–</b></span>
+        </div>
+        <div class="readout">
+          <span>bicubic sharpness <b id="iSharpB">–</b></span>
+          <span>Swin2SR sharpness <b id="iSharpA">–</b></span>
+          <span>delta <b id="iSharpD">–</b></span>
+        </div>
+        <table class="inside-table">
+          <thead><tr><th>tile #</th><th>input patch</th><th>time</th></tr></thead>
+          <tbody id="insideRows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        Upscaling used to mean either a fuzzy bicubic stretch or a paid cloud API that saw your images.
+        Swin2SR in the browser makes real, learned super-resolution a local function call — private, free
+        per call, and offline.
+      </p>
+      <ul>
+        <li><strong>Sharper thumbnails &amp; product shots</strong> — enlarge small catalogue or avatar images to fill a retina layout without a re-shoot or an upscaling service.</li>
+        <li><strong>Rescue compressed images</strong> — recover edges lost to heavy JPEG/WebP compression on user uploads before you store or display them.</li>
+        <li><strong>Restore old / low-res photos</strong> — bring scanned or early-digital pictures up to a usable size, entirely client-side, on sensitive family photos that should never be uploaded.</li>
+        <li><strong>On-device pipelines</strong> — cut a subject out with background removal, then super-res just the subject; or enhance a webcam frame before OCR or detection.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Upscale a sample 2× and wipe between bicubic and Swin2SR to feel the difference.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Enhance a tiny thumbnail or a heavily-compressed image — the everyday web job.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Upscale 32-px pixel-art or a live webcam frame and watch the model hallucinate detail.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">RMBG cuts the subject out → Swin2SR super-resolves just the cutout.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>Super-resolution is a one-liner with Transformers.js. The output is a <code>RawImage</code> at 2× the input:</p>
+      <pre><code>import { pipeline } from "@huggingface/transformers";
+
+const upscaler = await pipeline(
+  "image-to-image",
+  "Xenova/swin2SR-classical-sr-x2-64",
+); // downloads + caches ~150 MB once
+
+const output = await upscaler(imageURL);
+// → RawImage { data: Uint8Array, width, height, channels }
+//   width/height are exactly 2× the input; data is raw RGB pixels</code></pre>
+      <p class="muted">
+        This page goes one step further: instead of one giant forward pass, it splits the input into
+        overlapping tiles, calls the pipeline per tile inside a Web Worker, crops the overlap, and
+        stitches the cores back together — so memory stays bounded and you get real per-tile progress.
+        The "before" layer in the slider is the browser's own bicubic 2× zoom, for an honest comparison.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/Xenova/swin2SR-classical-sr-x2-64" target="_blank" rel="noopener">Model card — Xenova/swin2SR-classical-sr-x2-64</a></li>
+        <li><a href="https://arxiv.org/abs/2209.11345" target="_blank" rel="noopener">Paper — Swin2SR: SwinV2 Transformer for Compressed Image Super-Resolution (Conde et al., 2022)</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/api/pipelines#module_pipelines.ImageToImagePipeline" target="_blank" rel="noopener">Transformers.js — ImageToImagePipeline</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import {
+        SuperResEngine, fileToDataURL, decodeImage, toInputCanvas, bicubicUpscale,
+        rgbaToCanvas, sharpnessEnergy, setupCompare, SUPERRES_CSS,
+      } from "./superres.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = SUPERRES_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new SuperResEngine();
+      let inputCanvas = null; // the capped low-res input
+
+      // --- image selection ---
+      function showPreview(canvas) {
+        const p = $("preview");
+        p.hidden = false;
+        p.width = canvas.width; p.height = canvas.height;
+        p.getContext("2d").drawImage(canvas, 0, 0);
+      }
+      function resetResult() {
+        $("cmp").hidden = true; $("cmpRow").hidden = true; $("readout").hidden = true;
+        $("insideWrap").hidden = true; $("insideEmpty").hidden = false;
+        $("tileGrid").replaceChildren();
+        $("preview").hidden = false;
+      }
+      async function useImage(imgEl, label) {
+        const { canvas, capped } = toInputCanvas(imgEl);
+        inputCanvas = canvas;
+        resetResult();
+        showPreview(canvas);
+        $("status").classList.remove("err");
+        $("status").textContent = capped
+          ? `${label}: ${canvas.width}×${canvas.height} (downscaled to the 512-px cap). Ready to upscale.`
+          : `${label}: ${canvas.width}×${canvas.height}. Ready to upscale → ${canvas.width * 2}×${canvas.height * 2}.`;
+      }
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        const img = await decodeImage(el.dataset.src);
+        await useImage(img, "Sample");
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => {
+          if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); }
+        });
+      }
+      pickSample($("samples").firstElementChild);
+
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) {
+        for (const t of $("samples").children) t.classList.remove("active");
+        const img = await decodeImage(await fileToDataURL(f));
+        await useImage(img, f.name);
+        $("dropText").textContent = f.name;
+      }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
+
+      // --- load model (shared auto-init architecture) ---
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/swin2SR-classical-sr-x2-64", runtime: "transformers.js", dtype: "q8", sizeMB: 150, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: () => { $("run").disabled = false; },
+      });
+
+      // --- upscale ---
+      const wipe = $("wipe");
+      $("run").addEventListener("click", async () => {
+        if (!inputCanvas) { $("status").textContent = "Pick an image first."; return; }
+        const tile = +$("tile").value;
+        $("run").disabled = true; $("status").classList.remove("err");
+        $("status").textContent = "Upscaling… (tiling to keep memory bounded)";
+        // Pre-render tile dots.
+        const cols = Math.ceil(inputCanvas.width / tile);
+        const rows = Math.ceil(inputCanvas.height / tile);
+        const total = cols * rows;
+        const dots = Array.from({ length: total }, (_, i) => {
+          const d = document.createElement("span");
+          d.className = "tile-dot"; d.textContent = i + 1; return d;
+        });
+        $("tileGrid").replaceChildren(...dots);
+
+        try {
+          const before = bicubicUpscale(inputCanvas, 2);
+          const r = await engine.upscale(inputCanvas, {
+            tile,
+            onTile: ({ done }) => {
+              dots[done - 1]?.classList.add("done");
+              $("status").textContent = `Upscaling… tile ${done}/${total}`;
+            },
+          });
+          const after = rgbaToCanvas(r.rgba, r.width, r.height);
+
+          // Mount the before/after compare.
+          const cmp = $("cmp");
+          const aC = $("afterCanvas"), bC = $("beforeCanvas");
+          aC.width = after.width; aC.height = after.height; aC.getContext("2d").drawImage(after, 0, 0);
+          bC.width = before.width; bC.height = before.height; bC.getContext("2d").drawImage(before, 0, 0);
+          $("preview").hidden = true;
+          cmp.hidden = false; $("cmpRow").hidden = false;
+          setupCompare({ container: cmp, beforeCanvas: bC, afterCanvas: aC, slider: wipe, divider: $("divider") });
+
+          // Readouts.
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rIn").textContent = `${inputCanvas.width}×${inputCanvas.height}`;
+          $("rOut").textContent = `${r.width}×${r.height}`;
+          $("rTiles").textContent = r.tiles.length;
+          $("rMs").textContent = r.ms + " ms";
+          $("readout").hidden = false;
+
+          renderInside(r, before, after);
+          $("status").textContent = `Done — ${inputCanvas.width}×${inputCanvas.height} → ${r.width}×${r.height} in ${r.ms} ms across ${r.tiles.length} tile(s).`;
+          $("status").classList.add("ok");
+        } catch (err) {
+          $("status").textContent = "Upscale failed: " + err.message;
+          $("status").classList.add("err");
+        } finally {
+          $("run").disabled = false;
+        }
+      });
+
+      wipe.addEventListener("input", () => { $("wipeOut").textContent = wipe.value + "%"; });
+
+      function renderInside(r, before, after) {
+        $("insideEmpty").hidden = true;
+        $("insideWrap").hidden = false;
+        const inPx = inputCanvas.width * inputCanvas.height;
+        const outPx = r.width * r.height;
+        $("iIn").textContent = `${inputCanvas.width}×${inputCanvas.height} (${(inPx / 1000).toFixed(0)}k)`;
+        $("iOut").textContent = `${r.width}×${r.height} (${(outPx / 1000).toFixed(0)}k)`;
+        $("iGrow").textContent = `+${((outPx - inPx) / 1000).toFixed(0)}k (${(outPx / inPx).toFixed(1)}×)`;
+        const sB = sharpnessEnergy(before), sA = sharpnessEnergy(after);
+        $("iSharpB").textContent = sB.toFixed(2);
+        $("iSharpA").textContent = sA.toFixed(2);
+        const d = sA - sB;
+        $("iSharpD").textContent = `${d >= 0 ? "+" : ""}${d.toFixed(2)} (${((sA / (sB || 1) - 1) * 100).toFixed(0)}%)`;
+        $("insideRows").replaceChildren(...r.tiles.map((t, i) => {
+          const tr = document.createElement("tr");
+          tr.innerHTML = `<td>${i + 1}</td><td>${t.w}×${t.h}</td><td>${t.ms} ms</td>`;
+          return tr;
+        }));
+      }
+    </script>
+  </body>
+</html>

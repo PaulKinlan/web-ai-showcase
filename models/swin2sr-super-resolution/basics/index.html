@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Swin2SR Basics — upscale &amp; compare · Web AI Showcase</title>
+    <meta name="description" content="The fundamental Swin2SR move: pick a small image, upscale it 2×, and wipe between a plain bicubic zoom and the model's reconstruction. In your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🔍</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Swin2SR</a></p>
+
+    <header>
+      <p class="eyebrow">use case · basics</p>
+      <h1>Basics: upscale 2× and compare</h1>
+      <p class="lede">
+        Super-resolution in its simplest form. Pick a small image, upscale it 2×, then drag the wipe to
+        compare a plain bicubic zoom (left) against Swin2SR's reconstruction (right). The sharpness delta
+        is the model's genuine detail gain.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="sample-strip" id="samples" aria-label="Sample images">
+        <img class="sample-thumb active" src="../sample-cats.jpg" data-src="../sample-cats.jpg" alt="Low-res cats" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-room.jpg" data-src="../sample-room.jpg" alt="Low-res bedroom" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-river.jpg" data-src="../sample-river.jpg" alt="Low-res riverside" tabindex="0" role="button" />
+      </div>
+
+      <div style="margin:.6rem 0"><button id="run" type="button" disabled>Upscale 2×</button></div>
+      <div class="tile-grid" id="tileGrid" aria-live="polite"></div>
+
+      <div class="cmp" id="cmp" hidden>
+        <canvas id="afterCanvas" aria-label="Swin2SR upscaled result"></canvas>
+        <canvas id="beforeCanvas" aria-hidden="true"></canvas>
+        <span class="cmp-tag left">Bicubic ×2</span>
+        <span class="cmp-tag right">Swin2SR ×2</span>
+        <span class="cmp-divider" id="divider"></span>
+      </div>
+      <div class="slider-row" id="cmpRow" hidden>
+        <label for="wipe">Wipe: original ↔ upscaled</label>
+        <input type="range" id="wipe" min="0" max="100" step="1" value="50" role="slider" aria-label="Comparison wipe" />
+        <output id="wipeOut" for="wipe">50%</output>
+      </div>
+      <canvas id="preview" class="single-canvas" aria-label="Selected input image"></canvas>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>input <b id="rIn">–</b></span>
+        <span>output <b id="rOut">–</b></span>
+        <span>sharpness gain <b id="rGain">–</b></span>
+      </div>
+    </section>
+
+    <p class="crumbs"><a href="../">← Back to Swin2SR</a> · Next: <a href="../practical/">Practical →</a></p>
+
+    <script type="module">
+      import {
+        SuperResEngine, decodeImage, toInputCanvas, bicubicUpscale, rgbaToCanvas,
+        sharpnessEnergy, setupCompare, SUPERRES_CSS,
+      } from "../superres.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = SUPERRES_CSS;
+      document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new SuperResEngine();
+      let inputCanvas = null;
+
+      async function useSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        const img = await decodeImage(el.dataset.src);
+        inputCanvas = toInputCanvas(img).canvas;
+        $("cmp").hidden = true; $("cmpRow").hidden = true; $("readout").hidden = true; $("tileGrid").replaceChildren();
+        const p = $("preview"); p.hidden = false; p.width = inputCanvas.width; p.height = inputCanvas.height;
+        p.getContext("2d").drawImage(inputCanvas, 0, 0);
+        $("status").classList.remove("err");
+        $("status").textContent = `${inputCanvas.width}×${inputCanvas.height} → ${inputCanvas.width * 2}×${inputCanvas.height * 2} on upscale.`;
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => useSample(thumb));
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); useSample(thumb); } });
+      }
+      useSample($("samples").firstElementChild);
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/swin2SR-classical-sr-x2-64", runtime: "transformers.js", dtype: "q8", sizeMB: 150, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: () => { $("run").disabled = false; },
+      });
+
+      const wipe = $("wipe");
+      wipe.addEventListener("input", () => { $("wipeOut").textContent = wipe.value + "%"; });
+      $("run").addEventListener("click", async () => {
+        if (!inputCanvas) return;
+        $("run").disabled = true; $("status").classList.remove("err"); $("status").textContent = "Upscaling…";
+        const cols = Math.ceil(inputCanvas.width / 128), rows = Math.ceil(inputCanvas.height / 128), total = cols * rows;
+        const dots = Array.from({ length: total }, (_, i) => { const d = document.createElement("span"); d.className = "tile-dot"; d.textContent = i + 1; return d; });
+        $("tileGrid").replaceChildren(...dots);
+        try {
+          const before = bicubicUpscale(inputCanvas, 2);
+          const r = await engine.upscale(inputCanvas, { tile: 128, onTile: ({ done }) => { dots[done - 1]?.classList.add("done"); $("status").textContent = `Upscaling… tile ${done}/${total}`; } });
+          const after = rgbaToCanvas(r.rgba, r.width, r.height);
+          const aC = $("afterCanvas"), bC = $("beforeCanvas");
+          aC.width = after.width; aC.height = after.height; aC.getContext("2d").drawImage(after, 0, 0);
+          bC.width = before.width; bC.height = before.height; bC.getContext("2d").drawImage(before, 0, 0);
+          $("preview").hidden = true; $("cmp").hidden = false; $("cmpRow").hidden = false;
+          setupCompare({ container: $("cmp"), beforeCanvas: bC, afterCanvas: aC, slider: wipe, divider: $("divider") });
+          const sB = sharpnessEnergy(before), sA = sharpnessEnergy(after);
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rIn").textContent = `${inputCanvas.width}×${inputCanvas.height}`;
+          $("rOut").textContent = `${r.width}×${r.height}`;
+          $("rGain").textContent = `+${((sA / (sB || 1) - 1) * 100).toFixed(0)}%`;
+          $("readout").hidden = false;
+          $("status").textContent = `Done — upscaled to ${r.width}×${r.height} in ${r.ms} ms.`;
+          $("status").classList.add("ok");
+        } catch (err) {
+          $("status").textContent = "Upscale failed: " + err.message; $("status").classList.add("err");
+        } finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>

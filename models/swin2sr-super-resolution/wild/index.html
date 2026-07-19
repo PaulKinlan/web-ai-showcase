@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Swin2SR Wild — upscale pixel-art &amp; webcam frames · Web AI Showcase</title>
+    <meta name="description" content="Feed Swin2SR something it never expected: a 32-pixel pixel-art sprite or a live webcam frame, and watch it hallucinate smooth detail. In your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🔍</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Swin2SR</a></p>
+
+    <header>
+      <p class="eyebrow">use case · wild</p>
+      <h1>Wild: upscale pixel-art and webcam frames</h1>
+      <p class="lede">
+        Swin2SR was trained on photos, so feeding it a 32-pixel sprite or a grabbed webcam frame is a
+        little cruel — and fun. Watch it invent smooth gradients where there were hard pixels, or sharpen
+        a blurry camera grab. Everything runs locally; the camera frame never leaves the tab.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="slider-row">
+        <button id="cam" type="button" class="secondary">Start camera</button>
+        <button id="grab" type="button" class="secondary" disabled>Capture frame</button>
+      </div>
+      <video id="video" playsinline muted style="display:none;max-inline-size:100%;border-radius:8px"></video>
+
+      <div class="sample-strip" id="samples" aria-label="Sample images">
+        <img class="sample-thumb active" src="../sample-pixelart.png" data-src="../sample-pixelart.png" alt="32px pixel-art mushroom" tabindex="0" role="button" style="image-rendering:pixelated" />
+        <img class="sample-thumb" src="../sample-thumb.jpg" data-src="../sample-thumb.jpg" alt="Tiny thumbnail" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-cats.jpg" data-src="../sample-cats.jpg" alt="Low-res cats" tabindex="0" role="button" />
+      </div>
+
+      <div style="margin:.6rem 0"><button id="run" type="button" disabled>Upscale 2×</button></div>
+      <div class="tile-grid" id="tileGrid" aria-live="polite"></div>
+
+      <div class="cmp" id="cmp" hidden>
+        <canvas id="afterCanvas" aria-label="Swin2SR upscaled result"></canvas>
+        <canvas id="beforeCanvas" aria-hidden="true"></canvas>
+        <span class="cmp-tag left">Nearest / bicubic</span>
+        <span class="cmp-tag right">Swin2SR</span>
+        <span class="cmp-divider" id="divider"></span>
+      </div>
+      <div class="slider-row" id="cmpRow" hidden>
+        <label for="wipe">Wipe: raw ↔ upscaled</label>
+        <input type="range" id="wipe" min="0" max="100" step="1" value="50" role="slider" aria-label="Comparison wipe" />
+        <output id="wipeOut" for="wipe">50%</output>
+      </div>
+      <canvas id="preview" class="single-canvas" aria-label="Selected input image"></canvas>
+      <div class="readout" id="readout" hidden>
+        <span>input <b id="rIn">–</b></span>
+        <span>output <b id="rOut">–</b></span>
+        <span>time <b id="rMs">–</b></span>
+      </div>
+    </section>
+
+    <p class="crumbs"><a href="../practical/">← Practical</a> · <a href="../">Swin2SR</a> · Next: <a href="../multi-model/">Multi-model →</a></p>
+
+    <script type="module">
+      import {
+        SuperResEngine, decodeImage, toInputCanvas, bicubicUpscale, rgbaToCanvas, setupCompare, SUPERRES_CSS,
+      } from "../superres.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = SUPERRES_CSS;
+      document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new SuperResEngine();
+      let inputCanvas = null;
+      let stream = null;
+
+      function resetOut() { $("cmp").hidden = true; $("cmpRow").hidden = true; $("readout").hidden = true; $("tileGrid").replaceChildren(); $("preview").hidden = false; }
+      function preview(c) { const p = $("preview"); p.hidden = false; p.width = c.width; p.height = c.height; p.getContext("2d").drawImage(c, 0, 0); }
+      function useCanvas(c, label) {
+        inputCanvas = c; resetOut(); preview(c);
+        $("status").classList.remove("err");
+        $("status").textContent = `${label}: ${c.width}×${c.height} → ${c.width * 2}×${c.height * 2}.`;
+      }
+      async function useSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        // For pixel-art we cap harder so the model has room to smooth; keep others under the global cap.
+        const img = await decodeImage(el.dataset.src);
+        const maxEdge = el.dataset.src.includes("pixelart") ? 64 : 256;
+        useCanvas(toInputCanvas(img, maxEdge).canvas, "Sample");
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => useSample(thumb));
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); useSample(thumb); } });
+      }
+      useSample($("samples").firstElementChild);
+
+      // --- webcam (honest fallback: samples stay usable if no camera / permission denied) ---
+      $("cam").addEventListener("click", async () => {
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
+          const v = $("video"); v.srcObject = stream; v.style.display = "block"; await v.play();
+          $("grab").disabled = false; $("cam").textContent = "Camera on";
+          $("status").textContent = "Camera on — hit Capture frame, then Upscale.";
+        } catch (err) {
+          $("status").textContent = "No camera available (" + err.name + "). Use the samples below instead.";
+          $("status").classList.add("err");
+        }
+      });
+      $("grab").addEventListener("click", () => {
+        const v = $("video");
+        if (!v.videoWidth) { $("status").textContent = "Camera not ready yet."; return; }
+        for (const t of $("samples").children) t.classList.remove("active");
+        // Grab a small central frame so super-res has headroom under the cap.
+        const c = document.createElement("canvas");
+        const scale = Math.min(1, 256 / Math.max(v.videoWidth, v.videoHeight));
+        c.width = Math.round(v.videoWidth * scale); c.height = Math.round(v.videoHeight * scale);
+        c.getContext("2d").drawImage(v, 0, 0, c.width, c.height);
+        useCanvas(c, "Webcam frame");
+      });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/swin2SR-classical-sr-x2-64", runtime: "transformers.js", dtype: "q8", sizeMB: 150, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: () => { $("run").disabled = false; },
+      });
+
+      const wipe = $("wipe");
+      wipe.addEventListener("input", () => { $("wipeOut").textContent = wipe.value + "%"; });
+      $("run").addEventListener("click", async () => {
+        if (!inputCanvas) return;
+        $("run").disabled = true; $("status").classList.remove("err"); $("status").textContent = "Upscaling…";
+        const total = Math.ceil(inputCanvas.width / 128) * Math.ceil(inputCanvas.height / 128);
+        const dots = Array.from({ length: total }, (_, i) => { const d = document.createElement("span"); d.className = "tile-dot"; d.textContent = i + 1; return d; });
+        $("tileGrid").replaceChildren(...dots);
+        try {
+          const before = bicubicUpscale(inputCanvas, 2);
+          const r = await engine.upscale(inputCanvas, { tile: 128, onTile: ({ done }) => { dots[done - 1]?.classList.add("done"); $("status").textContent = `Upscaling… tile ${done}/${total}`; } });
+          const after = rgbaToCanvas(r.rgba, r.width, r.height);
+          const aC = $("afterCanvas"), bC = $("beforeCanvas");
+          aC.width = after.width; aC.height = after.height; aC.getContext("2d").drawImage(after, 0, 0);
+          bC.width = before.width; bC.height = before.height; bC.getContext("2d").drawImage(before, 0, 0);
+          $("preview").hidden = true; $("cmp").hidden = false; $("cmpRow").hidden = false;
+          setupCompare({ container: $("cmp"), beforeCanvas: bC, afterCanvas: aC, slider: wipe, divider: $("divider") });
+          $("rIn").textContent = `${inputCanvas.width}×${inputCanvas.height}`;
+          $("rOut").textContent = `${r.width}×${r.height}`;
+          $("rMs").textContent = r.ms + " ms";
+          $("readout").hidden = false;
+          $("status").textContent = `Done — ${r.width}×${r.height} in ${r.ms} ms.`; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Upscale failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>
