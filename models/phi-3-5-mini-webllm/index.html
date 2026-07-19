@@ -1,0 +1,311 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Phi-3.5-mini on WebLLM — a reasoning chat model in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run Microsoft's Phi-3.5-mini (3.8B) locally on WebGPU via MLC's WebLLM engine: a strong reasoning chat model with streaming, sampling controls, a system prompt, and live prefill/decode timing — tokens generated on your GPU, nothing sent to a server."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🧠</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">text-generation · chat LLM · WebLLM (MLC) · WebGPU · ~2.2 GB</p>
+      <h1>Phi-3.5-mini — a reasoning chat model that runs on your GPU</h1>
+      <p class="lede">
+        Microsoft's Phi-3.5-mini is a 3.8-billion-parameter instruct model punching well above its size on
+        reasoning, maths, and structured output — and it runs entirely in your browser, compiled to WebGPU
+        by MLC's <strong>WebLLM</strong> engine. You get streaming tokens, sampling controls, a system
+        prompt, and full conversation history, with nothing uploaded and no API bill. It's a bigger, more
+        capable step up from the 1B models: no WASM fallback, so it needs a real GPU and enough VRAM.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="glance">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/microsoft/Phi-3.5-mini-instruct" target="_blank" rel="noopener">microsoft/Phi-3.5-mini-instruct</a></td></tr>
+          <tr><th>MLC build</th><td><code>Phi-3.5-mini-instruct-q4f16_1-MLC</code></td></tr>
+          <tr><th>Runtime</th><td><strong>WebLLM / MLC</strong> — <em>not</em> Transformers.js. Weights are precompiled to WebGPU shaders.</td></tr>
+          <tr><th>Task</th><td><code>text-generation</code> (instruction-tuned chat)</td></tr>
+          <tr><th>Params / dtype</th><td>3.8B · <code>q4f16_1</code> (4-bit weights, fp16 compute)</td></tr>
+          <tr><th>Backend</th><td>WebGPU <strong>only</strong> — no WASM fallback. Gated on a real GPU adapter (~3.7 GB VRAM).</td></tr>
+          <tr><th>Download</th><td>~2.2 GB, cached after first load</td></tr>
+          <tr><th>Context window</th><td>4096 tokens (MLC prebuilt config; base model supports 128k)</td></tr>
+          <tr><th>License</th><td><a href="https://huggingface.co/microsoft/Phi-3.5-mini-instruct/resolve/main/LICENSE" target="_blank" rel="noopener">MIT</a></td></tr>
+          <tr><th>Web APIs</th><td>WebGPU, Web Workers, ES module imports</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it — chat</h3>
+      <div id="model-loader"></div>
+      <div id="fallback" class="fallback" hidden></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="sysbox" style="margin-top:.6rem">
+        <label for="sys">System prompt (sets the assistant's behaviour)</label>
+        <textarea id="sys">You are Phi, a careful, concise assistant. Think step by step when a question needs reasoning.</textarea>
+      </div>
+
+      <div class="controls">
+        <label class="control">temperature
+          <span class="row"><input type="range" id="temp" min="0" max="1.5" step="0.05" value="0.7" /><b id="tempV">0.70</b></span>
+        </label>
+        <label class="control">top_p
+          <span class="row"><input type="range" id="topp" min="0.1" max="1" step="0.05" value="0.95" /><b id="toppV">0.95</b></span>
+        </label>
+        <label class="control">max tokens
+          <span class="row"><input type="range" id="maxtok" min="32" max="1024" step="32" value="384" /><b id="maxtokV">384</b></span>
+        </label>
+      </div>
+
+      <div class="chat-wrap">
+        <div class="chat-log" id="log" aria-live="polite" aria-label="Conversation">
+          <div class="msg system"><span class="bubble">The conversation will appear here. Load the model, then say hello.</span></div>
+        </div>
+        <div class="composer">
+          <textarea id="input" placeholder="Type a message… (Enter to send, Shift+Enter for a newline)" disabled></textarea>
+          <button id="send" type="button" disabled>Send</button>
+          <button id="stop" type="button" class="secondary" hidden>Stop</button>
+        </div>
+        <div style="display:flex;gap:.5rem;align-items:center">
+          <button id="reset" type="button" class="secondary" disabled>Clear conversation</button>
+          <span class="muted" style="font-size:.76rem">History is kept in-tab only — reloading forgets it.</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside</h3>
+      <p class="muted">
+        An LLM does two very different jobs per turn: it <strong>prefills</strong> your whole prompt (fast,
+        parallel) and then <strong>decodes</strong> the answer one token at a time (the part you watch
+        stream). The split below is measured live — time-to-first-token is essentially the prefill cost;
+        everything after is decode. WebLLM reuses a KV cache across turns, so later replies in the same
+        conversation reprocess less of the history, and the context meter shows how much of Phi's 4096-token
+        window you're using.
+      </p>
+      <div class="inside-grid" id="insideGrid">
+        <div class="stat"><div class="k">decode speed</div><div class="v" id="sTps">–</div></div>
+        <div class="stat"><div class="k">time to first token</div><div class="v" id="sTtft">–</div></div>
+        <div class="stat"><div class="k">decode time</div><div class="v" id="sDecode">–</div></div>
+        <div class="stat"><div class="k">generated</div><div class="v" id="sGen">–</div></div>
+        <div class="stat"><div class="k">context used <small>(est.)</small></div><div class="v" id="sCtx">–</div></div>
+        <div class="stat"><div class="k">total time</div><div class="v" id="sTotal">–</div></div>
+      </div>
+      <p class="muted" id="statsRaw" style="font-family:var(--font-mono);font-size:.76rem"></p>
+      <h4 style="font-family:var(--font-body);font-size:.85rem;margin:.6rem 0 .2rem">Exact chat messages sent to the model (last turn)</h4>
+      <pre class="wire" id="wire"><span class="muted">Send a message to see the messages array that WebLLM receives.</span></pre>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        Phi-3.5-mini is small enough to run in a tab but strong enough to reason: it's competitive with
+        much larger models on maths, code, and structured tasks. Running it on WebLLM makes that capability
+        a client-side primitive — private by construction, free to run, and available offline once the
+        weights are cached.
+      </p>
+      <ul>
+        <li><strong>Private reasoning assistants</strong> — step-by-step help with maths, code, and analysis where the conversation never leaves the device.</li>
+        <li><strong>Reliable structured output</strong> — JSON extraction and schema-shaped answers, using WebLLM's JSON mode, with a model good enough to get the fields right.</li>
+        <li><strong>Longer-context work</strong> — summarise or answer over multi-paragraph documents within a 4k window, on-device.</li>
+        <li><strong>On-device RAG</strong> — pair it with a local embedding model to answer grounded in a user's own documents (see the multi-model demo).</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">A clean streaming chat — the fundamental "talk to the model" loop.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Structured extraction with JSON mode over longer, messier text.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Watch it reason: personas and visible step-by-step thinking.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">RAG: MiniLM retrieves from a pasted doc, Phi answers grounded in it.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>
+        WebLLM gives you an OpenAI-shaped chat API backed by a WebGPU engine. You create the engine (which
+        downloads and compiles the weights), then stream a completion. This page uses the shared helpers in
+        <code>lib/webllm.js</code>, running inside a Web Worker so the UI stays responsive:
+      </p>
+      <pre><code>import { webGPUAdapterAvailable, createEngine, streamChat }
+  from "/web-ai-showcase/lib/webllm.js";
+
+// WebLLM is WebGPU-only — gate before doing anything (headless requestAdapter() → null).
+if (!(await webGPUAdapterAvailable())) {
+  showNeedsWebGPU();          // never a faked reply
+} else {
+  const engine = await createEngine({
+    model: "Phi-3.5-mini-instruct-q4f16_1-MLC",
+    onProgress: (p) => setProgress(p.text, p.progress),   // ~2.2 GB, cached after first load
+  });
+
+  const messages = [
+    { role: "system", content: "You are a careful, concise assistant." },
+    { role: "user",   content: "If a train travels 60 km in 45 minutes, what is its speed in km/h?" },
+  ];
+
+  const full = await streamChat(
+    engine,
+    { messages, temperature: 0.7, top_p: 0.95, max_tokens: 384 },
+    (delta) => appendToken(delta),          // streams token-by-token on your GPU
+  );
+  // engine.interruptGenerate() stops decoding early; engine.runtimeStatsText() reports tok/s.
+}</code></pre>
+      <p class="muted">
+        Everything here runs exactly that path in <code>worker.js</code>, and gates on a real WebGPU
+        adapter first. No adapter → a labelled needs-WebGPU state, never a canned answer.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/microsoft/Phi-3.5-mini-instruct" target="_blank" rel="noopener">Model card — Phi-3.5-mini-instruct</a></li>
+        <li><a href="https://github.com/mlc-ai/web-llm" target="_blank" rel="noopener">WebLLM — in-browser LLM inference engine (MLC)</a></li>
+        <li><a href="https://webllm.mlc.ai/docs/" target="_blank" rel="noopener">WebLLM documentation &amp; prebuilt model list</a></li>
+        <li><a href="https://azure.microsoft.com/en-us/blog/new-models-added-to-the-phi-3-family-available-on-microsoft-azure/" target="_blank" rel="noopener">Microsoft — the Phi-3.5 model family</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/mlc-ai/web-llm" target="_blank" rel="noopener">WebLLM / MLC</a> on WebGPU.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <style>
+      .glance { inline-size:100%; border-collapse:collapse; font-size:.85rem; }
+      .glance th, .glance td { text-align:left; padding:.3rem .5rem; border-bottom:1px solid var(--border); vertical-align:top; }
+      .glance th { color:var(--muted); font-weight:600; inline-size:11rem; }
+      .glance td { font-family:var(--font-mono); }
+    </style>
+
+    <script type="module">
+      import { WebLLMChatEngine, probeWebGPU, escapeHTML, estimateTokens, webgpuFallbackHTML, CHAT_CSS }
+        from "./webllm-chat.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = CHAT_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new WebLLMChatEngine();
+      let generating = false;
+      const history = []; // { role:"user"|"assistant", content }
+
+      // The MLC build id — cache scanning matches how WebLLM stores its files on-device.
+      const MODEL = { modelId: "Phi-3.5-mini-instruct-q4f16_1-MLC", runtime: "webllm", dtype: "q4f16_1", sizeMB: 2200, requiresWebGPU: true };
+
+      // Sampling controls — reflect live.
+      const bind = (r, out, fmt) => { const el = $(r), o = $(out); const upd = () => o.textContent = fmt(el.value); el.addEventListener("input", upd); upd(); };
+      bind("temp", "tempV", (v) => (+v).toFixed(2));
+      bind("topp", "toppV", (v) => (+v).toFixed(2));
+      bind("maxtok", "maxtokV", (v) => String(v));
+
+      // Shared auto-init model-loading architecture — replaces the bespoke WebGPU gate + Load button.
+      // A real WebGPU adapter is required (requiresWebGPU); no adapter → honest needs-WebGPU state, no fake tokens.
+      createModelLoader({
+        mount: $("model-loader"),
+        model: MODEL,
+        load: async (onProgress) => {
+          await engine.load((p) => { if (typeof p.progress === "number") onProgress({ status: "progress", progress: p.progress * 100 }); });
+          return engine;
+        },
+        onReady: () => {
+          $("input").disabled = false; $("send").disabled = false; $("reset").disabled = false;
+          $("log").querySelector(".msg.system .bubble").textContent = "Model ready. Say hello 👋";
+          $("input").focus();
+        },
+        onError: async (err) => {
+          if (String(err?.message ?? err).includes("needs-webgpu")) {
+            const probe = await probeWebGPU();
+            $("fallback").hidden = false; $("fallback").innerHTML = webgpuFallbackHTML(probe);
+          }
+        },
+      });
+
+      function addBubble(role, text) {
+        const wrap = document.createElement("div"); wrap.className = "msg " + role;
+        const who = document.createElement("span"); who.className = "who"; who.textContent = role === "user" ? "you" : "phi-3.5";
+        const b = document.createElement("div"); b.className = "bubble";
+        wrap.append(who, b);
+        if (role === "assistant") b.innerHTML = '<span class="caret"></span>'; else b.textContent = text;
+        $("log").append(wrap); $("log").scrollTop = $("log").scrollHeight;
+        return b;
+      }
+      function buildMessages(userText) {
+        const sys = $("sys").value.trim();
+        const msgs = [];
+        if (sys) msgs.push({ role: "system", content: sys });
+        for (const m of history) msgs.push(m);
+        msgs.push({ role: "user", content: userText });
+        return msgs;
+      }
+
+      async function send() {
+        const text = $("input").value.trim();
+        if (!text || generating) return;
+        generating = true;
+        $("input").value = ""; $("send").disabled = true; $("stop").hidden = false; $("input").disabled = true;
+        addBubble("user", text);
+        const messages = buildMessages(text);
+        $("wire").textContent = JSON.stringify(messages, null, 2);
+        const bubble = addBubble("assistant", "");
+        const temperature = +$("temp").value, top_p = +$("topp").value, max_tokens = +$("maxtok").value;
+        let acc = "";
+        try {
+          const res = await engine.chat(
+            { messages, temperature, top_p, max_tokens },
+            {
+              onFirstToken: () => {},
+              onToken: (d) => { acc += d; bubble.innerHTML = escapeHTML(acc) + '<span class="caret"></span>'; $("log").scrollTop = $("log").scrollHeight; },
+            },
+          );
+          bubble.textContent = acc || "(no output)";
+          history.push({ role: "user", content: text });
+          history.push({ role: "assistant", content: acc });
+          // See inside — real measurements.
+          const decodeMs = Math.max(1, res.ms - res.ttft);
+          const tps = res.chunks > 1 ? ((res.chunks - 1) / (decodeMs / 1000)) : 0;
+          $("sTps").innerHTML = tps.toFixed(1) + ' <small>tok/s</small>';
+          $("sTtft").innerHTML = res.ttft + ' <small>ms</small>';
+          $("sDecode").innerHTML = decodeMs + ' <small>ms</small>';
+          $("sGen").innerHTML = res.chunks + ' <small>tok*</small>';
+          const ctxEst = estimateTokens(messages.map((m) => m.content).join("\n")) + res.chunks;
+          $("sCtx").innerHTML = '≈' + ctxEst + ' <small>/ 4096</small>';
+          $("sTotal").innerHTML = res.ms + ' <small>ms</small>';
+          $("statsRaw").textContent = (res.stats ? "WebLLM runtime: " + res.stats + "  ·  " : "") + "* generated count is streamed chunks (≈ tokens); context is a ~4-chars/token estimate.";
+          $("status").textContent = "Done."; $("status").classList.remove("err"); $("status").classList.add("ok");
+        } catch (err) {
+          bubble.innerHTML = '<span class="muted">Generation failed.</span>';
+          $("status").textContent = "Generation failed: " + err.message; $("status").classList.remove("ok"); $("status").classList.add("err");
+        } finally {
+          generating = false; $("stop").hidden = true; $("input").disabled = false; $("send").disabled = false; $("input").focus();
+        }
+      }
+
+      $("send").addEventListener("click", send);
+      $("stop").addEventListener("click", () => { engine.stop(); $("status").textContent = "Stopping…"; });
+      $("input").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } });
+      $("reset").addEventListener("click", () => {
+        history.length = 0;
+        $("log").replaceChildren();
+        const d = document.createElement("div"); d.className = "msg system";
+        d.innerHTML = '<span class="bubble">Conversation cleared. The model keeps no memory of it.</span>';
+        $("log").append(d);
+        $("wire").textContent = "";
+      });
+
+      if ("serviceWorker" in navigator) navigator.serviceWorker.register("/web-ai-showcase/sw.js").catch(() => {});
+    </script>
+  </body>
+</html>

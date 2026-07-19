@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Phi-3.5-mini Practical — structured JSON extraction · Web AI Showcase</title>
+    <meta name="description" content="Turn messy text into strict JSON on-device: Phi-3.5-mini with WebLLM's JSON mode extracts fields from a note, entirely in your browser — a stronger model that gets the fields right." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🧠</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Phi-3.5-mini</a></p>
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Practical: text → structured JSON</h1>
+      <p class="lede">
+        The most shippable LLM trick: extract clean, typed data from messy human text. Paste a note, email,
+        or message and Phi-3.5-mini returns strict JSON matching a schema — using WebLLM's
+        <strong>JSON mode</strong> so the output always parses, and a model strong enough to get the fields
+        right. All on-device, so the source text (often sensitive) never leaves.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <div id="fallback" class="fallback" hidden></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:1rem;margin-top:.6rem">
+        <div style="display:flex;flex-direction:column;gap:.4rem">
+          <div class="chips" id="samples">
+            <button class="chip" type="button" data-k="meeting">Meeting note</button>
+            <button class="chip" type="button" data-k="order">Order email</button>
+            <button class="chip" type="button" data-k="bug">Bug report</button>
+          </div>
+          <label for="src" style="font-size:.82rem;color:var(--muted)">Source text</label>
+          <textarea id="src" rows="8" style="width:100%"></textarea>
+          <label for="schema" style="font-size:.82rem;color:var(--muted)">Fields to extract (one per line)</label>
+          <textarea id="schema" rows="4" style="width:100%"></textarea>
+          <button id="run" type="button" disabled>Extract JSON</button>
+          <button id="stop" type="button" class="secondary" hidden>Stop</button>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:.4rem">
+          <label style="font-size:.82rem;color:var(--muted)">Extracted JSON (validated — parses or shows the error)</label>
+          <pre class="wire" id="out" style="min-block-size:12rem"><span class="muted">The JSON streams here, then is parsed and pretty-printed.</span></pre>
+          <p class="status" id="valid" role="status" aria-live="polite" style="font-size:.8rem"></p>
+          <div class="readout" id="readout" hidden><span>first token <b id="rTtft">–</b></span><span>decode <b id="rTps">–</b></span><span>total <b id="rMs">–</b></span></div>
+        </div>
+      </div>
+    </section>
+
+    <section aria-labelledby="how-h">
+      <h2 id="how-h">How JSON mode helps</h2>
+      <p class="muted">
+        Passing <code>response_format: { type: "json_object" }</code> constrains WebLLM's sampler to emit
+        only tokens that keep the output valid JSON — so you never get a stray sentence wrapped around the
+        object. Combined with a schema in the prompt and a capable model, extraction becomes reliable
+        enough to drop straight into a form or an API call, entirely on-device.
+      </p>
+    </section>
+
+    <p class="crumbs"><a href="../basics/">← Basics</a> · <a href="../">Phi-3.5-mini</a> · Next: <a href="../wild/">Wild →</a></p>
+
+    <script type="module">
+      import { WebLLMChatEngine, probeWebGPU, escapeHTML, webgpuFallbackHTML, CHAT_CSS } from "../webllm-chat.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = CHAT_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new WebLLMChatEngine();
+      let loaded = false, generating = false;
+
+      const SAMPLES = {
+        meeting: { src: "Sync with Priya and Marco on Thursday 2pm about the Q3 launch. Priya to finalise pricing by Wed, Marco owns the landing page. Blocker: legal review still pending. Follow up next Monday.", schema: "title\ndate\nattendees\naction_items\nblockers" },
+        order: { src: "Hi, I'd like to order 3 units of the walnut desk (SKU WD-42) and 1 oak stool. Ship to 14 Elm Street, Bristol. Needed before the 20th. My budget is around £900.", schema: "items\nshipping_address\ndeadline\nbudget" },
+        bug: { src: "Login page throws a 500 for some users since this morning, seems intermittent, only on Safari. Started after the 3.2 deploy. Fairly urgent as it blocks checkout.", schema: "issue\nseverity\nbrowser\nsuspected_cause\nurgency" },
+      };
+      function setSample(k) { $("src").value = SAMPLES[k].src; $("schema").value = SAMPLES[k].schema; }
+      setSample("meeting");
+      for (const c of $("samples").children) c.addEventListener("click", () => setSample(c.dataset.k));
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Phi-3.5-mini-instruct-q4f16_1-MLC", runtime: "webllm", dtype: "q4f16_1", sizeMB: 2200, requiresWebGPU: true },
+        load: async (onProgress) => { await engine.load((p) => { if (typeof p.progress === "number") onProgress({ status: "progress", progress: p.progress * 100 }); }); return engine; },
+        onReady: () => { loaded = true; $("run").disabled = false; },
+        onError: async (err) => { if (String(err?.message ?? err).includes("needs-webgpu")) { const probe = await probeWebGPU(); $("fallback").hidden = false; $("fallback").innerHTML = webgpuFallbackHTML(probe); } },
+      });
+
+      async function run() {
+        if (!loaded || generating) return;
+        const src = $("src").value.trim();
+        const fields = $("schema").value.split("\n").map((s) => s.trim()).filter(Boolean);
+        if (!src || !fields.length) { $("status").textContent = "Add source text and at least one field."; return; }
+        generating = true; $("run").disabled = true; $("stop").hidden = false; $("valid").textContent = "";
+        $("status").classList.remove("err"); $("status").textContent = "Extracting…";
+        $("out").innerHTML = '<span class="caret"></span>'; let acc = "";
+        const system = `You extract structured data as JSON. Return a single JSON object with exactly these keys: ${fields.join(", ")}. Use null when a value is not present. Output only JSON.`;
+        try {
+          const res = await engine.chat(
+            { messages: [{ role: "system", content: system }, { role: "user", content: src }], temperature: 0.2, top_p: 0.9, max_tokens: 400, response_format: { type: "json_object" } },
+            { onToken: (d) => { acc += d; $("out").innerHTML = escapeHTML(acc) + '<span class="caret"></span>'; } },
+          );
+          const raw = acc || "";
+          try {
+            const parsed = JSON.parse(raw);
+            $("out").textContent = JSON.stringify(parsed, null, 2);
+            $("valid").textContent = "✓ Valid JSON — parsed and pretty-printed."; $("valid").classList.remove("err"); $("valid").classList.add("ok");
+          } catch (e) {
+            $("out").textContent = raw || "(no output)";
+            $("valid").textContent = "⚠ Model output did not parse as JSON: " + e.message; $("valid").classList.add("err");
+          }
+          const decodeMs = Math.max(1, res.ms - res.ttft);
+          $("readout").hidden = false; $("rTtft").textContent = res.ttft + " ms"; $("rTps").textContent = (res.chunks > 1 ? ((res.chunks - 1) / (decodeMs / 1000)).toFixed(1) : "0") + " tok/s"; $("rMs").textContent = res.ms + " ms";
+          $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (err) { $("out").textContent = acc || "(failed)"; $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { generating = false; $("run").disabled = false; $("stop").hidden = true; }
+      }
+      $("run").addEventListener("click", run);
+      $("stop").addEventListener("click", () => engine.stop());
+    </script>
+  </body>
+</html>
