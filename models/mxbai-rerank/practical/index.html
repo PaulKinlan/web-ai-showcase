@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>mxbai-rerank Practical — rerank a keyword shortlist for RAG · Web AI Showcase</title>
+    <meta name="description" content="The realistic pattern: a fast keyword filter narrows a corpus to a shortlist, then the mxbai cross-encoder reorders it for precision — the reranking stage of a RAG pipeline, in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🥖</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">mxbai-rerank</a></p>
+
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Practical: rerank a keyword shortlist for RAG</h1>
+      <p class="lede">
+        Reranking is the precision stage of retrieval. A cheap first pass (here, a keyword filter) narrows a
+        larger corpus to a shortlist, and the cross-encoder rereads each shortlisted passage against the
+        query and reorders it — so the chunk you hand your LLM is the one that genuinely answers the question,
+        not just the one with the most matching words. Both stages run locally.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <label for="query" style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
+        Question
+        <input id="query" type="text" disabled value="How do I get a refund for an order that never arrived?" style="font:inherit;padding:.4rem .5rem;border:1px solid var(--border);border-radius:6px;background:var(--bg-raised);color:var(--color)" />
+      </label>
+      <label for="passages" style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
+        Knowledge base (one passage per line)
+        <textarea id="passages" rows="9" disabled>If your order hasn't arrived within 10 days, open the order in Your Orders and choose "Request a refund" — we'll refund the full amount to your original payment method.
+Refunds for returned items are processed within 3–5 business days of us receiving the item back.
+To track an order, go to Your Orders and select the parcel to see its latest delivery status.
+Orders over $35 qualify for free standard shipping in most regions.
+If a parcel is marked delivered but you never received it, report it within 48 hours and we will investigate and refund undelivered orders.
+You can change the delivery address before an order ships from the order detail page.
+Gift cards are non-refundable but never expire.
+Our return policy allows returns within 30 days of delivery for a full refund.</textarea>
+      </label>
+      <div style="margin:.5rem 0;display:flex;gap:.6rem;align-items:center;flex-wrap:wrap">
+        <label style="font-size:.82rem;display:flex;gap:.4rem;align-items:center">Shortlist size (top-k keyword)
+          <input id="topk" type="number" min="2" max="8" value="5" disabled style="width:4rem;font:inherit;padding:.3rem;border:1px solid var(--border);border-radius:6px;background:var(--bg-raised);color:var(--color)" />
+        </label>
+        <button id="run" type="button" disabled>Filter, then rerank</button>
+      </div>
+
+      <div class="ba-wrap" id="beforeAfter" hidden></div>
+      <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>rerank latency <b id="rMs">–</b></span><span>shortlist <b id="rN">–</b></span></div>
+    </section>
+
+    <p class="muted" style="font-size:.85rem">
+      The left column is what a keyword filter alone would surface (by shared-word overlap); the right column
+      is after the cross-encoder rereads the shortlist. When the top result changes, that's the reranker
+      earning its keep — you only run the slower cross-encoder on the shortlist the cheap filter narrowed down.
+    </p>
+
+    <p class="crumbs"><a href="../basics/">← Basics</a> · <a href="../">mxbai-rerank</a> · Next: <a href="../wild/">Wild →</a></p>
+
+    <script type="module">
+      import { RerankEngine, parseLines, escapeHTML, RERANK_CSS } from "../mxrank.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = RERANK_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new RerankEngine();
+      let loaded = false;
+
+      const STOP = new Set("the a an of to in on and or is are was were be for with as at by from this that it into how do i my get an you your we our".split(" "));
+      const words = (s) => new Set(s.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, " ").split(/\s+/).filter((w) => w.length > 1 && !STOP.has(w)));
+      function keywordScore(q, p) { const qs = words(q); if (!qs.size) return 0; const ps = words(p); let hit = 0; for (const w of qs) if (ps.has(w)) hit++; return hit / qs.size; }
+      const shorten = (s) => (s.length > 58 ? s.slice(0, 57) + "…" : s);
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "mixedbread-ai/mxbai-rerank-xsmall-v1", runtime: "transformers.js", dtype: "q8", sizeMB: 90, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("query").disabled = false; $("passages").disabled = false; $("topk").disabled = false; $("run").disabled = false; loaded = true; run(); },
+      });
+
+      $("run").addEventListener("click", run);
+      $("query").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); run(); } });
+
+      function renderCols(retrieved, reranked) {
+        const rerankPos = new Map(reranked.map((r, i) => [r.passage, i]));
+        const left = retrieved.map((r, i) => {
+          const to = rerankPos.get(r.passage);
+          return `<div class="ba-item"><span class="ba-rank">${i + 1}</span>` +
+            `<span class="ba-text">${escapeHTML(shorten(r.passage))}</span>` +
+            `<span class="ba-move">kw ${(r.kw * 100).toFixed(0)}%${to !== i ? " · →#" + (to + 1) : ""}</span></div>`;
+        }).join("");
+        const right = reranked.map((r, i) =>
+          `<div class="ba-item ${i === 0 ? "top" : ""}"><span class="ba-rank">${i + 1}</span>` +
+          `<span class="ba-text">${escapeHTML(shorten(r.passage))}</span>` +
+          `<span class="ba-move">logit ${r.logit.toFixed(2)}</span></div>`
+        ).join("");
+        $("beforeAfter").innerHTML =
+          `<div class="ba-col"><h4>Stage 1 — keyword filter (shortlist)</h4>${left}</div>` +
+          `<div class="ba-col"><h4>Stage 2 — mxbai cross-encoder (reranked)</h4>${right}</div>`;
+      }
+
+      async function run() {
+        if (!loaded) return;
+        const query = $("query").value.trim();
+        const passages = parseLines($("passages").value);
+        if (!query || passages.length < 2) return;
+        const topK = Math.max(2, Math.min(8, parseInt($("topk").value) || 5));
+        $("run").disabled = true;
+        $("runStatus").hidden = false; $("runStatus").classList.remove("err"); $("runStatus").textContent = "Filtering, then reranking…";
+        try {
+          // Stage 1: cheap keyword filter → shortlist (in-page, no model).
+          const scored = passages.map((p) => ({ passage: p, kw: keywordScore(query, p) }))
+            .sort((a, b) => b.kw - a.kw).slice(0, topK);
+          // Stage 2: cross-encoder rerank the shortlist.
+          const r = await engine.rerank(query, scored.map((s) => s.passage));
+          renderCols(scored, r.ranked);
+          $("beforeAfter").hidden = false;
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = r.ms + " ms";
+          $("rN").textContent = scored.length;
+          $("runStatus").textContent = "Done.";
+          $("runStatus").classList.add("ok");
+        } catch (err) { $("runStatus").textContent = "Failed: " + err.message; $("runStatus").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      }
+    </script>
+  </body>
+</html>
