@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Text-to-SQL — Wild: push it to breaking · Web AI Showcase</title>
+    <meta name="description" content="Throw multi-table joins, nested subqueries, and window-style aggregations at a 60M text-to-SQL model and find exactly where it shines and where it breaks — locally in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🗄️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Text-to-SQL</a></p>
+
+    <header>
+      <p class="eyebrow">Wild · text2text-generation · WASM</p>
+      <h1>Find the edge of a 60M model</h1>
+      <p class="lede">
+        A tiny model has a ceiling. Here are increasingly nasty challenges — three-table joins, nested
+        subqueries, conditional aggregation, "top-N per group". Run each and judge the SQL yourself: which
+        does it nail, and where does it hallucinate a column or drop a clause? Editing the schema or question
+        is the whole point — probe it.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Challenges</h3>
+      <div id="model-loader"></div>
+
+      <div class="preset-grid" id="challenges"></div>
+
+      <label style="display:flex;flex-direction:column;gap:.3rem;font-size:.82rem;margin-top:.6rem">
+        Schema (editable)
+        <textarea id="schema" class="schema-box" rows="5" disabled></textarea>
+      </label>
+      <label style="display:flex;flex-direction:column;gap:.3rem;font-size:.82rem;margin-top:.6rem">
+        Question (editable)
+        <input type="text" id="question" disabled />
+      </label>
+
+      <div class="controls-grid">
+        <label>Max new tokens <span class="val" id="maxVal">200</span>
+          <input type="range" id="maxTok" min="16" max="256" step="16" value="200" />
+        </label>
+        <label>Beams <span class="val" id="beamVal">4 (beam search)</span>
+          <input type="range" id="beams" min="1" max="6" step="1" value="4" />
+        </label>
+        <button id="run" type="button" disabled>Generate SQL</button>
+      </div>
+      <p class="muted" style="font-size:.78rem">Beam search often helps on hard queries (it explores several
+        continuations) but can't stream token-by-token, so the answer appears at the end.</p>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+
+      <div style="margin-top:.2rem">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:.5rem">
+          <span style="font-size:.82rem;color:var(--muted)">Generated SQL</span>
+          <button id="copy" class="copy-btn" type="button" hidden>Copy SQL</button>
+        </div>
+        <div class="sql-out-wrap"><div class="sql-out" id="out" aria-live="polite"></div></div>
+      </div>
+      <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>time <b id="rMs">–</b></span><span>tokens in→out <b id="rTok">–</b></span></div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">What to watch for</h2>
+      <p class="muted">Common tiny-model failure modes: inventing a column that isn't in the schema, joining
+        on the wrong key, flattening a "per group" question into a single aggregate, or truncating a long
+        query. When it fails, the failure is honest and on the page — that is far more instructive than a
+        model that always looks right. For production, treat this as a first draft and validate.</p>
+    </section>
+
+    <p class="crumbs" style="margin-top:1.5rem"><a href="../multi-model/">Next: Multi-model — ask, query, answer →</a></p>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via 🤗 Transformers.js.
+      <a href="../">← Back to Text-to-SQL</a>
+    </footer>
+
+    <script type="module">
+      import { SqlEngine, buildPrompt, highlightSQL, copyText, SQL_CSS } from "../t2sql.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = SQL_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new SqlEngine();
+      let last = null;
+
+      const CHALLENGES = [
+        {
+          t: "Three-table join",
+          d: "customers · orders · items",
+          schema:
+            "CREATE TABLE customers (customer_id INT, name VARCHAR, country VARCHAR)\n" +
+            "CREATE TABLE orders (order_id INT, customer_id INT, order_date DATE)\n" +
+            "CREATE TABLE items (item_id INT, order_id INT, product VARCHAR, price DECIMAL, qty INT)",
+          q: "List each customer name and the total value of all their order items, for customers in Canada.",
+        },
+        {
+          t: "Top-N per group",
+          d: "hardest for a tiny model",
+          schema:
+            "CREATE TABLE employees (id INT, name VARCHAR, department VARCHAR, salary INT)",
+          q: "Find the two highest-paid employees in each department.",
+        },
+        {
+          t: "Nested subquery",
+          d: "above-average filter",
+          schema: "CREATE TABLE products (product_id INT, name VARCHAR, category VARCHAR, price DECIMAL)",
+          q: "Show products whose price is above the average price of their category.",
+        },
+        {
+          t: "Conditional aggregate",
+          d: "COUNT with CASE / filter",
+          schema: "CREATE TABLE tickets (id INT, status VARCHAR, priority VARCHAR, agent VARCHAR)",
+          q: "For each agent, count how many tickets are open and how many are closed.",
+        },
+        {
+          t: "HAVING clause",
+          d: "group filter",
+          schema: "CREATE TABLE sales (sale_id INT, region VARCHAR, amount DECIMAL)",
+          q: "Which regions have total sales greater than 10000?",
+        },
+      ];
+      $("challenges").replaceChildren(...CHALLENGES.map((c) => {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "preset";
+        b.innerHTML = `<span class="t"></span><br><span class="d"></span>`;
+        b.querySelector(".t").textContent = c.t;
+        b.querySelector(".d").textContent = c.d;
+        b.addEventListener("click", () => { $("schema").value = c.schema; $("question").value = c.q; });
+        return b;
+      }));
+
+      $("maxTok").addEventListener("input", () => { $("maxVal").textContent = $("maxTok").value; });
+      $("beams").addEventListener("input", () => {
+        const b = +$("beams").value;
+        $("beamVal").textContent = b === 1 ? "1 (greedy, streams)" : b + " (beam search)";
+      });
+
+      // Seed with the first challenge.
+      $("schema").value = CHALLENGES[0].schema;
+      $("question").value = CHALLENGES[0].q;
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/t5-small-awesome-text-to-sql", runtime: "transformers.js", dtype: "q8", sizeMB: 80, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("schema").disabled = false; $("question").disabled = false; $("run").disabled = false; },
+      });
+
+      $("copy").addEventListener("click", async () => {
+        if (!last?.output) return;
+        const ok = await copyText(last.output);
+        $("copy").textContent = ok ? "Copied ✓" : "Copy failed";
+        setTimeout(() => { $("copy").textContent = "Copy SQL"; }, 1600);
+      });
+
+      $("run").addEventListener("click", async () => {
+        const schema = $("schema").value.trim();
+        const question = $("question").value.trim();
+        if (!question) { $("status").hidden = false; $("status").classList.add("err"); $("status").textContent = "Write a question first."; return; }
+        const prompt = buildPrompt(schema, question);
+        $("run").disabled = true; $("copy").hidden = true; $("status").hidden = false; $("status").classList.remove("err");
+        $("status").textContent = "Generating…"; $("out").textContent = "";
+        try {
+          const opts = { maxNewTokens: +$("maxTok").value, numBeams: +$("beams").value };
+          const r = await engine.run(prompt, opts, (p) => { $("out").textContent = p; });
+          last = r;
+          if (r.output) { $("out").innerHTML = `<pre>${highlightSQL(r.output)}</pre>`; $("copy").hidden = false; }
+          else { $("out").textContent = "(empty output)"; }
+          $("readout").hidden = false; $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = (r.ms / 1000).toFixed(2) + " s"; $("rTok").textContent = `${r.inTokens} → ${r.outTokens}`;
+          $("status").textContent = `Done on ${r.device.toUpperCase()} — judge it yourself.`; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>

@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Text-to-SQL — Multi-model: ask, query, answer · Web AI Showcase</title>
+    <meta name="description" content="A full 'chat with your database' loop, entirely on-device: T5 writes SQL from your question, an in-browser SQLite runs it, and FLAN-T5 turns the result rows back into a plain-English answer. Three stages, no server." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🗄️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Text-to-SQL</a></p>
+
+    <header>
+      <p class="eyebrow">Multi-model · T5-SQL + SQLite + FLAN-T5 · WASM</p>
+      <h1>Ask in English, get an English answer</h1>
+      <p class="lede">
+        The complete "chat with your data" loop, all in the tab and all real:
+        <a href="../">Text-to-SQL</a> turns your question into a query, an in-browser
+        <a href="https://sql.js.org/" target="_blank" rel="noopener">SQLite</a> runs it against a seeded
+        database, and <a href="/web-ai-showcase/models/flan-t5-instruct/">FLAN-T5</a> reads the result rows
+        and answers your original question in plain English. Two small models plus a database engine — each
+        doing the part it's actually good at.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Ask your database</h3>
+      <div id="loaderSql"></div>
+      <div id="loaderFlan"></div>
+
+      <p class="muted" style="font-size:.82rem;margin:.6rem 0 .2rem">Seeded database schema:</p>
+      <div class="fed-input" id="schemaView"></div>
+      <p id="dbStatus" class="muted" style="font-size:.78rem;margin:.3rem 0"></p>
+
+      <p class="muted" style="font-size:.82rem;margin:.8rem 0 .2rem">Pick a question (single-answer questions
+        suit the small FLAN model best):</p>
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem" id="questions"></div>
+
+      <div style="display:flex;gap:.4rem;flex-wrap:wrap;align-items:center;margin:.6rem 0">
+        <input id="question" type="text" value="How many products are there in total?" style="flex:1;min-inline-size:14rem" disabled />
+        <button id="run" type="button" disabled>Ask</button>
+      </div>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+
+      <div id="result" hidden>
+        <p class="muted" style="font-size:.82rem;margin:.6rem 0 .2rem">Step 1 · Text-to-SQL wrote:</p>
+        <div class="sql-out-wrap"><div class="sql-out" id="sqlOut"></div></div>
+        <p class="muted" style="font-size:.82rem;margin:.8rem 0 .2rem">Step 2 · the in-browser database returned:</p>
+        <div id="rows" class="rows-wrap"></div>
+        <p class="muted" style="font-size:.82rem;margin:.8rem 0 .2rem">Step 3 · FLAN-T5's plain-English answer:</p>
+        <div class="flan-out" id="answer" aria-live="polite"></div>
+      </div>
+      <div class="readout" id="readout" hidden><span>SQL <b id="rGen">–</b></span><span>query <b id="rQuery">–</b></span><span>answer <b id="rAns">–</b></span><span>backend <b id="rBackend">–</b></span></div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why chain three stages</h2>
+      <p class="muted">Each component is weak alone but strong together. T5-SQL knows how to produce SQL from
+        a schema but can't run it or talk about results; SQLite runs SQL but knows nothing about the
+        question; FLAN-T5 can't query a database but is good at reading a small set of facts and answering
+        from them. Composed, they form the same retrieve-then-answer shape as a production text-to-SQL
+        assistant — with nothing leaving the device. The tiny FLAN model answers single-value questions
+        cleanly; multi-row aggregates are where its 80M-parameter ceiling shows, and the page shows you the
+        real rows either way.</p>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      🤗 Transformers.js and <a href="https://sql.js.org/" target="_blank" rel="noopener">sql.js</a>.
+      <a href="../">← Back to Text-to-SQL</a>
+    </footer>
+
+    <script type="module">
+      import { SqlEngine, buildPrompt, highlightSQL, escapeHTML, SQL_CSS } from "../t2sql.js";
+      import { FlanEngine, FLAN_CSS } from "/web-ai-showcase/models/flan-t5-instruct/t2t.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = SQL_CSS + FLAN_CSS + `
+        .rows-wrap { overflow-x:auto; min-inline-size:0; }
+        .rows-table { border-collapse:collapse; font-family:var(--font-mono); font-size:.8rem; min-inline-size:100%; }
+        .rows-table th, .rows-table td { border:1px solid var(--border); padding:.3rem .55rem; text-align:start; white-space:nowrap; }
+        .rows-table th { background:var(--bg-secondary); color:var(--muted); }
+        .db-err { color:var(--bad, #c0392b); font-family:var(--font-mono); font-size:.82rem; white-space:pre-wrap; }
+      `;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const sql = new SqlEngine();
+      const flan = new FlanEngine();
+      let sqlReady = false, flanReady = false, db = null;
+
+      const SCHEMA =
+        "CREATE TABLE categories (category_id INTEGER, name TEXT)\n" +
+        "CREATE TABLE products (product_id INTEGER, name TEXT, category_id INTEGER, price REAL)\n" +
+        "CREATE TABLE orders (order_id INTEGER, product_id INTEGER, quantity INTEGER, country TEXT)";
+      $("schemaView").textContent = SCHEMA;
+
+      const SEED = `
+        CREATE TABLE categories (category_id INTEGER PRIMARY KEY, name TEXT);
+        CREATE TABLE products (product_id INTEGER PRIMARY KEY, name TEXT, category_id INTEGER, price REAL);
+        CREATE TABLE orders (order_id INTEGER PRIMARY KEY, product_id INTEGER, quantity INTEGER, country TEXT);
+        INSERT INTO categories VALUES (1,'Electronics'),(2,'Books'),(3,'Home');
+        INSERT INTO products VALUES
+          (1,'Headphones',1,79.0),(2,'Laptop',1,999.0),(3,'Novel',2,12.5),
+          (4,'Cookbook',2,24.0),(5,'Lamp',3,39.5),(6,'Kettle',3,29.0);
+        INSERT INTO orders VALUES
+          (1,2,1,'US'),(2,1,3,'US'),(3,3,5,'CA'),(4,4,2,'UK'),
+          (5,5,4,'US'),(6,6,1,'CA'),(7,2,1,'UK'),(8,1,2,'CA'),(9,3,10,'US');
+      `;
+
+      const QUESTIONS = [
+        "How many products are there in total?",
+        "How many orders are there in total?",
+        "What is the name of the most expensive product?",
+        "How many orders were placed from each country?",
+      ];
+      $("questions").replaceChildren(...QUESTIONS.map((q) => {
+        const b = document.createElement("button");
+        b.type = "button"; b.className = "chip"; b.textContent = q;
+        b.addEventListener("click", () => { $("question").value = q; });
+        return b;
+      }));
+
+      const SQLJS_BASE = "https://cdn.jsdelivr.net/npm/sql.js@1.13.0/dist/";
+      function loadSqlJsScript() {
+        return new Promise((resolve, reject) => {
+          if (globalThis.initSqlJs) return resolve(globalThis.initSqlJs);
+          const s = document.createElement("script");
+          s.src = SQLJS_BASE + "sql-wasm.js";
+          s.onload = () => resolve(globalThis.initSqlJs);
+          s.onerror = () => reject(new Error("Could not load sql.js from CDN"));
+          document.head.append(s);
+        });
+      }
+      async function initDb() {
+        try {
+          const initSqlJs = await loadSqlJsScript();
+          const SQL = await initSqlJs({ locateFile: (f) => SQLJS_BASE + f });
+          db = new SQL.Database();
+          db.run(SEED);
+          $("dbStatus").textContent = "In-browser SQLite ready · 3 tables seeded.";
+        } catch {
+          db = null;
+          $("dbStatus").textContent = "Couldn't start the in-browser database (offline or CDN blocked). SQL will still be generated.";
+          $("dbStatus").classList.add("err");
+        }
+      }
+      initDb();
+
+      function maybeEnable() {
+        if (sqlReady && flanReady) { for (const id of ["question", "run"]) $(id).disabled = false; }
+      }
+      createModelLoader({
+        mount: $("loaderSql"),
+        model: { modelId: "Xenova/t5-small-awesome-text-to-sql", runtime: "transformers.js", dtype: "q8", sizeMB: 80, requiresWebGPU: false },
+        load: async (onProgress) => { await sql.load(onProgress); return sql; },
+        onReady: () => { sqlReady = true; maybeEnable(); },
+      });
+      createModelLoader({
+        mount: $("loaderFlan"),
+        model: { modelId: "Xenova/flan-t5-small", runtime: "transformers.js", dtype: "q8", sizeMB: 100, requiresWebGPU: false },
+        load: async (onProgress) => { await flan.load(onProgress); return flan; },
+        onReady: () => { flanReady = true; maybeEnable(); },
+      });
+
+      // Render rows and return a compact text serialization of the result for FLAN's context.
+      function runQuery(sqlText) {
+        if (!db) { $("rows").innerHTML = `<p class="muted" style="font-size:.82rem">No database available — SQL generated only.</p>`; return null; }
+        try {
+          const res = db.exec(sqlText);
+          if (!res.length) { $("rows").innerHTML = `<p class="muted" style="font-size:.82rem">Query ran · 0 rows.</p>`; return { text: "(no rows)", rows: 0 }; }
+          const { columns, values } = res[0];
+          const head = `<tr>${columns.map((c) => `<th>${escapeHTML(c)}</th>`).join("")}</tr>`;
+          const body = values.map((r) => `<tr>${r.map((v) => `<td>${escapeHTML(v === null ? "NULL" : String(v))}</td>`).join("")}</tr>`).join("");
+          $("rows").innerHTML = `<table class="rows-table"><thead>${head}</thead><tbody>${body}</tbody></table>`;
+          const text = columns.join(" | ") + "\n" + values.slice(0, 12).map((r) => r.join(" | ")).join("\n");
+          return { text, rows: values.length };
+        } catch (err) {
+          $("rows").innerHTML = `<p class="db-err">Database error: ${escapeHTML(err.message)}</p>`;
+          return null;
+        }
+      }
+
+      $("run").addEventListener("click", async () => {
+        const question = $("question").value.trim();
+        if (!question) { $("status").hidden = false; $("status").classList.add("err"); $("status").textContent = "Write a question first."; return; }
+        $("run").disabled = true; $("status").hidden = false; $("status").classList.remove("err");
+        $("status").textContent = "Step 1: writing SQL with T5…";
+        $("sqlOut").textContent = ""; $("rows").textContent = ""; $("answer").textContent = "";
+        try {
+          const g = await sql.run(buildPrompt(SCHEMA, question), { maxNewTokens: 128 }, (p) => { $("sqlOut").textContent = p; });
+          $("result").hidden = false;
+          if (g.output) $("sqlOut").innerHTML = `<pre>${highlightSQL(g.output)}</pre>`;
+          else { $("sqlOut").textContent = "(empty output)"; }
+
+          $("status").textContent = "Step 2: running the query…";
+          const t0 = performance.now();
+          const result = g.output ? runQuery(g.output) : null;
+          const queryMs = Math.round(performance.now() - t0);
+
+          let ansMs = 0;
+          if (result && result.text) {
+            $("status").textContent = "Step 3: answering with FLAN-T5…";
+            const prompt = `Answer the question using the table of results. Results:\n${result.text}\nQuestion: ${question}`;
+            const a = await flan.run(prompt, { maxNewTokens: 60 }, (p) => { $("answer").textContent = p; });
+            $("answer").textContent = a.output || "(no answer)";
+            ansMs = a.ms;
+          } else {
+            $("answer").textContent = "No rows to answer from — see the SQL and database result above.";
+          }
+          $("readout").hidden = false;
+          $("rGen").textContent = (g.ms / 1000).toFixed(2) + " s";
+          $("rQuery").textContent = db ? queryMs + " ms" : "–";
+          $("rAns").textContent = ansMs ? (ansMs / 1000).toFixed(2) + " s" : "–";
+          $("rBackend").textContent = g.device.toUpperCase();
+          $("status").textContent = "Done — question → SQL → rows → answer, fully on-device.";
+          $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>

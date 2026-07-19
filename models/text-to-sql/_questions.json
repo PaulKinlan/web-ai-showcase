@@ -1,0 +1,135 @@
+{
+  "schemaVersion": 1,
+  "id": "text-to-sql",
+  "revision": 1,
+  "reviewedAt": "2026-07-19T00:00:00Z",
+  "reviewer": "build-agent (runner + headless-browser evidenced, revision 1)",
+  "frontend": true,
+  "rubric": [
+    {
+      "dimension": "real-inference",
+      "score": 5,
+      "severity": "info",
+      "evidence": "conformance (wasm, headless): 14/14 auto-checkable pass (loads-clean, calls-real-inference, declares-*, inference-off-main-thread, shared-auto-init-loader, live-status-region, errors-on-the-page, images-have-alt, buttons-have-names, responsive-desktop/mobile). Real full-lifecycle run in a persistent-profile headless Chrome: first visit showed state=download-required + Download button; after downloading ~80 MB the pipeline('text2text-generation','Xenova/t5-small-awesome-text-to-sql',{device:'wasm',dtype:'q8'}) produced REAL SQL for the default question 'List the names of students who never attended a course, ordered by GPA descending.' → SELECT name FROM students WHERE NOT student_id IN (SELECT student_id FROM attendance) ORDER BY gpa DESC (0.48s, 75.3 tok/s, 85→36 tokens). 0 console errors.",
+      "notes": "Distinct developer use vs the general text2text demos (flan-t5-instruct, t5-base-text2text): this is a SCHEMA-CONDITIONED NL→SQL fine-tune. Node cross-check confirmed 'tables:\\n<CREATE TABLE…>\\nquery for:<q>' produces valid SQL for filters/counts/GROUP BY/joins."
+    },
+    {
+      "dimension": "io-shape",
+      "score": 4,
+      "severity": "info",
+      "evidence": "conformance: io-shape-semantic=manual. Output is a single SQL string grounded in the provided schema — verified across the presets: GROUP BY+AVG ('SELECT department, AVG(salary) FROM employees GROUP BY department'), COUNT+WHERE, two-table JOIN, and anti-join subquery all produced syntactically valid, schema-appropriate SQL. The Practical page executes the SQL against an in-browser SQLite (sql.js) and returns real rows (country counts CA=3/UK=2/US=4), proving the output is runnable — and honestly surfaces a DB error when the 60M model hallucinates a column.",
+      "notes": "Score 4 not 5: at 60M the model sometimes invents a column (e.g. 'revenue') or adds a redundant JOIN; the page is explicit that output must be reviewed, and the Practical page shows real DB errors rather than hiding them."
+    },
+    {
+      "dimension": "runtime-config",
+      "score": 5,
+      "severity": "info",
+      "evidence": "conformance: declares-model-id (Xenova/t5-small-awesome-text-to-sql, linked to its card + the cssupport base), declares-task (text2text-generation), declares-backend (WASM), declares-quantisation (q8), inference-off-main-thread (Web Worker: t2sql.js SqlEngine → worker.js) all pass. At-a-glance also documents params (~60M), the exact input format, training datasets, and license (Apache-2.0).",
+      "notes": ""
+    },
+    {
+      "dimension": "cache-init",
+      "score": 5,
+      "severity": "info",
+      "evidence": "conformance: shared-auto-init-loader=pass; auto-init-on-cached=manual, VERIFIED: after the first-visit download, a same-profile reload auto-initialised to state=ready with NO Download button (hasDownloadBtn=false, runDisabled=false) and 0 console errors. First visit correctly showed the Download control (download-required).",
+      "notes": "Uses shared createModelLoader; no hand-rolled Load button. Same pattern on all four use-case pages and the multi-model page (which auto-inits both T5-SQL and FLAN-T5)."
+    },
+    {
+      "dimension": "states",
+      "score": 4,
+      "severity": "info",
+      "evidence": "conformance: live-status-region, errors-on-the-page, runs-without-webgpu-fallback all pass + honest-progress-retry-offline=manual. Download progress renders in the shared loader progress bar; generation failures surface as an .err status; the createModelLoader Retry path covers recovery. The Practical page degrades honestly if sql.js can't load from CDN (offline): it says so and still generates + copies SQL. WASM model needs no WebGPU.",
+      "notes": "Per-run status uses role=status aria-live=polite; the empty-question guard shows an .err status."
+    },
+    {
+      "dimension": "controls",
+      "score": 5,
+      "severity": "info",
+      "evidence": "conformance: controls-operable=manual. Verified controls across pages: preset/challenge buttons that fill schema+question; a schema textarea (with a live CREATE-TABLE pill summary), a question input; max-new-tokens + beams range sliders with live value labels; Generate button; a Copy SQL button (Clipboard API with execCommand fallback); on Practical, a run-edited-SQL path over an editable (contenteditable plaintext-only) SQL block. Driving Generate produced the real SQL above; the Copy button and sql.js execution both worked.",
+      "notes": "All controls labelled with visible <label> or accessible text; focus-visible outlines on presets/chips/copy."
+    },
+    {
+      "dimension": "no-fake-output",
+      "score": 5,
+      "severity": "info",
+      "evidence": "conformance: no-fake-output=manual. The only SQL shown is streamed from the pipeline's generate() (TextStreamer, token-by-token); empty output renders '(empty output)'. The 'exact fed string' + token chips are computed from the same buildPrompt() the worker tokenizes, so what you read is what runs. On the Practical page the rows come from sql.js executing that exact SQL — and a hallucinated column yields the real 'no such column' error, never a faked table.",
+      "notes": ""
+    },
+    {
+      "dimension": "accessibility",
+      "score": 5,
+      "severity": "info",
+      "evidence": "conformance: images-have-alt=pass (no <img>; icon is an inline SVG data URI), buttons-have-names=pass. Status regions use role=status aria-live=polite; the decode-timeline canvas has an aria-label; the rows result table uses real <th> headers; every input/textarea has an associated <label>. Applied accessibility guidance: accessible names on all buttons, live-region async announcements, visible focus.",
+      "notes": ""
+    },
+    {
+      "dimension": "responsive",
+      "score": 4,
+      "severity": "info",
+      "evidence": "conformance: responsive-desktop=pass, responsive-mobile=pass; parity-both-classes=manual. responsive-check.mjs: desktop (1280×800) clean, mobile (360×740 DPR3) clean — no horizontal overflow on either class. Agent read screenshots: light (warm paper) and dark both legible; header/lede/at-a-glance table wrap cleanly on 360px. Applied css-layout: the SQL output block (.sql-out), the fed-input, the token chips, and the result-rows table use overflow-x:auto + min-inline-size:0 + word-break so long queries and wide tables scroll inside their own box and never force the page to scroll horizontally.",
+      "notes": "responsive-check flags 13/5 'sub-24px' targets — inline crumb/reference links and small chip/copy buttons (standard, not primary tap targets); primary controls (Generate, presets, sliders) are ≥~35px. support flipped to ok with this evidence."
+    },
+    {
+      "dimension": "performance",
+      "score": 4,
+      "severity": "info",
+      "evidence": "conformance: inp-stays-low=manual. Inference runs in a Web Worker (SqlEngine → worker.js) and tokens stream via TextStreamer, so the control UI stays responsive during generation (measured ~75 tok/s, sub-second for typical queries). The live 'fed string' + token rendering is O(tokens) and cheap; the CREATE-TABLE pill parse runs only on schema edit. Applied identify-inp-causes / break-up-long-tasks: off-main-thread inference + streamed incremental output.",
+      "notes": "sql.js execution on the Practical page is over a tiny seeded DB (<10 rows) so query time is ~1ms — no main-thread stall."
+    }
+  ],
+  "guidanceConsulted": [
+    {
+      "id": "css-layout",
+      "recommendation": "Use flexbox with flex-wrap for 1D control rows; set min-inline-size:0 (and word-break / overflow-x:auto) on flex/grid items holding long unbreakable content; use repeat(auto-fit, minmax(...)) for responsive control/stat grids.",
+      "appliedOrException": "applied — the generated-SQL block, the fed-input schema box, the token chips, and the Practical result-rows table all use overflow-x:auto + min-inline-size:0 (+ word-break) so long queries and wide result tables scroll inside their own container instead of forcing page-level horizontal overflow on mobile; controls-grid, stat-row, preset-grid use auto-fit minmax.",
+      "evidence": "responsive-check desktop+mobile clean (no horizontal overflow); headless mobile 360×740 DPR3 mobileOverflow=false"
+    },
+    {
+      "id": "accessibility",
+      "recommendation": "Expose accessible names on all controls; announce async state in a role=status aria-live region; give canvases/labels accessible names; use real table headers.",
+      "appliedOrException": "applied — Generate/Copy/preset buttons all carry text labels; loader + run status use role=status aria-live=polite; the decode timeline canvas has an aria-label; the sql.js result uses <th> headers.",
+      "evidence": "conformance buttons-have-names=pass, images-have-alt=pass, live-status-region=pass"
+    },
+    {
+      "id": "identify-inp-causes",
+      "recommendation": "Move heavy JS off the main thread and keep interaction handlers short to protect INP.",
+      "appliedOrException": "applied — model download + generate run in a Web Worker; decoded SQL tokens stream incrementally to the output; per-keystroke work (CREATE-TABLE pill parse) is O(input) and only on schema edit.",
+      "evidence": "conformance inference-off-main-thread=pass; worker.js drives pipeline() with a TextStreamer at ~75 tok/s"
+    },
+    {
+      "id": "break-up-long-tasks",
+      "recommendation": "Break up / bound long main-thread loops so they don't spike INP.",
+      "appliedOrException": "applied — generation is off-thread and streamed; there is no long synchronous main-thread loop; token-chip render is bounded by the (short) input length; sql.js runs over a <10-row seeded DB.",
+      "evidence": "t2sql.js renderTokens over input tokens only; streaming callbacks update the DOM in small increments"
+    },
+    {
+      "id": "cross-document-transitions",
+      "recommendation": "Use cross-document view transitions for catalogue-to-page navigation.",
+      "appliedOrException": "applied — inherited from public/styles.css @view-transition navigation:auto (invariant 6); use-case cards use the shared .model-card grid.",
+      "evidence": "shared design system"
+    }
+  ],
+  "openQuestions": [
+    "Beam search (beams>1) often improves hard multi-join queries but can't stream — is the current greedy default + optional beam slider the right trade-off, or should hard-query pages default to beams=4?",
+    "Should the Practical page offer an 'edit schema + re-seed the in-browser DB' mode so users can query their own tables, or does a fixed seeded schema teach the loop more clearly?",
+    "Would a NEW additive demo comparing this schema-conditioned fine-tune against a general instruction model (FLAN-T5) on the same NL→SQL prompt make the 'specialised vs general' distinction concrete?"
+  ],
+  "followUpGoals": [
+    {
+      "goal": "Agent matrix pass for text-to-sql is done (desktop real-output run + mobile no-overflow + light/dark screenshots read + Practical sql.js rows verified); support flipped to ok. Re-audit if the design system changes.",
+      "kind": "targeted-fix",
+      "priority": "low"
+    },
+    {
+      "goal": "Add a NEW additive multi-model demo: chain an on-device embedding model to pick the most relevant table subset from a large schema before Text-to-SQL generates, to scale NL→SQL to wide databases (new slug, never replacing this page).",
+      "kind": "additive-demo",
+      "priority": "low"
+    },
+    {
+      "goal": "Consider an 'ask your own CSV' Practical variant that loads a user CSV into sql.js and queries it via generated SQL (new slug).",
+      "kind": "additive-demo",
+      "priority": "low"
+    }
+  ],
+  "summary": "Revision-1 build critique for text-to-sql (text2text-generation, WASM q8, Xenova/t5-small-awesome-text-to-sql), evidenced by a real headless full-lifecycle run: first-visit download → REAL SQL 'SELECT name FROM students WHERE NOT student_id IN (SELECT student_id FROM attendance) ORDER BY gpa DESC'; cached reload auto-inits with no Download button and 0 console errors. The star is SCHEMA-CONDITIONING — the see-inside surface shows the exact 'tables:…query for:…' string with the schema dimmed and the question highlighted, plus SentencePiece tokens and a real per-token decode timeline. The Practical page runs the generated SQL against an in-browser SQLite (sql.js) and shows real rows (CA=3/UK=2/US=4), honestly surfacing DB errors on hallucinated columns; the Multi-model page chains T5-SQL → FLAN-T5 to explain the query. Conformance 14/14 auto-checkable pass + 9 manual-evidenced; responsive desktop+mobile clean, light+dark legible. A distinct developer NL→SQL tool, not a relabel of the general text2text demos."
+}

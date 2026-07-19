@@ -1,0 +1,375 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Text-to-SQL — turn a question into a query, in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="A T5-small fine-tune that writes SQL from your database schema plus a plain-English question — running locally in your browser. Paste CREATE TABLE statements, ask a question, get a real query. See the exact schema-conditioned string fed to the model and its tokens."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🗄️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">text2text-generation · text · WASM · ~80 MB</p>
+      <h1>Text-to-SQL — ask in English, get a query</h1>
+      <p class="lede">
+        This is a small <strong>encoder-decoder</strong> (T5-small, ~60M) fine-tuned for one job:
+        <strong>writing SQL from a database schema and a plain-language question</strong>. Unlike a general
+        text model, it is <em>schema-conditioned</em> — you paste your <code>CREATE TABLE</code> statements
+        in front of the question, and the model grounds its query in <em>your</em> columns and table names.
+        The decoder writes the <code>SELECT</code> one token at a time; watch it stream. Nothing leaves your
+        device.
+      </p>
+      <p class="lede" style="font-size:.95rem">
+        Calibrate expectations: at 60M params it is genuinely good at single-table filters, counts,
+        <code>GROUP BY</code> aggregations, and simple joins over a schema you give it — and it will
+        sometimes get complex multi-join logic wrong. The page shows the real generated SQL, correct or not,
+        never a canned answer. Always review generated SQL before running it against a real database.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/Xenova/t5-small-awesome-text-to-sql" target="_blank" rel="noopener">Xenova/t5-small-awesome-text-to-sql</a> (ONNX of <a href="https://huggingface.co/cssupport/t5-small-awesome-text-to-sql" target="_blank" rel="noopener">cssupport/t5-small-awesome-text-to-sql</a>)</td></tr>
+          <tr><th>Task / pipeline</th><td><code>text2text-generation</code> (sequence-to-sequence)</td></tr>
+          <tr><th>Architecture</th><td>T5-small encoder-decoder (~60M params) — encoder reads schema + question, decoder writes SQL</td></tr>
+          <tr><th>Training</th><td>Fine-tuned on <a href="https://huggingface.co/datasets/b-mc2/sql-create-context" target="_blank" rel="noopener">b-mc2/sql-create-context</a> + <a href="https://huggingface.co/datasets/Clinton/Text-to-sql-v1" target="_blank" rel="noopener">Clinton/Text-to-sql-v1</a> — schema-grounded NL→SQL pairs</td></tr>
+          <tr><th>Input format</th><td><code>tables:\n&lt;CREATE TABLE …&gt;\nquery for:&lt;question&gt;</code> — the schema is the conditioning</td></tr>
+          <tr><th>Quantization</th><td>q8 (8-bit) ONNX — encoder + merged decoder</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (runs anywhere; no WebGPU needed)</td></tr>
+          <tr><th>Download</th><td>~80 MB, cached after first load</td></tr>
+          <tr><th>License</th><td>Apache-2.0</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers, Clipboard — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Paste your schema (one or more <code>CREATE TABLE</code> statements), ask a question in
+        plain English, and hit Generate. The schema plus the question is what conditions the model — change
+        the schema and the same question produces different SQL.</p>
+
+      <div id="model-loader"></div>
+
+      <div class="preset-grid" id="presets"></div>
+
+      <label style="display:flex;flex-direction:column;gap:.3rem;font-size:.82rem;margin-top:.4rem">
+        Schema — <code>CREATE TABLE</code> statements (one per line)
+        <textarea id="schema" class="schema-box" rows="4" disabled>CREATE TABLE students (student_id INT, name VARCHAR, gpa FLOAT, major VARCHAR)
+CREATE TABLE attendance (student_id INT, course_id INT, present BOOLEAN)</textarea>
+      </label>
+      <div class="schema-tables" id="schemaTables" aria-live="polite"></div>
+
+      <label style="display:flex;flex-direction:column;gap:.3rem;font-size:.82rem;margin-top:.6rem">
+        Question (plain English)
+        <input type="text" id="question" value="List the names of students who never attended a course, ordered by GPA descending." disabled />
+      </label>
+
+      <div class="controls-grid">
+        <label>Max new tokens <span class="val" id="maxVal">128</span>
+          <input type="range" id="maxTok" min="16" max="256" step="16" value="128" />
+        </label>
+        <label>Beams <span class="val" id="beamVal">1 (greedy, streams)</span>
+          <input type="range" id="beams" min="1" max="5" step="1" value="1" />
+        </label>
+        <button id="run" type="button" disabled>Generate SQL</button>
+      </div>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+
+      <div style="margin-top:.4rem">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:.5rem">
+          <span style="font-size:.82rem;color:var(--muted)">Generated SQL</span>
+          <button id="copy" class="copy-btn" type="button" hidden>Copy SQL</button>
+        </div>
+        <div class="sql-out-wrap">
+          <div class="sql-out" id="out" aria-live="polite"></div>
+        </div>
+      </div>
+
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>time <b id="rMs">–</b></span>
+        <span>speed <b id="rTps">–</b></span>
+        <span>tokens in→out <b id="rTok">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside — the schema-conditioned input the model actually reads</h3>
+      <p class="muted">
+        There is no hidden prompt engineering. The model was trained on one exact shape: the word
+        <code>tables:</code>, your <code>CREATE TABLE</code> lines, then <code>query for:</code> and the
+        question. Below, the <span style="color:var(--muted)">schema conditioning</span> is dimmed and the
+        <span style="background:color-mix(in srgb, var(--accent) 22%, transparent);border-radius:3px;padding:0 .2rem">question</span>
+        is highlighted, so you can see exactly how the schema steers the query. Then the encoder's tokens
+        (T5 uses SentencePiece — a leading <code>·</code> marks a word boundary) and the decoder's real
+        per-token timeline.
+      </p>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Generate a query to inspect the exact input the model was fed.</div>
+      <div id="insideWrap" hidden>
+        <p class="muted" style="font-size:.8rem;margin:.4rem 0 .2rem">Exact input string fed to the encoder:</p>
+        <div class="fed-input" id="fedInput"></div>
+        <div class="stat-row">
+          <div class="stat"><div class="k">Input tokens</div><div class="v" id="inTok">–</div></div>
+          <div class="stat"><div class="k">Output tokens</div><div class="v" id="outTok">–</div></div>
+          <div class="stat"><div class="k">Decode mode</div><div class="v" id="mode" style="font-size:1rem">–</div></div>
+        </div>
+        <p class="muted" style="font-size:.8rem;margin:.6rem 0 .2rem">Input tokens (SentencePiece):</p>
+        <div class="tok-wrap" id="tokens"></div>
+        <p class="muted" style="font-size:.82rem;margin:.8rem 0 .3rem">Per-token decode timeline (ms per token):</p>
+        <canvas id="timeline" class="timeline" aria-label="Bar chart of milliseconds taken to generate each output SQL token"></canvas>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        Natural-language querying is one of the most-requested database features, and it usually means
+        shipping every schema and question to a cloud LLM. An 80 MB model in a tab does the common cases
+        privately, offline, and for free — the schema and the question never leave the device.
+      </p>
+      <ul>
+        <li><strong>Query assistant in your app</strong> — let non-SQL users ask questions of a database whose schema you already know; show them the generated SQL to run or edit.</li>
+        <li><strong>Private analytics on local data</strong> — build a "ask your CSV/SQLite" tool that composes queries client-side, with nothing sent to a server.</li>
+        <li><strong>SQL learning aid</strong> — a student types a question and sees the query, then reads the token stream to understand how the schema shaped it.</li>
+        <li><strong>Draft-then-review workflows</strong> — generate a first-pass query on-device, then send only the (small) SQL for validation instead of the whole prompt.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">One schema, many questions — feel how a plain-English question becomes SQL.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">A query console over a fixed schema: ask, get copyable SQL, run it against an in-browser database and see rows.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Push it: multi-table joins, aggregations, and nested subqueries — find where a 60M model shines and where it breaks.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">The full loop: question → SQL → run it in SQLite → FLAN-T5 answers in plain English. Two models plus a database.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>The whole task lives in the input string — the schema is the conditioning, no template roles:</p>
+      <pre><code>import { pipeline } from "@huggingface/transformers";
+
+const text2sql = await pipeline(
+  "text2text-generation",
+  "Xenova/t5-small-awesome-text-to-sql",
+); // downloads + caches ~80 MB once
+
+// paste the schema in front of the question — this exact shape is what it was trained on:
+const prompt =
+  "tables:\n" +
+  "CREATE TABLE students (student_id INT, name VARCHAR, gpa FLOAT);" +
+  " CREATE TABLE attendance (student_id INT, course_id INT)\n" +
+  "query for:List the names of students who never attended a course.";
+
+await text2sql(prompt, { max_new_tokens: 128 });
+// → [{ generated_text: "SELECT name FROM students WHERE NOT student_id IN
+//        (SELECT student_id FROM attendance)" }]</code></pre>
+      <p class="muted">
+        For the live token stream and the decode timeline, this page passes a <code>TextStreamer</code> so it
+        can timestamp each generated token — all inside a Web Worker so the UI never janks.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/Xenova/t5-small-awesome-text-to-sql" target="_blank" rel="noopener">Model card — Xenova/t5-small-awesome-text-to-sql (ONNX)</a></li>
+        <li><a href="https://huggingface.co/cssupport/t5-small-awesome-text-to-sql" target="_blank" rel="noopener">Original weights &amp; card — cssupport/t5-small-awesome-text-to-sql</a></li>
+        <li><a href="https://huggingface.co/datasets/b-mc2/sql-create-context" target="_blank" rel="noopener">Dataset — b-mc2/sql-create-context (schema-grounded NL→SQL)</a></li>
+        <li><a href="https://arxiv.org/abs/1910.10683" target="_blank" rel="noopener">Paper — T5: the encoder-decoder text-to-text framework (Raffel et al., 2019)</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import {
+        SqlEngine,
+        buildPrompt,
+        renderFedPrompt,
+        renderTokens,
+        drawTimeline,
+        highlightSQL,
+        copyText,
+        SQL_CSS,
+      } from "./t2sql.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = SQL_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new SqlEngine();
+      let last = null;
+
+      const PRESETS = [
+        {
+          t: "Never attended",
+          d: "anti-join / subquery",
+          schema:
+            "CREATE TABLE students (student_id INT, name VARCHAR, gpa FLOAT, major VARCHAR)\nCREATE TABLE attendance (student_id INT, course_id INT, present BOOLEAN)",
+          q: "List the names of students who never attended a course, ordered by GPA descending.",
+        },
+        {
+          t: "Average by group",
+          d: "GROUP BY + AVG",
+          schema: "CREATE TABLE employees (id INT, name TEXT, salary INT, department TEXT)",
+          q: "What is the average salary for each department?",
+        },
+        {
+          t: "Count with filter",
+          d: "COUNT + WHERE",
+          schema: "CREATE TABLE orders (order_id INT, customer_id INT, total DECIMAL, status VARCHAR)",
+          q: "How many orders have a total greater than 100 and status 'shipped'?",
+        },
+        {
+          t: "Two-table join",
+          d: "JOIN",
+          schema:
+            "CREATE TABLE authors (author_id INT, name VARCHAR)\nCREATE TABLE books (book_id INT, title VARCHAR, author_id INT, year INT)",
+          q: "Show each book title with its author's name for books published after 2010.",
+        },
+        {
+          t: "Max per category",
+          d: "MAX + GROUP BY",
+          schema: "CREATE TABLE products (product_id INT, name TEXT, category TEXT, price DECIMAL)",
+          q: "What is the most expensive product in each category?",
+        },
+      ];
+      $("presets").replaceChildren(...PRESETS.map((pr) => {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "preset";
+        b.innerHTML = `<span class="t"></span><br><span class="d"></span>`;
+        b.querySelector(".t").textContent = pr.t;
+        b.querySelector(".d").textContent = pr.d;
+        b.addEventListener("click", () => {
+          $("schema").value = pr.schema;
+          $("question").value = pr.q;
+          refreshTables();
+        });
+        return b;
+      }));
+
+      // Parse CREATE TABLE names/columns for a quick at-a-glance of the schema the model will read.
+      function refreshTables() {
+        const text = $("schema").value;
+        const re = /CREATE\s+TABLE\s+([`"[\]\w]+)\s*\(([^)]*)\)/gi;
+        const pills = [];
+        let m;
+        while ((m = re.exec(text)) !== null) {
+          const name = m[1].replace(/[`"[\]]/g, "");
+          const cols = m[2].split(",").map((c) => c.trim().split(/\s+/)[0]).filter(Boolean).length;
+          const pill = document.createElement("span");
+          pill.className = "tbl-pill";
+          pill.innerHTML = `<b></b> <span></span>`;
+          pill.querySelector("b").textContent = name;
+          pill.querySelector("span").textContent = `${cols} col${cols === 1 ? "" : "s"}`;
+          pills.push(pill);
+        }
+        $("schemaTables").replaceChildren(...pills);
+      }
+      $("schema").addEventListener("input", refreshTables);
+
+      $("maxTok").addEventListener("input", () => { $("maxVal").textContent = $("maxTok").value; });
+      $("beams").addEventListener("input", () => {
+        const b = +$("beams").value;
+        $("beamVal").textContent = b === 1 ? "1 (greedy, streams)" : b + " (beam search)";
+      });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: {
+          modelId: "Xenova/t5-small-awesome-text-to-sql",
+          runtime: "transformers.js",
+          dtype: "q8",
+          sizeMB: 80,
+          requiresWebGPU: false,
+        },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => {
+          $("schema").disabled = false;
+          $("question").disabled = false;
+          $("run").disabled = false;
+          refreshTables();
+        },
+      });
+
+      $("copy").addEventListener("click", async () => {
+        if (!last?.output) return;
+        const ok = await copyText(last.output);
+        $("copy").textContent = ok ? "Copied ✓" : "Copy failed";
+        setTimeout(() => { $("copy").textContent = "Copy SQL"; }, 1600);
+      });
+
+      $("run").addEventListener("click", async () => {
+        const schema = $("schema").value.trim();
+        const question = $("question").value.trim();
+        if (!question) {
+          $("status").hidden = false;
+          $("status").classList.add("err");
+          $("status").textContent = "Write a question first.";
+          return;
+        }
+        const prompt = buildPrompt(schema, question);
+        $("run").disabled = true;
+        $("copy").hidden = true;
+        $("status").hidden = false;
+        $("status").classList.remove("err");
+        $("status").textContent = "Generating…";
+        $("out").textContent = "";
+        try {
+          const opts = { maxNewTokens: +$("maxTok").value, numBeams: +$("beams").value };
+          const r = await engine.run(prompt, opts, (partial) => { $("out").textContent = partial; });
+          last = r;
+          if (r.output) {
+            $("out").innerHTML = `<pre>${highlightSQL(r.output)}</pre>`;
+            $("copy").hidden = false;
+          } else {
+            $("out").textContent = "(empty output)";
+          }
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = (r.ms / 1000).toFixed(2) + " s";
+          const tps = r.ms > 0 ? (r.outTokens / (r.ms / 1000)) : 0;
+          $("rTps").textContent = tps ? tps.toFixed(1) + " tok/s" : "–";
+          $("rTok").textContent = `${r.inTokens} → ${r.outTokens}`;
+          $("readout").hidden = false;
+          // See inside
+          $("insideEmpty").hidden = true;
+          $("insideWrap").hidden = false;
+          renderFedPrompt($("fedInput"), r.input);
+          $("inTok").textContent = r.inTokens;
+          $("outTok").textContent = r.outTokens;
+          $("mode").textContent = r.beams > 1 ? `beam ×${r.beams}` : "greedy";
+          renderTokens($("tokens"), r.inTokenStrings);
+          drawTimeline($("timeline"), r.intervals);
+          $("status").textContent = `Done on ${r.device.toUpperCase()}.`;
+          $("status").classList.add("ok");
+        } catch (err) {
+          $("status").textContent = "Generation failed: " + err.message;
+          $("status").classList.add("err");
+        } finally {
+          $("run").disabled = false;
+        }
+      });
+
+      addEventListener("resize", () => { if (last) drawTimeline($("timeline"), last.intervals); });
+    </script>
+  </body>
+</html>

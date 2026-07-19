@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Text-to-SQL — Practical: a live query console · Web AI Showcase</title>
+    <meta name="description" content="Ask a question of a real in-browser database: T5 writes the SQL, an in-tab SQLite (sql.js) runs it, and you see the actual rows. Copyable SQL, honest errors, nothing sent to a server." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🗄️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Text-to-SQL</a></p>
+
+    <header>
+      <p class="eyebrow">Practical · text2text-generation + SQLite · WASM</p>
+      <h1>A live "ask your database" console</h1>
+      <p class="lede">
+        This is the shippable version: a small e-commerce database lives <em>in the tab</em> (a real SQLite
+        built with <a href="https://sql.js.org/" target="_blank" rel="noopener">sql.js</a>). Ask a question,
+        T5 writes the SQL, and the in-browser database actually runs it — you see the real rows. When the
+        tiny model produces invalid SQL, you see the honest database error instead of a fake result. Nothing
+        leaves your device.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Query the database</h3>
+      <div id="model-loader"></div>
+
+      <p class="muted" style="font-size:.82rem;margin:.6rem 0 .2rem">Schema in the in-browser database:</p>
+      <div class="fed-input" id="schemaView"></div>
+      <p id="dbStatus" class="muted" style="font-size:.78rem;margin:.3rem 0"></p>
+
+      <p class="muted" style="font-size:.82rem;margin:.8rem 0 .2rem">Pick a business question:</p>
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem" id="questions"></div>
+
+      <div style="display:flex;gap:.4rem;flex-wrap:wrap;align-items:center;margin:.6rem 0">
+        <input id="question" type="text" value="How many orders were placed from each country?" style="flex:1;min-inline-size:14rem" disabled />
+        <button id="run" type="button" disabled>Generate &amp; run</button>
+      </div>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+
+      <div id="result" hidden>
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:.5rem">
+          <span style="font-size:.82rem;color:var(--muted)">Generated SQL</span>
+          <span style="display:flex;gap:.4rem">
+            <button id="copy" class="copy-btn" type="button" hidden>Copy SQL</button>
+            <button id="rerun" class="copy-btn" type="button" hidden>Run edited SQL</button>
+          </span>
+        </div>
+        <div class="sql-out-wrap"><div class="sql-out" id="sqlOut" contenteditable="false"></div></div>
+
+        <p class="muted" style="font-size:.82rem;margin:.8rem 0 .2rem">Result from the in-browser database:</p>
+        <div id="rows" class="rows-wrap"></div>
+      </div>
+      <div class="readout" id="readout" hidden><span>generate <b id="rGen">–</b></span><span>query <b id="rQuery">–</b></span><span>rows <b id="rRows">–</b></span><span>backend <b id="rBackend">–</b></span></div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why this is the shippable shape</h2>
+      <p class="muted">A generate-and-execute loop against a schema you own is exactly how an in-app query
+        assistant works: the model drafts SQL from the user's words, your database engine runs it, and the
+        user sees rows — or a real error they can act on. Here both the model and the database are in the
+        browser, so a whole "chat with your data" feature ships with zero backend and total privacy.</p>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      🤗 Transformers.js and <a href="https://sql.js.org/" target="_blank" rel="noopener">sql.js</a>.
+      <a href="../">← Back to Text-to-SQL</a>
+    </footer>
+
+    <script type="module">
+      import { SqlEngine, buildPrompt, highlightSQL, copyText, escapeHTML, SQL_CSS } from "../t2sql.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = SQL_CSS + `
+        .rows-wrap { overflow-x:auto; min-inline-size:0; }
+        .rows-table { border-collapse:collapse; font-family:var(--font-mono); font-size:.8rem; min-inline-size:100%; }
+        .rows-table th, .rows-table td { border:1px solid var(--border); padding:.3rem .55rem; text-align:start; white-space:nowrap; }
+        .rows-table th { background:var(--bg-secondary); color:var(--muted); }
+        .db-err { color:var(--bad, #c0392b); font-family:var(--font-mono); font-size:.82rem; white-space:pre-wrap; }
+      `;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new SqlEngine();
+      let last = null;
+      let db = null;
+
+      const SCHEMA =
+        "CREATE TABLE categories (category_id INTEGER, name TEXT)\n" +
+        "CREATE TABLE products (product_id INTEGER, name TEXT, category_id INTEGER, price REAL)\n" +
+        "CREATE TABLE orders (order_id INTEGER, product_id INTEGER, quantity INTEGER, country TEXT)";
+      $("schemaView").textContent = SCHEMA;
+
+      // The schema string fed to the model. sql.js gets a fully-typed version with seed rows below.
+      const SEED = `
+        CREATE TABLE categories (category_id INTEGER PRIMARY KEY, name TEXT);
+        CREATE TABLE products (product_id INTEGER PRIMARY KEY, name TEXT, category_id INTEGER, price REAL);
+        CREATE TABLE orders (order_id INTEGER PRIMARY KEY, product_id INTEGER, quantity INTEGER, country TEXT);
+        INSERT INTO categories VALUES (1,'Electronics'),(2,'Books'),(3,'Home');
+        INSERT INTO products VALUES
+          (1,'Headphones',1,79.0),(2,'Laptop',1,999.0),(3,'Novel',2,12.5),
+          (4,'Cookbook',2,24.0),(5,'Lamp',3,39.5),(6,'Kettle',3,29.0);
+        INSERT INTO orders VALUES
+          (1,2,1,'US'),(2,1,3,'US'),(3,3,5,'CA'),(4,4,2,'UK'),
+          (5,5,4,'US'),(6,6,1,'CA'),(7,2,1,'UK'),(8,1,2,'CA'),(9,3,10,'US');
+      `;
+
+      const QUESTIONS = [
+        "How many orders were placed from each country?",
+        "What is the average price of products in each category?",
+        "What is the name and price of the most expensive product?",
+        "How many products are there in total?",
+        "What is the total revenue per product category?",
+      ];
+      $("questions").replaceChildren(...QUESTIONS.map((q) => {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "chip";
+        b.textContent = q;
+        b.addEventListener("click", () => { $("question").value = q; });
+        return b;
+      }));
+
+      // Load sql.js (UMD) via a classic <script> tag — it exposes a global initSqlJs factory. The wasm
+      // binary is fetched from the same CDN via locateFile. Degrade honestly if it can't load.
+      const SQLJS_BASE = "https://cdn.jsdelivr.net/npm/sql.js@1.13.0/dist/";
+      function loadSqlJsScript() {
+        return new Promise((resolve, reject) => {
+          if (globalThis.initSqlJs) return resolve(globalThis.initSqlJs);
+          const s = document.createElement("script");
+          s.src = SQLJS_BASE + "sql-wasm.js";
+          s.onload = () => resolve(globalThis.initSqlJs);
+          s.onerror = () => reject(new Error("Could not load sql.js from CDN"));
+          document.head.append(s);
+        });
+      }
+      async function initDb() {
+        try {
+          const initSqlJs = await loadSqlJsScript();
+          const SQL = await initSqlJs({ locateFile: (f) => SQLJS_BASE + f });
+          db = new SQL.Database();
+          db.run(SEED);
+          $("dbStatus").textContent = "In-browser SQLite ready · 3 tables seeded with sample rows.";
+        } catch (err) {
+          db = null;
+          $("dbStatus").textContent =
+            "Couldn't start the in-browser database (offline or CDN blocked). You can still generate and copy SQL below.";
+          $("dbStatus").classList.add("err");
+        }
+      }
+      initDb();
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/t5-small-awesome-text-to-sql", runtime: "transformers.js", dtype: "q8", sizeMB: 80, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("question").disabled = false; $("run").disabled = false; },
+      });
+
+      $("copy").addEventListener("click", async () => {
+        if (!last?.output) return;
+        const ok = await copyText(last.output);
+        $("copy").textContent = ok ? "Copied ✓" : "Copy failed";
+        setTimeout(() => { $("copy").textContent = "Copy SQL"; }, 1600);
+      });
+
+      function renderRows(sql) {
+        const t0 = performance.now();
+        if (!db) {
+          $("rows").innerHTML = `<p class="muted" style="font-size:.82rem">No in-browser database — SQL generated only.</p>`;
+          $("rQuery").textContent = "–"; $("rRows").textContent = "–";
+          return;
+        }
+        try {
+          const res = db.exec(sql);
+          const ms = Math.round(performance.now() - t0);
+          $("rQuery").textContent = ms + " ms";
+          if (!res.length) {
+            $("rows").innerHTML = `<p class="muted" style="font-size:.82rem">Query ran successfully · 0 rows.</p>`;
+            $("rRows").textContent = "0";
+            return;
+          }
+          const { columns, values } = res[0];
+          const head = `<tr>${columns.map((c) => `<th>${escapeHTML(c)}</th>`).join("")}</tr>`;
+          const body = values.map((row) =>
+            `<tr>${row.map((v) => `<td>${escapeHTML(v === null ? "NULL" : String(v))}</td>`).join("")}</tr>`
+          ).join("");
+          $("rows").innerHTML = `<table class="rows-table"><thead>${head}</thead><tbody>${body}</tbody></table>`;
+          $("rRows").textContent = String(values.length);
+        } catch (err) {
+          $("rows").innerHTML = `<p class="db-err">Database error: ${escapeHTML(err.message)}</p>
+            <p class="muted" style="font-size:.78rem">The 60M model produced SQL this schema rejected — an honest failure. Edit the SQL above and re-run.</p>`;
+          $("rQuery").textContent = "error"; $("rRows").textContent = "–";
+        }
+      }
+
+      function enableEdit() {
+        $("sqlOut").setAttribute("contenteditable", "plaintext-only");
+        $("rerun").hidden = false;
+      }
+      $("rerun").addEventListener("click", () => {
+        const edited = $("sqlOut").textContent.trim();
+        if (edited) { last = { ...last, output: edited }; renderRows(edited); }
+      });
+
+      $("run").addEventListener("click", async () => {
+        const question = $("question").value.trim();
+        if (!question) { $("status").hidden = false; $("status").classList.add("err"); $("status").textContent = "Pick or write a question."; return; }
+        const prompt = buildPrompt(SCHEMA, question);
+        $("run").disabled = true; $("copy").hidden = true; $("rerun").hidden = true;
+        $("status").hidden = false; $("status").classList.remove("err");
+        $("status").textContent = "Writing SQL…";
+        $("sqlOut").textContent = ""; $("rows").textContent = "";
+        try {
+          const r = await engine.run(prompt, { maxNewTokens: 128 }, (p) => { $("sqlOut").textContent = p; });
+          last = r;
+          $("result").hidden = false;
+          if (r.output) {
+            $("sqlOut").innerHTML = `<pre>${highlightSQL(r.output)}</pre>`;
+            $("copy").hidden = false; enableEdit();
+          } else {
+            $("sqlOut").textContent = "(empty output)";
+          }
+          $("status").textContent = "Running the query in the browser…";
+          if (r.output) renderRows(r.output);
+          $("readout").hidden = false;
+          $("rGen").textContent = (r.ms / 1000).toFixed(2) + " s";
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("status").textContent = db ? "Done — real rows from the in-tab database." : "SQL generated (no database available).";
+          $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>
