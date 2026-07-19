@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CLIPSeg wild — segment abstract ideas · Web AI Showcase</title>
+    <meta name="description" content="CLIPSeg isn't limited to nouns. Prompt it with abstract, relational, or vibe-based phrases — 'the warmest area', 'the safest place to walk', 'where to look first' — and watch a probability field bloom over your photo. Runs locally in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎯</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">CLIPSeg</a></p>
+    <header>
+      <p class="eyebrow">wild · text-prompted segmentation</p>
+      <h1>Wild — segment an idea, not a noun</h1>
+      <p class="lede">Because CLIPSeg rides on CLIP's language understanding, the prompt doesn't have to be a
+        concrete object. Ask for <code>the warmest area</code>, <code>the safest place to walk</code>, or
+        <code>where to look first</code> and it will still paint a heatmap — its best guess at where that
+        <em>idea</em> lives in the pixels. Some hits are uncanny; some are nonsense. That's the fun.</p>
+    </header>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Try it</h3>
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image">
+        <span>Drop a photo here, or click to choose</span>
+        <input type="file" id="file" accept="image/*" hidden />
+      </div>
+      <div class="sample-strip" id="samples" aria-label="Sample images">
+        <img class="sample-thumb active" src="../sample-street.jpg" data-src="../sample-street.jpg" alt="A riverside landscape at golden hour" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-pets.jpg" data-src="../sample-pets.jpg" alt="Two cats on a couch" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-room.jpg" data-src="../sample-room.jpg" alt="A bedroom interior" tabindex="0" role="button" />
+      </div>
+
+      <label for="prompt" style="font-size:.82rem;color:var(--muted);display:block;margin-top:.6rem">An abstract phrase</label>
+      <input id="prompt" class="prompt-input" type="text" value="the brightest part" disabled />
+      <div class="chip-row">
+        <button class="seg-chip" type="button" data-set="the brightest part">the brightest part</button>
+        <button class="seg-chip" type="button" data-set="where to look first">where to look first</button>
+        <button class="seg-chip" type="button" data-set="the warmest area">the warmest area</button>
+        <button class="seg-chip" type="button" data-set="the safest place to walk">the safest place to walk</button>
+        <button class="seg-chip" type="button" data-set="something dangerous">something dangerous</button>
+        <button class="seg-chip" type="button" data-set="the coziest spot">the coziest spot</button>
+      </div>
+      <p class="muted" style="font-size:.78rem;margin:.2rem 0 0">Abstract prompts score low and diffuse in absolute terms, so here the field is <strong>normalised per image</strong> (each map stretched to its own min–max) — you're seeing <em>where the signal concentrates</em>, not a calibrated probability. The threshold is that relative intensity; the readout still reports the true peak sigmoid.</p>
+      <div class="slider-row">
+        <button id="segBtn" type="button" disabled>Segment</button>
+        <label for="thresh" style="margin-inline-start:1rem">Relative threshold</label>
+        <input id="thresh" type="range" min="0.05" max="0.95" step="0.01" value="0.55" />
+        <output id="threshOut">0.55</output>
+      </div>
+
+      <div class="canvas-grid">
+        <div class="canvas-card">
+          <h4>Mask over photo (relative)</h4>
+          <canvas id="stage" class="viz-canvas"></canvas>
+        </div>
+        <div class="canvas-card">
+          <h4>Relative match field</h4>
+          <canvas id="heat" class="viz-canvas"></canvas>
+          <div class="colorbar" aria-hidden="true"></div>
+          <div class="colorbar-labels"><span>weakest</span><span>strongest</span></div>
+        </div>
+      </div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+        <span>peak prob <b id="rPeak">–</b></span>
+        <span>coverage <b id="rCov">–</b></span>
+      </div>
+    </section>
+
+    <section aria-labelledby="note-h">
+      <h2 id="note-h">Why this works at all</h2>
+      <p>CLIPSeg conditions a segmentation decoder on a CLIP text embedding. CLIP learned those embeddings
+        from hundreds of millions of image–caption pairs, so "cozy", "dangerous", or "warm" already point
+        somewhere in its visual space. The decoder just asks "which pixels look most like <em>that</em>?"
+        Treat the result as vibes, not ground truth — but it's a striking demo of language steering pixels,
+        with no labels in sight.</p>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via 🤗 Transformers.js.
+      <a href="../">← Back to CLIPSeg</a>
+    </footer>
+
+    <script type="module">
+      import { ClipsegEngine, CLIPSEG_CSS, colorForIndex, loadImage, parsePrompts, peakOfMap, probColor, urlToDataURL, fileToDataURL } from "../clipseg.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      document.head.append(Object.assign(document.createElement("style"), { textContent: CLIPSEG_CSS }));
+      const $ = (id) => document.getElementById(id);
+      const engine = new ClipsegEngine();
+      let ready = false, img = null, imgURL = null, last = null;
+
+      async function setImage(src) { imgURL = src; img = await loadImage(src); if (ready) run(); }
+      for (const t of document.querySelectorAll(".sample-thumb")) {
+        const pick = async () => { document.querySelectorAll(".sample-thumb").forEach((x) => x.classList.remove("active")); t.classList.add("active"); await setImage(await urlToDataURL(t.dataset.src)); };
+        t.addEventListener("click", pick);
+        t.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(); } });
+      }
+      $("drop").addEventListener("click", () => $("file").click());
+      $("drop").addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); $("file").click(); } });
+      $("file").addEventListener("change", async (e) => { const f = e.target.files?.[0]; if (f) { document.querySelectorAll(".sample-thumb").forEach((x) => x.classList.remove("active")); await setImage(await fileToDataURL(f)); } });
+      for (const ev of ["dragover", "dragenter"]) $("drop").addEventListener(ev, (e) => { e.preventDefault(); $("drop").classList.add("drag"); });
+      for (const ev of ["dragleave", "drop"]) $("drop").addEventListener(ev, (e) => { e.preventDefault(); $("drop").classList.remove("drag"); });
+      $("drop").addEventListener("drop", async (e) => { const f = e.dataTransfer?.files?.[0]; if (f) { await setImage(await fileToDataURL(f)); } });
+      for (const c of document.querySelectorAll(".seg-chip")) c.addEventListener("click", () => { $("prompt").value = c.dataset.set; if (ready) run(); });
+      $("prompt").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); run(); } });
+      $("segBtn").addEventListener("click", run);
+      $("thresh").addEventListener("input", () => { $("threshOut").textContent = (+$("thresh").value).toFixed(2); paint(); });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/clipseg-rd64-refined", runtime: "transformers.js", dtype: "q8", sizeMB: 140, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: async () => { ready = true; $("prompt").disabled = false; $("segBtn").disabled = false; if (!img) await setImage(await urlToDataURL("../sample-street.jpg")); else run(); },
+      });
+
+      async function run() {
+        if (!ready || !img) return;
+        const prompts = parsePrompts($("prompt").value, 1);
+        if (!prompts.length) return;
+        $("runStatus").hidden = false; $("runStatus").classList.remove("err"); $("runStatus").textContent = "Segmenting…";
+        try {
+          last = await engine.segment(imgURL, prompts);
+          $("runStatus").hidden = true;
+          paint();
+          $("readout").hidden = false;
+          $("rBackend").textContent = last.device.toUpperCase();
+          $("rMs").textContent = last.ms + " ms";
+        } catch (err) { $("runStatus").hidden = false; $("runStatus").classList.add("err"); $("runStatus").textContent = "Failed: " + err.message; }
+      }
+      // Per-image normalisation: sigmoid → stretch to the map's own min–max, so an abstract prompt's
+      // low, diffuse field becomes legible as RELATIVE intensity (clearly labelled as such in the UI).
+      function normalize(map) {
+        const p = new Float32Array(map.length);
+        let mn = Infinity, mx = -Infinity;
+        for (let i = 0; i < map.length; i++) { const v = 1 / (1 + Math.exp(-map[i])); p[i] = v; if (v < mn) mn = v; if (v > mx) mx = v; }
+        const span = mx - mn || 1;
+        for (let i = 0; i < p.length; i++) p[i] = (p[i] - mn) / span;
+        return p;
+      }
+      function paint() {
+        if (!last || !img) return;
+        const thr = +$("thresh").value, m = last.maps[0];
+        const norm = normalize(m.data), W = last.mapW, H = last.mapH;
+        // relative heatmap
+        const heat = $("heat"); heat.width = W; heat.height = H;
+        const hd = new Uint8ClampedArray(W * H * 4);
+        for (let i = 0; i < W * H; i++) { const [r, g, b] = probColor(norm[i]); const o = i * 4; hd[o] = r; hd[o + 1] = g; hd[o + 2] = b; hd[o + 3] = 255; }
+        heat.getContext("2d").putImageData(new ImageData(hd, W, H), 0, 0);
+        // relative mask over photo
+        const stage = $("stage"), iw = img.naturalWidth, ih = img.naturalHeight;
+        stage.width = iw; stage.height = ih;
+        const ctx = stage.getContext("2d"); ctx.drawImage(img, 0, 0, iw, ih);
+        const [mr, mg, mb] = colorForIndex(0);
+        const md = new Uint8ClampedArray(W * H * 4);
+        let above = 0;
+        for (let i = 0; i < W * H; i++) { if (norm[i] >= thr) { const o = i * 4; md[o] = mr; md[o + 1] = mg; md[o + 2] = mb; md[o + 3] = 140; above++; } }
+        const tmp = document.createElement("canvas"); tmp.width = W; tmp.height = H;
+        tmp.getContext("2d").putImageData(new ImageData(md, W, H), 0, 0);
+        ctx.imageSmoothingEnabled = true; ctx.drawImage(tmp, 0, 0, iw, ih);
+        const pk = peakOfMap(m.data, W, H);
+        $("rPeak").textContent = pk.prob.toFixed(3);
+        $("rCov").textContent = (above / (W * H) * 100).toFixed(1) + "%";
+      }
+    </script>
+  </body>
+</html>

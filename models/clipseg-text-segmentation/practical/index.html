@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CLIPSeg practical — isolate or blur by phrase · Web AI Showcase</title>
+    <meta name="description" content="Two shippable CLIPSeg workflows, entirely on-device: isolate the thing a phrase names onto a transparent background (download the PNG), or privacy-blur exactly the region a phrase matches." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎯</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">CLIPSeg</a></p>
+    <header>
+      <p class="eyebrow">practical · text-prompted segmentation</p>
+      <h1>Practical — isolate it, or blur it</h1>
+      <p class="lede">Two things people actually ship: cut out whatever a phrase names onto a transparent
+        background, or redact it with a privacy blur. Same model, one phrase, no upload — the pixels never
+        leave your tab.</p>
+    </header>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Try it</h3>
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image">
+        <span>Drop a photo here, or click to choose</span>
+        <input type="file" id="file" accept="image/*" hidden />
+      </div>
+      <div class="sample-strip" id="samples" aria-label="Sample images">
+        <img class="sample-thumb active" src="../sample-pets.jpg" data-src="../sample-pets.jpg" alt="Two cats on a couch" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-street.jpg" data-src="../sample-street.jpg" alt="A riverside landscape" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-room.jpg" data-src="../sample-room.jpg" alt="A bedroom interior" tabindex="0" role="button" />
+      </div>
+
+      <label for="prompt" style="font-size:.82rem;color:var(--muted);display:block;margin-top:.6rem">Phrase to target</label>
+      <input id="prompt" class="prompt-input" type="text" value="a cat" disabled />
+      <div class="chip-row">
+        <button class="seg-chip" type="button" data-set="a cat">a cat</button>
+        <button class="seg-chip" type="button" data-set="the sky">the sky</button>
+        <button class="seg-chip" type="button" data-set="a face">a face</button>
+        <button class="seg-chip" type="button" data-set="the bed">the bed</button>
+      </div>
+      <div class="chip-row" role="radiogroup" aria-label="Mode">
+        <button class="seg-chip" id="modeIsolate" type="button" aria-pressed="true" style="border-color:var(--accent)">Isolate (transparent bg)</button>
+        <button class="seg-chip" id="modeBlur" type="button" aria-pressed="false">Privacy blur</button>
+      </div>
+      <div class="slider-row">
+        <button id="segBtn" type="button" disabled>Apply</button>
+        <label for="thresh" style="margin-inline-start:1rem">Threshold</label>
+        <input id="thresh" type="range" min="0.05" max="0.95" step="0.01" value="0.4" />
+        <output id="threshOut">0.40</output>
+      </div>
+      <div class="slider-row" id="blurRow" hidden>
+        <label for="blur">Blur strength</label>
+        <input id="blur" type="range" min="4" max="40" step="1" value="16" />
+        <output id="blurOut">16px</output>
+      </div>
+
+      <div class="canvas-wrap" style="background:repeating-conic-gradient(#0000 0 25%, #8884 0 50%) 0 0 / 24px 24px"><canvas id="stage" class="stage-canvas" aria-label="Result"></canvas></div>
+      <div class="slider-row">
+        <button id="dl" class="secondary" type="button" disabled>Download PNG</button>
+        <span class="readout" style="margin:0"><span>backend <b id="rBackend">–</b></span><span>latency <b id="rMs">–</b></span><span>coverage <b id="rCov">–</b></span></span>
+      </div>
+    </section>
+
+    <section aria-labelledby="note-h">
+      <h2 id="note-h">Where this ships</h2>
+      <ul>
+        <li><strong>Product cut-outs</strong> — "the shoe", "the mug" onto transparent for a catalogue, no studio mask.</li>
+        <li><strong>Privacy redaction</strong> — blur "a face", "the licence plate", "the screen" client-side before an image is stored or shared.</li>
+        <li><strong>Background swaps</strong> — isolate the subject, drop any backdrop behind the transparent PNG.</li>
+      </ul>
+      <p class="muted">CLIPSeg gives a soft, sometimes ragged mask — great for redaction and quick cut-outs. For a
+        crisp matte you'd refine the edge (feather / matting), but the localisation is all from your words.</p>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via 🤗 Transformers.js.
+      <a href="../">← Back to CLIPSeg</a>
+    </footer>
+
+    <script type="module">
+      import { ClipsegEngine, CLIPSEG_CSS, cutout, loadImage, maskCoverage, parsePrompts, urlToDataURL, fileToDataURL } from "../clipseg.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      document.head.append(Object.assign(document.createElement("style"), { textContent: CLIPSEG_CSS }));
+      const $ = (id) => document.getElementById(id);
+      const engine = new ClipsegEngine();
+      let ready = false, img = null, imgURL = null, last = null, mode = "isolate";
+
+      async function setImage(src) { imgURL = src; img = await loadImage(src); if (ready) run(); }
+      for (const t of document.querySelectorAll(".sample-thumb")) {
+        const pick = async () => { document.querySelectorAll(".sample-thumb").forEach((x) => x.classList.remove("active")); t.classList.add("active"); await setImage(await urlToDataURL(t.dataset.src)); };
+        t.addEventListener("click", pick);
+        t.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(); } });
+      }
+      $("drop").addEventListener("click", () => $("file").click());
+      $("drop").addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); $("file").click(); } });
+      $("file").addEventListener("change", async (e) => { const f = e.target.files?.[0]; if (f) { document.querySelectorAll(".sample-thumb").forEach((x) => x.classList.remove("active")); await setImage(await fileToDataURL(f)); } });
+      for (const ev of ["dragover", "dragenter"]) $("drop").addEventListener(ev, (e) => { e.preventDefault(); $("drop").classList.add("drag"); });
+      for (const ev of ["dragleave", "drop"]) $("drop").addEventListener(ev, (e) => { e.preventDefault(); $("drop").classList.remove("drag"); });
+      $("drop").addEventListener("drop", async (e) => { const f = e.dataTransfer?.files?.[0]; if (f) { await setImage(await fileToDataURL(f)); } });
+      for (const c of document.querySelectorAll(".seg-chip[data-set]")) c.addEventListener("click", () => { $("prompt").value = c.dataset.set; if (ready) run(); });
+      $("prompt").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); run(); } });
+      $("segBtn").addEventListener("click", run);
+      function setMode(m) {
+        mode = m;
+        $("modeIsolate").setAttribute("aria-pressed", String(m === "isolate")); $("modeIsolate").style.borderColor = m === "isolate" ? "var(--accent)" : "";
+        $("modeBlur").setAttribute("aria-pressed", String(m === "blur")); $("modeBlur").style.borderColor = m === "blur" ? "var(--accent)" : "";
+        $("blurRow").hidden = m !== "blur"; $("dl").textContent = m === "blur" ? "Download image" : "Download PNG";
+        paint();
+      }
+      $("modeIsolate").addEventListener("click", () => setMode("isolate"));
+      $("modeBlur").addEventListener("click", () => setMode("blur"));
+      $("thresh").addEventListener("input", () => { $("threshOut").textContent = (+$("thresh").value).toFixed(2); paint(); });
+      $("blur").addEventListener("input", () => { $("blurOut").textContent = $("blur").value + "px"; paint(); });
+      $("dl").addEventListener("click", () => { const a = document.createElement("a"); a.download = "clipseg-" + mode + ".png"; a.href = $("stage").toDataURL("image/png"); a.click(); });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/clipseg-rd64-refined", runtime: "transformers.js", dtype: "q8", sizeMB: 140, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: async () => { ready = true; $("prompt").disabled = false; $("segBtn").disabled = false; if (!img) await setImage(await urlToDataURL("../sample-pets.jpg")); else run(); },
+      });
+
+      async function run() {
+        if (!ready || !img) return;
+        const prompts = parsePrompts($("prompt").value, 1);
+        if (!prompts.length) return;
+        $("runStatus").hidden = false; $("runStatus").classList.remove("err"); $("runStatus").textContent = "Segmenting…";
+        try {
+          last = await engine.segment(imgURL, prompts);
+          $("runStatus").hidden = true;
+          paint();
+          $("dl").disabled = false;
+          $("rBackend").textContent = last.device.toUpperCase();
+          $("rMs").textContent = last.ms + " ms";
+        } catch (err) { $("runStatus").hidden = false; $("runStatus").classList.add("err"); $("runStatus").textContent = "Failed: " + err.message; }
+      }
+      function paint() {
+        if (!last || !img) return;
+        const thr = +$("thresh").value, m = last.maps[0];
+        $("rCov").textContent = (maskCoverage(m.data, thr) * 100).toFixed(1) + "%";
+        const stage = $("stage");
+        if (mode === "isolate") {
+          const c = cutout(img, m.data, last.mapW, last.mapH, thr);
+          stage.width = c.width; stage.height = c.height;
+          const ctx = stage.getContext("2d"); ctx.clearRect(0, 0, c.width, c.height); ctx.drawImage(c, 0, 0);
+        } else {
+          blurRegion(stage, img, m.data, last.mapW, last.mapH, thr, +$("blur").value);
+        }
+      }
+      // Blur only the masked region: sharp photo, blurred photo composited through the (upscaled) mask.
+      function blurRegion(stage, img, map, mapW, mapH, thr, radius) {
+        const w = img.naturalWidth, h = img.naturalHeight;
+        stage.width = w; stage.height = h;
+        const ctx = stage.getContext("2d");
+        ctx.clearRect(0, 0, w, h);
+        ctx.drawImage(img, 0, 0, w, h);                       // sharp base
+        const blurred = cutout(img, map, mapW, mapH, thr);    // masked crop (transparent elsewhere)
+        const b = document.createElement("canvas"); b.width = w; b.height = h;
+        const bctx = b.getContext("2d"); bctx.filter = "blur(" + radius + "px)"; bctx.drawImage(blurred, 0, 0);
+        ctx.drawImage(b, 0, 0);                                // overlay blurred masked region
+      }
+    </script>
+  </body>
+</html>

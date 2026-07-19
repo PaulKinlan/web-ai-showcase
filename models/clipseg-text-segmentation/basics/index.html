@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CLIPSeg basics — one phrase, one mask · Web AI Showcase</title>
+    <meta name="description" content="The fundamental CLIPSeg move: type a phrase, get a per-pixel mask. Enter several phrases and compare their masks side by side on one photo — locally in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎯</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">CLIPSeg</a></p>
+    <header>
+      <p class="eyebrow">basics · text-prompted segmentation</p>
+      <h1>Basics — one phrase, one mask</h1>
+      <p class="lede">The whole idea in its simplest form: each phrase you type becomes its own per-pixel
+        mask. Enter a few and see them side by side — the model scores the same photo separately against
+        each phrase.</p>
+    </header>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Try it</h3>
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image">
+        <span>Drop a photo here, or click to choose</span>
+        <input type="file" id="file" accept="image/*" hidden />
+      </div>
+      <div class="sample-strip" id="samples" aria-label="Sample images">
+        <img class="sample-thumb active" src="../sample-pets.jpg" data-src="../sample-pets.jpg" alt="Two cats on a couch" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-street.jpg" data-src="../sample-street.jpg" alt="A riverside landscape" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-room.jpg" data-src="../sample-room.jpg" alt="A bedroom interior" tabindex="0" role="button" />
+      </div>
+
+      <label for="prompts" style="font-size:.82rem;color:var(--muted);display:block;margin-top:.6rem">Phrases (comma-separated)</label>
+      <input id="prompts" class="prompt-input" type="text" value="a cat, the blanket, a whisker" disabled />
+      <div class="chip-row">
+        <button class="seg-chip" type="button" data-set="a cat, the blanket, a whisker">a cat / blanket / whisker</button>
+        <button class="seg-chip" type="button" data-set="the sky, the water, the trees, the horizon">sky / water / trees / horizon</button>
+        <button class="seg-chip" type="button" data-set="the bed, the pillow, the lamp">bed / pillow / lamp</button>
+      </div>
+      <div class="slider-row">
+        <button id="segBtn" type="button" disabled>Segment</button>
+        <label for="thresh" style="margin-inline-start:1rem">Threshold</label>
+        <input id="thresh" type="range" min="0.05" max="0.95" step="0.01" value="0.45" />
+        <output id="threshOut">0.45</output>
+      </div>
+
+      <div class="canvas-grid" id="cards"></div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+        <span>phrases <b id="rN">–</b></span>
+      </div>
+    </section>
+
+    <section aria-labelledby="note-h">
+      <h2 id="note-h">What you're seeing</h2>
+      <p>Each card is one forward-pass score map, thresholded into a mask. Notice that phrases the photo
+        doesn't contain come back nearly empty — CLIPSeg isn't forced to pick a winner per pixel the way a
+        fixed-class segmenter is; every phrase is judged on its own. Try a phrase that isn't there
+        (<code>a dog</code> on the cats photo) and watch the mask stay dark.</p>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via 🤗 Transformers.js.
+      <a href="../">← Back to CLIPSeg</a>
+    </footer>
+
+    <script type="module">
+      import { ClipsegEngine, CLIPSEG_CSS, escapeHTML, loadImage, maskCoverage, paintMasks, parsePrompts, urlToDataURL, fileToDataURL } from "../clipseg.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      document.head.append(Object.assign(document.createElement("style"), { textContent: CLIPSEG_CSS }));
+      const $ = (id) => document.getElementById(id);
+      const engine = new ClipsegEngine();
+      let ready = false, img = null, imgURL = null, last = null;
+
+      async function setImage(src) { imgURL = src; img = await loadImage(src); if (ready) run(); }
+      for (const t of document.querySelectorAll(".sample-thumb")) {
+        const pick = async () => { document.querySelectorAll(".sample-thumb").forEach((x) => x.classList.remove("active")); t.classList.add("active"); await setImage(await urlToDataURL(t.dataset.src)); };
+        t.addEventListener("click", pick);
+        t.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(); } });
+      }
+      $("drop").addEventListener("click", () => $("file").click());
+      $("drop").addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); $("file").click(); } });
+      $("file").addEventListener("change", async (e) => { const f = e.target.files?.[0]; if (f) { document.querySelectorAll(".sample-thumb").forEach((x) => x.classList.remove("active")); await setImage(await fileToDataURL(f)); } });
+      for (const ev of ["dragover", "dragenter"]) $("drop").addEventListener(ev, (e) => { e.preventDefault(); $("drop").classList.add("drag"); });
+      for (const ev of ["dragleave", "drop"]) $("drop").addEventListener(ev, (e) => { e.preventDefault(); $("drop").classList.remove("drag"); });
+      $("drop").addEventListener("drop", async (e) => { const f = e.dataTransfer?.files?.[0]; if (f) { await setImage(await fileToDataURL(f)); } });
+      for (const c of document.querySelectorAll(".seg-chip")) c.addEventListener("click", () => { $("prompts").value = c.dataset.set; if (ready) run(); });
+      $("prompts").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); run(); } });
+      $("segBtn").addEventListener("click", run);
+      $("thresh").addEventListener("input", () => { $("threshOut").textContent = (+$("thresh").value).toFixed(2); paint(); });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/clipseg-rd64-refined", runtime: "transformers.js", dtype: "q8", sizeMB: 140, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: async () => { ready = true; $("prompts").disabled = false; $("segBtn").disabled = false; if (!img) await setImage(await urlToDataURL("../sample-pets.jpg")); else run(); },
+      });
+
+      async function run() {
+        if (!ready || !img) return;
+        const prompts = parsePrompts($("prompts").value, 6);
+        if (!prompts.length) return;
+        $("runStatus").hidden = false; $("runStatus").classList.remove("err"); $("runStatus").textContent = "Segmenting…";
+        try {
+          last = await engine.segment(imgURL, prompts);
+          $("runStatus").hidden = true;
+          paint();
+          $("readout").hidden = false;
+          $("rBackend").textContent = last.device.toUpperCase();
+          $("rMs").textContent = last.ms + " ms";
+          $("rN").textContent = prompts.length;
+        } catch (err) { $("runStatus").hidden = false; $("runStatus").classList.add("err"); $("runStatus").textContent = "Failed: " + err.message; }
+      }
+      function paint() {
+        if (!last || !img) return;
+        const thr = +$("thresh").value;
+        $("cards").replaceChildren(...last.maps.map((m) => {
+          const card = document.createElement("div"); card.className = "canvas-card";
+          const cov = maskCoverage(m.data, thr);
+          const h = document.createElement("h4"); h.textContent = m.prompt; card.append(h);
+          const c = document.createElement("canvas"); c.className = "viz-canvas"; card.append(c);
+          paintMasks(c, img, [m], last.mapW, last.mapH, thr, 0.6);
+          const p = document.createElement("p"); p.className = "muted"; p.style.fontSize = ".78rem"; p.style.margin = ".3rem 0 0";
+          p.innerHTML = "coverage <b>" + (cov * 100).toFixed(1) + "%</b>"; card.append(p);
+          return card;
+        }));
+      }
+    </script>
+  </body>
+</html>

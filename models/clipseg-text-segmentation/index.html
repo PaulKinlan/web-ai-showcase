@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CLIPSeg — segment an image by typing a phrase, in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Type any phrase — 'the dog', 'shadows', 'the road' — and CLIPSeg paints a per-pixel mask over the matching parts of your photo, locally in your browser. Open-vocabulary, prompt-driven segmentation with a raw probability heatmap and a live threshold slider. No server, real inference you can see inside."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎯</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">image-segmentation · vision + language · WASM · ~140 MB</p>
+      <h1>CLIPSeg — segment by describing it</h1>
+      <p class="lede">
+        Most segmenters know a <em>fixed</em> list of classes. CLIPSeg doesn't: you type a phrase in
+        plain language — <code>the dog</code>, <code>shadows</code>, <code>the road</code>,
+        <code>the warmest area</code> — and it returns a per-pixel score map for exactly that phrase.
+        It's <strong>open-vocabulary, text-prompted segmentation</strong>: point at things with words,
+        not with a class menu or a mouse click. All on your device.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/Xenova/clipseg-rd64-refined" target="_blank" rel="noopener">Xenova/clipseg-rd64-refined</a> (ONNX build of CIDAS/clipseg-rd64-refined)</td></tr>
+          <tr><th>Task / pipeline</th><td><code>image-segmentation</code> — text-prompted (<code>CLIPSegForImageSegmentation</code>)</td></tr>
+          <tr><th>Architecture</th><td>Frozen CLIP ViT-B/16 backbone + a lightweight FiLM-conditioned transformer decoder (reduce-dim 64, "refined")</td></tr>
+          <tr><th>Prompt</th><td>Any free-text phrase(s) — no fixed label set. Output is one 352×352 score map per phrase.</td></tr>
+          <tr><th>Quantization</th><td>q8 (8-bit) ONNX — <code>model_quantized.onnx</code></td></tr>
+          <tr><th>Backend</th><td>WebAssembly (runs anywhere; no WebGPU needed)</td></tr>
+          <tr><th>Download</th><td>~140 MB, cached after first load</td></tr>
+          <tr><th>License</th><td>Apache-2.0</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers, Canvas, FileReader — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Pick or drop a photo, type one or more phrases (comma-separated), and hit Segment.
+        Each phrase gets its own colour. Drag the threshold to tighten or loosen every mask; drag opacity
+        to fade between your photo and the masks.</p>
+
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image">
+        <span id="dropText">Drop a photo here, or click to choose</span>
+        <input type="file" id="file" accept="image/*" hidden />
+      </div>
+      <div class="sample-strip" id="samples" aria-label="Sample images">
+        <img class="sample-thumb active" src="sample-pets.jpg" data-src="sample-pets.jpg" alt="Two cats on a couch by a wall" tabindex="0" role="button" />
+        <img class="sample-thumb" src="sample-street.jpg" data-src="sample-street.jpg" alt="A riverside landscape at golden hour with sky, water and trees" tabindex="0" role="button" />
+        <img class="sample-thumb" src="sample-room.jpg" data-src="sample-room.jpg" alt="A cozy bedroom interior with wall, floor and furniture" tabindex="0" role="button" />
+      </div>
+
+      <label for="prompts" style="font-size:.82rem;color:var(--muted);display:block;margin-top:.6rem">Phrases to segment (comma-separated)</label>
+      <input id="prompts" class="prompt-input" type="text" value="a cat, the couch" disabled />
+      <div class="chip-row" id="chips">
+        <button class="seg-chip" type="button" data-set="a cat, the couch">a cat, the couch</button>
+        <button class="seg-chip" type="button" data-set="the sky, the water, the trees">sky / water / trees</button>
+        <button class="seg-chip" type="button" data-set="the floor, the wall, the bed">floor / wall / bed</button>
+        <button class="seg-chip" type="button" data-set="something soft">something soft</button>
+      </div>
+      <button id="segBtn" type="button" disabled>Segment</button>
+
+      <div class="canvas-wrap"><canvas id="stage" class="stage-canvas" aria-label="Segmentation result"></canvas></div>
+      <div class="legend" id="legend" hidden></div>
+
+      <div class="slider-row">
+        <label for="thresh">Mask threshold</label>
+        <input id="thresh" type="range" min="0.05" max="0.95" step="0.01" value="0.5" />
+        <output id="threshOut">0.50</output>
+      </div>
+      <div class="slider-row">
+        <label for="opacity">Mask opacity</label>
+        <input id="opacity" type="range" min="0.1" max="1" step="0.05" value="0.55" />
+        <output id="opacityOut">0.55</output>
+      </div>
+
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+        <span>phrases <b id="rN">–</b></span>
+        <span>map <b id="rMap">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside — the raw probability heatmap</h3>
+      <p class="muted">
+        A mask is just a <em>threshold on a probability</em>. Before we cut anywhere, CLIPSeg gives every
+        one of the 352×352 pixels a score for your phrase. Here's that raw field for one phrase — dark =
+        "definitely not this", bright = "definitely this". Slide the threshold above and watch the mask
+        boundary sweep across this gradient. That's the whole decision, made legible.
+      </p>
+      <label for="heatSel" style="font-size:.82rem;color:var(--muted)">Heatmap for phrase</label>
+      <select id="heatSel" style="margin-inline-start:.4rem"></select>
+      <div class="canvas-grid">
+        <div class="canvas-card">
+          <h4>Probability field</h4>
+          <canvas id="heat" class="viz-canvas"></canvas>
+          <div class="colorbar" aria-hidden="true"></div>
+          <div class="colorbar-labels"><span>0.0 — not this</span><span>1.0 — this</span></div>
+        </div>
+        <div class="canvas-card">
+          <h4>Per-phrase readout</h4>
+          <table class="inside-table"><tbody id="statTbl"></tbody></table>
+        </div>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        CLIPSeg turns "select the thing I mean" into a text box. There's no training a new segmentation
+        head per class, no fixed taxonomy, and no click-to-prompt — just words. Because it runs in the
+        browser, you can localize anything a user can describe without a byte of their image leaving the tab.
+      </p>
+      <ul>
+        <li><strong>Describe-to-select editing</strong> — "mask the sky", "select the shadows" as a photo-tool selection, computed locally.</li>
+        <li><strong>Long-tail / bespoke classes</strong> — segment "the forklift", "the cracked tile", "the barcode" with zero per-class training.</li>
+        <li><strong>Content-aware effects</strong> — blur / recolour / remove exactly the region a phrase names, e.g. privacy blur "faces" or "screens".</li>
+        <li><strong>Prompted pre-processing</strong> — crop to the phrase and hand the region to another model (classify, OCR, caption) — see the multi-model demo.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Type a phrase, get a mask. Compare several phrases side by side on one photo.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Isolate an object on a transparent background, or privacy-blur exactly what a phrase names.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Segment abstract concepts — "the warmest area", "the safest place to walk", "where to look first".</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">CLIPSeg localizes a phrase → crop the region → a ViT classifier names what's actually there.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>CLIPSeg is a model class, not a one-call pipeline — because it takes <em>both</em> an image and text.
+        For this ONNX repo the processor bundles an image processor only, so we load the text tokenizer
+        separately and batch the phrases against one image:</p>
+      <pre><code>import {
+  AutoTokenizer, AutoProcessor, CLIPSegForImageSegmentation, RawImage,
+} from "@huggingface/transformers";
+
+const tokenizer = await AutoTokenizer.from_pretrained("Xenova/clipseg-rd64-refined");
+const processor = await AutoProcessor.from_pretrained("Xenova/clipseg-rd64-refined");
+const model     = await CLIPSegForImageSegmentation.from_pretrained(
+  "Xenova/clipseg-rd64-refined", { dtype: "q8" });
+
+const image  = (await RawImage.read(url)).rgb();
+const texts  = ["a cat", "the couch"];
+const text   = tokenizer(texts, { padding: true, truncation: true });
+const pixels = (await processor(image)).pixel_values;      // [1, 3, 352, 352]
+
+// tile pixels to [texts.length, 3, 352, 352] so every phrase shares the image
+const { logits } = await model({
+  input_ids: text.input_ids, attention_mask: text.attention_mask, pixel_values,
+});
+// logits: [texts.length, 352, 352] — a RAW per-pixel score map per phrase.
+// mask = sigmoid(logits) &gt; threshold, upscaled to the image.</code></pre>
+      <p class="muted">
+        The score maps are 352×352 (the model's working resolution); we upscale to your photo for display.
+        Everything runs in a Web Worker so the sliders stay smooth while a forward pass is in flight.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/Xenova/clipseg-rd64-refined" target="_blank" rel="noopener">Model card — CLIPSeg rd64-refined (Xenova ONNX)</a></li>
+        <li><a href="https://huggingface.co/CIDAS/clipseg-rd64-refined" target="_blank" rel="noopener">Original model card — CIDAS/clipseg-rd64-refined</a></li>
+        <li><a href="https://arxiv.org/abs/2112.10003" target="_blank" rel="noopener">Paper — Image Segmentation Using Text and Image Prompts (Lüddecke &amp; Ecker, 2021, arXiv:2112.10003)</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import {
+        ClipsegEngine, CLIPSEG_CSS, cssColor, loadImage, maskCoverage, paintHeatmap, paintMasks,
+        parsePrompts, peakOfMap, urlToDataURL, fileToDataURL, escapeHTML,
+      } from "./clipseg.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      document.head.append(Object.assign(document.createElement("style"), { textContent: CLIPSEG_CSS }));
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new ClipsegEngine();
+      let ready = false, img = null, imgURL = null, last = null;
+
+      // --- image selection ---
+      async function setImage(src) {
+        imgURL = src;
+        img = await loadImage(src);
+        if (ready) run();
+      }
+      for (const t of document.querySelectorAll(".sample-thumb")) {
+        const pick = async () => {
+          document.querySelectorAll(".sample-thumb").forEach((x) => x.classList.remove("active"));
+          t.classList.add("active");
+          await setImage(await urlToDataURL(t.dataset.src));
+        };
+        t.addEventListener("click", pick);
+        t.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(); } });
+      }
+      $("drop").addEventListener("click", () => $("file").click());
+      $("drop").addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); $("file").click(); } });
+      $("file").addEventListener("change", async (e) => {
+        const f = e.target.files?.[0];
+        if (f) { document.querySelectorAll(".sample-thumb").forEach((x) => x.classList.remove("active")); await setImage(await fileToDataURL(f)); }
+      });
+      for (const ev of ["dragover", "dragenter"]) $("drop").addEventListener(ev, (e) => { e.preventDefault(); $("drop").classList.add("drag"); });
+      for (const ev of ["dragleave", "drop"]) $("drop").addEventListener(ev, (e) => { e.preventDefault(); $("drop").classList.remove("drag"); });
+      $("drop").addEventListener("drop", async (e) => {
+        const f = e.dataTransfer?.files?.[0];
+        if (f) { document.querySelectorAll(".sample-thumb").forEach((x) => x.classList.remove("active")); await setImage(await fileToDataURL(f)); }
+      });
+
+      for (const c of document.querySelectorAll(".seg-chip")) {
+        c.addEventListener("click", () => { $("prompts").value = c.dataset.set; if (ready) run(); });
+      }
+      $("prompts").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); run(); } });
+      $("segBtn").addEventListener("click", run);
+      $("thresh").addEventListener("input", () => { $("threshOut").textContent = (+$("thresh").value).toFixed(2); repaint(); });
+      $("opacity").addEventListener("input", () => { $("opacityOut").textContent = (+$("opacity").value).toFixed(2); repaint(); });
+      $("heatSel").addEventListener("change", repaintHeat);
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/clipseg-rd64-refined", runtime: "transformers.js", dtype: "q8", sizeMB: 140, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: async () => {
+          ready = true;
+          $("prompts").disabled = false; $("segBtn").disabled = false;
+          if (!img) await setImage(await urlToDataURL("sample-pets.jpg"));
+          else run();
+        },
+      });
+
+      async function run() {
+        if (!ready || !img) return;
+        const prompts = parsePrompts($("prompts").value);
+        if (prompts.length === 0) { $("runStatus").hidden = false; $("runStatus").textContent = "Type at least one phrase."; return; }
+        $("runStatus").hidden = false; $("runStatus").classList.remove("err"); $("runStatus").textContent = "Segmenting…";
+        try {
+          last = await engine.segment(imgURL, prompts);
+          $("runStatus").hidden = true;
+          // heatmap phrase selector
+          $("heatSel").replaceChildren(...prompts.map((p, i) => Object.assign(document.createElement("option"), { value: String(i), textContent: p })));
+          repaint();
+          repaintHeat();
+          $("readout").hidden = false;
+          $("rBackend").textContent = last.device.toUpperCase();
+          $("rMs").textContent = last.ms + " ms";
+          $("rN").textContent = prompts.length;
+          $("rMap").textContent = last.mapW + "×" + last.mapH;
+        } catch (err) {
+          $("runStatus").hidden = false; $("runStatus").classList.add("err");
+          $("runStatus").textContent = "Segmentation failed: " + err.message;
+        }
+      }
+
+      function repaint() {
+        if (!last || !img) return;
+        const thr = +$("thresh").value, op = +$("opacity").value;
+        paintMasks($("stage"), img, last.maps, last.mapW, last.mapH, thr, op);
+        // legend + per-phrase stats
+        const leg = last.maps.map((m, i) => {
+          const cov = maskCoverage(m.data, thr);
+          return `<span class="legend-item"><span class="swatch" style="background:${cssColor(i)}"></span>${escapeHTML(m.prompt)} <span class="pct">${(cov * 100).toFixed(1)}%</span></span>`;
+        }).join("");
+        $("legend").hidden = false; $("legend").innerHTML = leg;
+        $("statTbl").innerHTML = "<tr><th>phrase</th><th>peak prob</th><th>coverage</th></tr>" + last.maps.map((m, i) => {
+          const pk = peakOfMap(m.data, last.mapW, last.mapH);
+          const cov = maskCoverage(m.data, thr);
+          return `<tr><td style="color:${cssColor(i)}">${escapeHTML(m.prompt)}</td><td>${pk.prob.toFixed(3)}</td><td>${(cov * 100).toFixed(1)}%</td></tr>`;
+        }).join("");
+      }
+      function repaintHeat() {
+        if (!last) return;
+        const i = Math.min(last.maps.length - 1, +$("heatSel").value || 0);
+        paintHeatmap($("heat"), last.maps[i].data, last.mapW, last.mapH);
+      }
+    </script>
+  </body>
+</html>

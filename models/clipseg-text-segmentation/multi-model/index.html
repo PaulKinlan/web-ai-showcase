@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CLIPSeg × ViT — localize by phrase, then identify · Web AI Showcase</title>
+    <meta name="description" content="A two-model pipeline, both in your browser: CLIPSeg localizes the region a phrase names, we crop to its bounding box, and a ViT image classifier names what's actually there. Open-vocabulary localization feeding fixed-vocabulary identification." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎯</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">CLIPSeg</a></p>
+    <header>
+      <p class="eyebrow">multi-model · CLIPSeg → ViT</p>
+      <h1>Multi-model — point with words, then identify</h1>
+      <p class="lede">CLIPSeg is great at <em>where</em> ("the thing on the left") but it doesn't tell you
+        <em>what</em>. So chain it: CLIPSeg localizes the phrase, we crop to that region's bounding box, and
+        <a href="../../vit-image-classification/">ViT-base</a> — a 1000-class ImageNet classifier — names it.
+        Two models, one tab, no server.</p>
+    </header>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Try it</h3>
+      <div style="display:grid;gap:.5rem">
+        <div><span class="muted" style="font-size:.78rem">1 · CLIPSeg (localize)</span><div id="loader-clipseg"></div></div>
+        <div><span class="muted" style="font-size:.78rem">2 · ViT (identify)</span><div id="loader-vit"></div></div>
+      </div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image">
+        <span>Drop a photo here, or click to choose</span>
+        <input type="file" id="file" accept="image/*" hidden />
+      </div>
+      <div class="sample-strip" id="samples" aria-label="Sample images">
+        <img class="sample-thumb active" src="../sample-pets.jpg" data-src="../sample-pets.jpg" alt="Two cats on a couch" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-street.jpg" data-src="../sample-street.jpg" alt="A riverside landscape" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-room.jpg" data-src="../sample-room.jpg" alt="A bedroom interior" tabindex="0" role="button" />
+      </div>
+
+      <label for="prompt" style="font-size:.82rem;color:var(--muted);display:block;margin-top:.6rem">Phrase to localize</label>
+      <input id="prompt" class="prompt-input" type="text" value="the animal on the left" disabled />
+      <div class="chip-row">
+        <button class="seg-chip" type="button" data-set="the animal on the left">the animal on the left</button>
+        <button class="seg-chip" type="button" data-set="a cat">a cat</button>
+        <button class="seg-chip" type="button" data-set="the furniture">the furniture</button>
+        <button class="seg-chip" type="button" data-set="the thing in the middle">the thing in the middle</button>
+      </div>
+      <div class="slider-row">
+        <button id="runBtn" type="button" disabled>Localize → identify</button>
+        <label for="thresh" style="margin-inline-start:1rem">Threshold</label>
+        <input id="thresh" type="range" min="0.05" max="0.95" step="0.01" value="0.4" />
+        <output id="threshOut">0.40</output>
+      </div>
+
+      <div class="canvas-grid">
+        <div class="canvas-card">
+          <h4>CLIPSeg mask + crop box</h4>
+          <canvas id="stage" class="viz-canvas"></canvas>
+        </div>
+        <div class="canvas-card">
+          <h4>Cropped region → ViT</h4>
+          <canvas id="crop" class="viz-canvas" style="max-block-size:200px"></canvas>
+          <div id="bars" style="margin-top:.5rem"></div>
+        </div>
+      </div>
+      <div class="readout" id="readout" hidden>
+        <span>CLIPSeg <b id="rSeg">–</b></span>
+        <span>ViT <b id="rCls">–</b></span>
+        <span>top label <b id="rTop">–</b></span>
+      </div>
+    </section>
+
+    <section aria-labelledby="note-h">
+      <h2 id="note-h">Why chain them</h2>
+      <p>The two models cover each other's blind spots. CLIPSeg has open-vocabulary <em>spatial</em>
+        grounding — it finds "the animal on the left" without ever being trained on that phrase — but its
+        output is a mask, not a name. ViT has no localization at all, yet it puts a confident ImageNet label
+        on a tight crop. Pipe one into the other and you get "find the thing I described, then tell me
+        exactly what it is." Swap ViT for OCR to read a "licence plate", or for a captioner to describe the
+        region — same pattern.</p>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via 🤗 Transformers.js.
+      <a href="../">← Back to CLIPSeg</a>
+    </footer>
+
+    <script type="module">
+      import { ClipsegEngine, CLIPSEG_CSS, bboxOfMask, loadImage, paintMasks, parsePrompts, urlToDataURL, fileToDataURL } from "../clipseg.js";
+      import { ViTEngine, VIT_CSS, renderBars } from "/web-ai-showcase/models/vit-image-classification/vit.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      document.head.append(Object.assign(document.createElement("style"), { textContent: CLIPSEG_CSS + VIT_CSS }));
+      const $ = (id) => document.getElementById(id);
+      const seg = new ClipsegEngine();
+      const vit = new ViTEngine();
+      let segReady = false, vitReady = false, img = null, imgURL = null, lastSeg = null;
+
+      async function setImage(src) { imgURL = src; img = await loadImage(src); if (segReady && vitReady) run(); }
+      for (const t of document.querySelectorAll(".sample-thumb")) {
+        const pick = async () => { document.querySelectorAll(".sample-thumb").forEach((x) => x.classList.remove("active")); t.classList.add("active"); await setImage(await urlToDataURL(t.dataset.src)); };
+        t.addEventListener("click", pick);
+        t.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(); } });
+      }
+      $("drop").addEventListener("click", () => $("file").click());
+      $("drop").addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); $("file").click(); } });
+      $("file").addEventListener("change", async (e) => { const f = e.target.files?.[0]; if (f) { document.querySelectorAll(".sample-thumb").forEach((x) => x.classList.remove("active")); await setImage(await fileToDataURL(f)); } });
+      for (const ev of ["dragover", "dragenter"]) $("drop").addEventListener(ev, (e) => { e.preventDefault(); $("drop").classList.add("drag"); });
+      for (const ev of ["dragleave", "drop"]) $("drop").addEventListener(ev, (e) => { e.preventDefault(); $("drop").classList.remove("drag"); });
+      $("drop").addEventListener("drop", async (e) => { const f = e.dataTransfer?.files?.[0]; if (f) { await setImage(await fileToDataURL(f)); } });
+      for (const c of document.querySelectorAll(".seg-chip")) c.addEventListener("click", () => { $("prompt").value = c.dataset.set; maybeRun(); });
+      $("prompt").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); run(); } });
+      $("runBtn").addEventListener("click", run);
+      $("thresh").addEventListener("input", () => { $("threshOut").textContent = (+$("thresh").value).toFixed(2); });
+
+      function maybeReady() { if (segReady && vitReady) { $("prompt").disabled = false; $("runBtn").disabled = false; if (img) run(); else init(); } }
+      async function init() { await setImage(await urlToDataURL("../sample-pets.jpg")); }
+      function maybeRun() { if (segReady && vitReady) run(); }
+
+      createModelLoader({
+        mount: $("loader-clipseg"),
+        model: { modelId: "Xenova/clipseg-rd64-refined", runtime: "transformers.js", dtype: "q8", sizeMB: 140, requiresWebGPU: false },
+        load: async (onProgress) => { await seg.load(onProgress); return seg; },
+        onReady: () => { segReady = true; maybeReady(); },
+      });
+      createModelLoader({
+        mount: $("loader-vit"),
+        model: { modelId: "Xenova/vit-base-patch16-224", runtime: "transformers.js", dtype: "q8", sizeMB: 88, requiresWebGPU: false },
+        load: async (onProgress) => { await vit.load(onProgress); return vit; },
+        onReady: () => { vitReady = true; maybeReady(); },
+      });
+
+      async function run() {
+        if (!segReady || !vitReady || !img) return;
+        const prompts = parsePrompts($("prompt").value, 1);
+        if (!prompts.length) return;
+        $("runStatus").hidden = false; $("runStatus").classList.remove("err"); $("runStatus").textContent = "1/2 · CLIPSeg localizing…";
+        try {
+          lastSeg = await seg.segment(imgURL, prompts);
+          const thr = +$("thresh").value, m = lastSeg.maps[0];
+          const bb = bboxOfMask(m.data, lastSeg.mapW, lastSeg.mapH, thr);
+          paintMaskWithBox(m, thr, bb);
+          $("rSeg").textContent = lastSeg.ms + " ms";
+          if (!bb) { $("runStatus").textContent = "CLIPSeg found nothing above the threshold — lower it or try another phrase."; $("runStatus").classList.add("err"); $("bars").replaceChildren(); return; }
+          // crop the bbox (with a little padding) from the full-res photo
+          const cropURL = cropTo($("crop"), img, bb, 0.08);
+          $("runStatus").textContent = "2/2 · ViT identifying the crop…";
+          const res = await vit.classify(cropURL, 5);
+          renderBars($("bars"), res.labels.map((l, i) => ({ label: l, prob: res.probs[i] })));
+          $("runStatus").hidden = true;
+          $("readout").hidden = false;
+          $("rCls").textContent = res.ms + " ms";
+          $("rTop").textContent = res.labels[0].split(",")[0];
+        } catch (err) { $("runStatus").hidden = false; $("runStatus").classList.add("err"); $("runStatus").textContent = "Failed: " + err.message; }
+      }
+
+      function paintMaskWithBox(m, thr, bb) {
+        paintMasks($("stage"), img, [m], lastSeg.mapW, lastSeg.mapH, thr, 0.5);
+        if (!bb) return;
+        const c = $("stage"), ctx = c.getContext("2d");
+        ctx.lineWidth = Math.max(2, c.width / 200);
+        ctx.strokeStyle = "#4b3aff";
+        ctx.setLineDash([ctx.lineWidth * 3, ctx.lineWidth * 2]);
+        ctx.strokeRect(bb.x * c.width, bb.y * c.height, bb.w * c.width, bb.h * c.height);
+      }
+      function cropTo(canvas, img, bb, pad) {
+        const W = img.naturalWidth, H = img.naturalHeight;
+        const x = Math.max(0, (bb.x - pad) * W), y = Math.max(0, (bb.y - pad) * H);
+        const w = Math.min(W - x, (bb.w + 2 * pad) * W), h = Math.min(H - y, (bb.h + 2 * pad) * H);
+        canvas.width = Math.round(w); canvas.height = Math.round(h);
+        canvas.getContext("2d").drawImage(img, x, y, w, h, 0, 0, w, h);
+        return canvas.toDataURL("image/png");
+      }
+    </script>
+  </body>
+</html>
