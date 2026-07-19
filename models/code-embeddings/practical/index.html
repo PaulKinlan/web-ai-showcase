@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Jina Code Embeddings — Practical: NL search + duplicate detection · Web AI Showcase</title>
+    <meta name="description" content="Search your own snippet bank in plain English, and flag near-duplicate functions — both running locally on Jina's code embedder. No server, nothing uploaded." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🔎</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Jina Code Embeddings</a></p>
+
+    <header>
+      <p class="eyebrow">Practical · feature-extraction · WASM</p>
+      <h1>Search your snippets, and find the duplicates</h1>
+      <p class="lede">
+        Two things every codebase needs and neither is keyword search: <strong>ask for code in English</strong>
+        and get the function that does it, and <strong>flag near-duplicate helpers</strong> that were copied
+        and drifted apart. Both are just cosine similarity over embeddings — computed here entirely on-device,
+        so you can point it at a private repo with nothing uploaded. Edit the bank below to use your own code.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="bank-h">
+      <h3 id="bank-h">Snippet bank</h3>
+      <div id="model-loader"></div>
+      <p class="muted" style="font-size:.82rem">One snippet per block, separated by a line containing only <code>---</code>. These are embedded once and reused by both tools below.</p>
+      <label class="field">
+        <span class="muted" style="font-size:.8rem">Your snippet bank</span>
+        <textarea id="bank" rows="14" disabled></textarea>
+      </label>
+      <div style="margin:.6rem 0;display:flex;gap:.4rem;flex-wrap:wrap;align-items:center">
+        <button id="embed" type="button" disabled>Embed the bank</button>
+        <button id="reset" type="button" class="secondary">Reset examples</button>
+        <span class="status" id="bankStatus" role="status" aria-live="polite"></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="search-h">
+      <h3 id="search-h">1 · Natural-language search</h3>
+      <label class="field" style="max-inline-size:34rem">
+        Describe what you want
+        <span style="display:flex;gap:.4rem;flex-wrap:wrap">
+          <input id="query" type="text" value="parse a JSON file from disk" style="flex:1;min-inline-size:12rem" disabled />
+          <button id="search" type="button" disabled>Search</button>
+        </span>
+      </label>
+      <div class="code-list" id="ranked" aria-live="polite"></div>
+    </section>
+
+    <section class="panel" aria-labelledby="dup-h">
+      <h3 id="dup-h">2 · Duplicate / near-duplicate detection</h3>
+      <p class="muted" style="font-size:.82rem">Flags every pair in the bank whose cosine similarity is at or above the threshold — copy-pasted helpers, or the same routine reimplemented.</p>
+      <label class="field" style="max-inline-size:22rem">
+        Similarity threshold: <b id="thVal" style="font-family:var(--font-mono)">0.75</b>
+        <input id="threshold" type="range" min="0.5" max="0.95" step="0.01" value="0.75" disabled />
+      </label>
+      <div style="margin:.5rem 0;display:flex;gap:.4rem;flex-wrap:wrap;align-items:center">
+        <button id="findDup" type="button" disabled>Find duplicates</button>
+        <span class="status" id="dupStatus" role="status" aria-live="polite"></span>
+      </div>
+      <div id="dupWrap" aria-live="polite"></div>
+    </section>
+
+    <p class="crumbs" style="margin-top:1.5rem"><a href="../wild/">Next: Wild — cross-language clone hunt →</a></p>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via 🤗 Transformers.js.
+      <a href="../">← Back to Jina Code Embeddings</a>
+    </footer>
+
+    <script type="module">
+      import { CodeEmbedClient, cosine, renderCodeHits, prettySnippet, CODE_CSS } from "../codeembed.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = CODE_CSS + `
+        .dup-pair { border:1px solid var(--border); border-radius:8px; background:var(--bg-raised); padding:.55rem .7rem; margin-top:.5rem; }
+        .dup-pair .grid-2 { gap:.6rem; margin-top:.4rem; }
+        .dup-score { font-family:var(--font-mono); color:var(--accent); font-weight:600; }
+      `;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new CodeEmbedClient();
+
+      const DEFAULT_BANK = [
+        "import json\nwith open(path) as f:\n    data = json.load(f)",
+        "def load_config(path):\n    with open(path) as fh:\n        return json.load(fh)",
+        "async function getJSON(url) {\n  const res = await fetch(url);\n  return res.json();\n}",
+        "def reverse(s):\n    return s[::-1]",
+        "SELECT customer_id, SUM(total) AS spend\nFROM orders\nGROUP BY customer_id\nORDER BY spend DESC\nLIMIT 10;",
+        "func Reverse(s string) string {\n    r := []rune(s)\n    for i, j := 0, len(r)-1; i < j; i, j = i+1, j-1 {\n        r[i], r[j] = r[j], r[i]\n    }\n    return string(r)\n}",
+      ].join("\n---\n");
+      $("bank").value = DEFAULT_BANK;
+      $("reset").addEventListener("click", () => { $("bank").value = DEFAULT_BANK; });
+
+      let snippets = [];   // string[]
+      let embs = [];       // number[][]
+
+      function parseBank() {
+        return $("bank").value.split(/^\s*---\s*$/m).map((s) => s.trim()).filter(Boolean);
+      }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "jinaai/jina-embeddings-v2-base-code", runtime: "transformers.js", dtype: "q8", sizeMB: 162, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => {
+          $("bank").disabled = false; $("embed").disabled = false;
+          embedBank();
+        },
+      });
+
+      $("embed").addEventListener("click", embedBank);
+      async function embedBank() {
+        snippets = parseBank();
+        if (snippets.length < 2) { $("bankStatus").textContent = "Add at least two snippets."; $("bankStatus").classList.add("err"); return; }
+        $("bankStatus").classList.remove("err"); $("bankStatus").textContent = "Embedding " + snippets.length + " snippets…";
+        $("embed").disabled = true;
+        try {
+          const r = await engine.embed(snippets);
+          embs = r.embeddings;
+          $("query").disabled = false; $("search").disabled = false; $("threshold").disabled = false; $("findDup").disabled = false;
+          $("bankStatus").textContent = "Embedded " + snippets.length + " snippets on " + r.device.toUpperCase() + " (" + r.ms + " ms). Ready.";
+          $("bankStatus").classList.add("ok");
+        } catch (err) { $("bankStatus").textContent = "Failed: " + err.message; $("bankStatus").classList.add("err"); }
+        finally { $("embed").disabled = false; }
+      }
+
+      $("search").addEventListener("click", search);
+      $("query").addEventListener("keydown", (e) => { if (e.key === "Enter") search(); });
+      async function search() {
+        const q = $("query").value.trim();
+        if (!q || !embs.length) return;
+        $("search").disabled = true;
+        try {
+          const qr = await engine.embed([q]);
+          const qv = qr.embeddings[0];
+          const hits = snippets.map((code, i) => ({ code, lang: "", score: cosine(qv, embs[i]) })).sort((a, b) => b.score - a.score);
+          renderCodeHits($("ranked"), hits);
+        } catch (err) { $("ranked").textContent = "Search failed: " + err.message; }
+        finally { $("search").disabled = false; }
+      }
+
+      $("threshold").addEventListener("input", () => { $("thVal").textContent = (+$("threshold").value).toFixed(2); });
+      $("findDup").addEventListener("click", () => {
+        if (!embs.length) return;
+        const th = +$("threshold").value;
+        const pairs = [];
+        for (let i = 0; i < snippets.length; i++) {
+          for (let j = i + 1; j < snippets.length; j++) {
+            const s = cosine(embs[i], embs[j]);
+            if (s >= th) pairs.push({ i, j, s });
+          }
+        }
+        pairs.sort((a, b) => b.s - a.s);
+        if (!pairs.length) { $("dupWrap").innerHTML = ""; $("dupStatus").textContent = "No pairs at or above " + th.toFixed(2) + "."; $("dupStatus").classList.remove("err"); return; }
+        $("dupStatus").textContent = pairs.length + " duplicate pair(s) flagged.";
+        $("dupWrap").replaceChildren(...pairs.map((p) => {
+          const div = document.createElement("div");
+          div.className = "dup-pair";
+          const head = document.createElement("div");
+          head.innerHTML = `<span class="dup-score">cosine ${p.s.toFixed(3)}</span> <span class="muted" style="font-size:.78rem">— snippets #${p.i + 1} and #${p.j + 1}</span>`;
+          const g = document.createElement("div");
+          g.className = "grid-2";
+          for (const idx of [p.i, p.j]) {
+            const pre = document.createElement("pre");
+            pre.className = "code-snip";
+            pre.textContent = prettySnippet(snippets[idx]);
+            g.append(pre);
+          }
+          div.append(head, g);
+          return div;
+        }));
+      });
+    </script>
+  </body>
+</html>

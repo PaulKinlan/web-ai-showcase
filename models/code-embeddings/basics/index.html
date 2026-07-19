@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Jina Code Embeddings — Basics: how similar are two snippets? · Web AI Showcase</title>
+    <meta name="description" content="Paste two code snippets and get one cosine-similarity number from Jina's code embedder — and see why it stays high even when the two are the same algorithm in different languages. Real embeddings, in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🔎</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Jina Code Embeddings</a></p>
+
+    <header>
+      <p class="eyebrow">Basics · feature-extraction · WASM</p>
+      <h1>How similar are two snippets?</h1>
+      <p class="lede">
+        The fundamental capability, felt directly: the model turns each snippet into a 768-d unit vector, and
+        cosine similarity — the dot product — is one number from −1 to 1 that says how close in <em>meaning</em>
+        they are. Edit either side and watch it move. Try the "same algorithm, different language" example: a
+        keyword diff would call them unrelated; the embedder does not.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Compare two snippets</h3>
+      <div id="model-loader"></div>
+
+      <div class="snippet-toggle" aria-label="Example pairs">
+        <button class="chip" type="button" data-key="clone-lang">same algo, two languages</button>
+        <button class="chip" type="button" data-key="paraphrase">same intent, rewritten</button>
+        <button class="chip" type="button" data-key="unrelated">unrelated</button>
+        <button class="chip" type="button" data-key="nl-code">English ↔ code</button>
+      </div>
+
+      <div class="grid-2">
+        <label class="field">Snippet A
+          <textarea id="a" rows="7" disabled>def reverse(s):
+    return s[::-1]</textarea>
+        </label>
+        <label class="field">Snippet B
+          <textarea id="b" rows="7" disabled>func Reverse(s string) string {
+    r := []rune(s)
+    for i, j := 0, len(r)-1; i < j; i, j = i+1, j-1 {
+        r[i], r[j] = r[j], r[i]
+    }
+    return string(r)
+}</textarea>
+        </label>
+      </div>
+      <div style="margin:.6rem 0;display:flex;gap:.4rem;flex-wrap:wrap;align-items:center">
+        <button id="run" type="button" disabled>Compare</button>
+        <span class="status" id="status" role="status" aria-live="polite"></span>
+      </div>
+
+      <div id="scoreWrap" hidden>
+        <div class="gauge" aria-hidden="true"><div class="gauge-mark" id="gaugeMark"></div></div>
+        <p style="font-family:var(--font-display);font-size:1.6rem;margin:.4rem 0">
+          cosine = <b id="score">–</b> <span class="muted" id="verdict" style="font-size:1rem"></span>
+        </p>
+        <div class="readout"><span>backend <b id="rBackend">–</b></span><span>latency <b id="rMs">–</b></span><span>dims <b>768</b></span></div>
+      </div>
+    </section>
+
+    <p class="crumbs" style="margin-top:1.5rem"><a href="../practical/">Next: Practical — search &amp; duplicate detection →</a></p>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via 🤗 Transformers.js.
+      <a href="../">← Back to Jina Code Embeddings</a>
+    </footer>
+
+    <script type="module">
+      import { CodeEmbedClient, cosine, CODE_CSS } from "../codeembed.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = CODE_CSS + `
+        .gauge { position:relative; block-size:14px; border-radius:999px; border:1px solid var(--border);
+          background:linear-gradient(90deg, var(--bad), var(--warn), var(--good)); }
+        .gauge-mark { position:absolute; inset-block:-4px; inline-size:3px; background:var(--color); border-radius:2px; transition:left .3s; }
+      `;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new CodeEmbedClient();
+
+      const PAIRS = {
+        "clone-lang": ["def reverse(s):\n    return s[::-1]", "func Reverse(s string) string {\n    r := []rune(s)\n    for i, j := 0, len(r)-1; i < j; i, j = i+1, j-1 {\n        r[i], r[j] = r[j], r[i]\n    }\n    return string(r)\n}"],
+        "paraphrase": ["function sum(a, b) { return a + b; }", "const add = (x, y) => x + y;"],
+        "unrelated": ["def reverse(s):\n    return s[::-1]", "SELECT name FROM users WHERE active = 1;"],
+        "nl-code": ["download JSON from a URL over HTTP", "async function getJSON(url) {\n  const res = await fetch(url);\n  return res.json();\n}"],
+      };
+      for (const c of document.querySelectorAll(".chip")) {
+        c.addEventListener("click", () => { const p = PAIRS[c.dataset.key]; $("a").value = p[0]; $("b").value = p[1]; if (!$("run").disabled) run(); });
+      }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "jinaai/jina-embeddings-v2-base-code", runtime: "transformers.js", dtype: "q8", sizeMB: 162, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("a").disabled = false; $("b").disabled = false; $("run").disabled = false; run(); },
+      });
+
+      function verdict(s) {
+        if (s >= 0.8) return "— essentially the same thing";
+        if (s >= 0.65) return "— clearly related";
+        if (s >= 0.45) return "— loosely related";
+        if (s >= 0.3) return "— weakly related";
+        return "— unrelated";
+      }
+
+      $("run").addEventListener("click", run);
+      async function run() {
+        const a = $("a").value.trim(), b = $("b").value.trim();
+        if (!a || !b) { $("status").textContent = "Fill in both snippets."; return; }
+        $("run").disabled = true; $("status").classList.remove("err"); $("status").textContent = "Embedding…";
+        try {
+          const r = await engine.embed([a, b]);
+          const s = cosine(r.embeddings[0], r.embeddings[1]);
+          $("scoreWrap").hidden = false;
+          $("score").textContent = s.toFixed(3);
+          $("verdict").textContent = verdict(s);
+          $("gaugeMark").style.left = `${Math.max(0, Math.min(1, (s + 1) / 2)) * 100}%`;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = r.ms + " ms";
+          $("status").textContent = "";
+        } catch (err) { $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      }
+    </script>
+  </body>
+</html>

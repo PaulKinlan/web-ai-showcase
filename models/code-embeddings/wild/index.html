@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Jina Code Embeddings — Wild: cross-language clone hunt · Web AI Showcase</title>
+    <meta name="description" content="Paste a function in one language and find the same algorithm reimplemented in others — cross-language clone detection running locally on Jina's code embedder." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🔎</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Jina Code Embeddings</a></p>
+
+    <header>
+      <p class="eyebrow">Wild · feature-extraction · WASM</p>
+      <h1>Cross-language clone hunt</h1>
+      <p class="lede">
+        Here is something you could not do with grep at all: paste a function in <em>one</em> language and find
+        the same algorithm reimplemented in <em>others</em>. During a Python→Go migration, or when auditing a
+        polyglot monorepo, "is this logic already written somewhere else?" is a semantic question — and a code
+        embedder answers it. The bank below holds four algorithms, each written in several languages. Query with
+        any one and watch its siblings surface across the language barrier.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Query a snippet, find its clones elsewhere</h3>
+      <div id="model-loader"></div>
+
+      <label class="field" style="margin-top:.6rem">Pick a starter, or paste your own below
+        <select id="starter" disabled></select>
+      </label>
+      <label class="field" style="margin-top:.5rem">Query snippet
+        <textarea id="query" rows="7" disabled></textarea>
+      </label>
+      <label style="display:flex;gap:.4rem;align-items:center;font-size:.82rem;margin:.5rem 0">
+        <input id="excludeSame" type="checkbox" checked disabled />
+        Hide results in the same language as the query (show only cross-language clones)
+      </label>
+      <div style="margin:.4rem 0;display:flex;gap:.4rem;flex-wrap:wrap;align-items:center">
+        <button id="run" type="button" disabled>Find clones</button>
+        <span class="status" id="status" role="status" aria-live="polite"></span>
+      </div>
+
+      <div class="code-list" id="ranked" aria-live="polite"></div>
+    </section>
+
+    <p class="crumbs" style="margin-top:1.5rem"><a href="../multi-model/">Next: Multi-model — retrieve then explain with an LLM →</a></p>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via 🤗 Transformers.js.
+      <a href="../">← Back to Jina Code Embeddings</a>
+    </footer>
+
+    <script type="module">
+      import { CodeEmbedClient, cosine, renderCodeHits, CODE_CSS } from "../codeembed.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = CODE_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new CodeEmbedClient();
+
+      // Four algorithms, each in several languages. `intent` is ground truth for the clone relationship.
+      const BANK = [
+        { lang: "Python", intent: "reverse-string", code: "def reverse(s):\n    return s[::-1]" },
+        { lang: "JavaScript", intent: "reverse-string", code: "function reverse(s) {\n  return s.split(\"\").reverse().join(\"\");\n}" },
+        { lang: "Go", intent: "reverse-string", code: "func Reverse(s string) string {\n    r := []rune(s)\n    for i, j := 0, len(r)-1; i < j; i, j = i+1, j-1 {\n        r[i], r[j] = r[j], r[i]\n    }\n    return string(r)\n}" },
+        { lang: "Python", intent: "binary-search", code: "def bsearch(a, x):\n    lo, hi = 0, len(a) - 1\n    while lo <= hi:\n        mid = (lo + hi) // 2\n        if a[mid] == x: return mid\n        if a[mid] < x: lo = mid + 1\n        else: hi = mid - 1\n    return -1" },
+        { lang: "Java", intent: "binary-search", code: "int bsearch(int[] a, int x) {\n    int lo = 0, hi = a.length - 1;\n    while (lo <= hi) {\n        int mid = (lo + hi) / 2;\n        if (a[mid] == x) return mid;\n        if (a[mid] < x) lo = mid + 1;\n        else hi = mid - 1;\n    }\n    return -1;\n}" },
+        { lang: "Rust", intent: "binary-search", code: "fn bsearch(a: &[i32], x: i32) -> i32 {\n    let (mut lo, mut hi) = (0i32, a.len() as i32 - 1);\n    while lo <= hi {\n        let mid = (lo + hi) / 2;\n        if a[mid as usize] == x { return mid; }\n        if a[mid as usize] < x { lo = mid + 1; } else { hi = mid - 1; }\n    }\n    -1\n}" },
+        { lang: "Python", intent: "factorial", code: "def factorial(n):\n    r = 1\n    for i in range(2, n + 1):\n        r *= i\n    return r" },
+        { lang: "JavaScript", intent: "factorial", code: "function factorial(n) {\n  let r = 1;\n  for (let i = 2; i <= n; i++) r *= i;\n  return r;\n}" },
+        { lang: "SQL", intent: "top-customers", code: "SELECT customer_id, SUM(total) AS spend\nFROM orders\nGROUP BY customer_id\nORDER BY spend DESC\nLIMIT 10;" },
+        { lang: "Python", intent: "top-customers", code: "top = (orders.groupby(\"customer_id\")[\"total\"]\n         .sum().sort_values(ascending=False).head(10))" },
+      ];
+      let embs = [];
+
+      $("starter").replaceChildren(...BANK.map((b, i) => {
+        const o = document.createElement("option");
+        o.value = String(i);
+        o.textContent = `${b.lang}: ${b.intent}`;
+        return o;
+      }));
+      $("starter").addEventListener("change", () => { $("query").value = BANK[+$("starter").value].code; });
+      $("query").value = BANK[0].code;
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "jinaai/jina-embeddings-v2-base-code", runtime: "transformers.js", dtype: "q8", sizeMB: 162, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: async () => {
+          $("status").textContent = "Embedding the clone bank…";
+          try {
+            const r = await engine.embed(BANK.map((b) => b.code));
+            embs = r.embeddings;
+            $("starter").disabled = false; $("query").disabled = false; $("run").disabled = false; $("excludeSame").disabled = false;
+            $("status").textContent = "Bank ready on " + r.device.toUpperCase() + ".";
+            run();
+          } catch (err) { $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        },
+      });
+
+      $("run").addEventListener("click", run);
+      async function run() {
+        const q = $("query").value.trim();
+        if (!q || !embs.length) return;
+        $("run").disabled = true; $("status").classList.remove("err"); $("status").textContent = "Searching…";
+        // Detect the query's language if it matches a bank entry exactly (for the exclude toggle).
+        const exact = BANK.findIndex((b) => b.code.trim() === q);
+        const qLang = exact >= 0 ? BANK[exact].lang : null;
+        try {
+          const qr = await engine.embed([q]);
+          const qv = qr.embeddings[0];
+          let hits = BANK.map((b, i) => ({ ...b, score: cosine(qv, embs[i]), same: b.code.trim() === q }));
+          if ($("excludeSame").checked && qLang) hits = hits.filter((h) => h.lang !== qLang);
+          hits = hits.filter((h) => !h.same).sort((a, b) => b.score - a.score);
+          renderCodeHits($("ranked"), hits);
+          const top = hits[0];
+          $("status").textContent = top ? `Top clone: ${top.lang} (${top.intent}), cosine ${top.score.toFixed(3)}.` : "No results.";
+        } catch (err) { $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      }
+    </script>
+  </body>
+</html>
