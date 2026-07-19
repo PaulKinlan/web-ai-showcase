@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OuteTTS — Wild: voice &amp; style control · Web AI Showcase</title>
+    <meta name="description" content="Because OuteTTS is an LLM, temperature and speaker profiles reshape the delivery. Generate the same line several ways and hear the difference — side by side, in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🗣️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">OuteTTS</a></p>
+
+    <header>
+      <p class="eyebrow">Wild · text-to-speech · WebGPU/WASM</p>
+      <h1>Voice &amp; style control — the LLM's sampling knobs</h1>
+      <p class="lede">
+        Here is what makes an LLM-based TTS unusual: the same knobs that make a chat model creative or steady
+        also shape a <em>voice</em>. Low temperature gives a flat, consistent read; higher temperature loosens
+        the delivery. And each speaker profile conditions the model like a persona. Generate the same sentence
+        across a temperature sweep or across speakers and listen to the difference — something you could never
+        do with a fixed vocoder.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Compare deliveries</h3>
+      <div id="model-loader"></div>
+
+      <label class="field" style="margin-top:.6rem">Text
+        <textarea id="text" rows="2" disabled>You would not believe what just happened at the office today.</textarea>
+      </label>
+      <div class="controls-grid" style="margin-top:.4rem">
+        <label class="field">Sweep
+          <select id="mode" disabled>
+            <option value="temp">Temperature sweep (one voice)</option>
+            <option value="voice">Speaker sweep (one temperature)</option>
+          </select>
+        </label>
+        <label class="field">Base voice
+          <select id="voice" disabled></select>
+        </label>
+      </div>
+      <div style="margin:.7rem 0;display:flex;gap:.4rem;flex-wrap:wrap;align-items:center">
+        <button id="run" type="button" disabled>Generate variants</button>
+        <span class="status" id="status" role="status" aria-live="polite"></span>
+      </div>
+      <div id="progWrap" hidden>
+        <progress id="prog" max="100" value="0" style="inline-size:100%"></progress>
+        <p class="muted" id="progText" style="font-size:.8rem"></p>
+      </div>
+
+      <div id="variants"></div>
+    </section>
+
+    <p class="crumbs" style="margin-top:1.5rem"><a href="../multi-model/">Next: Multi-model — summarise, then speak →</a></p>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via 🤗 Transformers.js + outetts.
+      <a href="../">← Back to OuteTTS</a>
+    </footer>
+
+    <script type="module">
+      import { OuteClient, wavURL, renderWaveform, OUTE_CSS } from "../outetts-ui.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = OUTE_CSS + `
+        .variant { border:1px solid var(--border); border-radius:8px; background:var(--bg-raised); padding:.7rem .8rem; margin-top:.7rem; }
+        .variant h4 { margin:.1rem 0 .4rem; font-size:.9rem; }
+      `;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new OuteClient();
+      const urls = [];
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/OuteTTS-0.2-500M", runtime: "transformers.js", dtype: "q8", sizeMB: 580, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => {
+          $("voice").replaceChildren(...engine.speakers.map((s) => {
+            const o = document.createElement("option"); o.value = s.id; o.textContent = s.name; return o;
+          }));
+          for (const el of ["text", "mode", "voice", "run"]) $(el).disabled = false;
+        },
+      });
+
+      $("run").addEventListener("click", async () => {
+        const text = $("text").value.trim();
+        if (!text) { $("status").textContent = "Type a line first."; $("status").classList.add("err"); return; }
+        // Build the variant plan.
+        let plan;
+        if ($("mode").value === "temp") {
+          plan = [0.1, 0.4, 0.8].map((t) => ({ label: `Temperature ${t.toFixed(1)}`, temperature: t, voice: $("voice").value }));
+        } else {
+          const ids = engine.speakers.slice(0, 3);
+          plan = ids.map((s) => ({ label: `Voice: ${s.name}`, temperature: 0.2, voice: s.id }));
+        }
+        $("run").disabled = true; $("status").classList.remove("err"); $("status").textContent = "";
+        $("progWrap").hidden = false; $("prog").value = 0;
+        for (const u of urls) URL.revokeObjectURL(u);
+        urls.length = 0;
+        $("variants").replaceChildren();
+        try {
+          for (let i = 0; i < plan.length; i++) {
+            const p = plan[i];
+            $("progText").textContent = `Generating ${p.label} (${i + 1} of ${plan.length})…`;
+            const r = await engine.generate({ text, voice: p.voice, temperature: p.temperature, repetitionPenalty: 1.1, maxLength: 1536 });
+            const url = wavURL(r.wav); urls.push(url);
+            const card = document.createElement("div");
+            card.className = "variant";
+            card.innerHTML = `<h4>${p.label}</h4>`;
+            const row = document.createElement("div"); row.className = "audio-row";
+            const audio = document.createElement("audio"); audio.controls = true; audio.src = url;
+            const dl = document.createElement("a"); dl.className = "button secondary"; dl.href = url; dl.download = "variant.wav"; dl.textContent = "Download WAV";
+            row.append(audio, dl);
+            const wave = document.createElement("div");
+            const meta = document.createElement("p"); meta.className = "muted"; meta.style.fontSize = ".76rem";
+            meta.textContent = `${r.device.toUpperCase()} · ${r.durSec.toFixed(1)}s audio · ${(r.ms / 1000).toFixed(1)}s gen · ${r.audioTokens} tokens`;
+            card.append(row, wave, meta);
+            $("variants").append(card);
+            renderWaveform(wave, r.pcm);
+            $("prog").value = Math.round(((i + 1) / plan.length) * 100);
+          }
+          $("progWrap").hidden = true;
+          $("status").textContent = "Compare the deliveries above."; $("status").classList.add("ok");
+        } catch (err) {
+          $("progWrap").hidden = true;
+          $("status").textContent = "Failed: " + err.message; $("status").classList.add("err");
+        } finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>

@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OuteTTS — an LLM that speaks, in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="OuteTTS is text-to-speech done as language modelling: a Qwen2 500M LLM generates discrete audio tokens from your text, and the WavTokenizer neural codec decodes them into a 24 kHz waveform. Pick a voice, tune sampling, hear it speak — entirely on your device."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🗣️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">text-to-speech · audio · WebGPU/WASM · ~580 MB</p>
+      <h1>OuteTTS — a language model that speaks</h1>
+      <p class="lede">
+        Most text-to-speech models are custom acoustic networks. OuteTTS takes a different route: it is a
+        plain <strong>Qwen2 language model</strong> that was taught to predict <em>audio</em> tokens instead of
+        words. Feed it text (and optionally a speaker profile) and it autoregressively generates a stream of
+        discrete codec tokens — then a second model, the <strong>WavTokenizer</strong> neural codec, decodes
+        that stream into an actual 24 kHz waveform. It is TTS reframed as next-token prediction, and it runs
+        end-to-end in your browser. Nothing is uploaded.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/onnx-community/OuteTTS-0.2-500M" target="_blank" rel="noopener">onnx-community/OuteTTS-0.2-500M</a> (ONNX of <a href="https://huggingface.co/OuteAI/OuteTTS-0.2-500M" target="_blank" rel="noopener">OuteAI/OuteTTS-0.2-500M</a>)</td></tr>
+          <tr><th>Task / pipeline</th><td><code>text-to-speech</code> — via the official <a href="https://www.npmjs.com/package/outetts" target="_blank" rel="noopener"><code>outetts</code></a> library (wraps Transformers.js)</td></tr>
+          <tr><th>Architecture</th><td><strong>LLM-based TTS</strong>: a Qwen2 ~500M-param decoder generates audio tokens → the <a href="https://huggingface.co/onnx-community/WavTokenizer-large-speech-75token_decode" target="_blank" rel="noopener">WavTokenizer</a> codec (75 tokens/sec) decodes them to a 24 kHz waveform</td></tr>
+          <tr><th>Controls</th><td>Speaker profile, <code>temperature</code>, <code>repetition_penalty</code>, <code>max_length</code> — real LLM sampling knobs</td></tr>
+          <tr><th>Quantization</th><td>q8 (8-bit) ONNX for both the LLM and the codec decoder</td></tr>
+          <tr><th>Backend</th><td>WebGPU accelerates the LLM when a GPU adapter exists; honest WASM fallback (the codec decoder always runs on WASM/CPU)</td></tr>
+          <tr><th>Download</th><td>~508 MB (LLM) + ~72 MB (codec) ≈ <strong>580 MB</strong>, cached after first load</td></tr>
+          <tr><th>Languages</th><td>English, Chinese, Japanese, Korean (this demo uses English speakers)</td></tr>
+          <tr><th>License</th><td>CC-BY-NC-4.0 — <strong>non-commercial</strong>. Fine for demos/research; not for commercial products.</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers, Web Audio (playback), optionally WebGPU — WASM path is Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Type something, pick a voice, and generate. Because the LLM produces audio one token at
+        a time, synthesis is not instant — the readout shows the real generation time, audio-token count, and
+        the real-time factor. On WASM this is genuinely slow (an autoregressive 500M model on the CPU); a
+        WebGPU device is much faster.</p>
+
+      <div id="model-loader"></div>
+
+      <label class="field" style="margin-top:.6rem">Text to speak
+        <textarea id="text" rows="3" disabled>Speech synthesis is the artificial production of human speech.</textarea>
+      </label>
+      <div class="chip-row" aria-label="Example phrases">
+        <button class="chip" type="button" data-t="Speech synthesis is the artificial production of human speech.">default</button>
+        <button class="chip" type="button" data-t="Welcome back! Your order has shipped and will arrive on Tuesday.">notification</button>
+        <button class="chip" type="button" data-t="Once upon a time, in a browser far, far away, a language model learned to speak.">narration</button>
+      </div>
+
+      <div class="controls-grid" style="margin-top:.4rem">
+        <label class="field">Voice
+          <select id="voice" disabled></select>
+        </label>
+        <label class="field">Temperature <span class="muted" id="tempVal" style="font-family:var(--font-mono)">0.10</span>
+          <div class="range-row"><input id="temp" type="range" min="0.05" max="1.0" step="0.05" value="0.1" disabled /></div>
+        </label>
+        <label class="field">Repetition penalty <span class="muted" id="repVal" style="font-family:var(--font-mono)">1.10</span>
+          <div class="range-row"><input id="rep" type="range" min="1.0" max="1.5" step="0.05" value="1.1" disabled /></div>
+        </label>
+        <label class="field">Max length (tokens) <span class="muted" id="maxVal" style="font-family:var(--font-mono)">2048</span>
+          <div class="range-row"><input id="max" type="range" min="512" max="4096" step="256" value="2048" disabled /></div>
+        </label>
+      </div>
+
+      <div style="margin:.7rem 0;display:flex;gap:.4rem;flex-wrap:wrap;align-items:center">
+        <button id="run" type="button" disabled>Generate speech</button>
+        <span class="status" id="status" role="status" aria-live="polite"></span>
+      </div>
+
+      <div id="outWrap" hidden>
+        <div class="audio-row">
+          <audio id="player" controls></audio>
+          <a id="download" class="button secondary" download="outetts.wav">Download WAV</a>
+        </div>
+        <div id="wave"></div>
+        <div class="readout">
+          <span>backend <b id="rBackend">–</b></span>
+          <span>gen time <b id="rMs">–</b></span>
+          <span>audio <b id="rDur">–</b></span>
+          <span>audio tokens <b id="rTok">–</b></span>
+          <span>real-time factor <b id="rRtf">–</b></span>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside — text → audio tokens → waveform</h3>
+      <p class="muted">
+        OuteTTS is two models in a row. Making that legible is the point of this panel: the LLM never emits
+        sound directly — it emits <em>tokens</em>, and only the codec turns tokens into a waveform. The
+        WavTokenizer runs at <strong>75 tokens per second</strong> of audio, so the token count below is a
+        real, physical property of the clip you just generated.
+      </p>
+      <div class="pipe" aria-hidden="false">
+        <div class="pipe-stage"><h4>1 · Text</h4><p>Your sentence, formatted with the speaker profile into the LLM prompt.</p></div>
+        <span class="pipe-arrow" aria-hidden="true">→</span>
+        <div class="pipe-stage"><h4>2 · Qwen2 LLM</h4><p>Autoregressively predicts discrete <b>audio tokens</b> (WebGPU or WASM).</p></div>
+        <span class="pipe-arrow" aria-hidden="true">→</span>
+        <div class="pipe-stage"><h4>3 · WavTokenizer</h4><p>Neural codec decodes the token stream into a 24 kHz <b>waveform</b> (WASM).</p></div>
+      </div>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Generate a clip above to inspect its real token/latency breakdown.</div>
+      <div id="insideWrap" hidden>
+        <div class="readout">
+          <span>audio tokens generated <b id="iTok">–</b></span>
+          <span>clip duration <b id="iDur">–</b></span>
+          <span>gen throughput <b id="iTps">–</b></span>
+          <span>token rate (codec) <b>75 tok/s</b></span>
+        </div>
+        <p class="muted" style="font-size:.78rem;margin:.4rem 0">The waveform is the codec's real output — every wiggle is decoded from the LLM's token stream:</p>
+        <div id="insideWave"></div>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        Framing speech as language modelling is what makes modern TTS controllable and composable. Because the
+        generator is <em>an LLM</em>, the same sampling knobs you know from text — temperature, repetition
+        penalty — shape the voice, and a speaker profile conditions it like a system prompt. And it all runs
+        locally.
+      </p>
+      <ul>
+        <li><strong>Private narration &amp; read-aloud</strong> — turn articles, docs, or messages into audio without shipping text to a TTS API.</li>
+        <li><strong>Voice for offline / on-device apps</strong> — games, kiosks, and accessibility tools that speak with no network and no per-character billing.</li>
+        <li><strong>Expressive control</strong> — dial temperature for a flatter or livelier delivery; swap speaker profiles for different characters.</li>
+        <li><strong>Composable pipelines</strong> — pair with a summariser or chat LLM so a model can write <em>and</em> speak (see the multi-model demo).</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Type a line, hear it spoken, and see the text→tokens→waveform pipeline made real.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Narrate any pasted passage — chunk long text into sentences and stitch a single clip.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Voice &amp; style control: sweep temperature and speakers to hear the LLM's delivery change.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">A summariser LLM condenses a passage, then OuteTTS speaks the summary aloud.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>The <code>outetts</code> library orchestrates the LLM and the codec; you drive it like any TTS:</p>
+      <pre><code>import { HFModelConfig_v1, InterfaceHF } from "outetts";
+
+const cfg = new HFModelConfig_v1({
+  model_path: "onnx-community/OuteTTS-0.2-500M",
+  language: "en",
+  dtype: "q8",         // 8-bit LLM + codec
+  device: "webgpu",    // or "wasm"
+});
+const tts = await InterfaceHF({ model_version: "0.2", cfg });
+
+const speaker = tts.load_default_speaker("male_1");
+const output = await tts.generate({
+  text: "Speech synthesis is the artificial production of human speech.",
+  temperature: 0.1,          // LLM sampling — lower = steadier delivery
+  repetition_penalty: 1.1,
+  speaker,
+});
+// output.audio is a waveform Tensor; output.sr is 24000 Hz.</code></pre>
+      <p class="muted">
+        This page runs all of that in a Web Worker. The LLM tries WebGPU first and falls back to WASM
+        honestly; the WavTokenizer decoder always runs on WASM (WebGPU isn't supported for it yet). We build
+        a 16-bit PCM WAV from <code>output.audio</code> for playback and download.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/onnx-community/OuteTTS-0.2-500M" target="_blank" rel="noopener">Model card — onnx-community/OuteTTS-0.2-500M (ONNX + usage)</a></li>
+        <li><a href="https://huggingface.co/OuteAI/OuteTTS-0.2-500M" target="_blank" rel="noopener">Original OuteTTS-0.2-500M weights &amp; card (OuteAI)</a></li>
+        <li><a href="https://huggingface.co/onnx-community/WavTokenizer-large-speech-75token_decode" target="_blank" rel="noopener">WavTokenizer — the neural codec decoder</a></li>
+        <li><a href="https://www.npmjs.com/package/outetts" target="_blank" rel="noopener">outetts — the JS library that wraps Transformers.js</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>
+      and <a href="https://www.npmjs.com/package/outetts" target="_blank" rel="noopener">outetts</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { OuteClient, wavURL, renderWaveform, OUTE_CSS } from "./outetts-ui.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = OUTE_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new OuteClient();
+      let lastURL = null;
+
+      for (const c of document.querySelectorAll(".chip")) {
+        c.addEventListener("click", () => { $("text").value = c.dataset.t; });
+      }
+      $("temp").addEventListener("input", () => { $("tempVal").textContent = (+$("temp").value).toFixed(2); });
+      $("rep").addEventListener("input", () => { $("repVal").textContent = (+$("rep").value).toFixed(2); });
+      $("max").addEventListener("input", () => { $("maxVal").textContent = $("max").value; });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/OuteTTS-0.2-500M", runtime: "transformers.js", dtype: "q8", sizeMB: 580, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => {
+          $("voice").replaceChildren(...engine.speakers.map((s) => {
+            const o = document.createElement("option");
+            o.value = s.id; o.textContent = s.name;
+            return o;
+          }));
+          for (const el of ["text", "voice", "temp", "rep", "max", "run"]) $(el).disabled = false;
+        },
+      });
+
+      $("run").addEventListener("click", run);
+      async function run() {
+        const text = $("text").value.trim();
+        if (!text) { $("status").textContent = "Type something to speak."; $("status").classList.add("err"); return; }
+        $("run").disabled = true; $("status").classList.remove("err");
+        $("status").textContent = "Generating on " + engine.device.toUpperCase() + " — the LLM is predicting audio tokens…";
+        try {
+          const r = await engine.generate({
+            text,
+            voice: $("voice").value,
+            temperature: +$("temp").value,
+            repetitionPenalty: +$("rep").value,
+            maxLength: +$("max").value,
+          });
+          if (lastURL) URL.revokeObjectURL(lastURL);
+          lastURL = wavURL(r.wav);
+          $("outWrap").hidden = false;
+          $("player").src = lastURL;
+          $("download").href = lastURL;
+          renderWaveform($("wave"), r.pcm);
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = (r.ms / 1000).toFixed(1) + " s";
+          $("rDur").textContent = r.durSec.toFixed(1) + " s";
+          $("rTok").textContent = r.audioTokens;
+          $("rRtf").textContent = r.rtf ? r.rtf.toFixed(1) + "×" : "–";
+          // See inside
+          $("insideEmpty").hidden = true;
+          $("insideWrap").hidden = false;
+          $("iTok").textContent = r.audioTokens;
+          $("iDur").textContent = r.durSec.toFixed(2) + " s";
+          $("iTps").textContent = r.genTokPerSec ? r.genTokPerSec + " tok/s" : "–";
+          renderWaveform($("insideWave"), r.pcm);
+          $("status").textContent = "Done — " + r.durSec.toFixed(1) + "s of audio in " + (r.ms / 1000).toFixed(1) + "s.";
+          $("status").classList.add("ok");
+        } catch (err) {
+          $("status").textContent = "Generation failed: " + err.message;
+          $("status").classList.add("err");
+        } finally {
+          $("run").disabled = false;
+        }
+      }
+    </script>
+  </body>
+</html>
