@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>GTE-ModernBERT × cross-encoder — retrieve then rerank · Web AI Showcase</title>
+    <meta name="description" content="The classic two-stage retrieval pipeline, in the browser: GTE-ModernBERT embeddings retrieve a shortlist fast, then a BGE cross-encoder reranks the top hits for precision. See the order change." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>📐</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">GTE-ModernBERT</a></p>
+
+    <header>
+      <p class="eyebrow">use case · multi-model</p>
+      <h1>Multi-model: retrieve with embeddings, then rerank with a cross-encoder</h1>
+      <p class="lede">
+        Every serious search stack is two stages. Stage one: <strong>GTE-ModernBERT</strong> embeds the
+        query and every passage independently and ranks by cosine — cheap and instant, but it can't see the
+        query and passage <em>together</em>. Stage two: a
+        <a href="/web-ai-showcase/models/bge-reranker/">BGE cross-encoder</a> reads each top passage
+        <em>with</em> the query and emits a sharper relevance score. Watch the shortlist reorder. Two models,
+        one on-device pipeline.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="embLoader"></div>
+      <div id="rrLoader"></div>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.4rem">
+        Passages (one per line)
+        <textarea id="docs" class="ner-input" rows="8" disabled>The transformer's self-attention weighs every token against every other in parallel.
+Attention mechanisms let a model decide which parts of the input matter most for each output.
+Positional encodings inject order information because attention itself is permutation-invariant.
+The refund window is 30 days; contact support with your order number to begin.
+Convolutional networks slide learned filters across an image to detect local patterns.
+Recurrent networks process a sequence step by step, carrying a hidden state forward.
+Gradient descent nudges weights in the direction that reduces the loss function.</textarea>
+      </label>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;max-inline-size:34rem;margin-top:.6rem">
+        Query
+        <span style="display:flex;gap:.4rem;flex-wrap:wrap">
+          <input id="query" type="text" value="how does attention decide what to focus on?" style="flex:1;min-inline-size:12rem" disabled />
+          <button id="run" type="button" disabled>Retrieve &amp; rerank</button>
+        </span>
+      </label>
+      <label style="display:inline-flex;align-items:center;gap:.4rem;font-size:.82rem;margin-top:.5rem">
+        Shortlist size (top-k to rerank)
+        <input id="topk" type="range" min="3" max="7" step="1" value="5" style="inline-size:8rem" />
+        <output id="topkOut" style="font-family:var(--font-mono)">5</output>
+      </label>
+
+      <div class="grid-2" style="margin-top:.8rem">
+        <div>
+          <h3 style="margin-top:.2rem">Stage 1 — embedding retrieval (cosine)</h3>
+          <div class="sent-list" id="retrieved" aria-live="polite"></div>
+        </div>
+        <div>
+          <h3 style="margin-top:.2rem">Stage 2 — cross-encoder rerank</h3>
+          <div class="sent-list" id="reranked" aria-live="polite"></div>
+        </div>
+      </div>
+      <div class="readout" id="readout" hidden>
+        <span>embed <b id="rEmb">–</b></span>
+        <span>rerank <b id="rRr">–</b></span>
+        <span>moved <b id="rMoved">–</b></span>
+      </div>
+    </section>
+
+    <section aria-labelledby="how-h">
+      <h2 id="how-h">Why two stages beat one</h2>
+      <p>
+        Bi-encoders (embeddings) scale — you embed a million documents once and compare vectors in
+        milliseconds — but each vector is computed without knowing the query, so subtle relevance gets lost.
+        Cross-encoders are the opposite: they read query and passage jointly for a precise score, but you
+        can't pre-compute them, so running one over a million documents is hopeless. The fix is the
+        <strong>retrieve-then-rerank</strong> cascade you see here: embeddings narrow a million to a handful,
+        the cross-encoder perfects the order of that handful.
+      </p>
+    </section>
+
+    <p class="crumbs"><a href="../wild/">← Wild</a> · <a href="../">Back to GTE-ModernBERT</a></p>
+
+    <script type="module">
+      import { GteMbEngine, RerankClient, cosine, parseLines, escapeHTML, GTEMB_CSS } from "../gtemb.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = GTEMB_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new GteMbEngine();
+      const reranker = new RerankClient();
+      let embReady = false, rrReady = false;
+
+      $("topk").addEventListener("input", () => { $("topkOut").textContent = $("topk").value; });
+
+      createModelLoader({
+        mount: $("embLoader"),
+        model: { modelId: "Alibaba-NLP/gte-modernbert-base", runtime: "transformers.js", dtype: "q8", sizeMB: 150, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { embReady = true; maybe(); },
+      });
+      createModelLoader({
+        mount: $("rrLoader"),
+        model: { modelId: "Xenova/bge-reranker-base", runtime: "transformers.js", dtype: "q8", sizeMB: 270, requiresWebGPU: false },
+        load: async (onProgress) => { await reranker.load(onProgress); return reranker; },
+        onReady: () => { rrReady = true; maybe(); },
+      });
+      function maybe() { if (embReady && rrReady) { $("docs").disabled = false; $("query").disabled = false; $("run").disabled = false; } }
+
+      // Map a passage back to its stage-1 rank so we can show how far the reranker moved it.
+      $("run").addEventListener("click", run);
+      $("query").addEventListener("keydown", (e) => { if (e.key === "Enter") run(); });
+      async function run() {
+        const texts = parseLines($("docs").value);
+        const q = $("query").value.trim();
+        if (!q || texts.length < 2) return;
+        $("run").disabled = true;
+        $("status").hidden = false; $("status").classList.remove("err"); $("status").textContent = "Stage 1 — embedding retrieval…";
+        try {
+          const [qr, dr] = await Promise.all([engine.embed([q]), engine.embed(texts)]);
+          const qv = qr.embeddings[0];
+          const retrieved = texts.map((text, i) => ({ text, score: cosine(qv, dr.embeddings[i]) })).sort((a, b) => b.score - a.score);
+          renderList($("retrieved"), retrieved.map((h) => ({ text: h.text, score: h.score })));
+
+          const k = Math.min(+$("topk").value, retrieved.length);
+          const shortlist = retrieved.slice(0, k);
+          const stage1Rank = new Map(shortlist.map((h, i) => [h.text, i]));
+
+          $("status").textContent = "Stage 2 — cross-encoder rerank…";
+          const rr = await reranker.rerank(q, shortlist.map((h) => h.text));
+          let moved = 0;
+          const rerankedRows = rr.ranked.map((h, newRank) => {
+            const oldRank = stage1Rank.get(h.passage);
+            const delta = oldRank - newRank;
+            if (delta !== 0) moved++;
+            const arrow = delta > 0 ? `▲${delta}` : delta < 0 ? `▼${-delta}` : "—";
+            return { text: h.passage, score: h.prob, sub: `cross-encoder ${h.prob.toFixed(3)} · was #${oldRank + 1} ${arrow}` };
+          });
+          renderList($("reranked"), rerankedRows);
+
+          $("readout").hidden = false;
+          $("rEmb").textContent = dr.ms + " ms"; $("rRr").textContent = rr.ms + " ms"; $("rMoved").textContent = moved + " / " + k;
+          $("status").hidden = true;
+        } catch (err) { $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      }
+
+      function renderList(container, rows) {
+        container.replaceChildren(...rows.map((h, rank) => {
+          const row = document.createElement("div"); row.className = "result-row";
+          const head = document.createElement("div"); head.className = "result-head";
+          const t = document.createElement("span"); t.textContent = `${rank + 1}. ${h.text.slice(0, 100)}${h.text.length > 100 ? "…" : ""}`;
+          const sc = document.createElement("span"); sc.className = "result-score"; sc.textContent = h.score.toFixed(3);
+          head.append(t, sc); row.append(head);
+          if (h.sub) { const s = document.createElement("div"); s.className = "result-sub"; s.textContent = h.sub; row.append(s); }
+          const bar = document.createElement("div"); bar.className = "result-bar";
+          const fill = document.createElement("div"); fill.className = "result-fill"; fill.style.inlineSize = `${Math.max(0, Math.min(1, h.score)) * 100}%`;
+          bar.append(fill); row.append(bar);
+          return row;
+        }));
+      }
+    </script>
+  </body>
+</html>

@@ -1,0 +1,374 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>GTE-ModernBERT — long-context text embeddings in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="A 768-dimensional embedding model built on the ModernBERT backbone — an 8192-token context and a newer encoder architecture — turned into a top-MTEB retriever. Embed long documents whole, build a cosine matrix, run semantic search, and see the CLS-pooled vector. Real embeddings, no server."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>📐</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">feature-extraction · text · WASM · ~150 MB</p>
+      <h1>GTE-ModernBERT — a long-context embedder on a newer backbone</h1>
+      <p class="lede">
+        Most in-browser embedders (GTE-small, MiniLM, BGE, E5) sit on the classic BERT encoder with its
+        512-token ceiling. This one is built on <strong>ModernBERT</strong> — a from-scratch redesign of
+        the encoder (rotary positions, alternating local/global attention, an <strong>8192-token
+        context</strong>) — fine-tuned by Alibaba's GTE team into a 768-dimensional retriever that tops
+        MTEB for its class. It also pools differently: the <strong>[CLS] token</strong>, not the mean.
+        Paste a few passages to build a live similarity matrix, search by meaning, and inspect the vector.
+        Nothing leaves your device.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/Alibaba-NLP/gte-modernbert-base" target="_blank" rel="noopener">Alibaba-NLP/gte-modernbert-base</a> (Transformers.js ONNX build)</td></tr>
+          <tr><th>Task / pipeline</th><td><code>feature-extraction</code></td></tr>
+          <tr><th>Backbone</th><td><a href="https://huggingface.co/answerdotai/ModernBERT-base" target="_blank" rel="noopener">ModernBERT-base</a> (~149M params) → 768-dimensional sentence embedding</td></tr>
+          <tr><th>Context length</th><td><strong>8192 tokens</strong> (16× the classic 512) — rotary position embeddings + local/global attention</td></tr>
+          <tr><th>Pooling</th><td><strong>CLS token</strong> (the [CLS] vector), then <strong>L2-normalize</strong> — contrast GTE-small's mean pooling. No instruction prefix.</td></tr>
+          <tr><th>Strength</th><td>Contrastive fine-tuning → strong <a href="https://huggingface.co/spaces/mteb/leaderboard" target="_blank" rel="noopener">MTEB</a> retrieval, especially on long passages</td></tr>
+          <tr><th>Quantization</th><td>q8 (8-bit) ONNX</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (runs anywhere; no WebGPU needed)</td></tr>
+          <tr><th>Download</th><td>~150 MB, cached after first load</td></tr>
+          <tr><th>License</th><td>Apache-2.0</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Put one passage per line (short or long — this model takes long ones). The matrix shows
+        cosine similarity between every pair (1.00 = identical direction); the scatter is a 2D PCA of the
+        768-d vectors. Then type a query to rank the passages by meaning.</p>
+
+      <div id="model-loader"></div>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
+        Passages (one per line)
+        <textarea id="sentences" rows="8">The transformer architecture replaced recurrence with self-attention, letting models weigh every token against every other in parallel.
+Attention lets a model focus on the most relevant parts of the input when producing each output token.
+Our refund policy allows returns within 30 days of purchase for a full refund.
+Customers may send items back for a month after buying them and get their money back.
+Photosynthesis converts sunlight, water and carbon dioxide into glucose and oxygen in plant chloroplasts.
+The Eiffel Tower, completed in 1889, is a wrought-iron landmark on the Champ de Mars in Paris.</textarea>
+      </label>
+      <div style="margin:.5rem 0;display:flex;gap:.4rem;flex-wrap:wrap">
+        <button id="run" type="button" disabled>Embed &amp; compare</button>
+        <button id="reset" type="button" class="secondary">Reset examples</button>
+      </div>
+      <p class="status" id="rowStatus" role="status" aria-live="polite" hidden></p>
+
+      <div class="grid-2">
+        <div>
+          <h3 style="margin-top:.4rem">Cosine similarity matrix</h3>
+          <div class="matrix-scroll" id="matrix" aria-live="polite"></div>
+        </div>
+        <div>
+          <h3 style="margin-top:.4rem">2D map (PCA)</h3>
+          <div id="projection" aria-live="polite"></div>
+          <p class="muted" id="explained" style="font-size:.78rem;font-family:var(--font-mono)"></p>
+        </div>
+      </div>
+
+      <div style="margin-top:1rem">
+        <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;max-inline-size:34rem">
+          Semantic search — rank the passages above by meaning
+          <span style="display:flex;gap:.4rem;flex-wrap:wrap">
+            <input id="query" type="text" value="how do neural networks pay attention?" style="flex:1;min-inline-size:12rem" disabled />
+            <button id="search" type="button" disabled>Search</button>
+          </span>
+        </label>
+        <div class="sent-list" id="ranked" aria-live="polite"></div>
+      </div>
+
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+        <span>passages <b id="rN">–</b></span>
+        <span>dims <b id="rDim">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside — the CLS vector, long context, and the backbone contrast</h3>
+      <p class="muted">
+        ModernBERT emits one 768-number vector per token. GTE-ModernBERT takes the <strong>[CLS]</strong>
+        token's vector as the whole-passage embedding (a learned summary slot) and <strong>L2-normalizes</strong>
+        it — so cosine similarity is a plain dot product. Pick a passage to see its real vector, its
+        pre-normalization magnitude, and how many tokens it spanned.
+      </p>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Embed some passages above to inspect a vector.</div>
+      <div id="insideWrap" hidden>
+        <label style="font-size:.82rem;display:flex;gap:.4rem;align-items:center;flex-wrap:wrap">
+          Inspect passage
+          <select id="pick"></select>
+        </label>
+        <div class="readout">
+          <span>dimensions <b>768</b></span>
+          <span>tokens <b id="iTok">–</b> / 8192</span>
+          <span>pre-norm ‖v‖ <b id="iNorm">–</b></span>
+          <span>post-norm ‖v‖ <b>1.000</b></span>
+        </div>
+        <p class="muted" style="font-size:.78rem;margin:.3rem 0">First 128 of 768 dimensions (blue = positive, orange = negative, brighter = larger magnitude):</p>
+        <div class="vec-strip" id="vecStrip"></div>
+        <p class="muted" style="font-size:.78rem;font-family:var(--font-mono);margin-top:.5rem;word-break:break-all" id="vecHead"></p>
+      </div>
+
+      <hr style="border:0;border-top:1px solid var(--border);margin:1.2rem 0" />
+      <h4 style="margin:.2rem 0">GTE-ModernBERT vs GTE-small on the same long passage</h4>
+      <p class="muted">
+        Two GTE recipes on two backbones: <strong>GTE-small</strong> (classic BERT, 512-token limit, mean
+        pool, 384-d) and <strong>GTE-ModernBERT</strong> (ModernBERT, 8192-token, CLS pool, 768-d). Feed
+        both a query and a <em>long</em> document whose answer sits deep in the text, and compare how each
+        scores relevance. Loads GTE-small (~34 MB) on demand.
+      </p>
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;align-items:center;margin:.4rem 0">
+        <button id="cmpRun" type="button" class="secondary" disabled>Compare on a long document</button>
+        <span class="status" id="cmpStatus" role="status" aria-live="polite"></span>
+      </div>
+      <div id="cmpWrap" hidden style="overflow-x:auto"></div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        Embeddings power search, recommendations, deduplication, clustering and retrieval-augmented
+        generation. GTE-ModernBERT's pitch is <strong>long context on a modern, efficient backbone</strong>:
+        you can embed a whole document — a full support article, a contract clause, a long chat turn —
+        without chopping it into 512-token windows and losing the thread, and get top-tier retrieval quality,
+        all in a tab and all private.
+      </p>
+      <ul>
+        <li><strong>Long-document retrieval</strong> — index whole articles or chapters as single vectors, no window-stitching.</li>
+        <li><strong>RAG over long chunks</strong> — fewer, longer chunks means fewer embeddings and less lost context.</li>
+        <li><strong>Dedup &amp; clustering</strong> — group "same thing, different words" across long passages.</li>
+        <li><strong>Retrieve → rerank pipelines</strong> — a fast long-context first pass, then a cross-encoder for precision (see the multi-model demo).</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Do two passages mean the same thing? One cosine number — and the long-context angle.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Long-document semantic search and near-duplicate detection over your own passages.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Cluster a pile of mixed passages into themes with k-means over the 768-d vectors.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">GTE-ModernBERT retrieves a shortlist, then a cross-encoder reranks the top hits.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>Feature-extraction with CLS pooling is the whole recipe — note it is <em>cls</em>, not mean, and there is no prefix:</p>
+      <pre><code>import { pipeline } from "@huggingface/transformers";
+
+const extract = await pipeline(
+  "feature-extraction",
+  "Alibaba-NLP/gte-modernbert-base",
+); // downloads + caches ~150 MB once
+
+// GTE-ModernBERT pools the [CLS] token and needs NO instruction prefix — up to 8192 tokens per input:
+const out = await extract([
+  "how do neural networks pay attention?",
+  "Attention lets a model focus on the most relevant parts of the input…",
+], { pooling: "cls", normalize: true });
+const [q, d] = out.tolist();
+
+// unit-length vectors → cosine similarity is just the dot product:
+const sim = q.reduce((s, x, i) =&gt; s + x * d[i], 0); // high — same meaning</code></pre>
+      <p class="muted">
+        This page asks the worker for the <em>un</em>-normalized CLS vectors so "See inside" can show the
+        real pre-normalization magnitude, then normalizes them in JS. Inference runs in a Web Worker, so the
+        matrix, projection and comparison never jank the page.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/Alibaba-NLP/gte-modernbert-base" target="_blank" rel="noopener">Model card — Alibaba-NLP/gte-modernbert-base</a></li>
+        <li><a href="https://huggingface.co/answerdotai/ModernBERT-base" target="_blank" rel="noopener">ModernBERT-base — the backbone</a></li>
+        <li><a href="https://arxiv.org/abs/2412.13663" target="_blank" rel="noopener">Paper — Smarter, Better, Faster, Longer: ModernBERT (Warner et al., 2024)</a></li>
+        <li><a href="https://arxiv.org/abs/2308.03281" target="_blank" rel="noopener">Paper — GTE: General Text Embeddings with Multi-stage Contrastive Learning (Li et al., 2023)</a></li>
+        <li><a href="https://huggingface.co/spaces/mteb/leaderboard" target="_blank" rel="noopener">MTEB leaderboard — how embedders are benchmarked</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import {
+        GteMbEngine, EmbedClient, WORKERS, cosine, simMatrix, pca2d, parseLines,
+        renderMatrix, renderProjection, renderRanked, GTEMB_CSS,
+      } from "./gtemb.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = GTEMB_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new GteMbEngine();
+      const DEFAULT = $("sentences").value;
+      let last = null; // { texts, embeddings, norms, dim, tokenCounts }
+
+      $("reset").addEventListener("click", () => { $("sentences").value = DEFAULT; });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Alibaba-NLP/gte-modernbert-base", runtime: "transformers.js", dtype: "q8", sizeMB: 150, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => {
+          $("run").disabled = false;
+          $("query").disabled = false;
+          $("search").disabled = false;
+          $("cmpRun").disabled = false;
+        },
+      });
+
+      $("run").addEventListener("click", run);
+      async function run() {
+        const texts = parseLines($("sentences").value);
+        if (texts.length < 2) {
+          $("rowStatus").hidden = false;
+          $("rowStatus").textContent = "Give at least two distinct passages.";
+          $("rowStatus").classList.add("err");
+          return;
+        }
+        $("rowStatus").hidden = false;
+        $("rowStatus").classList.remove("err");
+        $("rowStatus").textContent = "Embedding…";
+        $("run").disabled = true;
+        try {
+          const r = await engine.embed(texts);
+          last = r;
+          renderMatrix($("matrix"), simMatrix(r.embeddings), r.texts);
+          const { points, explained } = pca2d(r.embeddings);
+          renderProjection($("projection"), points, r.texts);
+          $("explained").textContent = `PC1+PC2 explain ${(explained * 100).toFixed(0)}% of the variance`;
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = r.ms + " ms";
+          $("rN").textContent = r.texts.length;
+          $("rDim").textContent = r.dim;
+          fillInside(r);
+          $("rowStatus").textContent = "Done.";
+          $("rowStatus").classList.add("ok");
+        } catch (err) {
+          $("rowStatus").textContent = "Embedding failed: " + err.message;
+          $("rowStatus").classList.add("err");
+        } finally {
+          $("run").disabled = false;
+        }
+      }
+
+      $("search").addEventListener("click", search);
+      $("query").addEventListener("keydown", (e) => { if (e.key === "Enter") search(); });
+      async function search() {
+        const q = $("query").value.trim();
+        const texts = parseLines($("sentences").value);
+        if (!q || texts.length < 1) return;
+        $("search").disabled = true;
+        try {
+          const [qr, dr] = await Promise.all([engine.embed([q]), engine.embed(texts)]);
+          const qv = qr.embeddings[0];
+          const hits = dr.texts
+            .map((text, i) => ({ text, score: cosine(qv, dr.embeddings[i]) }))
+            .sort((a, b) => b.score - a.score);
+          renderRanked($("ranked"), hits);
+        } catch (err) {
+          $("ranked").textContent = "Search failed: " + err.message;
+        } finally {
+          $("search").disabled = false;
+        }
+      }
+
+      function fillInside(r) {
+        $("insideEmpty").hidden = true;
+        $("insideWrap").hidden = false;
+        $("pick").replaceChildren(...r.texts.map((t, i) => {
+          const o = document.createElement("option");
+          o.value = String(i);
+          o.textContent = `D${i + 1} — ${t.length > 40 ? t.slice(0, 39) + "…" : t}`;
+          return o;
+        }));
+        showVector(0);
+      }
+      $("pick").addEventListener("change", (e) => showVector(+e.target.value));
+      function showVector(i) {
+        if (!last) return;
+        const v = last.embeddings[i];
+        $("iNorm").textContent = last.norms[i].toFixed(3);
+        $("iTok").textContent = last.tokenCounts?.[i] ?? "–";
+        const maxAbs = Math.max(...v.map(Math.abs)) || 1;
+        $("vecStrip").replaceChildren(...v.slice(0, 128).map((val) => {
+          const cell = document.createElement("span");
+          cell.className = "vec-cell";
+          const t = Math.abs(val) / maxAbs;
+          const hue = val >= 0 ? "var(--accent)" : "var(--warn)";
+          cell.style.background = `color-mix(in srgb, ${hue} ${(t * 100).toFixed(0)}%, var(--bg-raised))`;
+          cell.title = val.toFixed(4);
+          return cell;
+        }));
+        $("vecHead").textContent = "[" + v.slice(0, 8).map((x) => x.toFixed(4)).join(", ") + ", … ] (768-d unit vector)";
+      }
+
+      // ---- GTE-ModernBERT vs GTE-small on a long document ----
+      const LONG_DOC =
+        "The company was founded in 1998 in a garage. It grew through the 2000s, went public, and expanded into cloud services, advertising and hardware. " +
+        "Over two decades it faced antitrust scrutiny on several continents. " +
+        "Buried near the end of this passage is the key fact: the current chief executive took over the top job in 2015 after previously leading the product division.";
+      const LONG_QUERY = "who became CEO and when?";
+      let gteSmall = null;
+      $("cmpRun").addEventListener("click", async () => {
+        $("cmpRun").disabled = true;
+        $("cmpStatus").classList.remove("err");
+        $("cmpStatus").textContent = "Loading GTE-small (first time downloads ~34 MB)…";
+        try {
+          if (!gteSmall) { gteSmall = new EmbedClient(WORKERS.gteSmall); await gteSmall.load(); }
+          $("cmpStatus").textContent = "Embedding the long document with both…";
+          const [mbQ, mbD, smQ, smD] = await Promise.all([
+            engine.embed([LONG_QUERY]), engine.embed([LONG_DOC]),
+            gteSmall.embed([LONG_QUERY]), gteSmall.embed([LONG_DOC]),
+          ]);
+          const mb = cosine(mbQ.embeddings[0], mbD.embeddings[0]);
+          const sm = cosine(smQ.embeddings[0], smD.embeddings[0]);
+          const mbTok = mbD.tokenCounts?.[0] ?? "?";
+          $("cmpWrap").innerHTML = `
+            <p class="ctx-note">Query: “${LONG_QUERY}” · document ≈ ${mbTok} tokens; the answer sits in the last sentence.</p>
+            <table class="sim-matrix" style="margin-top:.5rem">
+              <thead><tr><th>Model</th><th>backbone / context</th><th>pooling · dim</th><th>cosine(query, doc)</th></tr></thead>
+              <tbody>
+                <tr><td style="text-align:start"><b>GTE-ModernBERT</b></td><td>ModernBERT · 8192</td><td>CLS · 768</td><td>${mb.toFixed(3)}</td></tr>
+                <tr><td style="text-align:start"><b>GTE-small</b></td><td>BERT · 512</td><td>mean · 384</td><td>${sm.toFixed(3)}</td></tr>
+              </tbody>
+            </table>
+            <p class="muted" style="font-size:.76rem;margin-top:.4rem">Each model has its own cosine scale, so the absolute numbers aren't directly comparable — the point is that both surface the buried answer, and GTE-ModernBERT reads the full document within one 8192-token context instead of a 512-token window.</p>`;
+          $("cmpWrap").hidden = false;
+          $("cmpStatus").textContent = "";
+        } catch (err) {
+          $("cmpStatus").textContent = "Comparison failed: " + err.message;
+          $("cmpStatus").classList.add("err");
+        } finally {
+          $("cmpRun").disabled = false;
+        }
+      });
+    </script>
+  </body>
+</html>

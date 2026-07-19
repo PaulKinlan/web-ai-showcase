@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>GTE-ModernBERT Basics — do two passages mean the same thing? · Web AI Showcase</title>
+    <meta name="description" content="The fundamental move: embed two passages and read one cosine number for how close their meanings are — with the long-context, CLS-pooled ModernBERT embedder. Runs in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>📐</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">GTE-ModernBERT</a></p>
+
+    <header>
+      <p class="eyebrow">use case · basics</p>
+      <h1>Basics: how close are two passages?</h1>
+      <p class="lede">
+        The simplest thing an embedder does: turn each passage into a 768-number vector, then measure the
+        angle between them. Cosine 1.00 means "same direction / same meaning", near 0 means "unrelated".
+        Edit either box — long passages welcome, this model reads up to 8192 tokens.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.5rem 0" id="chips" role="group" aria-label="Example pairs"></div>
+
+      <div class="grid-2" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:1rem">
+        <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">Passage A
+          <textarea id="a" rows="4" disabled>Attention lets a model focus on the most relevant parts of the input when producing each output token.</textarea>
+        </label>
+        <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">Passage B
+          <textarea id="b" rows="4" disabled>The transformer weighs every token against every other so it can attend to whichever context matters most.</textarea>
+        </label>
+      </div>
+      <div style="margin:.6rem 0;display:flex;gap:.4rem;flex-wrap:wrap">
+        <button id="run" type="button" disabled>Compare meaning</button>
+      </div>
+
+      <div id="scoreWrap" hidden style="margin-top:.5rem">
+        <div style="font-size:2.4rem;font-family:var(--font-mono);font-weight:700" id="score">–</div>
+        <div class="result-bar" style="max-inline-size:24rem"><div class="result-fill" id="bar" style="inline-size:0%"></div></div>
+        <p class="muted" id="verdict" style="margin-top:.4rem"></p>
+      </div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+        <span>dims <b id="rDim">–</b></span>
+        <span>tokens A/B <b id="rTok">–</b></span>
+      </div>
+    </section>
+
+    <p class="muted" style="font-size:.85rem">
+      Cosine is scale-free: it only cares about direction, so passage length barely matters — a one-line
+      question and a paragraph-long answer can still score high if they mean the same thing. That is exactly
+      what makes embeddings good at matching short queries to long documents.
+    </p>
+
+    <p class="crumbs"><a href="../">← Back to GTE-ModernBERT</a> · Next: <a href="../practical/">Practical →</a></p>
+
+    <script type="module">
+      import { GteMbEngine, cosine, GTEMB_CSS } from "../gtemb.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = GTEMB_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new GteMbEngine();
+      let loaded = false;
+
+      const PAIRS = [
+        { label: "same meaning", a: "Attention lets a model focus on the most relevant parts of the input when producing each output token.", b: "The transformer weighs every token against every other so it can attend to whichever context matters most." },
+        { label: "paraphrase", a: "Our refund policy allows returns within 30 days of purchase.", b: "Customers may send items back for a month after buying them and get their money back." },
+        { label: "unrelated", a: "Photosynthesis converts sunlight into glucose in plant chloroplasts.", b: "The quarterly earnings call is scheduled for next Thursday afternoon." },
+        { label: "short vs long", a: "how do neural networks pay attention?", b: "Self-attention computes a weighted sum over all token representations, where the weights come from query-key dot products, letting each position gather information from the whole sequence at once." },
+      ];
+      for (const p of PAIRS) {
+        const b = document.createElement("button"); b.className = "secondary"; b.type = "button"; b.textContent = p.label;
+        b.style.cssText = "font-size:.8rem;min-block-size:2.2rem";
+        b.addEventListener("click", () => { $("a").value = p.a; $("b").value = p.b; run(); });
+        $("chips").append(b);
+      }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Alibaba-NLP/gte-modernbert-base", runtime: "transformers.js", dtype: "q8", sizeMB: 150, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("a").disabled = false; $("b").disabled = false; $("run").disabled = false; },
+      });
+
+      $("run").addEventListener("click", run);
+      async function run() {
+        if (!$("a").value.trim() || !$("b").value.trim()) return;
+        $("status").hidden = false; $("status").classList.remove("err"); $("status").textContent = "Embedding…";
+        $("run").disabled = true;
+        try {
+          const r = await engine.embed([$("a").value.trim(), $("b").value.trim()]);
+          const s = cosine(r.embeddings[0], r.embeddings[1]);
+          $("scoreWrap").hidden = false;
+          $("score").textContent = s.toFixed(3);
+          $("bar").style.inlineSize = `${Math.max(0, Math.min(1, s)) * 100}%`;
+          $("verdict").textContent = s > 0.75 ? "Very close — near-identical meaning." : s > 0.5 ? "Related — overlapping meaning." : s > 0.3 ? "Loosely related." : "Different topics.";
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase(); $("rMs").textContent = r.ms + " ms"; $("rDim").textContent = r.dim;
+          $("rTok").textContent = (r.tokenCounts ? r.tokenCounts.join(" / ") : "–");
+          $("status").hidden = true;
+        } catch (err) { $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      }
+    </script>
+  </body>
+</html>

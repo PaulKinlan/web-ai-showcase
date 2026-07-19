@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>GTE-ModernBERT Practical — long-document search &amp; dedup · Web AI Showcase</title>
+    <meta name="description" content="Two things you'd ship: semantic search over long passages, and near-duplicate detection to collapse 'same thing, different words'. On-device with the long-context ModernBERT embedder." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>📐</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">GTE-ModernBERT</a></p>
+
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Practical: long-document search &amp; near-duplicate detection</h1>
+      <p class="lede">
+        Two workhorses. <strong>Semantic search</strong>: rank a set of passages by meaning against a query,
+        not by keyword overlap. <strong>Dedup</strong>: find pairs that say the same thing in different words
+        so you can collapse them. Both embed each passage once and reuse the vectors — and both handle long
+        passages whole, thanks to the 8192-token context.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">
+        Passages (one per line)
+        <textarea id="docs" class="ner-input" rows="8" disabled>A transformer is a neural network that relies entirely on self-attention to model relationships between tokens, dispensing with recurrence and convolution.
+Self-attention lets each position in a sequence attend to every other position, so context flows freely across the whole input in a single layer.
+Refunds are available within 30 days of purchase; contact support with your order number to start a return.
+You can get your money back for up to a month after buying, just message the support team and quote the order id.
+Chloroplasts in plant cells capture light energy and use it to turn water and carbon dioxide into sugars.
+The mitochondria generate ATP through respiration, powering most of the cell's energy-hungry processes.
+The Eiffel Tower is a wrought-iron lattice tower on the Champ de Mars in Paris, completed in 1889.</textarea>
+      </label>
+      <button id="embed" type="button" disabled style="margin-top:.5rem">Embed passages</button>
+
+      <div style="margin-top:1rem">
+        <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;max-inline-size:34rem">
+          Search query
+          <span style="display:flex;gap:.4rem;flex-wrap:wrap">
+            <input id="query" type="text" value="how does a transformer use attention?" style="flex:1;min-inline-size:12rem" disabled />
+            <button id="search" type="button" disabled>Search</button>
+          </span>
+        </label>
+        <div class="sent-list" id="ranked" aria-live="polite"></div>
+      </div>
+
+      <hr style="border:0;border-top:1px solid var(--border);margin:1.2rem 0" />
+      <h3 style="margin:.2rem 0">Near-duplicate pairs</h3>
+      <p class="muted" style="font-size:.82rem">Pairs whose cosine is above the threshold — candidates to merge.</p>
+      <label style="display:inline-flex;align-items:center;gap:.4rem;font-size:.82rem">
+        Duplicate threshold
+        <input id="thr" type="range" min="0.5" max="0.95" step="0.05" value="0.75" style="inline-size:9rem" />
+        <output id="thrOut" style="font-family:var(--font-mono)">0.75</output>
+      </label>
+      <div id="dups" aria-live="polite"></div>
+
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+        <span>passages <b id="rN">–</b></span>
+      </div>
+    </section>
+
+    <p class="crumbs"><a href="../basics/">← Basics</a> · <a href="../">Back to GTE-ModernBERT</a> · Next: <a href="../wild/">Wild →</a></p>
+
+    <script type="module">
+      import { GteMbEngine, cosine, parseLines, renderRanked, escapeHTML, GTEMB_CSS } from "../gtemb.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = GTEMB_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new GteMbEngine();
+      let last = null; // { texts, embeddings }
+
+      $("thr").addEventListener("input", () => { $("thrOut").textContent = (+$("thr").value).toFixed(2); if (last) renderDups(); });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Alibaba-NLP/gte-modernbert-base", runtime: "transformers.js", dtype: "q8", sizeMB: 150, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("docs").disabled = false; $("embed").disabled = false; $("query").disabled = false; $("search").disabled = false; embed(); },
+      });
+
+      $("embed").addEventListener("click", embed);
+      async function embed() {
+        const texts = parseLines($("docs").value);
+        if (texts.length < 2) { $("status").hidden = false; $("status").textContent = "Give at least two passages."; $("status").classList.add("err"); return; }
+        $("status").hidden = false; $("status").classList.remove("err"); $("status").textContent = "Embedding…"; $("embed").disabled = true;
+        try {
+          last = await engine.embed(texts);
+          renderDups();
+          $("readout").hidden = false; $("rBackend").textContent = last.device.toUpperCase(); $("rMs").textContent = last.ms + " ms"; $("rN").textContent = last.texts.length;
+          $("status").hidden = true;
+        } catch (err) { $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("embed").disabled = false; }
+      }
+
+      $("search").addEventListener("click", search);
+      $("query").addEventListener("keydown", (e) => { if (e.key === "Enter") search(); });
+      async function search() {
+        const q = $("query").value.trim();
+        if (!q || !last) { if (!last) await embed(); if (!last) return; }
+        $("search").disabled = true;
+        try {
+          const qr = await engine.embed([q]);
+          const qv = qr.embeddings[0];
+          const hits = last.texts.map((text, i) => ({ text, score: cosine(qv, last.embeddings[i]) })).sort((a, b) => b.score - a.score);
+          renderRanked($("ranked"), hits);
+        } catch (err) { $("ranked").textContent = "Search failed: " + err.message; }
+        finally { $("search").disabled = false; }
+      }
+
+      function renderDups() {
+        const thr = +$("thr").value;
+        const { texts, embeddings } = last;
+        const pairs = [];
+        for (let i = 0; i < texts.length; i++) for (let j = i + 1; j < texts.length; j++) {
+          const s = cosine(embeddings[i], embeddings[j]);
+          if (s >= thr) pairs.push({ i, j, s });
+        }
+        pairs.sort((a, b) => b.s - a.s);
+        $("dups").innerHTML = pairs.length
+          ? pairs.map((p) => `<div class="dup-pair"><span class="cos">cos ${p.s.toFixed(3)}</span><br>
+              <span>D${p.i + 1}: ${escapeHTML(texts[p.i].slice(0, 90))}${texts[p.i].length > 90 ? "…" : ""}</span><br>
+              <span>D${p.j + 1}: ${escapeHTML(texts[p.j].slice(0, 90))}${texts[p.j].length > 90 ? "…" : ""}</span></div>`).join("")
+          : `<p class="muted" style="font-size:.85rem">No pairs above ${thr.toFixed(2)} — lower the threshold to find looser matches.</p>`;
+      }
+    </script>
+  </body>
+</html>
