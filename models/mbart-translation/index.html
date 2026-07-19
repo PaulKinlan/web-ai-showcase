@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>mBART-50 — many-to-many translation across 50 languages in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="mBART-50 many-to-many: translate directly between any pair of 50 languages with one denoising-pretrained multilingual model, locally in your browser. See the language codes, the forced beginning-of-sequence token that picks the output language, tokens and timing. Nothing uploaded."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🌐</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">translation · text · WASM · ~850 MB</p>
+      <h1>mBART-50 — many-to-many translation from one denoising-pretrained model</h1>
+      <p class="lede">
+        mBART-50 translates directly between any pair of <strong>50 languages</strong> — no English pivot —
+        with a single multilingual encoder–decoder. Its twist is its <em>upbringing</em>: mBART was
+        pretrained by <strong>denoising</strong> (corrupting then reconstructing monolingual text in all 50
+        languages, the BART objective scaled up) before it was ever taught to translate. Pick a source and
+        target, type, and watch it translate on-device. The output language is chosen by a single
+        <strong>forced beginning-of-sequence token</strong>, shown below.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table" style="inline-size:100%;border-collapse:collapse">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/Xenova/mbart-large-50-many-to-many-mmt" target="_blank" rel="noopener">Xenova/mbart-large-50-many-to-many-mmt</a> <span class="muted">(ONNX build of facebook/mbart-large-50-many-to-many-mmt)</span></td></tr>
+          <tr><th>Task / pipeline</th><td><code>translation</code> (sequence-to-sequence)</td></tr>
+          <tr><th>Architecture</th><td>mBART: 12-layer BART-style multilingual encoder–decoder, ~610M params; denoising-pretrained on 50 languages, then fine-tuned many-to-many</td></tr>
+          <tr><th>Languages</th><td><strong>50</strong> (codes like <code>en_XX</code>, <code>fr_XX</code>, <code>zh_CN</code>), translated directly — target chosen via a forced BOS token</td></tr>
+          <tr><th>Quantization</th><td>q8 (8-bit) ONNX</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (runs anywhere; no WebGPU needed)</td></tr>
+          <tr><th>Download</th><td>~850 MB (encoder + merged decoder), cached after first load</td></tr>
+          <tr><th>License</th><td>MIT</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers, <code>&lt;datalist&gt;</code> — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+      <p class="muted" style="font-size:.85rem">
+        This is a large model — ~850 MB downloads once, then it's cached. On a memory-constrained phone the
+        first load can be slow or fail; the page tells you honestly if your device can't hold it.
+      </p>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Search the source and target language (type any of 50 names), enter text, and
+        translate. Greedy decoding streams the output live and records real timing. Because mBART is
+        many-to-many, you can go straight between two non-English languages.</p>
+
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.6rem 0">
+        <button class="chip" type="button" data-text="The weather is nice today." data-src="English" data-tgt="French">EN→FR</button>
+        <button class="chip" type="button" data-text="人工知能はブラウザの中で動作します。" data-src="Japanese" data-tgt="German">JA→DE</button>
+        <button class="chip" type="button" data-text="La ciencia abre nuevas puertas cada día." data-src="Spanish" data-tgt="Hindi">ES→HI</button>
+        <button class="chip" type="button" data-text="Clean water is a basic human right." data-src="English" data-tgt="Swahili">EN→SW</button>
+      </div>
+
+      <datalist id="langlist"></datalist>
+      <div class="lang-row">
+        <label>From
+          <input id="src" list="langlist" autocomplete="off" placeholder="Search a language…" disabled />
+          <span class="code">code: <b id="srcCode">—</b></span>
+        </label>
+        <button id="swap" type="button" class="secondary swap-btn" title="Swap languages" aria-label="Swap source and target languages" disabled>⇄</button>
+        <label>To
+          <input id="tgt" list="langlist" autocomplete="off" placeholder="Search a language…" disabled />
+          <span class="code">code: <b id="tgtCode">—</b></span>
+        </label>
+      </div>
+
+      <div class="tr-io">
+        <label style="display:flex;flex-direction:column;gap:.3rem;font-size:.82rem">
+          Source text
+          <textarea id="text" disabled>The weather is nice today.</textarea>
+        </label>
+        <div style="display:flex;flex-direction:column;gap:.3rem">
+          <span style="font-size:.82rem">Translation</span>
+          <div class="tr-out" id="out" aria-live="polite"></div>
+        </div>
+      </div>
+
+      <div class="controls-grid">
+        <label>Beams <span class="val" id="beamVal" style="font-family:var(--font-mono);color:var(--muted);font-size:.78rem">1 (greedy, streams)</span>
+          <input type="range" id="beams" min="1" max="5" step="1" value="1" />
+        </label>
+        <button id="run" type="button" disabled>Translate</button>
+      </div>
+
+      <div class="readout" id="readout" hidden>
+        <span>codes <b id="rCodes">–</b></span>
+        <span>forced BOS <b id="rBos">–</b></span>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>time <b id="rMs">–</b></span>
+        <span>speed <b id="rTps">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside — language codes, forced BOS token &amp; tokens</h3>
+      <p class="muted">
+        mBART is a sequence-to-sequence translator: it encodes the source, then decodes the target one token
+        at a time. What selects the output language is a single trick — the decoder is <em>forced</em> to
+        begin with the target language's special token (<code>forced_bos_token_id</code>). Change the target
+        and only that first token changes; the same input then decodes into a different language. Below are
+        the exact mBART language codes, the real numeric BOS token id mBART used, and the token counts each
+        side.
+      </p>
+      <div class="stat-row">
+        <div class="stat"><div class="k">src → tgt</div><div class="v" id="inCodes">–</div></div>
+        <div class="stat"><div class="k">Forced BOS</div><div class="v" id="inBos">–</div></div>
+        <div class="stat"><div class="k">Tokens in</div><div class="v" id="inTok">–</div></div>
+        <div class="stat"><div class="k">Tokens out</div><div class="v" id="outTok">–</div></div>
+        <div class="stat"><div class="k">Speed</div><div class="v" id="statTps">–</div></div>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        One model, 50 languages, any direction, entirely on-device — no per-call fees, no data leaving the
+        tab. mBART-50 covers the widely-used languages of Europe and Asia with solid quality, and because it
+        shares one representation across all of them you can translate between two languages that were never
+        explicitly paired in training.
+      </p>
+      <ul>
+        <li><strong>Private &amp; offline</strong> — translate messages, notes, or documents where nothing can leave the device, with no signal needed.</li>
+        <li><strong>Any-to-any pairs</strong> — go Japanese→German or Spanish→Hindi directly, no English hop.</li>
+        <li><strong>Relay translation</strong> — chain languages A→B→C locally and watch meaning travel and drift.</li>
+        <li><strong>Compose with other models</strong> — translate first, then speak, summarise, or classify the result — all in the browser.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Translate a phrase, then swap the target across 50 languages to feel the many-to-many model.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Any-to-any pairs + a round-trip fidelity check to spot where a translation drifts.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Relay translation: chain a sentence through several languages and back to the start.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">Translate any of 50 languages into English, then have Kokoro read the result aloud.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>Translation is one pipeline call; the language pair is set per call:</p>
+      <pre><code>import { pipeline } from "@huggingface/transformers";
+
+const translator = await pipeline(
+  "translation",
+  "Xenova/mbart-large-50-many-to-many-mmt",
+); // downloads + caches ~850 MB once
+
+const out = await translator("The weather is nice today.", {
+  src_lang: "en_XX",   // mBART-50 language code
+  tgt_lang: "fr_XX",   // French
+});
+// → [{ translation_text: "Le temps est agréable aujourd'hui." }]
+
+// Under the hood, tgt_lang selects a forced BOS token id that the decoder
+// must emit first — that single token is what picks the output language.</code></pre>
+      <p class="muted">
+        mBART-50 codes are a two-letter language plus a region tag (<code>en_XX</code>, <code>zh_CN</code>,
+        <code>pt_XX</code>) — the same scheme as the original fairseq model. This page streams tokens via a
+        <code>TextStreamer</code> inside a Web Worker, so decoding never blocks the interface.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/Xenova/mbart-large-50-many-to-many-mmt" target="_blank" rel="noopener">Model card — mBART-50 many-to-many (Xenova ONNX)</a></li>
+        <li><a href="https://huggingface.co/facebook/mbart-large-50-many-to-many-mmt" target="_blank" rel="noopener">Original weights — facebook/mbart-large-50-many-to-many-mmt</a></li>
+        <li><a href="https://arxiv.org/abs/2008.00401" target="_blank" rel="noopener">Paper — Multilingual Translation with Extensible Multilingual Pretraining and Finetuning (Tang et al., 2020)</a></li>
+        <li><a href="https://arxiv.org/abs/2001.08210" target="_blank" rel="noopener">Paper — mBART: Multilingual Denoising Pre-training for NMT (Liu et al., 2020)</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { MBartEngine, fillLangDatalist, bindPicker, resolveCode, nameFor, renderStats, LANG_COUNT, MBART_CSS } from "./mbart.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = MBART_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new MBartEngine();
+      let loaded = false;
+
+      fillLangDatalist($("langlist"));
+      const syncSrc = bindPicker($("src"), $("srcCode"), "en_XX");
+      const syncTgt = bindPicker($("tgt"), $("tgtCode"), "fr_XX");
+
+      for (const c of document.querySelectorAll(".chip")) {
+        c.addEventListener("click", () => {
+          $("text").value = c.dataset.text;
+          $("src").value = c.dataset.src; $("tgt").value = c.dataset.tgt;
+          syncSrc(); syncTgt();
+        });
+      }
+      $("swap").addEventListener("click", () => {
+        const s = $("src").value; $("src").value = $("tgt").value; $("tgt").value = s;
+        syncSrc(); syncTgt();
+      });
+      $("beams").addEventListener("input", () => {
+        const b = +$("beams").value;
+        $("beamVal").textContent = b === 1 ? "1 (greedy, streams)" : b + " (beam search)";
+      });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: {
+          modelId: "Xenova/mbart-large-50-many-to-many-mmt",
+          runtime: "transformers.js",
+          dtype: "q8",
+          sizeMB: 850,
+          requiresWebGPU: false,
+        },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => {
+          $("src").disabled = false; $("tgt").disabled = false; $("swap").disabled = false;
+          $("text").disabled = false; $("run").disabled = false;
+          loaded = true;
+        },
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!loaded) return;
+        const text = $("text").value.trim();
+        const srcCode = resolveCode($("src").value), tgtCode = resolveCode($("tgt").value);
+        if (!text) { $("runStatus").hidden = false; $("runStatus").textContent = "Type some text first."; return; }
+        if (!srcCode || !tgtCode) { $("runStatus").hidden = false; $("runStatus").classList.add("err"); $("runStatus").textContent = "Pick a valid source and target language."; return; }
+        if (srcCode === tgtCode) { $("runStatus").hidden = false; $("runStatus").textContent = "Pick two different languages."; return; }
+        $("run").disabled = true; $("runStatus").hidden = false; $("runStatus").classList.remove("err");
+        $("runStatus").textContent = "Translating…"; $("out").textContent = "";
+        try {
+          const r = await engine.translate(text, srcCode, tgtCode, { numBeams: +$("beams").value }, (p) => $("out").textContent = p);
+          $("out").textContent = r.translation;
+          renderStats(
+            { codes: $("rCodes"), bos: $("rBos"), backend: $("rBackend"), ms: $("rMs"), toksec: $("rTps"),
+              inTok: $("inTok"), outTok: $("outTok") },
+            r,
+          );
+          $("inCodes").textContent = `${r.srcCode} → ${r.tgtCode}`;
+          $("inBos").textContent = r.forcedBos != null ? r.forcedBos : "–";
+          $("statTps").textContent = r.ms > 0 ? (r.outTokens / (r.ms / 1000)).toFixed(0) + "/s" : "–";
+          $("readout").hidden = false;
+          $("runStatus").textContent = `Translated ${nameFor(r.srcCode)} → ${nameFor(r.tgtCode)} on ${r.device.toUpperCase()}.`;
+          $("runStatus").classList.add("ok");
+        } catch (err) {
+          $("runStatus").textContent = "Translation failed: " + err.message;
+          $("runStatus").classList.add("err");
+        } finally {
+          $("run").disabled = false;
+        }
+      });
+    </script>
+  </body>
+</html>

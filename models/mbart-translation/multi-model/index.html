@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>mBART-50 Multi-model — translate 50 languages, then speak · Web AI Showcase</title>
+    <meta name="description" content="Chain two on-device models: mBART translates any of 50 languages into English, then Kokoro reads the result aloud. A pocket interpreter, fully in the browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🌐</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">mBART-50</a></p>
+
+    <header>
+      <p class="eyebrow">use case · multi-model</p>
+      <h1>Multi-model: translate 50 languages → English → speak it</h1>
+      <p class="lede">
+        Two on-device models in a row. <strong>mBART-50</strong> translates text from any of 50 languages into
+        English; <strong>Kokoro</strong> reads the English aloud. Together they're a pocket interpreter —
+        private, offline, no server.
+      </p>
+    </header>
+
+    <section class="panel">
+      <h3>Step 1 — mBART translates to English</h3>
+      <div id="model-loader-tr"></div>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.6rem 0">
+        <button class="chip" type="button" data-text="人工知能はブラウザの中で動作します。" data-src="Japanese">Japanese</button>
+        <button class="chip" type="button" data-text="La ciencia abre nuevas puertas cada día." data-src="Spanish">Spanish</button>
+        <button class="chip" type="button" data-text="नमस्ते, आज मौसम बहुत अच्छा है।" data-src="Hindi">Hindi</button>
+      </div>
+
+      <datalist id="langlist"></datalist>
+      <div class="lang-row" style="grid-template-columns:1fr;max-inline-size:320px">
+        <label>Source language
+          <input id="src" list="langlist" autocomplete="off" placeholder="Search a language…" disabled />
+          <span class="code">code: <b id="srcCode">—</b></span>
+        </label>
+      </div>
+      <label style="display:flex;flex-direction:column;gap:.3rem;font-size:.82rem">
+        Text (any of 50 languages)
+        <textarea id="text" disabled style="min-block-size:80px">人工知能はブラウザの中で動作します。</textarea>
+      </label>
+      <div class="controls-grid"><button id="translate" type="button" disabled>Translate to English</button></div>
+      <div style="margin-top:.5rem"><span style="font-size:.82rem">English</span>
+        <div class="tr-out" id="translation" aria-live="polite"></div></div>
+      <div class="readout" id="trRead" hidden><span>codes <b id="trCodes">–</b></span><span>backend <b id="trBackend">–</b></span><span>time <b id="trMs">–</b></span></div>
+    </section>
+
+    <section class="panel">
+      <h3>Step 2 — Kokoro speaks the English</h3>
+      <div id="model-loader-tts"></div>
+      <div class="opt-row">
+        <label>Voice <select id="voice" disabled></select></label>
+        <label>Speed <span class="val" id="speedVal" style="font-family:var(--font-mono);color:var(--muted);font-size:.78rem">1.0×</span>
+          <input type="range" id="speed" min="0.5" max="1.5" step="0.1" value="1" /></label>
+        <button id="speak" type="button" disabled>Speak it</button>
+      </div>
+      <div class="wave-wrap"><canvas id="wave" class="wave" aria-label="Speech waveform"></canvas></div>
+      <audio id="out" controls preload="metadata"></audio>
+      <div class="readout" id="ttsRead" hidden><span>voice <b id="ttsVoice">–</b></span><span>backend <b id="ttsBackend">–</b></span><span>time <b id="ttsMs">–</b></span></div>
+    </section>
+
+    <p class="muted" style="font-size:.85rem">
+      Two models, one tab, nothing uploaded. mBART handles the 50-language reach; Kokoro gives it a voice.
+      Swap in Whisper up front and you have a full speech-to-speech interpreter.
+    </p>
+
+    <p class="crumbs"><a href="../wild/">← Wild</a> · <a href="../">Back to mBART-50</a></p>
+
+    <script type="module">
+      import { MBartEngine, fillLangDatalist, bindPicker, resolveCode, nameFor, MBART_CSS } from "../mbart.js";
+      import { KokoroEngine, wavUrl, groupVoices, drawWaveform, KOKORO_CSS } from "../../kokoro-text-to-speech/kokoro.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = MBART_CSS + KOKORO_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const tr = new MBartEngine();
+      const kokoro = new KokoroEngine();
+      let outPcm = null, curOut = null;
+
+      fillLangDatalist($("langlist"));
+      const syncSrc = bindPicker($("src"), $("srcCode"), "ja_XX");
+      $("speed").addEventListener("input", () => { $("speedVal").textContent = (+$("speed").value).toFixed(1) + "×"; });
+      for (const c of document.querySelectorAll(".chip")) c.addEventListener("click", () => { $("text").value = c.dataset.text; $("src").value = c.dataset.src; syncSrc(); });
+
+      function fillVoices(voices) {
+        const sel = $("voice"); sel.replaceChildren();
+        for (const [label, list] of groupVoices(voices)) {
+          const og = document.createElement("optgroup"); og.label = label;
+          for (const v of list) { const o = document.createElement("option"); o.value = v.id; o.textContent = `${v.name || v.id}${v.grade ? ` (${v.grade})` : ""}`; og.append(o); }
+          sel.append(og);
+        }
+        if ([...sel.options].some((o) => o.value === "af_heart")) sel.value = "af_heart";
+        sel.disabled = false;
+      }
+
+      createModelLoader({
+        mount: $("model-loader-tr"),
+        model: { modelId: "Xenova/mbart-large-50-many-to-many-mmt", runtime: "transformers.js", dtype: "q8", sizeMB: 850, requiresWebGPU: false },
+        load: async (onProgress) => { await tr.load(onProgress); return tr; },
+        onReady: () => { $("src").disabled = false; $("text").disabled = false; $("translate").disabled = false; },
+      });
+      createModelLoader({
+        mount: $("model-loader-tts"),
+        model: { modelId: "onnx-community/Kokoro-82M-v1.0-ONNX", runtime: "kokoro-js", dtype: "q8", sizeMB: 90, requiresWebGPU: false },
+        load: async (onProgress) => { const r = await kokoro.load((p) => onProgress(p)); return r; },
+        onReady: (r) => { fillVoices(r.voices || []); $("speak").disabled = false; },
+      });
+
+      $("translate").addEventListener("click", async () => {
+        const text = $("text").value.trim(), srcCode = resolveCode($("src").value);
+        if (!text) { $("status").hidden = false; $("status").textContent = "Paste some text first."; return; }
+        if (!srcCode) { $("status").hidden = false; $("status").classList.add("err"); $("status").textContent = "Pick a valid source language."; return; }
+        if (srcCode === "en_XX") { $("status").hidden = false; $("status").textContent = "Pick a non-English source (the target is English)."; return; }
+        $("translate").disabled = true; $("status").hidden = false; $("status").classList.remove("err"); $("status").textContent = "Translating to English…"; $("translation").textContent = "";
+        try {
+          const r = await tr.translate(text, srcCode, "en_XX", { numBeams: 1 }, (p) => $("translation").textContent = p);
+          $("translation").textContent = r.translation;
+          $("trRead").hidden = false; $("trCodes").textContent = `${r.srcCode} → ${r.tgtCode}`; $("trBackend").textContent = r.device.toUpperCase(); $("trMs").textContent = (r.ms / 1000).toFixed(2) + " s";
+          $("status").textContent = `Translated ${nameFor(srcCode)} → English — now hear it.`; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Translation failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("translate").disabled = false; }
+      });
+
+      $("speak").addEventListener("click", async () => {
+        const text = $("translation").textContent.trim();
+        if (!text) { $("status").hidden = false; $("status").textContent = "Translate something first."; return; }
+        $("speak").disabled = true; $("status").hidden = false; $("status").classList.remove("err"); $("status").textContent = "Kokoro synthesizing…";
+        try {
+          const r = await kokoro.speak(text, $("voice").value, +$("speed").value);
+          outPcm = r.pcm; if (curOut) URL.revokeObjectURL(curOut); curOut = wavUrl(r.wav);
+          $("out").src = curOut; drawWaveform($("wave"), outPcm, 0);
+          $("ttsRead").hidden = false; $("ttsVoice").textContent = r.voice; $("ttsBackend").textContent = r.device.toUpperCase(); $("ttsMs").textContent = (r.ms / 1000).toFixed(2) + " s";
+          $("status").textContent = "Done — press play on step 2."; $("status").classList.add("ok");
+          $("out").play().catch(() => {});
+        } catch (err) { $("status").textContent = "Synthesis failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("speak").disabled = false; }
+      });
+      $("out").addEventListener("timeupdate", () => { if (outPcm && $("out").duration) drawWaveform($("wave"), outPcm, $("out").currentTime / $("out").duration); });
+      $("out").addEventListener("ended", () => outPcm && drawWaveform($("wave"), outPcm, 1));
+      addEventListener("resize", () => outPcm && drawWaveform($("wave"), outPcm, 0));
+    </script>
+  </body>
+</html>
