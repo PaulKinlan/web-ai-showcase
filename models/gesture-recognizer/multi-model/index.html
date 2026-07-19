@@ -56,13 +56,14 @@
     <p class="crumbs"><a href="../wild/">← Wild</a> · <a href="../">Back to GestureRecognizer</a></p>
 
     <script type="module">
-      import { GestureTask, HAND_CONNECTIONS, MODEL_URL as GEST_URL, gestureLabel } from "../gesture.js";
+      import { createGestureWorker, HAND_CONNECTIONS, MODEL_URL as GEST_URL, gestureLabel } from "../gesture.js";
       import { FaceTask, MODEL_URL as FACE_URL, faceConnections, drawFaces, LANDMARK_CSS } from "../../face-landmarker/face.js";
       import { createVisionTask } from "/web-ai-showcase/lib/mediapipe.js";
       import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
       const style = document.createElement("style"); style.textContent = LANDMARK_CSS; document.head.append(style);
       const $ = (id) => document.getElementById(id);
-      let rec = null, face = null, conns = null, currentImg = null, camOn = false, rafId = null;
+      // GestureRecognizer runs OFF the main thread (worker); FaceLandmarker (a separate model) stays on-thread.
+      let rec = null, face = null, conns = null, currentImg = null, camOn = false, rafId = null, usingRvfc = false;
       faceConnections().then((c) => { conns = c; });
       function ready() { return rec && face; }
       function maybeEnable() { $("run").disabled = !(ready() && currentImg); $("camBtn").disabled = !ready(); }
@@ -73,8 +74,8 @@
       for (const thumb of $("samples").children) { thumb.addEventListener("click", () => pickSample(thumb)); thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } }); }
 
       createModelLoader({ mount: $("gesture-loader"), model: { modelId: GEST_URL, runtime: "mediapipe", sizeMB: 8, requiresWebGPU: false },
-        load: (op) => createVisionTask({ taskClass: "GestureRecognizer", modelUrl: GEST_URL, options: { numHands: 1, runningMode: "IMAGE" }, onProgress: op }),
-        onReady: (t) => { rec = new GestureTask(t); maybeEnable(); } });
+        load: (op) => createGestureWorker({ onProgress: op }),
+        onReady: (handle) => { rec = handle; maybeEnable(); } });
       createModelLoader({ mount: $("face-loader"), model: { modelId: FACE_URL, runtime: "mediapipe", sizeMB: 4, requiresWebGPU: false },
         load: (op) => createVisionTask({ taskClass: "FaceLandmarker", modelUrl: FACE_URL, options: { numFaces: 1, runningMode: "IMAGE" }, onProgress: op }),
         onReady: (t) => { face = new FaceTask(t); maybeEnable(); } });
@@ -109,17 +110,26 @@
       }
       $("run").addEventListener("click", async () => { if (!ready() || !currentImg) return; $("run").disabled = true; setStatus("Reading…"); try { await detectStill(); } catch (e) { setStatus("Failed: " + e.message, "err"); } finally { $("run").disabled = false; } });
 
-      function stopCam() { if (!camOn) return; camOn = false; cancelAnimationFrame(rafId); const v = $("video"); v.srcObject?.getTracks().forEach(t => t.stop()); v.srcObject = null; v.hidden = true; $("camBtn").textContent = "Use webcam"; $("camState").textContent = ""; }
+      function cancelFrame(v) { if (rafId == null) return; if (usingRvfc && v && typeof v.cancelVideoFrameCallback === "function") v.cancelVideoFrameCallback(rafId); else cancelAnimationFrame(rafId); rafId = null; }
+      function stopCam() { if (!camOn) return; camOn = false; const v = $("video"); cancelFrame(v); v.srcObject?.getTracks().forEach(t => t.stop()); v.srcObject = null; v.hidden = true; $("camBtn").textContent = "Use webcam"; $("camState").textContent = ""; }
       async function startCam() {
         try {
           const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
           const v = $("video"); v.srcObject = stream; await v.play();
           camOn = true; $("camBtn").textContent = "Stop webcam"; $("camState").innerHTML = '<span class="rec-dot"></span>Live';
-          const loop = async () => { if (!camOn) return; try { const t0 = performance.now(); const [gestRes, faceRes] = await Promise.all([rec.recognizeVideo(v, performance.now()), face.detectVideo(v, performance.now())]); composite(v, faceRes, gestRes, true); update(gestRes, faceRes, Math.round(performance.now() - t0)); } catch (e) { setStatus("Webcam error: " + e.message, "err"); } rafId = requestAnimationFrame(loop); };
-          loop();
+          usingRvfc = typeof v.requestVideoFrameCallback === "function"; // per-frame callback, rAF fallback
+          // Completion-paced loop: gesture recognises OFF the main thread, face on-thread, composite both.
+          const loop = async () => {
+            if (!camOn) return;
+            try { const t0 = performance.now(); const [gestRes, faceRes] = await Promise.all([rec.recognizeVideo(v, performance.now()), face.detectVideo(v, performance.now())]); composite(v, faceRes, gestRes, true); update(gestRes, faceRes, Math.round(performance.now() - t0)); }
+            catch (e) { if (e.name !== "SupersededError" && e.name !== "AbortError") setStatus("Webcam error: " + e.message, "err"); }
+            if (camOn) rafId = usingRvfc ? v.requestVideoFrameCallback(loop) : requestAnimationFrame(loop);
+          };
+          rafId = usingRvfc ? v.requestVideoFrameCallback(loop) : requestAnimationFrame(loop);
         } catch (e) { $("camState").textContent = "Camera blocked: " + e.message; }
       }
       $("camBtn").addEventListener("click", () => { camOn ? stopCam() : startCam(); });
+      window.addEventListener("pagehide", () => { stopCam(); rec?.close(); }); // free camera + worker on teardown
     </script>
   </body>
 </html>

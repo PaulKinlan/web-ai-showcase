@@ -166,13 +166,12 @@ const result = rec.recognize(imageElement);
     </footer>
 
     <script type="module">
-      import { GestureTask, MODEL_URL, gestureLabel, drawHands, escapeHTML, LANDMARK_CSS } from "./gesture.js";
-      import { createVisionTask } from "/web-ai-showcase/lib/mediapipe.js";
+      import { createGestureWorker, MODEL_URL, gestureLabel, drawHands, escapeHTML, LANDMARK_CSS } from "./gesture.js";
       import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
 
       const style = document.createElement("style"); style.textContent = LANDMARK_CSS; document.head.append(style);
       const $ = (id) => document.getElementById(id);
-      let rec = null, currentImg = null, camOn = false, rafId = null;
+      let rec = null, currentImg = null, camOn = false, rafId = null, usingRvfc = false;
 
       function setStatus(m, c) { $("status").textContent = m; $("status").classList.remove("err","ok"); if (c) $("status").classList.add(c); }
       function decode(url) { return new Promise((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = () => rej(new Error("decode failed")); im.src = url; }); }
@@ -192,8 +191,8 @@ const result = rec.recognize(imageElement);
       createModelLoader({
         mount: $("model-loader"),
         model: { modelId: MODEL_URL, runtime: "mediapipe", sizeMB: 8, requiresWebGPU: false },
-        load: (onProgress) => createVisionTask({ taskClass: "GestureRecognizer", modelUrl: MODEL_URL, options: { numHands: 1, runningMode: "IMAGE" }, onProgress }),
-        onReady: (task) => { rec = new GestureTask(task); $("run").disabled = !currentImg; $("camBtn").disabled = false; setStatus("Model ready.", "ok"); },
+        load: (onProgress) => createGestureWorker({ onProgress }),
+        onReady: (handle) => { rec = handle; $("run").disabled = !currentImg; $("camBtn").disabled = false; setStatus("Model ready.", "ok"); },
       });
       pickSample($("samples").firstElementChild);
 
@@ -223,17 +222,27 @@ const result = rec.recognize(imageElement);
         finally { $("run").disabled = false; }
       });
 
-      function stopCam() { if (!camOn) return; camOn = false; cancelAnimationFrame(rafId); const v = $("video"); v.srcObject?.getTracks().forEach(t => t.stop()); v.srcObject = null; v.hidden = true; $("camBtn").textContent = "Use webcam"; $("camState").textContent = ""; }
+      function cancelFrame(v) { if (rafId == null) return; if (usingRvfc && v && typeof v.cancelVideoFrameCallback === "function") v.cancelVideoFrameCallback(rafId); else cancelAnimationFrame(rafId); rafId = null; }
+      function stopCam() { if (!camOn) return; camOn = false; const v = $("video"); cancelFrame(v); v.srcObject?.getTracks().forEach(t => t.stop()); v.srcObject = null; v.hidden = true; $("camBtn").textContent = "Use webcam"; $("camState").textContent = ""; }
       async function startCam() {
         try {
           const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
           const v = $("video"); v.srcObject = stream; await v.play();
           camOn = true; $("camBtn").textContent = "Stop webcam"; $("camState").innerHTML = '<span class="rec-dot"></span>Live';
-          const loop = async () => { if (!camOn) return; try { const t0 = performance.now(); const r = await rec.recognizeVideo(v, performance.now()); renderResult(r, Math.round(performance.now() - t0), v, true); } catch (e) { setStatus("Webcam recognise error: " + e.message, "err"); } rafId = requestAnimationFrame(loop); };
-          loop();
+          usingRvfc = typeof v.requestVideoFrameCallback === "function"; // per-frame callback, rAF fallback
+          // Completion-paced loop: recognise the freshest frame OFF the main thread, paint the overlay,
+          // then schedule the next — one request in flight, latest-wins supersedes any stale frame.
+          const loop = async () => {
+            if (!camOn) return;
+            try { const t0 = performance.now(); const r = await rec.recognizeVideo(v, performance.now()); renderResult(r, Math.round(performance.now() - t0), v, true); }
+            catch (e) { if (e.name !== "SupersededError" && e.name !== "AbortError") setStatus("Webcam recognise error: " + e.message, "err"); }
+            if (camOn) rafId = usingRvfc ? v.requestVideoFrameCallback(loop) : requestAnimationFrame(loop);
+          };
+          rafId = usingRvfc ? v.requestVideoFrameCallback(loop) : requestAnimationFrame(loop);
         } catch (e) { $("camState").textContent = "Camera blocked: " + e.message; }
       }
       $("camBtn").addEventListener("click", () => { camOn ? stopCam() : startCam(); });
+      window.addEventListener("pagehide", () => { stopCam(); rec?.close(); }); // free camera + worker on teardown
     </script>
   </body>
 </html>

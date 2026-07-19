@@ -1,0 +1,117 @@
+{
+  "schemaVersion": 1,
+  "id": "gesture-recognizer",
+  "revision": 1,
+  "reviewedAt": "2026-07-19T00:00:00Z",
+  "reviewer": "off-main-thread-retrofit",
+  "frontend": true,
+  "summary": "In-place performance retrofit (durable-demo-permitted, measured perf bug): MediaPipe GestureRecognizer inference moved OFF the main thread into a dedicated worker (models/gesture-recognizer/worker.js) served via lib/worker-protocol.js. Route/slug/identity/controls/examples/behaviour all preserved. Measured cold main-thread long task ~90ms -> 0ms; page console clean (XNNPACK init log now stays in the worker). All 4 ladder pages + the main page updated to the same off-thread handle.",
+  "rubric": [
+    {
+      "dimension": "performance",
+      "score": 5,
+      "severity": "info",
+      "evidence": "BEFORE (main-thread, scripts/measure-gesture.mjs on the bundled thumbs-up sample): the cold/first recognize is a single ~90ms main-thread long task (longtask PerformanceObserver: [90]); warm recognizes ~30ms each, blocking the UI thread. AFTER (worker): 6/6 runs report 0 main-thread long tasks (maxLongTask min 0 / max 0); the ~89ms cold and ~30ms warm compute now runs off-thread. Off-thread transport measured via a longtask observer, not inferred (guidance: identify-inp-causes).",
+      "notes": "The reported latency (rMs) is the worker round-trip incl. ImageBitmap transfer + recognize; the main thread stays free during it."
+    },
+    {
+      "dimension": "real-inference",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Worker produced a correct result on the thumbs-up sample: gLabel='👍 Thumb Up', 75% confidence, 1 hand, full score ranking populated (insideRows=1), delegate=CPU (XNNPACK, no GPU in the headless runner). Real MediaPipe GestureRecognizer, no canned output."
+    },
+    {
+      "dimension": "io-shape",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Output shape preserved end-to-end: worker returns { landmarks[][{x,y,z}], handedness, gestures[][{categoryName,score}], top, delegate }; the page draws the 21 landmarks + names the top gesture + renders the full class ranking exactly as before the retrofit."
+    },
+    {
+      "dimension": "cache-init",
+      "score": 5,
+      "severity": "info",
+      "evidence": "createModelLoader auto-init + explicit .task download is UNCHANGED — the load() callback now boots the worker (which downloads + inits via the same lib/mediapipe.js createVisionTask) instead of loading on the main thread; the returned handle is what onReady receives. Fresh-profile conformance run shows the Download button (cache-absent) and never auto-downloads; a current cached model still auto-inits with no button (loader logic untouched)."
+    },
+    {
+      "dimension": "states",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Loader states preserved (checking/initialising/ready/download/error+Retry via lib/model-loader.js). Bootstrap/import failure in the worker posts a fatal protocol error so WorkerClient.ready rejects -> loader shows an error + Retry, never a hang. role=status aria-live region intact."
+    },
+    {
+      "dimension": "controls",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Every control preserved and operable: sample strip (click+keyboard), dropzone (click/Enter/Space + drag-drop), Recognise button, Use webcam toggle. No-camera fallback intact: clicking Use webcam in a device without a camera shows 'Camera blocked: Requested device not found' (getUserMedia rejection surfaced in the live camState region)."
+    },
+    {
+      "dimension": "no-fake-output",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Output is the on-device worker run only; on failure the loader/status shows an honest error + Retry. No hardcoded gesture is ever displayed."
+    },
+    {
+      "dimension": "accessibility",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Conformance images-have-alt + buttons-have-names assertions pass; live regions (role=status aria-live) unchanged. No a11y-affecting markup changed by the retrofit (JS-only change to inference transport)."
+    },
+    {
+      "dimension": "responsive",
+      "score": 5,
+      "severity": "info",
+      "evidence": "conformance.mjs responsive-desktop (1280x800) + responsive-mobile (360x740 DPR3) both PASS (14/14 tested assertions pass, 0 fail). Screenshots retained (regenerable via scripts/verify-gesture.mjs): reports/gesture-retrofit/main-{desktop,mobile}-{light,dark}.png render correctly in both themes. No CSS/layout changed."
+    },
+    {
+      "dimension": "runtime-config",
+      "score": 5,
+      "severity": "info",
+      "evidence": "At-a-glance still declares MediaPipe Tasks Vision + the gesture-recognition task + WASM/WebGPU backend; delegate probe (navigator.gpu.requestAdapter) now runs in the worker with honest CPU fallback. Same .task URL + tasks-vision 0.10.18 via lib/mediapipe.js."
+    }
+  ],
+  "guidanceConsulted": [
+    {
+      "id": "performance",
+      "query": "offload heavy computation to a web worker to keep INP low",
+      "recommendation": "INP & Main-Thread Unblocking: offload heavy compute (>250ms, and any sync work that blocks the UI) to a Web Worker; separate UI updates from heavy computation so the main thread only paints.",
+      "appliedOrException": "applied",
+      "evidence": "MediaPipe recognize (~90ms cold main-thread long task) moved into models/gesture-recognizer/worker.js; the main thread now only decodes a frame to an ImageBitmap, transfers it, and paints the cheap landmark overlay. Measured cold main-thread long task 90ms->0ms."
+    },
+    {
+      "id": "break-up-long-tasks",
+      "query": "break up long tasks scheduler.yield 50ms budget",
+      "recommendation": "Yield to the main thread on a 50ms budget with scheduler.yield() and a setTimeout(0) fallback for browsers without the Scheduler API.",
+      "appliedOrException": "applied",
+      "evidence": "lib/worker-protocol.js yieldToMain() already embodies this (scheduler.yield with setTimeout fallback). The gesture recognize handler is a single synchronous MediaPipe call with no sliceable loop, so the primary fix is the worker offload; the protocol keeps abort/progress cooperative."
+    },
+    {
+      "id": "identify-inp-causes",
+      "query": "identify INP causes long animation frames longtask",
+      "recommendation": "Measure responsiveness with the Long Animation Frames / longtask + Event Timing APIs rather than inferring; attribute the blocking script.",
+      "appliedOrException": "applied",
+      "evidence": "scripts/measure-gesture.mjs installs a PerformanceObserver({entryTypes:['longtask']}) and measures the recognize before (main-thread [90]) and after (worker []), so the off-thread claim is measured, not asserted."
+    },
+    {
+      "query": "MediaPipe tasks-vision FilesetResolver in a module worker (importScripts)",
+      "recommendation": "MDN Web Workers: module workers forbid importScripts(); classic workers allow it and still support dynamic import() of ES modules.",
+      "appliedOrException": "exception (justified): a CLASSIC worker is used, not a module worker",
+      "evidence": "A module-worker probe (scripts/probe-mpver.mjs) fails on every tasks-vision build tried — 0.10.18/0.10.20 throw \"Module scripts don't support importScripts()\" at GestureRecognizer.createFromOptions; 0.10.22 fails to load. A classic-worker probe inits FilesetResolver + GestureRecognizer and recognize() cleanly. lib/worker-protocol.js supports this via WorkerClient {module:false}; the worker dynamic-import()s both the ESM protocol and @mediapipe/tasks-vision. Scoped, documented in worker.js."
+    }
+  ],
+  "openQuestions": [
+    "Should the live-webcam loop additionally throttle to a target FPS on low-end mobile to cap worker load, beyond the current completion-paced requestVideoFrameCallback + latest-wins supersede?",
+    "Can the FaceLandmarker leg of the multi-model page also move off-thread (separate worker) once tasks-vision worker packaging is reworked — it stays on the main thread today, out of this retrofit's scope?"
+  ],
+  "followUpGoals": [
+    {
+      "goal": "Provide a reusable createMediaPipeWorker helper in lib/ so other MediaPipe demos (hand-landmarker, face-landmarker, pose, segmenters) can adopt the same classic-worker + worker-protocol off-thread pattern.",
+      "kind": "targeted-fix",
+      "priority": "medium"
+    },
+    {
+      "goal": "Add an optional on-page INP/long-task readout (Long Animation Frames API) so visitors can see the main thread stays free during the live loop.",
+      "kind": "additive-demo",
+      "priority": "low"
+    }
+  ]
+}
