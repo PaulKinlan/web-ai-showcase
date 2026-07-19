@@ -1,36 +1,89 @@
-// Front-end helpers for the MediaPipe PoseLandmarker pages. Like hand.js: wraps one task instance,
-// switches IMAGE/VIDEO running mode on demand, and draws the 33-point body skeleton onto a canvas.
-// The model loads through lib/model-loader.js via lib/mediapipe.js createVisionTask.
+// Front-end helpers for the MediaPipe PoseLandmarker pages. Draws the 33-point body skeleton onto a
+// canvas, and — the off-main-thread path (invariant 15) — provides createMediaPipeWorkerTask(): a
+// main-thread client that loads the MediaPipe task inside models/pose-landmarker/worker.js and runs every
+// detect there, so the heavy inference never blocks the UI. The model still loads through
+// lib/model-loader.js createModelLoader (auto-init/explicit-download policy unchanged); only WHERE the
+// MediaPipe task lives moved (main thread → dedicated worker). The worker is CLASSIC (see worker.js /
+// module:false below) because MediaPipe's WASM loader needs importScripts, which module workers forbid.
+
+import { WorkerClient } from "/web-ai-showcase/lib/worker-protocol.js";
 
 export const MODEL_URL =
   "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task";
 
 // MediaPipe's 33 body landmarks and how they connect into a skeleton.
 export const POSE_CONNECTIONS = [
-  [0, 1], [1, 2], [2, 3], [3, 7], [0, 4], [4, 5], [5, 6], [6, 8], [9, 10],
-  [11, 12], [11, 13], [13, 15], [15, 17], [15, 19], [15, 21], [17, 19],
-  [12, 14], [14, 16], [16, 18], [16, 20], [16, 22], [18, 20],
-  [11, 23], [12, 24], [23, 24], [23, 25], [24, 26], [25, 27], [26, 28],
-  [27, 29], [28, 30], [29, 31], [30, 32], [27, 31], [28, 32],
+  [0, 1],
+  [1, 2],
+  [2, 3],
+  [3, 7],
+  [0, 4],
+  [4, 5],
+  [5, 6],
+  [6, 8],
+  [9, 10],
+  [11, 12],
+  [11, 13],
+  [13, 15],
+  [15, 17],
+  [15, 19],
+  [15, 21],
+  [17, 19],
+  [12, 14],
+  [14, 16],
+  [16, 18],
+  [16, 20],
+  [16, 22],
+  [18, 20],
+  [11, 23],
+  [12, 24],
+  [23, 24],
+  [23, 25],
+  [24, 26],
+  [25, 27],
+  [26, 28],
+  [27, 29],
+  [28, 30],
+  [29, 31],
+  [30, 32],
+  [27, 31],
+  [28, 32],
 ];
 
 export const POSE_LANDMARK_NAMES = [
   "Nose",
-  "Left eye (inner)", "Left eye", "Left eye (outer)",
-  "Right eye (inner)", "Right eye", "Right eye (outer)",
-  "Left ear", "Right ear",
-  "Mouth (left)", "Mouth (right)",
-  "Left shoulder", "Right shoulder",
-  "Left elbow", "Right elbow",
-  "Left wrist", "Right wrist",
-  "Left pinky", "Right pinky",
-  "Left index", "Right index",
-  "Left thumb", "Right thumb",
-  "Left hip", "Right hip",
-  "Left knee", "Right knee",
-  "Left ankle", "Right ankle",
-  "Left heel", "Right heel",
-  "Left foot index", "Right foot index",
+  "Left eye (inner)",
+  "Left eye",
+  "Left eye (outer)",
+  "Right eye (inner)",
+  "Right eye",
+  "Right eye (outer)",
+  "Left ear",
+  "Right ear",
+  "Mouth (left)",
+  "Mouth (right)",
+  "Left shoulder",
+  "Right shoulder",
+  "Left elbow",
+  "Right elbow",
+  "Left wrist",
+  "Right wrist",
+  "Left pinky",
+  "Right pinky",
+  "Left index",
+  "Right index",
+  "Left thumb",
+  "Right thumb",
+  "Left hip",
+  "Right hip",
+  "Left knee",
+  "Right knee",
+  "Left ankle",
+  "Right ankle",
+  "Left heel",
+  "Right heel",
+  "Left foot index",
+  "Right foot index",
 ];
 
 const POSE_COLORS = ["#1565c0", "#b3261e", "#1a7a3a", "#6a1b9a"];
@@ -61,6 +114,85 @@ export class PoseTask {
 
 function normalize(res) {
   return { landmarks: res.landmarks || [], worldLandmarks: res.worldLandmarks || [] };
+}
+
+// ── Off-main-thread MediaPipe client ──────────────────────────────────────────────────────────────
+// Loads a MediaPipe vision task inside the dedicated module worker (worker.js) and runs detect there.
+// Mirrors the PoseTask/HandTask surface (detectImage / detectVideo / delegate) so the pages barely
+// change: the client grabs a frame with createImageBitmap on the main thread (cheap, async, no pixel
+// copy on the JS thread) and TRANSFERS it to the worker; the worker returns only the tiny landmark
+// arrays. The webcam loop must keep at most one detect in flight (see the pages' rVFC loops); the "live"
+// channel makes any stray extra frame supersede the older one rather than pile up (backpressure).
+//
+// @param {object} o
+// @param {string} o.taskClass  e.g. "PoseLandmarker" | "HandLandmarker"
+// @param {string} o.modelUrl   the canonical .task asset URL
+// @param {object} [o.options]  { runningMode, taskOptions } — taskOptions is passed to createFromOptions
+// @param {(p:any)=>void} [o.onProgress]
+// @returns {Promise<MediaPipeWorkerTask>}
+export async function createMediaPipeWorkerTask({ taskClass, modelUrl, options = {}, onProgress }) {
+  const client = new WorkerClient({
+    url: new URL("./worker.js", import.meta.url),
+    name: taskClass.toLowerCase(),
+    // CLASSIC worker (not module): MediaPipe's Emscripten WASM loader calls importScripts(), which only
+    // exists in classic workers — a module worker throws "Module scripts don't support importScripts()".
+    // worker.js dynamically import()s the ESM protocol + MediaPipe, both allowed in a classic worker.
+    module: false,
+    maxInFlight: 1,
+    maxQueue: 1,
+  });
+  await client.ready;
+  const { result } = await client.request(
+    "load",
+    {
+      taskClass,
+      modelUrl,
+      options,
+      preferGpu: typeof navigator !== "undefined" && "gpu" in navigator,
+    },
+    { onProgress },
+  );
+  return new MediaPipeWorkerTask(client, result?.delegate || "CPU", options.runningMode || "IMAGE");
+}
+
+export class MediaPipeWorkerTask {
+  constructor(client, delegate, mode) {
+    this.client = client;
+    this._delegate = delegate;
+    this.mode = mode;
+  }
+  get delegate() {
+    return this._delegate;
+  }
+  async _detect(source, mode, timestamp, channel) {
+    // Grab the current frame as an ImageBitmap and transfer ownership to the worker (no pixel copy on
+    // the main thread). MediaPipe accepts an ImageBitmap as an image source.
+    const bitmap = await createImageBitmap(source);
+    try {
+      const { result } = await this.client.request(
+        "detect",
+        { bitmap, mode, timestamp },
+        { transfer: [bitmap], ...(channel ? { channel } : {}) },
+      );
+      if (result?.delegate) this._delegate = result.delegate;
+      return { landmarks: result.landmarks || [], worldLandmarks: result.worldLandmarks || [] };
+    } catch (err) {
+      // If the request never dispatched (superseded/overflow) the bitmap wasn't transferred — release it.
+      try {
+        bitmap.close?.();
+      } catch { /* already neutered by a successful transfer */ }
+      throw err;
+    }
+  }
+  detectImage(source) {
+    return this._detect(source, "IMAGE", undefined, null);
+  }
+  detectVideo(source, tsMs) {
+    return this._detect(source, "VIDEO", tsMs, "live");
+  }
+  terminate() {
+    return this.client.terminate();
+  }
 }
 
 export function poseColor(i) {

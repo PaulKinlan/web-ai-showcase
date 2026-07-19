@@ -56,12 +56,11 @@
     <p class="crumbs"><a href="../basics/">← Basics</a> · <a href="../">PoseLandmarker</a> · Next: <a href="../wild/">Wild →</a></p>
 
     <script type="module">
-      import { PoseTask, MODEL_URL, drawPoses, LANDMARK_CSS } from "../pose.js";
-      import { createVisionTask } from "/web-ai-showcase/lib/mediapipe.js";
+      import { createMediaPipeWorkerTask, MODEL_URL, drawPoses, LANDMARK_CSS } from "../pose.js";
       import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
       const style = document.createElement("style"); style.textContent = LANDMARK_CSS; document.head.append(style);
       const $ = (id) => document.getElementById(id);
-      let pose = null, currentImg = null, camOn = false, rafId = null;
+      let pose = null, currentImg = null, camOn = false, rafId = null, usingRvfc = false;
       let reps = 0, stageDown = false;
       function setStatus(m, c) { $("status").textContent = m; $("status").classList.remove("err","ok"); if (c) $("status").classList.add(c); }
 
@@ -85,8 +84,8 @@
       createModelLoader({
         mount: $("model-loader"),
         model: { modelId: MODEL_URL, runtime: "mediapipe", sizeMB: 10, requiresWebGPU: false },
-        load: (onProgress) => createVisionTask({ taskClass: "PoseLandmarker", modelUrl: MODEL_URL, options: { numPoses: 1, runningMode: "IMAGE" }, onProgress }),
-        onReady: (task) => { pose = new PoseTask(task); $("run").disabled = !currentImg; $("camBtn").disabled = false; setStatus("Model ready.", "ok"); },
+        load: (onProgress) => createMediaPipeWorkerTask({ taskClass: "PoseLandmarker", modelUrl: MODEL_URL, options: { runningMode: "IMAGE", taskOptions: { numPoses: 1 } }, onProgress }),
+        onReady: (task) => { pose = task; $("run").disabled = !currentImg; $("camBtn").disabled = false; setStatus("Model ready.", "ok"); },
       });
       pickSample($("samples").firstElementChild);
 
@@ -113,28 +112,35 @@
 
       $("resetBtn").addEventListener("click", () => { reps = 0; stageDown = false; $("reps").textContent = "0"; $("stage2").textContent = "stand up to start"; });
 
-      function stopCam() { if (!camOn) return; camOn = false; cancelAnimationFrame(rafId); const v = $("video"); v.srcObject?.getTracks().forEach(t => t.stop()); v.srcObject = null; v.hidden = true; $("camBtn").textContent = "Start squat counter"; $("camState").textContent = ""; }
+      function stopLoop() { const v = $("video"); if (rafId == null) return; if (usingRvfc && v.cancelVideoFrameCallback) v.cancelVideoFrameCallback(rafId); else cancelAnimationFrame(rafId); rafId = null; }
+      function scheduleFrame() { const v = $("video"); if (v.requestVideoFrameCallback) { usingRvfc = true; rafId = v.requestVideoFrameCallback(onFrame); } else { usingRvfc = false; rafId = requestAnimationFrame(onFrame); } }
+      // One detect in flight (backpressure) — heavy inference off-thread in the worker, main loop only
+      // grabs a frame + measures angles + draws. Guidance: performance, break-up-long-tasks, identify-inp-causes.
+      async function onFrame() {
+        if (!camOn) return;
+        const v = $("video");
+        try {
+          const r = await pose.detectVideo(v, performance.now());
+          if (!camOn) return;
+          const mean = showAngles(r, v, true);
+          if (mean != null) {
+            if (!stageDown && mean < 100) { stageDown = true; $("stage2").textContent = "down"; }
+            else if (stageDown && mean > 160) { stageDown = false; reps++; $("reps").textContent = reps; $("stage2").textContent = "up — rep!"; }
+          }
+        } catch (e) { if (camOn && e.name !== "SupersededError" && e.name !== "AbortError") setStatus("Webcam error: " + e.message, "err"); }
+        if (camOn) scheduleFrame();
+      }
+      function stopCam() { if (!camOn) return; camOn = false; stopLoop(); const v = $("video"); v.srcObject?.getTracks().forEach(t => t.stop()); v.srcObject = null; v.hidden = true; $("camBtn").textContent = "Start squat counter"; $("camState").textContent = ""; }
       async function startCam() {
         try {
           const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
           const v = $("video"); v.srcObject = stream; await v.play();
           camOn = true; $("camBtn").textContent = "Stop counter"; $("camState").innerHTML = '<span class="rec-dot"></span>Live';
-          const loop = async () => {
-            if (!camOn) return;
-            try {
-              const r = await pose.detectVideo(v, performance.now());
-              const mean = showAngles(r, v, true);
-              if (mean != null) {
-                if (!stageDown && mean < 100) { stageDown = true; $("stage2").textContent = "down"; }
-                else if (stageDown && mean > 160) { stageDown = false; reps++; $("reps").textContent = reps; $("stage2").textContent = "up — rep!"; }
-              }
-            } catch (e) { setStatus("Webcam error: " + e.message, "err"); }
-            rafId = requestAnimationFrame(loop);
-          };
-          loop();
+          scheduleFrame();
         } catch (e) { $("camState").textContent = "Camera blocked: " + e.message; }
       }
       $("camBtn").addEventListener("click", () => { camOn ? stopCam() : startCam(); });
+      addEventListener("pagehide", () => { stopCam(); pose?.terminate?.(); });
     </script>
   </body>
 </html>

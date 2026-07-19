@@ -49,13 +49,12 @@
     <p class="crumbs"><a href="../wild/">← Wild</a> · <a href="../">Back to PoseLandmarker</a></p>
 
     <script type="module">
-      import { HandTask, MODEL_URL as HAND_URL, HAND_CONNECTIONS } from "../../hand-landmarker/hand.js";
-      import { PoseTask, MODEL_URL as POSE_URL, POSE_CONNECTIONS, LANDMARK_CSS } from "../pose.js";
-      import { createVisionTask } from "/web-ai-showcase/lib/mediapipe.js";
+      import { MODEL_URL as HAND_URL, HAND_CONNECTIONS } from "../../hand-landmarker/hand.js";
+      import { createMediaPipeWorkerTask, MODEL_URL as POSE_URL, POSE_CONNECTIONS, LANDMARK_CSS } from "../pose.js";
       import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
       const style = document.createElement("style"); style.textContent = LANDMARK_CSS; document.head.append(style);
       const $ = (id) => document.getElementById(id);
-      let hand = null, pose = null, currentImg = null, camOn = false, rafId = null;
+      let hand = null, pose = null, currentImg = null, camOn = false, rafId = null, usingRvfc = false;
       function ready() { return hand && pose; }
       function maybeEnable() { $("run").disabled = !(ready() && currentImg); $("camBtn").disabled = !ready(); }
       function setStatus(m, c) { $("status").textContent = m; $("status").classList.remove("err","ok"); if (c) $("status").classList.add(c); }
@@ -66,11 +65,11 @@
       for (const thumb of $("samples").children) { thumb.addEventListener("click", () => pickSample(thumb)); thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } }); }
 
       createModelLoader({ mount: $("pose-loader"), model: { modelId: POSE_URL, runtime: "mediapipe", sizeMB: 10, requiresWebGPU: false },
-        load: (op) => createVisionTask({ taskClass: "PoseLandmarker", modelUrl: POSE_URL, options: { numPoses: 1, runningMode: "IMAGE" }, onProgress: op }),
-        onReady: (t) => { pose = new PoseTask(t); maybeEnable(); } });
+        load: (op) => createMediaPipeWorkerTask({ taskClass: "PoseLandmarker", modelUrl: POSE_URL, options: { runningMode: "IMAGE", taskOptions: { numPoses: 1 } }, onProgress: op }),
+        onReady: (t) => { pose = t; maybeEnable(); } });
       createModelLoader({ mount: $("hand-loader"), model: { modelId: HAND_URL, runtime: "mediapipe", sizeMB: 8, requiresWebGPU: false },
-        load: (op) => createVisionTask({ taskClass: "HandLandmarker", modelUrl: HAND_URL, options: { numHands: 2, runningMode: "IMAGE" }, onProgress: op }),
-        onReady: (t) => { hand = new HandTask(t); maybeEnable(); } });
+        load: (op) => createMediaPipeWorkerTask({ taskClass: "HandLandmarker", modelUrl: HAND_URL, options: { runningMode: "IMAGE", taskOptions: { numHands: 2 } }, onProgress: op }),
+        onReady: (t) => { hand = t; maybeEnable(); } });
       pickSample($("samples").firstElementChild);
 
       function composite(source, poseRes, handRes, mirror) {
@@ -103,17 +102,34 @@
         finally { $("run").disabled = false; }
       });
 
-      function stopCam() { if (!camOn) return; camOn = false; cancelAnimationFrame(rafId); const v = $("video"); v.srcObject?.getTracks().forEach(t => t.stop()); v.srcObject = null; v.hidden = true; $("camBtn").textContent = "Use webcam"; $("camState").textContent = ""; }
+      function stopLoop() { const v = $("video"); if (rafId == null) return; if (usingRvfc && v.cancelVideoFrameCallback) v.cancelVideoFrameCallback(rafId); else cancelAnimationFrame(rafId); rafId = null; }
+      function scheduleFrame() { const v = $("video"); if (v.requestVideoFrameCallback) { usingRvfc = true; rafId = v.requestVideoFrameCallback(onFrame); } else { usingRvfc = false; rafId = requestAnimationFrame(onFrame); } }
+      // Both models run OFF-thread in their own workers; Promise.all lets them run in parallel. One detect
+      // in flight per worker (backpressure) — the main loop only composites the skeletons. Guidance:
+      // performance, break-up-long-tasks, identify-inp-causes.
+      async function onFrame() {
+        if (!camOn) return;
+        const v = $("video");
+        try {
+          const t0 = performance.now();
+          const [p, h] = await Promise.all([pose.detectVideo(v, performance.now()), hand.detectVideo(v, performance.now())]);
+          if (!camOn) return;
+          composite(v, p, h, true);
+          $("rDelegate").textContent = pose.delegate; $("rBody").textContent = p.landmarks[0]?.length ?? 0; $("rHands").textContent = h.landmarks.length; $("rMs").textContent = Math.round(performance.now()-t0) + " ms"; $("readout").hidden = false;
+        } catch (e) { if (camOn && e.name !== "SupersededError" && e.name !== "AbortError") setStatus("Webcam error: " + e.message, "err"); }
+        if (camOn) scheduleFrame();
+      }
+      function stopCam() { if (!camOn) return; camOn = false; stopLoop(); const v = $("video"); v.srcObject?.getTracks().forEach(t => t.stop()); v.srcObject = null; v.hidden = true; $("camBtn").textContent = "Use webcam"; $("camState").textContent = ""; }
       async function startCam() {
         try {
           const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
           const v = $("video"); v.srcObject = stream; await v.play();
           camOn = true; $("camBtn").textContent = "Stop webcam"; $("camState").innerHTML = '<span class="rec-dot"></span>Live';
-          const loop = async () => { if (!camOn) return; try { const t0 = performance.now(); const [p, h] = await Promise.all([pose.detectVideo(v, performance.now()), hand.detectVideo(v, performance.now())]); composite(v, p, h, true); $("rDelegate").textContent = pose.delegate; $("rBody").textContent = p.landmarks[0]?.length ?? 0; $("rHands").textContent = h.landmarks.length; $("rMs").textContent = Math.round(performance.now()-t0) + " ms"; $("readout").hidden = false; } catch (e) { setStatus("Webcam error: " + e.message, "err"); } rafId = requestAnimationFrame(loop); };
-          loop();
+          scheduleFrame();
         } catch (e) { $("camState").textContent = "Camera blocked: " + e.message; }
       }
       $("camBtn").addEventListener("click", () => { camOn ? stopCam() : startCam(); });
+      addEventListener("pagehide", () => { stopCam(); pose?.terminate?.(); hand?.terminate?.(); });
     </script>
   </body>
 </html>

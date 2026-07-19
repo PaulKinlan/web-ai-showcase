@@ -1,0 +1,120 @@
+{
+  "schemaVersion": 1,
+  "id": "pose-landmarker",
+  "revision": 1,
+  "reviewedAt": "2026-07-19T00:00:00Z",
+  "reviewer": "off-main-thread retrofit (invariant 15) — measured before/after long tasks, light/dark + mobile screenshots read",
+  "frontend": true,
+  "rubric": [
+    {
+      "dimension": "performance",
+      "score": 5,
+      "severity": "critical",
+      "evidence": "MEASURED before/after (own headless Chrome, CPU delegate, --disable-gpu). BEFORE (main-thread MediaPipe detect on the bundled sample): reported latency 142ms, one PerformanceObserver longtask of 143ms, MessageChannel main-thread block probe = 146ms — the synchronous detect blocked the whole UI. AFTER (detect moved into models/pose-landmarker/worker.js via lib/worker-protocol.js): still detect maxLongtask=0, main-thread block 5ms; 4s steady-state webcam loop maxLongtask=0, main-thread block 6ms. All 5 pages measured: index 5/6ms, basics 5ms, practical 5/4ms, wild 5/5ms, multi-model 6/8ms (multi-model composites TWO skeletons + grabs 2 ImageBitmaps/frame — the residual is frame-grab+draw, not inference). Zero inference long tasks anywhere.",
+      "notes": "The heavy MediaPipe detect (~143ms) is gone from the main thread; only createImageBitmap + skeleton draw remain (<8ms). Backpressure: one detect in flight, requestVideoFrameCallback re-armed after each result, worker-protocol 'live' channel supersedes any stray overlap."
+    },
+    {
+      "dimension": "real-inference",
+      "score": 5,
+      "severity": "info",
+      "evidence": "REAL MediaPipe PoseLandmarker Lite run in the worker: sample-yoga.jpg → 1 person, 33/33 landmarks visible, Nose at x=0.465 y=0.423 z=-0.152 vis=1.00 (plausible for the pose). Warm detect round-trip 30ms (CPU delegate). conformance: loads-clean=pass, calls-real-inference=pass (FilesetResolver/createFromOptions live in worker.js, scanned by modelSource). Not a canned result.",
+      "notes": "MediaPipe's Emscripten WASM loader uses importScripts, forbidden in module workers, so worker.js is a CLASSIC worker (module:false) that dynamic-import()s both the ESM protocol and @mediapipe/tasks-vision. Documented scoped exception in worker.js + pose.js."
+    },
+    {
+      "dimension": "io-shape",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Output is the declared shape: landmarks[0] = 33 {x,y,z,visibility} normalized points + worldLandmarks in metres, returned from the worker as tiny plain arrays (no pixels sent back). See-inside table populated 33 rows with real coordinates; skeleton drawn on the canvas at natural resolution. screenshots: reports/verify/pose-landmarker-light.png",
+      "notes": ""
+    },
+    {
+      "dimension": "runtime-config",
+      "score": 5,
+      "severity": "info",
+      "evidence": "At-a-glance declares MediaPipe Tasks Vision (@mediapipe/tasks-vision) .task bundle, pose-landmark-detection, GPU-when-adapter-exists-else-CPU(XNNPACK), ~10MB, Apache-2.0. Delegate readout showed CPU on the no-GPU headless runner (worker probes navigator.gpu.requestAdapter() then falls back) — matches the original main-thread selection. conformance: declares-mediapipe-runtime/declares-task/declares-backend/mediapipe-gpu-delegate=pass, worker-compliance=pass.",
+      "notes": "Delegate selection semantics preserved from lib/mediapipe.js (real adapter probe, not just navigator.gpu presence)."
+    },
+    {
+      "dimension": "cache-init",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Model still loads through the shared createModelLoader (lib/model-loader.js) — the load() callback now returns the worker-backed task instead of a main-thread task; the auto-init / explicit-download / cache-integrity policy is UNCHANGED. First visit (fresh profile) showed download-required + a real Download button; after download the loader reached 'Model ready — running locally on your device.' with a 'Clear cached model' control. shared-auto-init-loader=pass. screenshots: reports/verify/pose-landmarker-light.png",
+      "notes": "MediaPipe's .task fetch is still intercepted by the SW / Cache Storage the same way (worker clients are SW-controlled), so scanCachedFiles/recordValidated on the main thread are unaffected."
+    },
+    {
+      "dimension": "states",
+      "score": 4,
+      "severity": "info",
+      "evidence": "role=status aria-live regions announce checking→initialising→ready; load failures surface via the loader's error state + Retry; webcam denial is honest: overriding getUserMedia to reject showed camState='Camera blocked: Permission denied' (screenshot reports/verify/pose-landmarker-nocam.png). Zero console errors, zero failed network requests across load+detect (headless capture).",
+      "notes": "Webcam is user-initiated (button), never auto-started; worker terminates + tracks stop on pagehide."
+    },
+    {
+      "dimension": "controls",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Samples, dropzone, Detect, Use webcam, visibility slider, Clear-cached-model all real + keyboard-operable + labelled (buttons-have-names=pass, images-have-alt=pass). Visibility slider re-renders the last still result. Behaviour/identity of every control preserved — only the inference call site moved off-thread.",
+      "notes": ""
+    },
+    {
+      "dimension": "no-fake-output",
+      "score": 5,
+      "severity": "info",
+      "evidence": "All output is produced by the real on-device worker run; no canned landmarks. no-fake-output assertion retained.",
+      "notes": ""
+    },
+    {
+      "dimension": "accessibility",
+      "score": 5,
+      "severity": "info",
+      "evidence": "images-have-alt=pass, buttons-have-names=pass, live-status-region=pass. Focus-visible rings on dropzone/samples/canvas retained from the design system.",
+      "notes": ""
+    },
+    {
+      "dimension": "responsive",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Desktop 1280×900 and mobile 360×740 (DPR3) both render with no horizontal overflow, legible text, at-a-glance table wraps cleanly. Light + dark both pass. screenshots: reports/verify/pose-landmarker-light.png, reports/verify/pose-landmarker-darktheme.png, reports/verify/pose-landmarker-mobile.png",
+      "notes": "Layout untouched by the retrofit — only the inference path changed."
+    }
+  ],
+  "guidanceConsulted": [
+    {
+      "id": "performance",
+      "query": "offload heavy work to a web worker to keep the main thread responsive",
+      "recommendation": "> 250ms work → offload to a Web Worker; separate UI updates from heavy computation.",
+      "appliedOrException": "Applied: the ~143ms synchronous MediaPipe detect now runs in a dedicated worker; the main thread only grabs a frame + draws. Measured main-thread block dropped 146ms → ~5ms.",
+      "evidence": "before/after long-task + MessageChannel block probe (see performance rubric row)."
+    },
+    {
+      "id": "break-up-long-tasks",
+      "query": "INP long tasks break up main thread inference",
+      "recommendation": "Yield to the main thread on a 50ms budget with scheduler.yield() (setTimeout fallback) so long work does not block input/render.",
+      "appliedOrException": "Applied via the offload itself (the long task is removed from the main thread entirely); lib/worker-protocol.js yieldToMain() provides the scheduler.yield()/setTimeout slicing inside worker handlers for cooperative cancellation.",
+      "evidence": "worker-protocol.js yieldToMain; zero main-thread long tasks measured after the retrofit."
+    },
+    {
+      "id": "identify-inp-causes",
+      "query": "requestVideoFrameCallback process webcam frames / measure long tasks",
+      "recommendation": "Use the Long Animation Frames / longtask signal to attribute main-thread blocking; measure in the field rather than assume.",
+      "appliedOrException": "Applied as the measurement method: PerformanceObserver('longtask') + a MessageChannel main-thread blocking probe gave the before(143ms)/after(~5ms) numbers; the webcam loop uses requestVideoFrameCallback (Baseline) with a requestAnimationFrame fallback.",
+      "evidence": "measure-pose.mjs harness output recorded in the performance rubric row."
+    }
+  ],
+  "openQuestions": [
+    "On a real WebGPU/WebGL device the worker prefers the GPU delegate — worth confirming the OffscreenCanvas GPU path stays stable across the MediaPipe version bumps (currently 0.10.18).",
+    "The multi-model page runs two workers (pose + hands) and grabs two ImageBitmaps per frame; a single shared frame-grab feeding both workers could shave the ~8ms residual further."
+  ],
+  "followUpGoals": [
+    {
+      "goal": "Retrofit the remaining MediaPipe demos (face-landmarker, hand-landmarker, gesture-recognizer, face-detector) onto the same worker.js off-main-thread path so all 5 MediaPipe hard-exceptions clear the 8ms bar.",
+      "kind": "targeted-fix",
+      "priority": "high"
+    },
+    {
+      "goal": "Share one ImageBitmap grab across the pose+hands workers on the multi-model page to reduce the per-frame main-thread residual.",
+      "kind": "targeted-fix",
+      "priority": "low"
+    }
+  ],
+  "summary": "In-place off-main-thread retrofit (invariant 15) for a measured perf bug: the ~143ms synchronous MediaPipe PoseLandmarker detect blocked the main thread. Moved every detect into models/pose-landmarker/worker.js via lib/worker-protocol.js (ImageBitmap transferred in, tiny landmark arrays back, requestVideoFrameCallback + backpressure). Measured main-thread block 146ms → ~5ms with zero inference long tasks across all 5 pages. Route, slug, identity, controls, examples, and behaviour preserved; auto-init/explicit-download policy unchanged."
+}
