@@ -137,11 +137,14 @@ span/entity-prompt pipeline), **got-ocr2** (no `got_ocr2` class in 3.7.5/4.2; th
 `image-text-to-text` pipeline task doesn't exist in 3.7.5; stepfun-ai repos are safetensors-only, no
 ONNX), **git** (no `git` model class; no `Xenova/git-*` ONNX repo exists), **vilt** (no `vilt`
 class, `visual-question-answering` is not a supported pipeline task, `ViltFeatureExtractor`
-unimplemented, no ONNX export anywhere), **keyphrase-extraction** (no token-classification keyphrase
-model ships a browser-loadable ONNX — a 151-repo scan found only seq2seq generators, which can't
-produce per-token B/I/O spans; don't mislabel a generator or plain NER as keyphrase span
-extraction), **electra** (ONNX exports encoder-only; RTD discriminator head absent), **blip** /
-**bark** (gated / no usable ONNX). Never mislabel a substitute as the blocked family.
+unimplemented, no ONNX export anywhere), **kosmos-2** (no `kosmos` class in any transformers.js
+version; no browser ONNX — repos gated / safetensors-only), **internvl** (no `internvl` class →
+`Unsupported model type: internvl`; only third-party ONNX, upstream safetensors-only),
+**keyphrase-extraction** (no token-classification keyphrase model ships a browser-loadable ONNX — a
+151-repo scan found only seq2seq generators, which can't produce per-token B/I/O spans; don't
+mislabel a generator or plain NER as keyphrase span extraction), **electra** (ONNX exports
+encoder-only; RTD discriminator head absent), **blip** / **bark** (gated / no usable ONNX). Never
+mislabel a substitute as the blocked family.
 
 **Version-pin escape hatch (isolated).** A model whose class exists only in a transformers.js newer
 than the shared 3.7.5 pin (e.g. SAM2 — `Sam2Model` lands in 4.2.0, absent from 3.7.5) may pin the
@@ -278,9 +281,9 @@ scratch when a targeted edit suffices. Every build wave runs the gate before pus
 
 ### 14. Critique → immutable conformance → goal lifecycle (per-demo quality contract)
 
-Every built model page runs a WEB-AI-domain lifecycle (analogous to chrome-platform-showcase's, not a
-copy): **coverage/build → critique → immutable conformance → validation → goal-setting.** All ADDITIVE
-— it never rewrites a page or churns a URL; it sits alongside invariant 13.
+Every built model page runs a WEB-AI-domain lifecycle (analogous to chrome-platform-showcase's, not
+a copy): **coverage/build → critique → immutable conformance → validation → goal-setting.** All
+ADDITIVE — it never rewrites a page or churns a URL; it sits alongside invariant 13.
 
 - **Critique** (`models/<slug>/_questions.json`, versioned + mutable): a rubric scored across the
   domain dimensions — real-local-inference correctness, expected I/O shape + semantic sanity,
@@ -290,27 +293,29 @@ copy): **coverage/build → critique → immutable conformance → validation �
   excerpt, latency, output sample), plus `guidanceConsulted` (empty on a frontend critique =
   INCOMPLETE), `openQuestions`, and `followUpGoals`. Schema: `schemas/critique.schema.json`.
 - **Immutable conformance** (`models/<slug>/conformance.json`, hashed): per-model assertions DERIVED
-  from real `models.json` metadata + per-task templates, covering exactly those categories. **Immutable
-  = once committed, an assertion is never deleted, weakened, or regenerated to go green — you fix the
-  DEMO.** `suiteHash` = sha256 of the normalized assertions; `scripts/check-conformance.mjs` recomputes
-  it and diffs against `origin/main`, failing on any removed/weakened assertion without a
-  `conformance-migrations.json` record. Adding assertions (coverage grows) is always allowed. Schema:
-  `schemas/conformance.schema.json`. Generate suites for new built models with
-  `node scripts/gen-conformance.mjs` (it never overwrites an existing suite).
+  from real `models.json` metadata + per-task templates, covering exactly those categories.
+  **Immutable = once committed, an assertion is never deleted, weakened, or regenerated to go green
+  — you fix the DEMO.** `suiteHash` = sha256 of the normalized assertions;
+  `scripts/check-conformance.mjs` recomputes it and diffs against `origin/main`, failing on any
+  removed/weakened assertion without a `conformance-migrations.json` record. Adding assertions
+  (coverage grows) is always allowed. Schema: `schemas/conformance.schema.json`. Generate suites for
+  new built models with `node scripts/gen-conformance.mjs` (it never overwrites an existing suite).
 - **Validation** (`node scripts/conformance.mjs --slug <slug>` / `--all`): a deterministic,
-  headless-Chrome-backed, download-free runner emits exact **tested / total · pass / fail / blocked**
-  (+ manual-evidenced awaiting an agent verdict). `blocked` = the device/feature is GENUINELY
-  unavailable (e.g. a WebGPU-only model on a no-GPU runner showing its honest needs-WebGPU state) —
-  explicit, never a pass. It NEVER auto-downloads an absent large model to force a pass; a fresh
-  profile keeps every model cache-absent. Rollup: `reports/conformance/index.html` + `results.json`.
+  headless-Chrome-backed, download-free runner emits exact **tested / total · pass / fail /
+  blocked** (+ manual-evidenced awaiting an agent verdict). `blocked` = the device/feature is
+  GENUINELY unavailable (e.g. a WebGPU-only model on a no-GPU runner showing its honest needs-WebGPU
+  state) — explicit, never a pass. It NEVER auto-downloads an absent large model to force a pass; a
+  fresh profile keeps every model cache-absent. Rollup: `reports/conformance/index.html` +
+  `results.json`.
 - **Goal-setting** (`node scripts/goals.mjs` → `goals.json`, schema `schemas/goals.schema.json`):
   critique `followUpGoals` accumulate into an ADDITIVE backlog the routine consumes to pick the next
   NEW demo or targeted in-place fix — never to replace a stable page.
-- **Gate:** `node scripts/check-conformance.mjs` runs beside `check-routes.mjs` before every push (and
-  in CI). It FAILS on a built demo with no suite, a duplicate/orphan suite id, a malformed artifact, a
-  weakened/removed assertion without a migration record, or a touched demo left untested/broken on a
-  supported device class — and REPORTS the coverage denominators. Author genuine suites by DERIVING
-  from real metadata; never fake, never claim "complete/all" (built-demo count is a moving frontier).
+- **Gate:** `node scripts/check-conformance.mjs` runs beside `check-routes.mjs` before every push
+  (and in CI). It FAILS on a built demo with no suite, a duplicate/orphan suite id, a malformed
+  artifact, a weakened/removed assertion without a migration record, or a touched demo left
+  untested/broken on a supported device class — and REPORTS the coverage denominators. Author
+  genuine suites by DERIVING from real metadata; never fake, never claim "complete/all" (built-demo
+  count is a moving frontier).
 
 ## Mobile + desktop parity — every demo usable on both, or honestly unsupported with recorded evidence
 
@@ -322,29 +327,30 @@ targeted compatibility fixes — never a destructive rewrite, never a new slug t
 - **Validate a mobile+desktop MATRIX, not just "it loads."** Every autonomous build or fix must
   exercise the demo at, at minimum, one representative **narrow mobile** viewport (≈360×740, touch/
   pointer + DPR≈3) and one **desktop** viewport (≈1280×800, mouse + keyboard), driving every visible
-  control and state. Check, on each class: responsive layout with **no unintended horizontal overflow
-  or clipped controls/text**; legible font sizes; adequate **tap targets** (≈44px min); **focus order
-  + visible focus**; dialogs/popovers/menus open, position, dismiss, and trap focus correctly;
-  orientation, **dynamic viewport** (dvh/svh, not 100vh traps) and **safe-area** insets where
-  relevant; loading / progress / error / **retry** states; **zero console errors**; **no failed
-  network requests**; and honest capability handling.
+  control and state. Check, on each class: responsive layout with **no unintended horizontal
+  overflow or clipped controls/text**; legible font sizes; adequate **tap targets** (≈44px min);
+  **focus order
+  - visible focus**; dialogs/popovers/menus open, position, dismiss, and trap focus correctly;
+    orientation, **dynamic viewport** (dvh/svh, not 100vh traps) and **safe-area** insets where
+    relevant; loading / progress / error / **retry** states; **zero console errors**; **no failed
+    network requests**; and honest capability handling.
 - **Web AI — respect mobile memory/download/storage/backend limits.** Account for constrained
-  devices. Do **NOT** auto-download an absent large model just to make a test pass; an already-local,
-  current, validated model still auto-initialises per the existing auto-init rule. When a device
-  can't run a model, degrade honestly (labelled needs-WebGPU / needs-more-memory / too-large-for-this-
-  device) with the requirements — never a blank panel or a faked result.
+  devices. Do **NOT** auto-download an absent large model just to make a test pass; an
+  already-local, current, validated model still auto-initialises per the existing auto-init rule.
+  When a device can't run a model, degrade honestly (labelled needs-WebGPU / needs-more-memory /
+  too-large-for-this- device) with the requirements — never a blank panel or a faked result.
 - **A single-class outcome needs EVIDENCE.** A desktop-only or mobile-only demo is allowed ONLY with
   direct evidence that the API, hardware capability, browser runtime, or model requirement genuinely
   makes the other class unavailable — never because the layout or interaction was left unfinished.
   Then: preserve the stable URL; show a useful, accessible, explicit **unsupported/degraded
-  explanation** (requirements + a fallback/alternative where possible); NEVER blank UI, faked output,
-  or a hidden/disabled-without-explanation control. Record the **unsupported class + evidence** in the
-  catalogue/manifest.
-- **Coverage is reported and gated.** Track exact **mobile/desktop tested-vs-total** coverage.
-  A build/fix action's completion FAILS when a device class the demo is supposed to support is left
+  explanation** (requirements + a fallback/alternative where possible); NEVER blank UI, faked
+  output, or a hidden/disabled-without-explanation control. Record the **unsupported class +
+  evidence** in the catalogue/manifest.
+- **Coverage is reported and gated.** Track exact **mobile/desktop tested-vs-total** coverage. A
+  build/fix action's completion FAILS when a device class the demo is supposed to support is left
   untested or is broken. The route gate additionally FAILS if any demo is recorded broken on a class
-  it claims to support. Apply this to existing demos during audits with targeted compatibility fixes,
-  wave by wave — the coverage number is the backlog burn-down, and it never regresses.
+  it claims to support. Apply this to existing demos during audits with targeted compatibility
+  fixes, wave by wave — the coverage number is the backlog burn-down, and it never regresses.
 
 **Run the responsive matrix before every push** with `node scripts/responsive-check.mjs` and record
 each touched demo's result in the `support` field on its built `models.json` entry (`ok` /
@@ -353,9 +359,9 @@ each touched demo's result in the `support` field on its built `models.json` ent
 ## modern-web-guidance is mandatory for all frontend work
 
 Before ANY HTML, CSS, or client-side JavaScript implementation or modification — new pages AND
-targeted fixes — run/consult the **`modern-web-guidance`** skill FIRST for the specific UI/API topic,
-then apply its recommendations (or explicitly justify any exception with evidence). This is required
-whenever the change involves: layout, responsive mobile+desktop behavior, forms/controls,
+targeted fixes — run/consult the **`modern-web-guidance`** skill FIRST for the specific UI/API
+topic, then apply its recommendations (or explicitly justify any exception with evidence). This is
+required whenever the change involves: layout, responsive mobile+desktop behavior, forms/controls,
 dialogs/popovers/menus, loading/progress/error/retry states, animations/transitions, accessibility
 interactions, performance / Core Web Vitals, image/model loading + caching, modern CSS, or browser
 APIs.
@@ -364,8 +370,8 @@ APIs.
   the actual thing you're building/fixing (e.g. "responsive control panel without horizontal
   overflow", "accessible popover dismissal", "stream progress without INP regressions"), retain the
   relevant recommendation ids + evidence, and apply them — or record a justified exception.
-- **Canonical source, no stale fork.** Invoke the canonical skill; if the repo needs a scripted call,
-  use the published package (`npx -y modern-web-guidance@latest search "<query>"` /
+- **Canonical source, no stale fork.** Invoke the canonical skill; if the repo needs a scripted
+  call, use the published package (`npx -y modern-web-guidance@latest search "<query>"` /
   `retrieve "<id>"`) rather than copying guide text into the repo. Record the skill **source +
   version / update path** in the repo (so routines stay current) — do NOT vendor a stale copy.
 - **Process validation — missing guidance is an INCOMPLETE build/critique, not a pass.** Every

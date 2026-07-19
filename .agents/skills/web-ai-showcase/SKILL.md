@@ -52,10 +52,11 @@ of every model you can genuinely run in a browser — not a token set. Read `CLA
   (same — `Unsupported model type: gliner`; ONNX exists but no transformers.js GLiNER class),
   **got-ocr2** (no `got_ocr2` class; no `image-text-to-text` pipeline in 3.7.5; safetensors-only),
   **git** (no `git` class; no `Xenova/git-*` ONNX), **vilt** (no `vilt` class / no
-  `visual-question-answering` pipeline / no ONNX), **keyphrase-extraction** (no token-classification
-  keyphrase ONNX — only seq2seq generators), **electra** (ONNX is encoder-only; no RTD discriminator
-  head), **blip** / **bark** (gated / no usable ONNX). Never mislabel a substitute as the blocked
-  family.
+  `visual-question-answering` pipeline / no ONNX), **kosmos-2** (no `kosmos` class in
+  transformers.js; no browser ONNX), **internvl** (no `internvl` class →
+  `Unsupported model type: internvl`), **keyphrase-extraction** (no token-classification keyphrase
+  ONNX — only seq2seq generators), **electra** (ONNX is encoder-only; no RTD discriminator head),
+  **blip** / **bark** (gated / no usable ONNX). Never mislabel a substitute as the blocked family.
 - **Version-pin escape hatch:** a model needing a transformers.js class newer than the shared 3.7.5
   (e.g. SAM2 needs 4.2.0) may pin the newer version LOCALLY in its own `worker.js` only — never bump
   shared `lib/webai.js`. model-cache is version-agnostic so auto-init still works. Precedent:
@@ -196,34 +197,37 @@ built demo, prefer the smallest patch, and run the gate before every push.**
 
 ## 9. Critique → immutable conformance → goal lifecycle (per built demo)
 
-A WEB-AI-domain analog of chrome-platform-showcase's lifecycle (NOT a copy of its Chrome assertions).
-Order per demo: **coverage/build → critique → immutable conformance → validation → goal-setting.** All
-ADDITIVE — it never rewrites a page or churns a URL (invariant 13 still holds). Run critique +
-conformance before every push.
+A WEB-AI-domain analog of chrome-platform-showcase's lifecycle (NOT a copy of its Chrome
+assertions). Order per demo: **coverage/build → critique → immutable conformance → validation →
+goal-setting.** All ADDITIVE — it never rewrites a page or churns a URL (invariant 13 still holds).
+Run critique + conformance before every push.
 
 - **Critique** — `models/<slug>/_questions.json` (versioned, mutable; schema
-  `schemas/critique.schema.json`). Rubric dimensions: real-inference, io-shape (expected output shape +
-  semantic sanity), runtime-config (backend/model-id/quant), cache-init (auto-init-on-cached), states
-  (progress/error/retry/offline), controls (every visible control), no-fake-output, accessibility,
-  responsive (mobile+desktop), performance (INP). Each rubric entry keeps **REAL retained evidence**
-  (screenshot path / console excerpt / latency / output sample). Also `guidanceConsulted[]` — empty on
-  a frontend critique = INCOMPLETE (the gate fails it) — `openQuestions`, and `followUpGoals`.
+  `schemas/critique.schema.json`). Rubric dimensions: real-inference, io-shape (expected output
+  shape + semantic sanity), runtime-config (backend/model-id/quant), cache-init
+  (auto-init-on-cached), states (progress/error/retry/offline), controls (every visible control),
+  no-fake-output, accessibility, responsive (mobile+desktop), performance (INP). Each rubric entry
+  keeps **REAL retained evidence** (screenshot path / console excerpt / latency / output sample).
+  Also `guidanceConsulted[]` — empty on a frontend critique = INCOMPLETE (the gate fails it) —
+  `openQuestions`, and `followUpGoals`.
 - **Immutable conformance** — `models/<slug>/conformance.json` (schema
   `schemas/conformance.schema.json`). Assertions are DERIVED from real `models.json` metadata + the
   per-task templates in `scripts/conformance-lib.mjs` (task → expected output shape/semantic check;
   runtime/backend/model-id/quant; auto-init-on-cached; no-fake-output; a11y; mobile+desktop
   deviceClass; guidance build-process). **Immutable = never delete/weaken/regenerate an assertion to
-  go green — fix the DEMO.** `suiteHash` = sha256 of the normalized assertions; the gate recomputes it
-  and diffs against `origin/main`. Adding assertions is always allowed. Generate suites for NEW built
-  models with `node scripts/gen-conformance.mjs` (it never overwrites an existing suite; use `--rehash
+  go green — fix the DEMO.** `suiteHash` = sha256 of the normalized assertions; the gate recomputes
+  it and diffs against `origin/main`. Adding assertions is always allowed. Generate suites for NEW
+  built models with `node scripts/gen-conformance.mjs` (it never overwrites an existing suite; use
+  `--rehash
   <slug>` after hand-ADDING an assertion). Record any exceptional removal in
   `conformance-migrations.json`.
-- **Validation** — `node scripts/conformance.mjs --slug <slug>` (or `--all`, `--limit N`). Deterministic,
-  headless-Chrome-backed (fresh profile ⇒ cache-absent ⇒ **download-free**; it NEVER auto-downloads an
-  absent large model to force a pass). Emits **tested / total · pass / fail / blocked** (+ manual =
-  manual-evidenced screenshot awaiting an agent verdict). `blocked` = the device/feature is GENUINELY
-  unavailable (a WebGPU-only model on a no-GPU runner shows its honest needs-WebGPU state) — explicit,
-  never a pass. Rollup: `reports/conformance/index.html` + `results.json`.
+- **Validation** — `node scripts/conformance.mjs --slug <slug>` (or `--all`, `--limit N`).
+  Deterministic, headless-Chrome-backed (fresh profile ⇒ cache-absent ⇒ **download-free**; it NEVER
+  auto-downloads an absent large model to force a pass). Emits **tested / total · pass / fail /
+  blocked** (+ manual = manual-evidenced screenshot awaiting an agent verdict). `blocked` = the
+  device/feature is GENUINELY unavailable (a WebGPU-only model on a no-GPU runner shows its honest
+  needs-WebGPU state) — explicit, never a pass. Rollup: `reports/conformance/index.html` +
+  `results.json`.
 - **Goal-setting** — `node scripts/goals.mjs` collects critique `followUpGoals` into `goals.json`
   (schema `schemas/goals.schema.json`): an ADDITIVE backlog to pick the next NEW demo or targeted
   in-place fix — never to replace a stable page.
@@ -244,29 +248,30 @@ targeted compatibility fixes — never a destructive rewrite, never a new slug t
 - **Validate a mobile+desktop MATRIX, not just "it loads."** Every autonomous build or fix must
   exercise the demo at, at minimum, one representative **narrow mobile** viewport (≈360×740, touch/
   pointer + DPR≈3) and one **desktop** viewport (≈1280×800, mouse + keyboard), driving every visible
-  control and state. Check, on each class: responsive layout with **no unintended horizontal overflow
-  or clipped controls/text**; legible font sizes; adequate **tap targets** (≈44px min); **focus order
-  + visible focus**; dialogs/popovers/menus open, position, dismiss, and trap focus correctly;
-  orientation, **dynamic viewport** (dvh/svh, not 100vh traps) and **safe-area** insets where
-  relevant; loading / progress / error / **retry** states; **zero console errors**; **no failed
-  network requests**; and honest capability handling.
+  control and state. Check, on each class: responsive layout with **no unintended horizontal
+  overflow or clipped controls/text**; legible font sizes; adequate **tap targets** (≈44px min);
+  **focus order
+  - visible focus**; dialogs/popovers/menus open, position, dismiss, and trap focus correctly;
+    orientation, **dynamic viewport** (dvh/svh, not 100vh traps) and **safe-area** insets where
+    relevant; loading / progress / error / **retry** states; **zero console errors**; **no failed
+    network requests**; and honest capability handling.
 - **Web AI — respect mobile memory/download/storage/backend limits.** Account for constrained
-  devices. Do **NOT** auto-download an absent large model just to make a test pass; an already-local,
-  current, validated model still auto-initialises per the existing auto-init rule. When a device
-  can't run a model, degrade honestly (labelled needs-WebGPU / needs-more-memory / too-large-for-this-
-  device) with the requirements — never a blank panel or a faked result.
+  devices. Do **NOT** auto-download an absent large model just to make a test pass; an
+  already-local, current, validated model still auto-initialises per the existing auto-init rule.
+  When a device can't run a model, degrade honestly (labelled needs-WebGPU / needs-more-memory /
+  too-large-for-this- device) with the requirements — never a blank panel or a faked result.
 - **A single-class outcome needs EVIDENCE.** A desktop-only or mobile-only demo is allowed ONLY with
   direct evidence that the API, hardware capability, browser runtime, or model requirement genuinely
   makes the other class unavailable — never because the layout or interaction was left unfinished.
   Then: preserve the stable URL; show a useful, accessible, explicit **unsupported/degraded
-  explanation** (requirements + a fallback/alternative where possible); NEVER blank UI, faked output,
-  or a hidden/disabled-without-explanation control. Record the **unsupported class + evidence** in the
-  catalogue/manifest.
-- **Coverage is reported and gated.** Track exact **mobile/desktop tested-vs-total** coverage.
-  A build/fix action's completion FAILS when a device class the demo is supposed to support is left
+  explanation** (requirements + a fallback/alternative where possible); NEVER blank UI, faked
+  output, or a hidden/disabled-without-explanation control. Record the **unsupported class +
+  evidence** in the catalogue/manifest.
+- **Coverage is reported and gated.** Track exact **mobile/desktop tested-vs-total** coverage. A
+  build/fix action's completion FAILS when a device class the demo is supposed to support is left
   untested or is broken. The route gate additionally FAILS if any demo is recorded broken on a class
-  it claims to support. Apply this to existing demos during audits with targeted compatibility fixes,
-  wave by wave — the coverage number is the backlog burn-down, and it never regresses.
+  it claims to support. Apply this to existing demos during audits with targeted compatibility
+  fixes, wave by wave — the coverage number is the backlog burn-down, and it never regresses.
 
 **Run the responsive matrix before every push** with `node scripts/responsive-check.mjs` and record
 each touched demo's result in the `support` field on its built `models.json` entry (`ok` /
@@ -275,9 +280,9 @@ each touched demo's result in the `support` field on its built `models.json` ent
 ## 11. modern-web-guidance is mandatory for all frontend work
 
 Before ANY HTML, CSS, or client-side JavaScript implementation or modification — new pages AND
-targeted fixes — run/consult the **`modern-web-guidance`** skill FIRST for the specific UI/API topic,
-then apply its recommendations (or explicitly justify any exception with evidence). This is required
-whenever the change involves: layout, responsive mobile+desktop behavior, forms/controls,
+targeted fixes — run/consult the **`modern-web-guidance`** skill FIRST for the specific UI/API
+topic, then apply its recommendations (or explicitly justify any exception with evidence). This is
+required whenever the change involves: layout, responsive mobile+desktop behavior, forms/controls,
 dialogs/popovers/menus, loading/progress/error/retry states, animations/transitions, accessibility
 interactions, performance / Core Web Vitals, image/model loading + caching, modern CSS, or browser
 APIs.
@@ -286,8 +291,8 @@ APIs.
   the actual thing you're building/fixing (e.g. "responsive control panel without horizontal
   overflow", "accessible popover dismissal", "stream progress without INP regressions"), retain the
   relevant recommendation ids + evidence, and apply them — or record a justified exception.
-- **Canonical source, no stale fork.** Invoke the canonical skill; if the repo needs a scripted call,
-  use the published package (`npx -y modern-web-guidance@latest search "<query>"` /
+- **Canonical source, no stale fork.** Invoke the canonical skill; if the repo needs a scripted
+  call, use the published package (`npx -y modern-web-guidance@latest search "<query>"` /
   `retrieve "<id>"`) rather than copying guide text into the repo. Record the skill **source +
   version / update path** in the repo (so routines stay current) — do NOT vendor a stale copy.
 - **Process validation — missing guidance is an INCOMPLETE build/critique, not a pass.** Every
@@ -305,5 +310,5 @@ APIs.
   shell/design system first, then apply additive or narrowly-scoped improvements backed by
   mobile+desktop browser evidence.
 
-Source/version + update path recorded in `MODERN_WEB_GUIDANCE.md` (canonical skill + scripted fallback
-`npx -y modern-web-guidance@latest`; no vendored copies).
+Source/version + update path recorded in `MODERN_WEB_GUIDANCE.md` (canonical skill + scripted
+fallback `npx -y modern-web-guidance@latest`; no vendored copies).
