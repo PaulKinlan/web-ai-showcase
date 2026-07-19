@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>BGE Wild — STS gauge, paraphrase mining, odd-one-out · Web AI Showcase</title>
+    <meta name="description" content="Playful BGE demos: an STS 'how similar are these two?' gauge on a 0–5 scale, paraphrase mining that pulls every matching pair out of a pile, and odd-one-out detection. In your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🔎</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">bge-small-en-v1.5</a></p>
+
+    <header>
+      <p class="eyebrow">use case · wild</p>
+      <h1>Wild: STS gauge, paraphrase mining &amp; odd-one-out</h1>
+      <p class="lede">
+        Three things that only feel possible once a retrieval embedder runs in a tab. Rate how similar two
+        sentences are on the familiar <strong>0–5 STS scale</strong>. <strong>Mine paraphrases</strong> —
+        drop in a pile of lines and pull out every matching pair. And spot the <strong>odd one out</strong> —
+        the line that doesn't belong with the rest.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+
+      <h3 style="margin-top:.8rem">1 · STS gauge — how similar, 0 to 5?</h3>
+      <p class="muted" style="font-size:.85rem">Semantic Textual Similarity benchmarks rate pairs 0 (unrelated)
+        to 5 (identical meaning). We map BGE's cosine onto that scale so the number feels human.</p>
+      <div class="grid-2" style="margin-top:.4rem">
+        <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">
+          Sentence A
+          <textarea id="a" rows="2">A man is playing a guitar on stage.</textarea>
+        </label>
+        <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">
+          Sentence B
+          <textarea id="b" rows="2">A musician is performing with a guitar in front of a crowd.</textarea>
+        </label>
+      </div>
+      <button id="stsBtn" type="button" disabled style="margin-top:.5rem">Rate similarity</button>
+      <p class="status" id="stsStatus" role="status" aria-live="polite" hidden></p>
+      <div id="stsOut" hidden style="margin-top:.6rem">
+        <div style="font-family:var(--font-mono);font-size:2rem"><b id="stsScore">–</b> <span class="muted" style="font-size:1rem">/ 5</span></div>
+        <p id="stsVerdict" style="margin:.2rem 0"></p>
+        <div class="result-bar" style="max-inline-size:420px"><div class="result-fill" id="stsFill" style="inline-size:0%"></div></div>
+        <p class="muted" style="font-size:.78rem;font-family:var(--font-mono)" id="stsCos"></p>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h3>2 · Paraphrase mining</h3>
+      <p class="muted" style="font-size:.85rem">Every pair whose cosine clears the threshold, strongest first —
+        how you'd find duplicate FAQ entries, restated requirements, or repeated feedback across a pile.</p>
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">
+        Lines (one per line)
+        <textarea id="pile" rows="8">The delivery arrived two days late.
+My package showed up 48 hours after the promised date.
+I'd like to return an item that doesn't fit.
+Can I send back something that's the wrong size?
+The checkout button doesn't work on mobile.
+Great service, very fast shipping!
+On my phone, tapping "pay now" does nothing.</textarea>
+      </label>
+      <label style="display:flex;gap:.6rem;align-items:center;font-size:.82rem;margin:.4rem 0">
+        Match threshold
+        <input type="range" id="pThresh" min="0.6" max="0.95" step="0.01" value="0.8" style="flex:1" />
+        <b id="pThreshVal" style="font-family:var(--font-mono)">0.80</b>
+      </label>
+      <button id="mineBtn" type="button" disabled>Mine paraphrases</button>
+      <div id="mineOut" style="margin-top:.6rem" aria-live="polite"></div>
+    </section>
+
+    <section class="panel">
+      <h3>3 · Odd one out</h3>
+      <p class="muted" style="font-size:.85rem">Which line least belongs? Each item's average similarity to the
+        others is computed; the lowest is the outlier.</p>
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">
+        Items (one per line)
+        <textarea id="odd" rows="6">Golden retriever
+Labrador
+Poodle
+Beagle
+Photosynthesis
+Bulldog</textarea>
+      </label>
+      <button id="oddBtn" type="button" disabled style="margin-top:.4rem">Find the odd one out</button>
+      <div id="oddOut" style="margin-top:.6rem" aria-live="polite"></div>
+    </section>
+
+    <p class="crumbs"><a href="../practical/">← Practical</a> · <a href="../">Back to bge-small-en-v1.5</a> · Next: <a href="../multi-model/">Multi-model →</a></p>
+
+    <script type="module">
+      import { EmbedEngine, cosine, pairsAbove, escapeHTML, BGE_CSS } from "../sim.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = BGE_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new EmbedEngine();
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/bge-small-en-v1.5", runtime: "transformers.js", dtype: "q8", sizeMB: 34, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { for (const b of ["stsBtn", "mineBtn", "oddBtn"]) $(b).disabled = false; },
+      });
+
+      // 1 · STS gauge — map cosine (roughly 0.3..0.98 for BGE) onto 0..5.
+      $("stsBtn").addEventListener("click", async () => {
+        const a = $("a").value.trim(), b = $("b").value.trim();
+        $("stsStatus").hidden = false;
+        if (!a || !b) { $("stsStatus").textContent = "Fill in both."; $("stsStatus").classList.add("err"); return; }
+        $("stsStatus").classList.remove("err"); $("stsBtn").disabled = true; $("stsStatus").textContent = "Rating…";
+        try {
+          const r = await engine.embed([a, b]);
+          const cos = cosine(r.embeddings[0], r.embeddings[1]);
+          const sts = Math.max(0, Math.min(5, (cos - 0.3) / (0.95 - 0.3) * 5));
+          $("stsOut").hidden = false;
+          $("stsScore").textContent = sts.toFixed(1);
+          $("stsFill").style.inlineSize = (sts / 5 * 100).toFixed(0) + "%";
+          $("stsVerdict").textContent = sts > 4 ? "Essentially the same meaning."
+            : sts > 3 ? "Very similar — minor differences." : sts > 2 ? "Roughly related."
+            : sts > 1 ? "Loosely connected." : "Different topics.";
+          $("stsCos").textContent = `cosine ${cos.toFixed(4)} · ${r.ms} ms · ${r.device.toUpperCase()}`;
+          $("stsStatus").textContent = "Done."; $("stsStatus").classList.add("ok");
+        } catch (err) { $("stsStatus").textContent = "Failed: " + err.message; $("stsStatus").classList.add("err"); }
+        finally { $("stsBtn").disabled = false; }
+      });
+
+      // 2 · Paraphrase mining.
+      $("pThresh").addEventListener("input", () => { $("pThreshVal").textContent = (+$("pThresh").value).toFixed(2); });
+      let pileVecs = null, pileItems = null;
+      $("mineBtn").addEventListener("click", async () => {
+        const items = [...new Set($("pile").value.split(/\n/).map((s) => s.trim()).filter(Boolean))];
+        if (items.length < 2) return;
+        $("mineBtn").disabled = true;
+        try {
+          if (pileItems?.join("\n") !== items.join("\n")) {
+            const r = await engine.embed(items);
+            pileVecs = r.embeddings; pileItems = items;
+          }
+          const pairs = pairsAbove(pileVecs, +$("pThresh").value);
+          $("mineOut").innerHTML = pairs.length
+            ? `<div class="sent-list">${pairs.map((p) => `<div class="result-row"><div class="result-head"><span>${escapeHTML(pileItems[p.i])} <span class="muted">↔</span> ${escapeHTML(pileItems[p.j])}</span><span class="result-score">${p.score.toFixed(3)}</span></div><div class="result-bar"><div class="result-fill" style="inline-size:${(Math.max(0, p.score) * 100).toFixed(0)}%"></div></div></div>`).join("")}</div>`
+            : `<p class="muted">No pairs above ${(+$("pThresh").value).toFixed(2)}. Lower the threshold.</p>`;
+        } finally { $("mineBtn").disabled = false; }
+      });
+
+      // 3 · Odd one out — lowest average similarity to the rest.
+      $("oddBtn").addEventListener("click", async () => {
+        const items = [...new Set($("odd").value.split(/\n/).map((s) => s.trim()).filter(Boolean))];
+        if (items.length < 3) return;
+        $("oddBtn").disabled = true;
+        try {
+          const r = await engine.embed(items);
+          const avg = items.map((_, i) => {
+            let s = 0; for (let j = 0; j < items.length; j++) if (i !== j) s += cosine(r.embeddings[i], r.embeddings[j]);
+            return s / (items.length - 1);
+          });
+          const min = Math.min(...avg), oddIdx = avg.indexOf(min);
+          $("oddOut").innerHTML = `<div class="sent-list">${items.map((t, i) => `<div class="result-row" style="border-inline-start:4px solid ${i === oddIdx ? "var(--bad)" : "var(--border)"}"><div class="result-head"><span>${escapeHTML(t)}${i === oddIdx ? ' <span class="tone tone-neg">odd one out</span>' : ""}</span><span class="result-score">avg ${avg[i].toFixed(3)}</span></div></div>`).join("")}</div>`;
+        } finally { $("oddBtn").disabled = false; }
+      });
+    </script>
+  </body>
+</html>

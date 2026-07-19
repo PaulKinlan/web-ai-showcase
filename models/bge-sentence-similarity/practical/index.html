@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>BGE Practical — semantic search & near-duplicate clustering · Web AI Showcase</title>
+    <meta name="description" content="Two things you'd actually ship with BGE: semantic search over a pasted corpus (with the query instruction) that beats keyword search, and near-duplicate clustering to collapse 'same thing, different words'. In your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🔎</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">bge-small-en-v1.5</a></p>
+
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Practical: semantic search &amp; near-duplicate clustering</h1>
+      <p class="lede">
+        The two jobs teams reach for embeddings to do. <strong>Search</strong> a corpus by meaning — with
+        BGE's query instruction turned on for short-query retrieval — and watch it rank synonyms and
+        paraphrases that keyword search would miss. Then <strong>cluster</strong> the same corpus to collapse
+        near-duplicates: "same thing, different words" support tickets, notes, or reviews.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.8rem">
+        Corpus (one item per line)
+        <textarea id="corpus" rows="9">Reset my password because I'm locked out of my account.
+How do I change my billing address?
+The app crashes every time I open the reports tab.
+I can't log in — it keeps saying my credentials are wrong.
+Where can I download last month's invoice?
+The reports page freezes and then closes on launch.
+Update the credit card on file for my subscription.
+My account is inaccessible after too many sign-in attempts.
+The dashboard is fast and the new charts look great.</textarea>
+      </label>
+      <button id="embedBtn" type="button" disabled style="margin-top:.5rem">Embed corpus</button>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span><span>latency <b id="rMs">–</b></span>
+        <span>items <b id="rN">–</b></span><span>dims <b id="rDim">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" id="searchPanel" hidden>
+      <h3>1 · Semantic search</h3>
+      <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:end">
+        <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;flex:1;min-inline-size:240px">
+          Query
+          <input type="text" id="query" value="I forgot my login details" style="padding:.4rem;font:inherit" />
+        </label>
+        <label style="display:flex;gap:.4rem;align-items:center;font-size:.82rem;padding-block:.5rem">
+          <input type="checkbox" id="usePrefix" checked /> query instruction
+        </label>
+        <button id="searchBtn" type="button">Search</button>
+      </div>
+      <div id="searchOut" style="margin-top:.6rem" aria-live="polite"></div>
+    </section>
+
+    <section class="panel" id="clusterPanel" hidden>
+      <h3>2 · Near-duplicate clustering</h3>
+      <p class="muted" style="font-size:.85rem">Drag the threshold: pairs above it are treated as the same
+        thing. Higher = stricter (only near-identical merge); lower = looser (broader topics merge).</p>
+      <label style="display:flex;gap:.6rem;align-items:center;font-size:.82rem;margin:.4rem 0">
+        Similarity threshold
+        <input type="range" id="thresh" min="0.5" max="0.95" step="0.01" value="0.75" style="flex:1" />
+        <b id="threshVal" style="font-family:var(--font-mono)">0.75</b>
+      </label>
+      <div id="clusterOut" aria-live="polite"></div>
+    </section>
+
+    <p class="crumbs"><a href="../basics/">← Basics</a> · <a href="../">Back to bge-small-en-v1.5</a> · Next: <a href="../wild/">Wild →</a></p>
+
+    <script type="module">
+      import { EmbedEngine, asQuery, rank, cosine, clusterByThreshold, renderRanked, escapeHTML, BGE_CSS } from "../sim.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = BGE_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new EmbedEngine();
+      let items = [], vecs = [];
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/bge-small-en-v1.5", runtime: "transformers.js", dtype: "q8", sizeMB: 34, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("embedBtn").disabled = false; },
+      });
+
+      $("embedBtn").addEventListener("click", async () => {
+        items = [...new Set($("corpus").value.split(/\n/).map((s) => s.trim()).filter(Boolean))];
+        if (items.length < 2) { $("status").hidden = false; $("status").textContent = "Give at least two lines."; $("status").classList.add("err"); return; }
+        $("status").hidden = false; $("status").classList.remove("err"); $("status").textContent = "Embedding…"; $("embedBtn").disabled = true;
+        try {
+          const r = await engine.embed(items);
+          vecs = r.embeddings;
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase(); $("rMs").textContent = r.ms + " ms";
+          $("rN").textContent = items.length; $("rDim").textContent = r.dim;
+          $("searchPanel").hidden = false; $("clusterPanel").hidden = false;
+          renderClusters();
+          $("status").textContent = "Embedded — search or cluster below."; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("embedBtn").disabled = false; }
+      });
+
+      $("searchBtn").addEventListener("click", doSearch);
+      $("query").addEventListener("keydown", (e) => { if (e.key === "Enter") doSearch(); });
+      async function doSearch() {
+        const q = $("query").value.trim();
+        if (!q || !vecs.length) return;
+        $("searchBtn").disabled = true;
+        try {
+          const text = $("usePrefix").checked ? asQuery(q) : q;
+          const r = await engine.embed([text]);
+          const ranked = rank(r.embeddings[0], vecs).map((x) => ({ text: items[x.index], score: x.score }));
+          renderRanked($("searchOut"), ranked, { max: 6 });
+        } finally { $("searchBtn").disabled = false; }
+      }
+
+      $("thresh").addEventListener("input", () => { $("threshVal").textContent = (+$("thresh").value).toFixed(2); renderClusters(); });
+      function renderClusters() {
+        if (!vecs.length) return;
+        const t = +$("thresh").value;
+        const groups = clusterByThreshold(vecs, t);
+        const byGroup = new Map();
+        groups.forEach((g, i) => { if (!byGroup.has(g)) byGroup.set(g, []); byGroup.get(g).push(i); });
+        const clusters = [...byGroup.values()].sort((a, b) => b.length - a.length);
+        const html = clusters.map((idxs, gi) => {
+          const dup = idxs.length > 1;
+          const rows = idxs.map((i) => `<li>${escapeHTML(items[i])}</li>`).join("");
+          return `<div class="result-row" style="border-inline-start:4px solid ${dup ? "var(--accent)" : "var(--border)"}">
+            <div class="result-head"><span><strong>Cluster ${gi + 1}</strong>${dup ? ` <span class="tone">${idxs.length} near-duplicates</span>` : " <span class=\"tone\">unique</span>"}</span></div>
+            <ul style="margin:.3rem 0 0;padding-inline-start:1.1rem">${rows}</ul></div>`;
+        }).join("");
+        const dupCount = clusters.filter((c) => c.length > 1).length;
+        $("clusterOut").innerHTML = `<p class="muted" style="font-size:.8rem">${clusters.length} clusters · ${dupCount} contain near-duplicates</p><div class="sent-list">${html}</div>`;
+      }
+    </script>
+  </body>
+</html>

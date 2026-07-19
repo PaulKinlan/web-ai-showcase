@@ -1,0 +1,358 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>bge-small-en-v1.5 — retrieval-grade sentence similarity in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Rank sentences by meaning with BAAI's bge-small-en-v1.5 — a stronger retrieval embedder than MiniLM. CLS-pooled 384-d vectors, a live cosine ranking, and the query-instruction trick that lifts asymmetric search. Real embeddings, no server."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🔎</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">sentence-similarity · text · WASM · ~34 MB</p>
+      <h1>bge-small-en-v1.5 — rank text by <em>meaning</em>, retrieval-grade</h1>
+      <p class="lede">
+        A stronger retrieval embedder than MiniLM: BAAI's BGE turns each sentence into a 384-number vector
+        tuned for <strong>search and similarity</strong>. Give it a query and a handful of candidates and it
+        ranks them by cosine similarity — and it knows a trick MiniLM doesn't: a <em>query instruction</em>
+        that sharpens short-query-to-passage search. Everything runs locally; nothing leaves your device.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/Xenova/bge-small-en-v1.5" target="_blank" rel="noopener">Xenova/bge-small-en-v1.5</a> (ONNX build of <a href="https://huggingface.co/BAAI/bge-small-en-v1.5" target="_blank" rel="noopener">BAAI/bge-small-en-v1.5</a>)</td></tr>
+          <tr><th>Task / pipeline</th><td>sentence-similarity, via <code>feature-extraction</code></td></tr>
+          <tr><th>Architecture</th><td>BERT-style encoder (12 layers, 33M params) → 384-dimensional sentence embedding</td></tr>
+          <tr><th>Pooling</th><td><strong>CLS pooling</strong> (the [CLS] token vector — <em>not</em> mean pooling), then <strong>L2-normalize</strong></td></tr>
+          <tr><th>Query instruction</th><td><code>Represent this sentence for searching relevant passages:</code> — prepended to the <em>query</em> for asymmetric search</td></tr>
+          <tr><th>Quantization</th><td>q8 (8-bit) ONNX</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (runs anywhere; no WebGPU needed)</td></tr>
+          <tr><th>Download</th><td>~34 MB, cached after first load</td></tr>
+          <tr><th>License</th><td>MIT (BAAI FlagEmbedding)</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it — semantic ranking</h3>
+      <p class="muted">Type a query and one candidate per line. BGE embeds all of them and ranks the candidates
+        by cosine similarity to the query. Toggle the <strong>query instruction</strong> to see BGE's
+        asymmetric-search trick: it's prepended to the query only, never to the candidates.</p>
+
+      <div id="model-loader"></div>
+
+      <div class="grid-2" style="margin-top:.6rem">
+        <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">
+          Query
+          <textarea id="query" rows="2">How do I keep my laptop battery healthy?</textarea>
+        </label>
+        <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">
+          Candidates (one per line)
+          <textarea id="cands" rows="7">Avoid leaving your laptop plugged in at 100% all the time.
+Battery longevity improves if you keep charge between 20 and 80 percent.
+The best hiking trails in the Lake District.
+A recipe for slow-cooked beef stew.
+Heat is the main enemy of lithium-ion cells, so keep it cool.
+My cat refuses to eat the new food.</textarea>
+        </label>
+      </div>
+
+      <div style="margin:.5rem 0;display:flex;gap:.8rem;flex-wrap:wrap;align-items:center">
+        <label style="display:flex;gap:.4rem;align-items:center;font-size:.82rem">
+          <input type="checkbox" id="usePrefix" checked />
+          Prepend the query instruction (asymmetric search)
+        </label>
+        <button id="run" type="button" disabled>Rank candidates</button>
+        <button id="reset" type="button" class="secondary">Reset example</button>
+      </div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <div id="rankedOut" hidden style="margin-top:.6rem">
+        <div id="ranked" aria-live="polite"></div>
+        <div class="readout">
+          <span>backend <b id="rBackend">–</b></span>
+          <span>latency <b id="rMs">–</b></span>
+          <span>candidates <b id="rN">–</b></span>
+          <span>dims <b id="rDim">–</b></span>
+          <span>query instruction <b id="rPrefix">–</b></span>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside — the vector, and the query-instruction effect</h3>
+      <p class="muted">
+        BGE emits a 384-number vector for the whole sentence by taking the transformer's first
+        <strong>[CLS]</strong> token (not an average of all tokens like MiniLM), then L2-normalizing it to
+        unit length. Below left: the real vector for a chosen sentence. Below right: the same ranking run
+        <em>with</em> and <em>without</em> the query instruction — proof the prefix actually moves ranks.
+      </p>
+      <div class="grid-2">
+        <div>
+          <h3 style="margin-top:.4rem">The 384-d vector</h3>
+          <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Rank some sentences to inspect a vector.</div>
+          <div id="insideWrap" hidden>
+            <label style="font-size:.82rem;display:flex;gap:.4rem;align-items:center;flex-wrap:wrap">
+              Inspect
+              <select id="pick"></select>
+            </label>
+            <div class="readout">
+              <span>dimensions <b>384</b></span>
+              <span>pre-norm ‖v‖ <b id="iNorm">–</b></span>
+              <span>post-norm ‖v‖ <b>1.000</b></span>
+            </div>
+            <p class="muted" style="font-size:.78rem;margin:.3rem 0">First 96 of 384 dimensions (blue = positive, orange = negative, brighter = larger):</p>
+            <div class="vec-strip" id="vecStrip"></div>
+            <p class="muted" style="font-size:.78rem;font-family:var(--font-mono);margin-top:.5rem;word-break:break-all" id="vecHead"></p>
+          </div>
+        </div>
+        <div>
+          <h3 style="margin-top:.4rem">Prefix effect: with vs without</h3>
+          <div id="prefixEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Rank sentences to compare rankings.</div>
+          <div id="prefixWrap" hidden>
+            <table class="sim-matrix">
+              <thead><tr><th scope="col">candidate</th><th scope="col">with</th><th scope="col">without</th><th scope="col">Δ</th></tr></thead>
+              <tbody id="prefixBody"></tbody>
+            </table>
+            <p class="muted" style="font-size:.78rem;margin-top:.4rem">Cosine to the query, ranked, both ways.
+              For short-query → passage search the instruction usually lifts the truly relevant lines and
+              widens the gap to the distractors.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        Embeddings are the workhorse behind search, recommendations, dedup, clustering, and RAG. BGE is a
+        <em>retrieval-tuned</em> embedder — on the MTEB benchmark it out-ranks general models like MiniLM for
+        finding the right passage — yet at 34 MB it still runs in a tab. So you can ship meaning-based search
+        with no vector database, no API bill, and no user text leaving the device.
+      </p>
+      <ul>
+        <li><strong>Semantic search</strong> — rank a corpus by meaning, beating keyword search on synonyms and paraphrases, entirely client-side.</li>
+        <li><strong>Deduplication &amp; clustering</strong> — collapse "same thing, different words" tickets, notes, or reviews with no labels.</li>
+        <li><strong>Retrieve-then-rerank</strong> — BGE fetches a shortlist fast; a <a href="/web-ai-showcase/models/ms-marco-reranker/">cross-encoder reranker</a> then reorders it precisely.</li>
+        <li><strong>Private RAG</strong> — pull the right snippet to feed a local LLM, all on-device.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Pair similarity felt as one number, plus a demo of why meaning beats keyword overlap.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Semantic search that beats keywords, and near-duplicate clustering over a pasted corpus.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">An STS "how similar, 0–5?" gauge, paraphrase mining across a pile, and odd-one-out.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">BGE retrieves a shortlist, then hands it to the MS-MARCO cross-encoder to rerank.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>Feature-extraction with <strong>CLS pooling</strong> is the whole recipe — plus the query instruction for asymmetric search:</p>
+      <pre><code>import { pipeline } from "@huggingface/transformers";
+
+const extract = await pipeline(
+  "feature-extraction",
+  "Xenova/bge-small-en-v1.5",
+); // downloads + caches ~34 MB once
+
+// BGE v1.5 is trained with CLS pooling (NOT mean pooling):
+const embed = (texts) =&gt; extract(texts, { pooling: "cls", normalize: true });
+
+// Asymmetric search: prefix the QUERY only, leave passages bare.
+const INSTR = "Represent this sentence for searching relevant passages:";
+const q = await embed([`${INSTR} how to keep a battery healthy`]);
+const passages = await embed([
+  "Keep lithium-ion charge between 20 and 80 percent.",
+  "The best hiking trails in the Lake District.",
+]);
+
+// unit vectors → cosine similarity is just the dot product:
+const score = (a, b) =&gt; a.reduce((s, x, i) =&gt; s + x * b[i], 0);
+const q0 = q.tolist()[0], ps = passages.tolist();
+ps.map((p) =&gt; score(q0, p)); // → [0.71, 0.28] — battery line wins</code></pre>
+      <p class="muted">
+        This page asks the worker for the <em>un</em>-normalized CLS vectors so "See inside" can show the real
+        pre-normalization magnitude, then normalizes in JS. Inference runs in a Web Worker so ranking never
+        janks the page. Use the instruction for short-query search; for symmetric similarity (STS, dedup,
+        paraphrase) prefix nothing on either side.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/BAAI/bge-small-en-v1.5" target="_blank" rel="noopener">Model card — BAAI/bge-small-en-v1.5</a></li>
+        <li><a href="https://huggingface.co/Xenova/bge-small-en-v1.5" target="_blank" rel="noopener">ONNX build — Xenova/bge-small-en-v1.5</a></li>
+        <li><a href="https://github.com/FlagOpen/FlagEmbedding" target="_blank" rel="noopener">FlagEmbedding — the BGE training recipe &amp; usage</a></li>
+        <li><a href="https://huggingface.co/spaces/mteb/leaderboard" target="_blank" rel="noopener">MTEB leaderboard — how BGE ranks on retrieval</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { EmbedEngine, asQuery, cosine, rank, BGE_CSS } from "./sim.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = BGE_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new EmbedEngine();
+      const DEFAULT_Q = $("query").value;
+      const DEFAULT_C = $("cands").value;
+      let last = null; // { cands, vectors, norms, dim }
+
+      $("reset").addEventListener("click", () => {
+        $("query").value = DEFAULT_Q;
+        $("cands").value = DEFAULT_C;
+      });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: {
+          modelId: "Xenova/bge-small-en-v1.5",
+          runtime: "transformers.js",
+          dtype: "q8",
+          sizeMB: 34,
+          requiresWebGPU: false,
+        },
+        load: async (onProgress) => {
+          await engine.load(onProgress);
+          return engine;
+        },
+        onReady: () => {
+          $("run").disabled = false;
+        },
+      });
+
+      $("run").addEventListener("click", run);
+      async function run() {
+        const query = $("query").value.trim();
+        const cands = [...new Set($("cands").value.split(/\n/).map((s) => s.trim()).filter(Boolean))];
+        if (!query || cands.length < 2) {
+          $("runStatus").hidden = false;
+          $("runStatus").textContent = "Give a query and at least two candidates.";
+          $("runStatus").classList.add("err");
+          return;
+        }
+        $("runStatus").hidden = false;
+        $("runStatus").classList.remove("err");
+        $("runStatus").textContent = "Embedding…";
+        $("run").disabled = true;
+        try {
+          const usePrefix = $("usePrefix").checked;
+          // Embed candidates once, and the query BOTH ways so "See inside" can compare.
+          const r = await engine.embed([query, asQuery(query), ...cands]);
+          const [qPlain, qPrefixed, ...candVecs] = r.embeddings;
+          const qVec = usePrefix ? qPrefixed : qPlain;
+          const ranked = rank(qVec, candVecs).map((x) => ({ text: cands[x.index], score: x.score }));
+
+          const { renderRanked } = await import("./sim.js");
+          $("rankedOut").hidden = false;
+          renderRanked($("ranked"), ranked);
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = r.ms + " ms";
+          $("rN").textContent = cands.length;
+          $("rDim").textContent = r.dim;
+          $("rPrefix").textContent = usePrefix ? "ON" : "off";
+
+          last = { cands, candVecs, norms: r.norms.slice(2), dim: r.dim, qPlain, qPrefixed };
+          fillInside();
+          fillPrefixTable();
+          $("runStatus").textContent = "Done.";
+          $("runStatus").classList.add("ok");
+        } catch (err) {
+          $("runStatus").textContent = "Ranking failed: " + err.message;
+          $("runStatus").classList.add("err");
+        } finally {
+          $("run").disabled = false;
+        }
+      }
+
+      function fillInside() {
+        $("insideEmpty").hidden = true;
+        $("insideWrap").hidden = false;
+        $("pick").replaceChildren(...last.cands.map((t, i) => {
+          const o = document.createElement("option");
+          o.value = String(i);
+          o.textContent = `C${i + 1} — ${t.length > 36 ? t.slice(0, 35) + "…" : t}`;
+          return o;
+        }));
+        showVector(0);
+      }
+      $("pick").addEventListener("change", (e) => showVector(+e.target.value));
+      function showVector(i) {
+        if (!last) return;
+        const v = last.candVecs[i];
+        $("iNorm").textContent = last.norms[i].toFixed(3);
+        const maxAbs = Math.max(...v.map(Math.abs)) || 1;
+        $("vecStrip").replaceChildren(...v.slice(0, 96).map((val) => {
+          const cell = document.createElement("span");
+          cell.className = "vec-cell";
+          const t = Math.abs(val) / maxAbs;
+          const hue = val >= 0 ? "var(--accent)" : "var(--warn)";
+          cell.style.background = `color-mix(in srgb, ${hue} ${(t * 100).toFixed(0)}%, var(--bg-raised))`;
+          cell.title = val.toFixed(4);
+          return cell;
+        }));
+        $("vecHead").textContent = "[" + v.slice(0, 8).map((x) => x.toFixed(4)).join(", ") + ", … ] (384-d unit vector)";
+      }
+
+      function fillPrefixTable() {
+        $("prefixEmpty").hidden = true;
+        $("prefixWrap").hidden = false;
+        const withScores = last.cands.map((t, i) => ({ i, t, s: cosine(last.qPrefixed, last.candVecs[i]) }));
+        const withoutScores = last.cands.map((t, i) => ({ i, t, s: cosine(last.qPlain, last.candVecs[i]) }));
+        const rankOf = (arr) => {
+          const order = [...arr].sort((a, b) => b.s - a.s);
+          const m = new Map();
+          order.forEach((x, r) => m.set(x.i, r + 1));
+          return m;
+        };
+        const rWith = rankOf(withScores), rWithout = rankOf(withoutScores);
+        const body = $("prefixBody");
+        body.replaceChildren(...last.cands.map((t, i) => {
+          const tr = document.createElement("tr");
+          const c = document.createElement("th");
+          c.scope = "row";
+          c.style.textAlign = "left";
+          c.style.fontWeight = "400";
+          c.textContent = `C${i + 1}`;
+          c.title = t;
+          const w = document.createElement("td");
+          w.textContent = `${withScores[i].s.toFixed(2)} (#${rWith.get(i)})`;
+          w.style.background = `color-mix(in srgb, var(--accent) ${(Math.max(0, withScores[i].s) * 100).toFixed(0)}%, transparent)`;
+          const wo = document.createElement("td");
+          wo.textContent = `${withoutScores[i].s.toFixed(2)} (#${rWithout.get(i)})`;
+          wo.style.background = `color-mix(in srgb, var(--accent) ${(Math.max(0, withoutScores[i].s) * 100).toFixed(0)}%, transparent)`;
+          const d = document.createElement("td");
+          const delta = rWithout.get(i) - rWith.get(i);
+          d.textContent = delta > 0 ? `▲${delta}` : delta < 0 ? `▼${-delta}` : "–";
+          d.style.color = delta > 0 ? "var(--good)" : delta < 0 ? "var(--bad)" : "var(--muted)";
+          tr.append(c, w, wo, d);
+          return tr;
+        }));
+      }
+    </script>
+  </body>
+</html>
