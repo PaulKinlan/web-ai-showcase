@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sapiens Surface Normals — which way does every pixel face? · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run Sapiens surface-normal estimation locally via ONNX Runtime Web: give it one photo of a person and it predicts the 3D orientation of every pixel — an RGB normal map you can relight on-device. Distinct from depth: not how far, but which way each surface faces."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🧭</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">image-to-image · vision · WASM · ~444 MB</p>
+      <h1>Surface normals — which way does every pixel face?</h1>
+      <p class="lede">
+        Depth tells you <em>how far</em> a pixel is; a <strong>surface normal</strong> tells you
+        <em>which way it faces</em> — the little arrow sticking out of the surface in 3D. Sapiens predicts
+        one normal per pixel from a single photo, giving you the classic pastel <strong>normal map</strong>
+        that graphics engines use to relight, emboss, and fake geometry. It runs entirely on your device.
+      </p>
+    </header>
+
+    <section class="warn-box" role="note">
+      <strong>Heavy model, honest speed.</strong> This is a ~444 MB int8 ViT. On WebGPU it would be
+      seconds, but this demo ships the universal CPU (WASM) path — so the <em>first</em> estimate takes
+      roughly <strong>60–90 s</strong> in single-threaded WebAssembly. That is real, on-device inference,
+      not a canned result. Once the normal map is computed, relighting and inspection are instant (they
+      reuse the cached normals — no re-run).
+    </section>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/onnx-community/sapiens-normal-0.3b" target="_blank" rel="noopener">onnx-community/sapiens-normal-0.3b</a> — Sapiens human-centric ViT</td></tr>
+          <tr><th>Task</th><td><code>image-to-image</code> (dense per-pixel prediction) — run via raw ONNX Runtime Web</td></tr>
+          <tr><th>Runtime</th><td>onnxruntime-web 1.21 (transformers.js has no <code>sapiens</code> model class)</td></tr>
+          <tr><th>Input</th><td><code>pixel_values [1, 3, 1024, 768]</code> — ImageNet-normalized RGB</td></tr>
+          <tr><th>Output</th><td><code>predicted_normal [1, 3, 512, 384]</code> — a 3D unit vector per pixel (X,Y,Z in camera space)</td></tr>
+          <tr><th>Quantization</th><td>int8 (<code>model_quantized.onnx</code>)</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (single-threaded on GitHub Pages; no WebGPU needed)</td></tr>
+          <tr><th>Download</th><td>~444 MB, cached after first load</td></tr>
+          <tr><th>License</th><td>CC-BY-NC-4.0 (Sapiens, Meta) — non-commercial, attribution; weights loaded unmodified from the canonical onnx-community repo, not re-hosted</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers, OffscreenCanvas, Canvas — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Sapiens is trained on people, so it works best on a photo of a person. Pick a sample
+        or upload your own, then estimate. The pastel colours ARE the geometry: red encodes left/right,
+        green up/down, blue toward/away from the camera.</p>
+
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="sample-strip" id="samples" aria-label="Sample images (portrait is public-domain; faces are synthetic StyleGAN2)">
+        <img class="sample-thumb active" src="sample-portrait.jpg" data-src="sample-portrait.jpg" alt="Public-domain studio portrait of a seated woman" tabindex="0" role="button" />
+        <img class="sample-thumb" src="sample-face.jpg" data-src="sample-face.jpg" alt="Synthetic face portrait" tabindex="0" role="button" />
+        <img class="sample-thumb" src="sample-face2.jpg" data-src="sample-face2.jpg" alt="Another synthetic face portrait" tabindex="0" role="button" />
+      </div>
+      <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image">
+        <span id="dropText">Drop a photo of a person, or click to choose</span>
+        <input type="file" id="file" accept="image/*" hidden />
+      </div>
+      <div class="controls-row"><button id="run" type="button" disabled>Estimate surface normals</button></div>
+
+      <div class="canvas-grid">
+        <div class="canvas-card">
+          <h4>Input</h4>
+          <img class="preview-img" id="preview" src="sample-portrait.jpg" alt="Selected photo" />
+        </div>
+        <div class="canvas-card">
+          <h4>Surface normals (RGB-encoded)</h4>
+          <canvas class="viz-canvas pickable" id="normalCanvas" width="384" height="512" aria-label="Colour-encoded surface-normal map — hover or tap to read the 3D vector at a pixel"></canvas>
+        </div>
+      </div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+        <span>output <b id="rDims">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside</h3>
+      <p class="muted">The model outputs a <strong>3D unit vector per pixel</strong>, not a picture. The
+        colours are just those vectors mapped to RGB. The sphere below is the key — every direction a
+        surface can face, coloured the same way. Hover or tap the normal map to read the exact vector at
+        any pixel.</p>
+      <div class="legend-flex">
+        <canvas class="sphere-legend" id="sphere" width="120" height="120" aria-label="Normal-direction sphere legend: right is red, up is green, toward the camera is blue"></canvas>
+        <div class="axis-key">
+          <span class="rr">R = X</span> · surface faces <b>left ↔ right</b><br />
+          <span class="gg">G = Y</span> · surface faces <b>down ↕ up</b><br />
+          <span class="bb">B = Z</span> · surface faces <b>away ↔ toward you</b>
+        </div>
+      </div>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem;margin-top:.6rem">Estimate a normal map, then hover it to inspect vectors.</div>
+      <div id="insideWrap" hidden>
+        <table class="inside-table">
+          <tbody>
+            <tr><th>predicted_normal shape</th><td id="iDims">–</td></tr>
+            <tr><th>picked pixel normal (x, y, z)</th><td class="pick-vec" id="iPick">hover the map…</td></tr>
+            <tr><th>mean normal direction</th><td class="pick-vec" id="iMean">–</td></tr>
+            <tr><th>pixels predicted</th><td id="iPix">–</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        A per-pixel normal map is the single most useful ingredient for making a flat photo behave like a
+        3D surface — no mesh, no scan, no special hardware. Once you know which way every pixel faces,
+        client-side effects open up that depth alone can't do:
+      </p>
+      <ul>
+        <li><strong>Relighting</strong> — move a virtual light and the face lights up correctly, because shading is just the angle between the surface normal and the light (N·L).</li>
+        <li><strong>AR material & makeup try-on</strong> — normals tell you how light should bounce, so overlays sit on the surface instead of floating.</li>
+        <li><strong>Emboss / bump / detail enhancement</strong> — drive a bump-map look or sharpen surface detail directly from geometry.</li>
+        <li><strong>Depth + normals = 2.5D</strong> — combine "how far" with "which way" for occlusion-aware compositing and richer relighting.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">One photo in, a colour-encoded surface-normal map out — read orientation as colour.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Relighting studio — drag a light around and watch the face shade correctly from its normals (an AR-lighting concept).</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Three-point light rig — key, fill and rim lights in colour, all driven by the normal field.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">Normals + depth → 2.5D relight: shade by orientation, deepen by distance.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>transformers.js has no <code>sapiens</code> class, so we run the ONNX graph directly. It's a clean
+        image→image model — normalize in, unit-vector field out:</p>
+      <pre><code>import * as ort from "onnxruntime-web";
+
+const session = await ort.InferenceSession.create(sapiensBytes, { executionProviders: ["wasm"] });
+
+// image → [1,3,1024,768], ImageNet-normalized
+const input = new ort.Tensor("float32", preprocess(image), [1, 3, 1024, 768]);
+const { predicted_normal } = await session.run({ pixel_values: input });
+// predicted_normal → [1,3,512,384] raw XYZ vectors; L2-normalize per pixel → unit surface normals
+// RGB-encode with (n * 0.5 + 0.5) * 255 to get the classic pastel normal map</code></pre>
+      <p class="muted">Inference runs in a Web Worker, and the RGB normal-map composite is built there too
+        (OffscreenCanvas → transferred ImageBitmap), so the ~444 MB model never freezes the page. The
+        unit-normal field is transferred back so relighting and pixel-inspection run without re-inference.</p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/onnx-community/sapiens-normal-0.3b" target="_blank" rel="noopener">Model card — onnx-community/sapiens-normal-0.3b</a></li>
+        <li><a href="https://about.meta.com/realitylabs/codecavatars/sapiens/" target="_blank" rel="noopener">Sapiens — human-centric foundation models (Meta)</a></li>
+        <li><a href="https://arxiv.org/abs/2408.12569" target="_blank" rel="noopener">Paper — Sapiens: Foundation for Human Vision Models (arXiv:2408.12569)</a></li>
+        <li><a href="https://onnxruntime.ai/docs/tutorials/web/" target="_blank" rel="noopener">ONNX Runtime Web documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://onnxruntime.ai/docs/tutorials/web/" target="_blank" rel="noopener">ONNX Runtime Web</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { drawNormalBitmap, escapeHTML, NormalEngine, NORMAL_CSS, pickNormal, renderNormalSphere, toBitmap, urlToBitmap }
+        from "./normals.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style"); style.textContent = NORMAL_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new NormalEngine();
+      let currentBmp = null, lastResult = null;
+
+      renderNormalSphere($("sphere"));
+
+      async function useURL(src, isSample) {
+        currentBmp = await urlToBitmap(src);
+        $("preview").src = src;
+      }
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        await useURL(el.dataset.src, true);
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } });
+      }
+      pickSample($("samples").firstElementChild);
+
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) {
+        for (const t of $("samples").children) t.classList.remove("active");
+        currentBmp = await toBitmap(f);
+        $("preview").src = URL.createObjectURL(f);
+        $("dropText").textContent = f.name;
+      }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
+
+      const autoRun = new URLSearchParams(location.search).has("auto");
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/sapiens-normal-0.3b", runtime: "onnxruntime-web", dtype: "q8", sizeMB: 444, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: () => { $("run").disabled = false; if (autoRun) $("run").click(); },
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!currentBmp) { $("status").textContent = "Pick a photo first."; return; }
+        $("run").disabled = true; $("status").classList.remove("err", "ok");
+        $("status").textContent = "Estimating surface normals… (large model on CPU — this can take 60–90 s)";
+        try {
+          const r = await engine.estimate(await createImageBitmap(currentBmp));
+          lastResult = r;
+          if (r.bitmap) drawNormalBitmap($("normalCanvas"), r.bitmap);
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = r.ms + " ms";
+          $("rDims").textContent = `${r.width} × ${r.height}`;
+          $("insideEmpty").hidden = true; $("insideWrap").hidden = false;
+          $("iDims").textContent = `[${r.dims.join(" × ")}]`;
+          $("iMean").textContent = `[${r.meanNormal.map((v) => v.toFixed(3)).join(", ")}]`;
+          $("iPix").textContent = (r.width * r.height).toLocaleString();
+          $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (err) {
+          $("status").textContent = "Normal estimation failed: " + err.message; $("status").classList.add("err");
+        } finally { $("run").disabled = false; }
+      });
+
+      // Pixel-pick the normal vector (see inside).
+      function report(e) {
+        if (!lastResult) return;
+        const c = $("normalCanvas"), rect = c.getBoundingClientRect();
+        const u = (e.clientX - rect.left) / rect.width, v = (e.clientY - rect.top) / rect.height;
+        const n = pickNormal(lastResult.normals, lastResult.width, lastResult.height, u, v);
+        $("iPick").textContent = `[${n.map((x) => x.toFixed(3)).join(", ")}]`;
+      }
+      $("normalCanvas").addEventListener("pointermove", report);
+      $("normalCanvas").addEventListener("click", report);
+    </script>
+  </body>
+</html>

@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Multi-model — normals + depth = 2.5D relight · Sapiens · Web AI Showcase</title>
+    <meta name="description" content="Chain two dense predictors: Sapiens surface normals say which way each pixel faces, Depth Anything says how far — combine them to relight AND fog a flat photo into a 2.5D scene, all on-device." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🧭</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Sapiens normals</a></p>
+    <header>
+      <p class="eyebrow">Multi-model · normals + depth</p>
+      <h1>Normals + depth = 2.5D relight</h1>
+      <p class="lede">Two dense predictors answer two different questions about every pixel:
+        <strong>Sapiens normals</strong> say <em>which way it faces</em> (for shading), and
+        <strong>Depth Anything</strong> says <em>how far it is</em> (for fog/occlusion). Run both on-device
+        and combine them: shade the surface with a light, then push far pixels into atmospheric fog — a
+        flat photo becomes a lit, layered 2.5D scene.</p>
+    </header>
+
+    <section class="warn-box" role="note"><strong>Two models:</strong> Sapiens normals (~444 MB, one-time ~60–90 s on CPU) + Depth Anything (~100 MB, seconds). Relighting after that is real-time on the cached maps.</section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Estimate both, then relight</h3>
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+      <p class="muted" id="depthStatus" role="status" aria-live="polite" style="font-size:.8rem"></p>
+      <div class="sample-strip" id="samples" aria-label="Sample images">
+        <img class="sample-thumb active" src="../sample-portrait.jpg" data-src="../sample-portrait.jpg" alt="Public-domain studio portrait" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-face.jpg" data-src="../sample-face.jpg" alt="Synthetic face portrait" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-face2.jpg" data-src="../sample-face2.jpg" alt="Another synthetic face" tabindex="0" role="button" />
+      </div>
+      <div class="controls-row"><button id="run" type="button" disabled>Estimate normals + depth</button></div>
+
+      <div class="canvas-grid">
+        <div class="canvas-card"><h4>2.5D relit scene</h4><canvas class="viz-canvas" id="outCanvas" width="384" height="512" aria-label="Photo relit by normals and fogged by depth"></canvas></div>
+        <div class="canvas-card">
+          <h4>Controls</h4>
+          <div class="light-pad" id="lightPad" tabindex="0" role="slider" aria-label="Light direction — drag or arrow keys" aria-valuetext="light from front"><div class="light-dot" id="lightDot" style="left:50%;top:50%"></div></div>
+          <div class="controls-row" style="margin-top:.8rem">
+            <label style="font-size:.82rem;display:flex;gap:.5rem;align-items:center;flex:1 1 200px">Depth fog
+              <input type="range" id="fog" min="0" max="1" step="0.05" value="0.55" style="flex:1" />
+              <output id="fogOut" style="font-family:var(--font-mono)">0.55</output>
+            </label>
+          </div>
+          <p class="muted" style="font-size:.78rem">Light angle comes from the normals; fog strength pushes <em>far</em> pixels (per depth) toward a cool haze.</p>
+        </div>
+      </div>
+      <div class="readout" id="readout" hidden><span>normals <b id="rNorm">–</b></span><span>depth <b id="rDepth">–</b></span><span>backend <b id="rBackend">–</b></span></div>
+    </section>
+
+    <section aria-labelledby="learn-h">
+      <h2 id="learn-h">Why chain two dense models</h2>
+      <p>Normals and depth are complementary geometry channels. Alone, normals relight but can't tell
+        foreground from background; depth layers the scene but can't shade a surface. Together they're the
+        classic "2.5D" representation — enough to relight, fog, and composite a single photo as if it had
+        real 3D structure, without ever building a mesh or leaving the device.</p>
+    </section>
+
+    <footer class="byline">Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via <a href="https://onnxruntime.ai/docs/tutorials/web/" target="_blank" rel="noopener">ONNX Runtime Web</a> + <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">Transformers.js</a>. <a href="../">← Sapiens normals</a></footer>
+
+    <script type="module">
+      import { NormalEngine, NORMAL_CSS, urlToBitmap } from "../normals.js";
+      import { DepthEngine, urlToDataURL } from "/web-ai-showcase/models/depth-anything/depth.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = NORMAL_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new NormalEngine();
+      const depthEngine = new DepthEngine();
+      let currentSrc = null, normals = null, depthAtNorm = null, W = 384, H = 512;
+      const light = { x: 0, y: 0 };
+      const FOG_COLOR = [150, 170, 200];
+
+      async function pickSample(el) { for (const t of $("samples").children) t.classList.toggle("active", t === el); currentSrc = el.dataset.src; }
+      for (const t of $("samples").children) { t.addEventListener("click", () => pickSample(t)); t.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(t); } }); }
+      pickSample($("samples").firstElementChild);
+
+      const autoRun = new URLSearchParams(location.search).has("auto");
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/sapiens-normal-0.3b", runtime: "onnxruntime-web", dtype: "q8", sizeMB: 444, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: () => { $("run").disabled = false; if (autoRun) $("run").click(); },
+      });
+
+      // Resample a depth Uint8 buffer (native res) to the normal-map resolution via canvas scaling.
+      function resampleDepth(depth, dw, dh) {
+        const src = new OffscreenCanvas(dw, dh); const sctx = src.getContext("2d");
+        const img = sctx.createImageData(dw, dh);
+        for (let i = 0; i < dw * dh; i++) { const v = depth[i]; img.data[i * 4] = v; img.data[i * 4 + 1] = v; img.data[i * 4 + 2] = v; img.data[i * 4 + 3] = 255; }
+        sctx.putImageData(img, 0, 0);
+        const dst = new OffscreenCanvas(W, H); const dctx = dst.getContext("2d");
+        dctx.drawImage(src, 0, 0, W, H);
+        const out = new Float32Array(W * H); const d = dctx.getImageData(0, 0, W, H).data;
+        for (let i = 0; i < W * H; i++) out[i] = d[i * 4] / 255; // 1 = near, 0 = far
+        return out;
+      }
+
+      let rafPending = false;
+      function scheduleRender() {
+        if (rafPending || !normals) return;
+        rafPending = true;
+        requestAnimationFrame(() => {
+          rafPending = false;
+          const z = Math.sqrt(Math.max(0.05, 1 - light.x * light.x - light.y * light.y));
+          const Lx = light.x, Ly = light.y, Lz = z;
+          const fog = +$("fog").value, ambient = 0.12, albedo = [235, 232, 225];
+          const c = $("outCanvas"); c.width = W; c.height = H; const ctx = c.getContext("2d");
+          const img = ctx.createImageData(W, H); const px = img.data; const plane = W * H;
+          for (let i = 0; i < plane; i++) {
+            const nx = normals[i], ny = normals[plane + i], nz = normals[2 * plane + i];
+            const diff = Math.max(0, nx * Lx + ny * Ly + nz * Lz);
+            let r = (ambient + diff) * albedo[0], g = (ambient + diff) * albedo[1], b = (ambient + diff) * albedo[2];
+            if (depthAtNorm) { const f = (1 - depthAtNorm[i]) * fog; r = r * (1 - f) + FOG_COLOR[0] * f; g = g * (1 - f) + FOG_COLOR[1] * f; b = b * (1 - f) + FOG_COLOR[2] * f; }
+            const o = i * 4; px[o] = r > 255 ? 255 : r; px[o + 1] = g > 255 ? 255 : g; px[o + 2] = b > 255 ? 255 : b; px[o + 3] = 255;
+          }
+          ctx.putImageData(img, 0, 0);
+        });
+      }
+
+      $("run").addEventListener("click", async () => {
+        if (!currentSrc) return;
+        $("run").disabled = true; $("status").classList.remove("err", "ok"); $("status").textContent = "Estimating surface normals… (60–90 s on CPU)";
+        try {
+          const bmp = await urlToBitmap(currentSrc);
+          const nr = await engine.estimate(bmp);
+          normals = nr.normals; W = nr.width; H = nr.height;
+          $("rNorm").textContent = nr.ms + " ms";
+          $("status").textContent = "Normals done. Estimating depth…";
+          $("depthStatus").textContent = "Loading Depth Anything (~100 MB)…";
+          await depthEngine.load((p) => { if (p.status === "progress" && p.progress != null) $("depthStatus").textContent = `Depth model ${p.progress.toFixed(0)}%`; });
+          const dURL = await urlToDataURL(currentSrc);
+          const dr = await depthEngine.estimate(dURL);
+          depthAtNorm = resampleDepth(dr.depth, dr.width, dr.height);
+          $("rDepth").textContent = dr.ms + " ms"; $("depthStatus").textContent = "Depth ready.";
+          $("readout").hidden = false; $("rBackend").textContent = nr.device.toUpperCase() + " / " + dr.device.toUpperCase();
+          scheduleRender();
+          $("status").textContent = "2.5D scene ready. Drag the light; tune the fog."; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Pipeline failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+
+      const pad = $("lightPad"), dot = $("lightDot");
+      function setLight(x, y) { const m = Math.hypot(x, y); if (m > 1) { x /= m; y /= m; } light.x = x; light.y = y; dot.style.left = ((x * 0.5 + 0.5) * 100) + "%"; dot.style.top = ((-y * 0.5 + 0.5) * 100) + "%"; pad.setAttribute("aria-valuetext", `light x ${x.toFixed(2)}, y ${y.toFixed(2)}`); scheduleRender(); }
+      function fromEvent(e) { const r = pad.getBoundingClientRect(); setLight((e.clientX - r.left) / r.width * 2 - 1, -((e.clientY - r.top) / r.height * 2 - 1)); }
+      let dragging = false;
+      pad.addEventListener("pointerdown", (e) => { dragging = true; pad.setPointerCapture(e.pointerId); fromEvent(e); });
+      pad.addEventListener("pointermove", (e) => { if (dragging) fromEvent(e); });
+      pad.addEventListener("pointerup", () => { dragging = false; });
+      pad.addEventListener("keydown", (e) => { const s = 0.12; let dx = 0, dy = 0; if (e.key === "ArrowLeft") dx = -s; else if (e.key === "ArrowRight") dx = s; else if (e.key === "ArrowUp") dy = s; else if (e.key === "ArrowDown") dy = -s; else return; e.preventDefault(); setLight(light.x + dx, light.y + dy); });
+      $("fog").addEventListener("input", () => { $("fogOut").textContent = (+$("fog").value).toFixed(2); scheduleRender(); });
+    </script>
+  </body>
+</html>
