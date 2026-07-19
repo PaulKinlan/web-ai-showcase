@@ -50,8 +50,11 @@ of every model you can genuinely run in a browser — not a token set. Read `CLA
   `blockedReason` so future waves skip it. Known-blocked (re-check only on upstream change):
   **pegasus** (no `pegasus` model class in transformers.js → `Unsupported model type`), **gliner**
   (same — `Unsupported model type: gliner`; ONNX exists but no transformers.js GLiNER class),
-  **electra** (ONNX is encoder-only; no RTD discriminator head), **blip** / **bark** (gated / no
-  usable ONNX). Never mislabel a substitute as the blocked family.
+  **got-ocr2** (no `got_ocr2` class; no `image-text-to-text` pipeline in 3.7.5; safetensors-only),
+  **git** (no `git` class; no `Xenova/git-*` ONNX), **vilt** (no `vilt` class / no
+  `visual-question-answering` pipeline / no ONNX), **electra** (ONNX is encoder-only; no RTD
+  discriminator head), **blip** / **bark** (gated / no usable ONNX). Never mislabel a substitute as
+  the blocked family.
 - Only load weights from the canonical HF repo (or MLC/MediaPipe official). No arbitrary remote
   code.
 - Note device/browser requirements (WebGPU-only, RAM, secure context) in the page's at-a-glance.

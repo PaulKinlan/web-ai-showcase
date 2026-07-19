@@ -33,9 +33,12 @@ short version for tools that look for `AGENTS.md`.
   stops reselecting an impossible build. **Current known-blocked (re-check only when upstream changes):
   pegasus** (transformers.js registers no `pegasus` model class in any version — `Unsupported model
   type: pegasus` even with a full ONNX folder), **gliner** (same — `Unsupported model type: gliner`;
-  ONNX export exists but no transformers.js GLiNER class/processor), **electra** (ONNX exports are
-  encoder-only; the replaced-token-detection discriminator head is absent), **blip** / **bark** (repos
-  gated / no usable ONNX). Never mislabel a substitute as the blocked family.
+  ONNX export exists but no transformers.js GLiNER class/processor), **got-ocr2** (no `got_ocr2`
+  class; `image-text-to-text` pipeline absent in 3.7.5; stepfun-ai repos safetensors-only), **git**
+  (no `git` class; no `Xenova/git-*` ONNX repo), **vilt** (no `vilt` class / no
+  `visual-question-answering` pipeline / no ONNX), **electra** (ONNX exports are encoder-only; the
+  replaced-token-detection discriminator head is absent), **blip** / **bark** (repos gated / no usable
+  ONNX). Never mislabel a substitute as the blocked family.
 - **Denominator discipline — report TWO metrics.** PRIMARY: the evidence-backed eligible catalogue
   (`inventory/summary.json` + `models.json`) — built / eligible + built / catalogued (+ pending);
   this is a refining LOWER BOUND (grows with scan depth — state the depth), keep the catalogue +

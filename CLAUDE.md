@@ -132,8 +132,12 @@ reselecting it. **Known-blocked as of 2026-07-19 (re-check only on upstream chan
 (transformers.js registers no `pegasus` model class in any version → `Unsupported model type:
 pegasus`), **gliner** (same failure — `Unsupported model type: gliner`; onnx-community ships an ONNX
 export but no transformers.js class/processor implements GLiNER's span/entity-prompt pipeline),
-**electra** (ONNX exports encoder-only; RTD discriminator head absent), **blip** / **bark** (gated /
-no usable ONNX). Never mislabel a substitute as the blocked family.
+**got-ocr2** (no `got_ocr2` class in 3.7.5/4.2; the `image-text-to-text` pipeline task doesn't exist
+in 3.7.5; stepfun-ai repos are safetensors-only, no ONNX), **git** (no `git` model class; no
+`Xenova/git-*` ONNX repo exists), **vilt** (no `vilt` class, `visual-question-answering` is not a
+supported pipeline task, `ViltFeatureExtractor` unimplemented, no ONNX export anywhere), **electra**
+(ONNX exports encoder-only; RTD discriminator head absent), **blip** / **bark** (gated / no usable
+ONNX). Never mislabel a substitute as the blocked family.
 
 Cover the full capability range —
 classification, NER, embeddings/ reranking/search, summarisation/translation/generation, ASR, audio
