@@ -330,6 +330,51 @@ ADDITIVE — it never rewrites a page or churns a URL; it sits alongside invaria
   genuine suites by DERIVING from real metadata; never fake, never claim "complete/all" (built-demo
   count is a moving frontier).
 
+### 15. Off-main-thread reference architecture + first-class capture + rights-safe media
+
+web-ai-showcase is a production-grade REFERENCE ARCHITECTURE for running on-device models without
+freezing the main thread. All ADDITIVE; preserve stable routes; keep the auto-init/current-version/
+explicit-download policy (invariant 12).
+
+- **Off-main-thread by default; MEASURE, don't infer.** All inference AND any pre/post-processing
+  that could exceed an **8ms frame slice** runs off the main thread (16ms already misses 60fps).
+  Verify by measuring long tasks/INP + inspecting code paths — never assume compliance from "uses a
+  library". The systemic hotspot found by measurement is the **dense-output canvas composite**
+  (segmentation/ matting/depth/super-res doing `getImageData`→per-pixel→`putImageData` on the main
+  thread — fine on a thumbnail, ~40ms at 1080p): do it in the worker and **transfer** an RGBA buffer
+  / ImageBitmap back. Measured baseline (bundled samples): **143/148 compliant @50ms bar** (only the
+  5 MediaPipe demos —
+  `face-landmarker`/`hand-landmarker`/`pose-landmarker`/`gesture-recognizer`/`face-detector` — run
+  inference synchronously on the main thread), **~132/148 @8ms bar** with full-res inputs. See
+  `scratchpad/worker-compliance-baseline.md`.
+- **Shared worker architecture** (`lib/worker-protocol.js`): typed/**versioned** message protocol,
+  per-request ids, **transfer** ArrayBuffers/ImageBitmaps (not clone), explicit progress,
+  cancellation via AbortSignal, stale-response + supersession suppression, bounded
+  queue/backpressure, worker lifecycle states (starting→ready→busy→error→terminated), deterministic
+  dispose + object-URL cleanup. Dedicated **module** workers. Image/video preprocessing via
+  OffscreenCanvas/ImageBitmap with a measured main-thread fallback; real-time audio via
+  **AudioWorklet** posting bounded chunks/ring-buffer to a worker — SharedArrayBuffer needs
+  COOP/COEP which **GitHub Pages cannot set**, so the non-isolated postMessage path is the DEFAULT
+  (`lib/media-pipeline.js`).
+- **Resumable downloads are REAL here (researched + proven), not faked** (`lib/model-download.js`):
+  fetch the `…/resolve/…` URL, `Range: bytes=<received>-` + `If-Range:<strong-etag>` (206 append /
+  200 or 412 clean restart), IndexedDB partials, `storage.persist()`, and **WebCrypto SHA-256
+  verification against the git-LFS oid** before ready. Evicted/mismatched partial → honest clean
+  restart, never a fake resume. Evidence: `scratchpad/hf-download-resume-findings.md`.
+- **First-class user input** (`lib/capture-ux.js`): upload / camera snapshot / short webcam video /
+  mic — **always user-initiated** (never auto-request or auto-start capture). Accessible permission
+  rationale before requesting; explicit denied/unavailable/unsupported states; stop/retry; bounded
+  duration + countdown; deterministic cleanup of tracks + object URLs; mobile+desktop; a REQUIRED
+  bundled fallback example. Camera/mic permission stays user-initiated.
+- **Rights-safe media library** (`media/manifest.json`): every bundled example records source URL,
+  creator, license (SPDX/explicit), retrieval date, local path, dimensions. Optimize dims/format; NO
+  hotlinking; skip anything without a clear license (record the gap). The 2D→3D / removable-object
+  family (depth/matting/segmentation/SAM/CLIPSeg/panoptic) gets a broad, varied gallery.
+- **The `/architecture/` page** documents all of the above with copyable code. New demos + retrofit
+  waves MUST follow this; conformance assertions cover worker-compliance, capture-UX states, and
+  bundled-media provenance. Report worker-compliant/tested/total + long-task before/after; never
+  claim complete/all until the denominator closes.
+
 ## Mobile + desktop parity — every demo usable on both, or honestly unsupported with recorded evidence
 
 Every existing and future published demo MUST be a usable, polished experience on BOTH mobile and

@@ -140,6 +140,25 @@ no button) · stale/update (auto-init cached + Update offered) · partial/corrup
 · offline cached use · eviction · unsupported device/browser. The visible control MUST match the
 state.
 
+## 4c. Off-main-thread reference architecture + capture + media (invariant 15)
+
+- **Off-main-thread by default; MEASURE (long tasks/INP + code paths), don't infer.** Inference AND
+  pre/post that could exceed 8ms run off-thread. Use `lib/worker-protocol.js` (typed/versioned,
+  request ids, transfer-not-clone, AbortSignal cancel, stale-suppression, bounded queue,
+  lifecycle+cleanup, module workers). Dense-output composite (seg/matting/depth/super-res) belongs
+  in the worker with a transferred RGBA/ImageBitmap. OffscreenCanvas/AudioWorklet via
+  `lib/media-pipeline.js`; non-isolated postMessage is the GitHub-Pages default. Baseline 143/148
+  @50ms, ~132/148 @8ms (5 MediaPipe = hard exceptions). See
+  scratchpad/worker-compliance-baseline.md.
+- **Resumable download (`lib/model-download.js`):** resolve-URL + Range/If-Range + IndexedDB +
+  sha256-vs-oid; honest restart, never fake resume.
+- **Capture (`lib/capture-ux.js`):** upload/camera/short-video/mic; user-initiated only; rationale +
+  denied/unavailable/unsupported + stop/retry + duration + track/object-URL cleanup +
+  mobile/desktop + bundled fallback.
+- **Rights-safe media (`media/manifest.json`):** source/creator/license/retrieval-date/path/dims;
+  optimize; no hotlinking; skip unclear licensing. Broaden the 2D→3D family gallery. Doc:
+  `/architecture/`.
+
 ## 5. Cache / SW versioning + eviction
 
 `sw.js` owns only the app-shell cache (bump `SW_VERSION` on shell changes); transformers.js owns

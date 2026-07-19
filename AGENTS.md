@@ -112,6 +112,24 @@ short version for tools that look for `AGENTS.md`.
     an unexplained `built`-count drop — passing additive ids, honest new `blocked`, in-place fixes,
     and anything in `migrations.json`. Refresh the manifest with `node scripts/route-manifest.mjs`
     (`--json` / `--write-baseline`). Fold the gate into every build wave.
+- **Off-main-thread reference architecture (measure, don't infer).** All inference AND any pre/post
+  that could exceed an 8ms frame slice runs off-main-thread; verify by measuring long tasks/INP +
+  code paths. Use `lib/worker-protocol.js` (typed/versioned protocol, request ids, transfer not
+  clone, AbortSignal cancel, stale-suppression, bounded queue, lifecycle+cleanup; module workers),
+  OffscreenCanvas/ImageBitmap + AudioWorklet via `lib/media-pipeline.js` (non-isolated postMessage
+  is the GitHub-Pages default; SAB needs COOP/COEP). The systemic hotspot is the dense-output canvas
+  composite (segmentation/matting/depth/super-res) — do it in the worker, transfer RGBA/ImageBitmap
+  back. Measured baseline: 143/148 @50ms, ~132/148 @8ms (5 MediaPipe are the hard exceptions).
+- **Resumable downloads are real (`lib/model-download.js`):** `…/resolve/…` URL + Range/If-Range +
+  IndexedDB partials + sha256-vs-git-LFS-oid verify; honest clean restart on eviction/mismatch,
+  never a fake resume. Keep the auto-init/explicit-download policy.
+- **First-class user input (`lib/capture-ux.js`):** upload/camera/short-video/mic, always
+  user-initiated (never auto-request/auto-start); rationale + denied/unavailable/unsupported
+  states + stop/retry + duration limit + track/object-URL cleanup + mobile/desktop + bundled
+  fallback.
+- **Rights-safe media (`media/manifest.json`):** every bundled example records source/creator/
+  license/retrieval-date/local-path/dims; optimize; no hotlinking; skip unclear licensing. See
+  `/architecture/` and CLAUDE invariant 15.
 - Verify with headless Chrome + `Read` the screenshot (no chrome-devtools-mcp in the routine).
 - **Critique → immutable conformance → goal lifecycle.** Every built demo has a versioned critique
   (`models/<slug>/_questions.json`) and an IMMUTABLE conformance suite
