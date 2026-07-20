@@ -1,0 +1,127 @@
+{
+  "schemaVersion": 1,
+  "id": "vit-gpt2-captioning",
+  "revision": 1,
+  "reviewedAt": "2026-07-20T00:00:00Z",
+  "reviewer": "retrospective critique backfill (code-grounded + existing conformance suite), revision 1",
+  "frontend": true,
+  "rubric": [
+    {
+      "dimension": "real-inference",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Real transformers.js image-to-text pipeline in a dedicated module Worker (models/vit-gpt2-captioning/worker.js): loadPipeline({task:\"image-to-text\", model:\"Xenova/vit-gpt2-image-captioning\", backend:\"wasm\", dtype:\"q8\"}) then pipe(imageURL,{max_new_tokens, streamer}). A ViT-B/16 encoder reads the image, a GPT-2 decoder generates a caption token-by-token; a TextStreamer posts each decoded token with a timestamp. This is a WASM demo (no WebGPU required) so it genuinely runs everywhere. Conformance calls-real-inference (source, matches createModelLoader/pipeline) + loads-clean (console-clean) tested-pass; io-shape-semantic manual-evidenced. Latency/output samples are NOT fabricated here — this is a code-grounded backfill, not a measured run.",
+      "notes": "Encoder + decoder are separate q8 ONNX graphs joined by cross-attention; the streamed caption is the real decoder output."
+    },
+    {
+      "dimension": "io-shape",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Expected output is {generated_text:string} (the pipeline returns an array; the worker reads out[0].generated_text) — a free-form English caption. The page streams each token into a caption box as it decodes and reports token count + elapsed ms from the worker's result message. Shape matches the image-to-text pipeline contract exactly.",
+      "notes": "The final caption is trimmed; the streamed tokens are the same sequence forming live."
+    },
+    {
+      "dimension": "runtime-config",
+      "score": 5,
+      "severity": "info",
+      "evidence": "At-a-glance declares the exact model id (Xenova/vit-gpt2-image-captioning, linked), task/pipeline (image-to-text), architecture (ViT-B/16 encoder -> GPT-2 decoder, cross-attention), quantisation (q8, separate encoder+decoder graphs), backend (WebAssembly — no WebGPU needed, Baseline widely available), download (~250 MB), license Apache-2.0. Matches worker.js. Conformance declares-model-id/task/quantisation + declares-backend tested-pass.",
+      "notes": ""
+    },
+    {
+      "dimension": "cache-init",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Loads via shared createModelLoader (modelId:\"Xenova/vit-gpt2-image-captioning\", runtime:\"transformers.js\", dtype:\"q8\", sizeMB:250, requiresWebGPU:false). A valid cached current model auto-initialises with no Load click; Download/Re-download/Update + clear-cache surface otherwise. Conformance shared-auto-init-loader (source) tested-pass; auto-init-on-cached manual-evidenced.",
+      "notes": "modelId keyed on the repo so the ~250 MB cache is tracked for the no-silent-re-download guarantee."
+    },
+    {
+      "dimension": "states",
+      "score": 4,
+      "severity": "info",
+      "evidence": "Status is <p role=status aria-live=polite> (runStatus) and the caption box is aria-live=polite so streamed tokens are announced; the shared loader shows download progress + Retry. On failure the worker posts {type:error} and the page surfaces it. Conformance live-status-region + errors-on-the-page tested-pass; honest-progress-retry-offline manual; runs-without-webgpu-fallback (this demo needs no WebGPU) is asserted.",
+      "notes": ""
+    },
+    {
+      "dimension": "controls",
+      "score": 4,
+      "severity": "info",
+      "evidence": "Every control is real + keyboard-operable: sample thumbs (role=button + Enter/Space), drop/choose file (accept=image/*), a max-tokens range slider (8–50, default 30), and the Caption/Run button. The slider genuinely bounds decode length.",
+      "notes": ""
+    },
+    {
+      "dimension": "no-fake-output",
+      "score": 5,
+      "severity": "info",
+      "evidence": "No hardcoded caption: the streamed tokens and final text come from the real pipe() call over the chosen image. Conformance no-fake-output manual-evidenced.",
+      "notes": ""
+    },
+    {
+      "dimension": "accessibility",
+      "score": 4,
+      "severity": "info",
+      "evidence": "Sample thumbnails carry alt (images-have-alt tested-pass); the caption box + status use aria-live=polite; buttons have text names (buttons-have-names tested-pass); the range slider is a labelled native input; light+dark use the WCAG-AA design system.",
+      "notes": ""
+    },
+    {
+      "dimension": "responsive",
+      "score": 4,
+      "severity": "info",
+      "evidence": "Conformance responsive-desktop + responsive-mobile (no-horizontal-overflow) are the tested assertions; image + control columns flex-wrap to one column on mobile, the preview img is max-inline-size:100%. parity-both-classes manual-evidenced.",
+      "notes": "As a WASM demo it is fully usable on mobile (no GPU requirement); the ~250 MB download is surfaced in at-a-glance."
+    },
+    {
+      "dimension": "performance",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Captioning runs in the dedicated module Worker; the main thread only appends streamed tokens. Decode length is bounded (max 60 tokens clamp in the worker). Conformance inference-off-main-thread (source: new Worker) tested-pass; inp-stays-low manual-evidenced.",
+      "notes": "q8 WASM decode of a short caption keeps interactions responsive; no main-thread inference."
+    }
+  ],
+  "guidanceConsulted": [
+    {
+      "query": "break up long tasks keep INP low run heavy work off the main thread in a web worker",
+      "id": "break-up-long-tasks",
+      "recommendation": "Move heavy synchronous work off the main thread and break up long tasks so the browser can service input and repaint; workers + yielding keep interactions responsive.",
+      "appliedOrException": "applied — the ViT-GPT2 pipeline + TextStreamer run in a dedicated module Worker; the page thread only appends streamed caption tokens.",
+      "evidence": "worker.js new Worker(type:module) + streamer; conformance inference-off-main-thread pass"
+    },
+    {
+      "query": "keep INP low, responsive interactions and Core Web Vitals for a heavy on-device workload",
+      "id": "performance",
+      "recommendation": "Optimise INP/LCP/CLS: never block the main thread with heavy compute, stream progress, keep interaction handlers cheap.",
+      "appliedOrException": "applied — caption tokens stream in incrementally and decode length is capped, so INP stays low while the caption forms.",
+      "evidence": "streamed per-token updates; bounded max_new_tokens"
+    },
+    {
+      "query": "accessible live region status updates, accessible names for controls, loading state",
+      "id": "accessibility",
+      "recommendation": "Announce loading/ready/error via role=status aria-live; give every control an accessible name; semantic HTML + visible focus; mark language for correct shaping.",
+      "appliedOrException": "applied — role=status aria-live status, aria-live caption box, alt on samples, labelled range slider, accessible button names.",
+      "evidence": "conformance buttons-have-names + images-have-alt + live-status-region pass"
+    },
+    {
+      "query": "responsive control panel two-column layout without horizontal overflow using flex grid",
+      "id": "css-layout",
+      "recommendation": "Use fluid flex/grid with flex-wrap, intrinsic sizing and logical properties; avoid fixed widths that force horizontal overflow.",
+      "appliedOrException": "applied — image + control columns flex-wrap to one column on mobile, preview img max-inline-size:100%; no horizontal overflow.",
+      "evidence": "conformance responsive-desktop + responsive-mobile (no-horizontal-overflow) tested"
+    }
+  ],
+  "openQuestions": [
+    "io-shape-semantic / no-fake-output / auto-init-on-cached are manual-evidenced — a headless WASM run could capture a real caption + latency to flip them (this WASM demo CAN run in a no-GPU harness, unlike the WebGPU VLMs).",
+    "ViT-GPT2 is an older captioner — worth a side-by-side rung against a modern VLM caption (Florence <CAPTION> / moondream) to show the quality gap?"
+  ],
+  "followUpGoals": [
+    {
+      "goal": "Capture a real headless WASM caption run (output + latency) to satisfy io-shape-semantic / no-fake-output / auto-init-on-cached.",
+      "kind": "targeted-fix",
+      "priority": "medium"
+    },
+    {
+      "goal": "Add a caption-quality comparison rung against a modern VLM captioner.",
+      "kind": "additive-demo",
+      "priority": "low"
+    }
+  ],
+  "summary": "Retrospective code-grounded critique for vit-gpt2-captioning (Xenova/vit-gpt2-image-captioning, image-to-text, q8, WASM — runs everywhere, ~250 MB, Apache-2.0). A ViT-B/16 encoder -> GPT-2 decoder captioner: the image-to-text pipeline runs in a dedicated module Worker with a TextStreamer streaming each caption token + timestamp; output is {generated_text} matching the pipeline contract. No WebGPU needed, so it is fully usable on mobile. No fabricated output; latency/output NOT invented in this backfill. guidanceConsulted: break-up-long-tasks, performance, accessibility, css-layout. Weakness flagged: io-shape-semantic / no-fake-output / auto-init-on-cached manual-evidenced (capturable in a WASM harness)."
+}

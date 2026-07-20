@@ -1,0 +1,127 @@
+{
+  "schemaVersion": 1,
+  "id": "toxicity-detection",
+  "revision": 1,
+  "reviewedAt": "2026-07-20T00:00:00Z",
+  "reviewer": "retrospective critique backfill (code-grounded + existing conformance suite), revision 1",
+  "frontend": true,
+  "rubric": [
+    {
+      "dimension": "real-inference",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Real transformers.js inference in a dedicated module Worker (models/toxicity-detection/worker.js), and deliberately LOW-LEVEL: AutoTokenizer + AutoModelForSequenceClassification.from_pretrained(\"Xenova/toxic-bert\",{dtype:\"q8\",device:\"wasm\"}), then tokenizer(text) -> model(inputs) -> logits.data. It reads the 6 raw independent logits and applies its own sigmoid() per label (multi-label, not softmax) so the \"see inside\" surface can show BOTH the raw logit and the sigmoid probability. WASM demo (no WebGPU), runs everywhere. Conformance calls-real-inference (source, matches classifier) + loads-clean tested-pass; io-shape-semantic manual-evidenced. Latency/scores NOT fabricated in this backfill.",
+      "notes": "Labels come from model.config.id2label (toxic, severe_toxic, obscene, threat, insult, identity_hate) — not hardcoded. Batch triage + a moderation gate reuse the same scoreText path."
+    },
+    {
+      "dimension": "io-shape",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Expected output is 6 per-label {label, logit, score=sigmoid(logit)}, sorted high->low, each independent (a comment can be high on several at once; scores don't sum to 1). The page renders per-label probability bars (toxicity.js renderLabelBars: a bar-track role=meter with aria-valuemin/max/now + aria-label '<label>: <pct> percent', flagged rows at/above the threshold) and a logit->sigmoid table. This IS the accessible probability-bar surface.",
+      "notes": "The verdict (FLAG if any label >= threshold, else ALLOW) is derived from the real scores."
+    },
+    {
+      "dimension": "runtime-config",
+      "score": 5,
+      "severity": "info",
+      "evidence": "At-a-glance declares the exact model id (Xenova/toxic-bert, linked) as ONNX of unitary/toxic-bert (linked), task (text-classification, multi-label per-label sigmoid), the 6 labels, architecture (BERT-base fine-tuned on Jigsaw Toxic Comment), quantisation (q8), backend (WebAssembly, no WebGPU), download (~110 MB), license Apache-2.0. Matches worker.js. Conformance declares-model-id/task/quantisation + declares-backend tested-pass.",
+      "notes": ""
+    },
+    {
+      "dimension": "cache-init",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Loads via shared createModelLoader (modelId:\"Xenova/toxic-bert\", dtype:\"q8\", sizeMB:110, requiresWebGPU:false). Valid cached model auto-initialises with no Load click; Download/Re-download/Update + clear-cache otherwise. Conformance shared-auto-init-loader (source) tested-pass; auto-init-on-cached manual-evidenced.",
+      "notes": "env.allowLocalModels=false in the worker; modelId keyed on the repo so the ~110 MB cache is tracked for the no-silent-re-download guarantee."
+    },
+    {
+      "dimension": "states",
+      "score": 4,
+      "severity": "info",
+      "evidence": "Status is <p role=status aria-live=polite> (runStatus); the bars container is aria-live; the verdict row toggles hidden when input is empty. On failure the worker posts {type:error} surfaced on the page. Conformance live-status-region + errors-on-the-page tested-pass; runs-without-webgpu-fallback asserted; honest-progress-retry-offline manual.",
+      "notes": ""
+    },
+    {
+      "dimension": "controls",
+      "score": 4,
+      "severity": "info",
+      "evidence": "Every control is real + keyboard-operable: the text textarea, a threshold range slider (0.05–0.95, default 0.5) that re-computes which labels are flagged and the ALLOW/FLAG verdict live, and (on other rungs) a batch triage input. The threshold genuinely turns the numbers into a decision.",
+      "notes": ""
+    },
+    {
+      "dimension": "no-fake-output",
+      "score": 5,
+      "severity": "info",
+      "evidence": "No hardcoded scores: every bar + the logit/sigmoid table + the verdict come from the real forward pass. Conformance no-fake-output manual-evidenced.",
+      "notes": ""
+    },
+    {
+      "dimension": "accessibility",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Strong: each probability bar is a role=meter with aria-valuemin/valuemax/aria-valuenow + a descriptive aria-label ('<label>: <pct> percent, flagged'), so magnitudes are readable non-visually. Status uses role=status aria-live; buttons have text names (buttons-have-names tested-pass); no content images (images-have-alt vacuously pass); light+dark WCAG-AA.",
+      "notes": "This is the reference accessible-meter pattern the other classifier bars should follow."
+    },
+    {
+      "dimension": "responsive",
+      "score": 4,
+      "severity": "info",
+      "evidence": "Conformance responsive-desktop + responsive-mobile (no-horizontal-overflow) are the tested assertions; input + bars + table stack fluidly, bars are %-based, the logit table scrolls if needed. parity-both-classes manual-evidenced.",
+      "notes": "WASM demo — fully usable on mobile; ~110 MB download surfaced in at-a-glance."
+    },
+    {
+      "dimension": "performance",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Scoring runs in the dedicated module Worker; the main thread only renders 6 bar rows + a small table. Batch triage loops texts off-thread and reports as one job. Conformance inference-off-main-thread (source: new Worker) tested-pass; inp-stays-low manual-evidenced.",
+      "notes": ""
+    }
+  ],
+  "guidanceConsulted": [
+    {
+      "query": "break up long tasks keep INP low run heavy work off the main thread in a web worker",
+      "id": "break-up-long-tasks",
+      "recommendation": "Move heavy synchronous work off the main thread and break up long tasks so the browser can service input and repaint; workers + yielding keep interactions responsive.",
+      "appliedOrException": "applied — tokenise + forward + sigmoid (and batch triage / gate) run in a dedicated module Worker; the page thread only renders the accessible bars + table.",
+      "evidence": "worker.js new Worker(type:module); conformance inference-off-main-thread pass"
+    },
+    {
+      "query": "accessible live region status updates, accessible names for controls, loading state",
+      "id": "accessibility",
+      "recommendation": "Announce loading/ready/error via role=status aria-live; give every control an accessible name; semantic HTML + visible focus; mark language for correct shaping.",
+      "appliedOrException": "applied — each probability bar is role=meter with aria-valuenow + a descriptive aria-label; status is role=status aria-live; the threshold + verdict are announced.",
+      "evidence": "toxicity.js renderLabelBars role=meter aria-valuenow; conformance buttons-have-names + live-status-region pass"
+    },
+    {
+      "query": "accessible form controls: range slider and text input labelling, keyboard operable",
+      "id": "forms",
+      "recommendation": "Associate every input with a label, keep controls keyboard-operable, and reflect state changes accessibly.",
+      "appliedOrException": "applied — the threshold range slider is a labelled native control that live-recomputes the flagged labels and the ALLOW/FLAG verdict.",
+      "evidence": "native <input type=range> re-renders verdict + bar flags"
+    },
+    {
+      "query": "responsive control panel two-column layout without horizontal overflow using flex grid",
+      "id": "css-layout",
+      "recommendation": "Use fluid flex/grid with flex-wrap, intrinsic sizing and logical properties; avoid fixed widths that force horizontal overflow.",
+      "appliedOrException": "applied — input, meter bars and the logit/sigmoid table stack fluidly with %-based widths; no horizontal overflow at mobile.",
+      "evidence": "conformance responsive-desktop + responsive-mobile (no-horizontal-overflow) tested"
+    }
+  ],
+  "openQuestions": [
+    "io-shape-semantic / no-fake-output / auto-init-on-cached are manual-evidenced — a headless WASM run could capture the real 6-label logits/sigmoids + latency to flip them.",
+    "The moderation gate composes into multi-model chains (block toxic input before it reaches another model) — is that composition surfaced clearly enough as a reusable safety primitive?"
+  ],
+  "followUpGoals": [
+    {
+      "goal": "Capture a real headless WASM scoring run (6 logits + sigmoids + latency) to satisfy io-shape-semantic / no-fake-output / auto-init-on-cached.",
+      "kind": "targeted-fix",
+      "priority": "medium"
+    },
+    {
+      "goal": "Document the toxic-bert moderation gate as a reusable pre-filter primitive other demo chains can adopt.",
+      "kind": "additive-demo",
+      "priority": "low"
+    }
+  ],
+  "summary": "Retrospective code-grounded critique for toxicity-detection (Xenova/toxic-bert, ONNX of unitary/toxic-bert, text-classification MULTI-LABEL, q8, WASM — runs everywhere, ~110 MB, Apache-2.0). BERT-base Jigsaw moderation head run LOW-LEVEL (tokenizer -> model -> raw logits -> per-label sigmoid) in a dedicated module Worker, exposing both the logit and the probability for 6 independent labels as accessible role=meter probability bars with a live threshold and ALLOW/FLAG verdict; batch triage + a moderation gate reuse the same path. No WebGPU needed. No fabricated scores; latency NOT invented in this backfill. Accessibility is the batch's strongest (role=meter/aria-valuenow reference pattern). guidanceConsulted: break-up-long-tasks, accessibility, forms, css-layout. Weakness flagged: io-shape-semantic / no-fake-output / auto-init-on-cached manual-evidenced."
+}

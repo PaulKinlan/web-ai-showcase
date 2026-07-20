@@ -1,0 +1,132 @@
+{
+  "schemaVersion": 1,
+  "id": "janus-pro",
+  "revision": 1,
+  "reviewedAt": "2026-07-20T00:00:00Z",
+  "reviewer": "retrospective critique backfill (code-grounded + existing conformance suite), revision 1",
+  "frontend": true,
+  "rubric": [
+    {
+      "dimension": "real-inference",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Real transformers.js inference in a dedicated module Worker (models/janus-pro/worker.js) doing BOTH modes with ONE model: MultiModalityCausalLM.from_pretrained(\"onnx-community/Janus-Pro-1B-ONNX\") with a shader-f16-aware dtype map (LLM q4f16 + fp16 heads when shader-f16 is present, else q4/fp32) + a per-submodule device map (prepare_inputs_embeds on WASM for a known upstream WebGPU op bug, the rest on WebGPU). Understanding = AutoProcessor(conversation) -> model.generate + TextStreamer (streamed text). Generation = processor(conv,{chat_template:\"text_to_image\"}) -> model.generate_images (576 image tokens -> a 384x384 raster decoded to a Blob). This is a WebGPU-ONLY demo: worker probeGPU() calls navigator.gpu.requestAdapter() (presence is NOT enough) and createModelLoader is requiresWebGPU:true — on a no-GPU device (and in a no-GPU headless harness) the page shows a LABELLED needs-WebGPU state with enable steps, never a fabricated result. Because the GPU is genuinely unavailable in a no-GPU runner, the real-run output CANNOT be produced there and is NOT faked; the conformance runner records that class as blocked, not pass. Conformance calls-real-inference (source, matches \\.generate\\() + loads-clean tested-pass; io-shape-semantic manual-evidenced.",
+      "notes": "Verified against transformers.js v3.7.5 + the official janus-pro-webgpu example (VLChatProcessor via processor_class, model_type 'multi_modality'). Two decoupled vision paths: SigLIP for understanding, a VQ tokenizer + image_decode head for generation."
+    },
+    {
+      "dimension": "io-shape",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Two honest output shapes from one model: (1) understanding returns streamed TEXT conditioned on image+prompt (or text-only chat); (2) generation returns a raster IMAGE — exactly 576 autoregressive image tokens filling a 24x24 grid, decoded to a 384x384 RawImage then toBlob() and drawn to a canvas. The generation streamer reports per-token progress (step/total, tokens-per-second) as the grid fills; the 'See inside' panel prints the templated conversation (noting '[+ image -> 576 SigLIP vision tokens]').",
+      "notes": "The 576-token / 24x24 grid / 384x384 raster facts are declared in at-a-glance and match the worker exactly."
+    },
+    {
+      "dimension": "runtime-config",
+      "score": 5,
+      "severity": "info",
+      "evidence": "At-a-glance declares the exact model id (onnx-community/Janus-Pro-1B-ONNX, linked) as an ONNX build of deepseek-ai/Janus-Pro-1B (linked), task (any-to-any = image-text-to-text understanding + text-to-image generation), architecture (SigLIP + VQ tokenizer/decode head + shared autoregressive LLM), the shader-f16-conditional dtype map, backend (WebGPU; prepare_inputs_embeds on WASM for the upstream op bug), download (~2.4 GB with shader-f16 / ~4 GB fallback), and license MIT — all matching worker.js. Conformance declares-model-id/task/quantisation + declares-backend tested-pass.",
+      "notes": ""
+    },
+    {
+      "dimension": "cache-init",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Loads via shared createModelLoader (modelId:\"onnx-community/Janus-Pro-1B-ONNX\", runtime:\"transformers.js\", dtype:\"q4f16\", sizeMB:2400, requiresWebGPU:true). A valid cached current model auto-initialises with no Load click; Download/Re-download/Update + clear-cache surface otherwise. Conformance shared-auto-init-loader (source) tested-pass; auto-init-on-cached manual-evidenced.",
+      "notes": "modelId keyed on the ONNX repo so the ~2.4 GB multi-file cache is tracked for the no-silent-re-download guarantee."
+    },
+    {
+      "dimension": "states",
+      "score": 4,
+      "severity": "info",
+      "evidence": "Status is <p role=status aria-live=polite>; the answer region is aria-live=polite (streamed understanding text) and generation posts gen-start/gen-progress/gen-done so the image build shows real progress. Errors from either path post {type:error} and surface on the page. The needs-WebGPU honest state is driven by requiresWebGPU. Conformance live-status-region + errors-on-the-page tested-pass; honest-progress-retry-offline + webgpu-capability-honest manual/capability.",
+      "notes": ""
+    },
+    {
+      "dimension": "controls",
+      "score": 4,
+      "severity": "info",
+      "evidence": "Two real control groups: UNDERSTANDING (4 sample thumbs role=button + Enter/Space, drop/choose file, a prompt input, a max-tokens number input, an Ask button) and GENERATION (a text-to-image prompt input + a Generate button). Both are keyboard-operable and enabled onReady; each drives its own worker path.",
+      "notes": ""
+    },
+    {
+      "dimension": "no-fake-output",
+      "score": 5,
+      "severity": "info",
+      "evidence": "No canned text or placeholder image: understanding text is the real streamed generation, and the generated image is decoded from the model's own 576 VQ image tokens (do_sample:true) — not a stock asset. With no WebGPU the honest needs-WebGPU state shows. Conformance no-fake-output manual-evidenced.",
+      "notes": ""
+    },
+    {
+      "dimension": "accessibility",
+      "score": 4,
+      "severity": "minor",
+      "evidence": "Sample thumbs carry alt (images-have-alt tested-pass); buttons have text names (buttons-have-names tested-pass); status + answer use role=status / aria-live; the generated-image canvas should carry a text description of the prompt it rendered. Light+dark use the WCAG-AA design system.",
+      "notes": "Minor: the generated image is canvas/blob output — the prompt text beside it is its accessible description; a dedicated aria-label echoing the prompt would strengthen this."
+    },
+    {
+      "dimension": "responsive",
+      "score": 4,
+      "severity": "info",
+      "evidence": "Conformance responsive-desktop + responsive-mobile (no-horizontal-overflow) are the tested assertions; the understanding + generation panels stack on narrow mobile, images are max-inline-size:100%, sample strip flex-wraps. parity-both-classes manual-evidenced.",
+      "notes": "Mobile cost (~2.4–4 GB + WebGPU) surfaced in at-a-glance."
+    },
+    {
+      "dimension": "performance",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Both understanding and image generation run in the dedicated module Worker; the main thread only appends streamed tokens / paints the returned Blob and updates a progress readout. generate_images reports tokens-per-second as the 24x24 grid fills. Conformance inference-off-main-thread (source: new Worker) tested-pass; inp-stays-low manual-evidenced.",
+      "notes": "prepare_inputs_embeds intentionally runs on WASM inside the worker (upstream WebGPU op bug) — still off the UI thread."
+    }
+  ],
+  "guidanceConsulted": [
+    {
+      "query": "break up long tasks keep INP low run heavy work off the main thread in a web worker",
+      "id": "break-up-long-tasks",
+      "recommendation": "Move heavy synchronous work off the main thread and break up long tasks so the browser can service input and repaint; workers + yielding keep interactions responsive.",
+      "appliedOrException": "applied — both understanding (generate + TextStreamer) and text-to-image (generate_images) run in a dedicated module Worker; the page thread only streams tokens / paints the returned Blob.",
+      "evidence": "worker.js new Worker(type:module); conformance inference-off-main-thread pass"
+    },
+    {
+      "query": "keep INP low, responsive interactions and Core Web Vitals for a heavy on-device workload",
+      "id": "performance",
+      "recommendation": "Optimise INP/LCP/CLS: never block the main thread with heavy compute, stream progress, keep interaction handlers cheap.",
+      "appliedOrException": "applied — generation streams per-token progress + tokens-per-second so a multi-second image build stays legible without blocking input.",
+      "evidence": "gen-progress messages drive a live readout; no main-thread inference"
+    },
+    {
+      "query": "expose canvas-rendered content (overlays / generated image) to assistive technology",
+      "id": "expose-canvas-content-to-browser-features",
+      "recommendation": "Give canvas-rendered content a meaningful accessible name and a text equivalent so it is exposed to assistive tech.",
+      "appliedOrException": "applied — the generated image is drawn to a canvas/blob and described by the prompt text beside it; the understanding overlay uses aria-live text.",
+      "evidence": "generated-image canvas + prompt text equivalent"
+    },
+    {
+      "query": "accessible live region status updates, accessible names for controls, loading state",
+      "id": "accessibility",
+      "recommendation": "Announce loading/ready/error via role=status aria-live; give every control an accessible name; semantic HTML + visible focus; mark language for correct shaping.",
+      "appliedOrException": "applied — role=status aria-live, aria-live answer region, alt on samples, labelled prompt inputs, accessible button names across both control groups.",
+      "evidence": "conformance buttons-have-names + images-have-alt + live-status-region pass"
+    }
+  ],
+  "openQuestions": [
+    "io-shape-semantic / no-fake-output / auto-init-on-cached are manual-evidenced — a GPU run should capture BOTH a real understanding answer AND a generated image (with tokens/sec) to flip them to pass.",
+    "Generation uses do_sample:true (stochastic) — should the page expose a seed so a generated image is reproducible for demos/screenshots?"
+  ],
+  "followUpGoals": [
+    {
+      "goal": "On a WebGPU machine, capture retained evidence for BOTH paths (understanding answer + generated 384x384 image + tokens/sec) to satisfy io-shape-semantic / no-fake-output / auto-init-on-cached.",
+      "kind": "targeted-fix",
+      "priority": "medium"
+    },
+    {
+      "goal": "Add an optional seed control to the generation path for reproducible image outputs.",
+      "kind": "targeted-fix",
+      "priority": "low"
+    },
+    {
+      "goal": "Add an aria-label to the generated-image canvas that echoes the generation prompt.",
+      "kind": "targeted-fix",
+      "priority": "low"
+    }
+  ],
+  "summary": "Retrospective code-grounded critique for janus-pro (onnx-community/Janus-Pro-1B-ONNX, ONNX of deepseek-ai/Janus-Pro-1B, any-to-any, ~1B, WebGPU-only, ~2.4 GB / ~4 GB fallback, MIT). A UNIFIED multimodal model: ONE MultiModalityCausalLM both READS images (generate + TextStreamer, SigLIP path) and DRAWS them (generate_images -> 576 VQ image tokens -> 24x24 grid -> 384x384 raster Blob, VQ-decode path), all in a dedicated module Worker with a shader-f16-aware dtype map and prepare_inputs_embeds pinned to WASM for a known upstream op bug. Honest needs-WebGPU fallback; no fabricated text or image, genuinely blocked (not faked) in a no-GPU harness. guidanceConsulted: break-up-long-tasks, performance, expose-canvas-content-to-browser-features, accessibility. Weaknesses flagged: io-shape-semantic / no-fake-output / auto-init-on-cached manual-evidenced; generated-image canvas would benefit from a prompt-echoing aria-label and a seed control."
+}
