@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>mBERT Language Detection Multi-model — detect then translate · Web AI Showcase</title>
+    <meta name="description" content="Detect the language of a message, then route it to the matching MarianMT model to translate into English — two models chained locally in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🗣️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">mBERT language detection</a></p>
+
+    <header>
+      <p class="eyebrow">use case · multi-model</p>
+      <h1>Multi-model: detect the language, then translate</h1>
+      <p class="lede">
+        Language detection is the router. Here it detects the language of your text, then <strong>chooses the matching
+        MarianMT model</strong> to translate it into English — French text loads the French→English model,
+        German loads the German model, and so on. Only the translator you actually need is downloaded. Both
+        stages run locally, so you can build "understand any message" flows with nothing sent to a server.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <div style="display:flex;gap:.4rem;flex-wrap:wrap;margin:.5rem 0">
+        <button class="chip" type="button" data-sample="fr">Français</button>
+        <button class="chip" type="button" data-sample="de">Deutsch</button>
+        <button class="chip" type="button" data-sample="es">Español</button>
+        <button class="chip" type="button" data-sample="it">Italiano</button>
+        <button class="chip" type="button" data-sample="ru">Русский</button>
+        <button class="chip" type="button" data-sample="nl">Nederlands</button>
+        <button class="chip" type="button" data-sample="zh">中文</button>
+      </div>
+
+      <label for="text" style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">
+        Text in (almost) any language
+        <textarea id="text" rows="3" disabled style="font:inherit;padding:.5rem;border:1px solid var(--border);border-radius:6px;background:var(--bg-raised);color:var(--color)">Bonjour, je voudrais savoir si ma commande a bien été expédiée.</textarea>
+      </label>
+      <div style="margin:.5rem 0"><button id="run" type="button" disabled>Detect &amp; translate</button></div>
+
+      <div id="pipe" hidden>
+        <div class="mm-step"><span class="mm-num">1</span><div><div class="mm-title">Detected language</div><div id="mmDetect" class="mm-body"></div></div></div>
+        <div class="mm-arrow" aria-hidden="true">↓ routes to</div>
+        <div class="mm-step"><span class="mm-num">2</span><div><div class="mm-title">Translation into English</div><div id="mmTranslate" class="mm-body"></div></div></div>
+      </div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>detect <b id="rDet">–</b></span>
+        <span>translate <b id="rTr">–</b></span>
+      </div>
+    </section>
+
+    <p class="muted" style="font-size:.85rem">
+      Bundled translators cover French, German, Spanish, Italian, Russian, Dutch and Chinese into English;
+      English text is passed through, and any other detected language reports that no translator is bundled for
+      it — an honest "I know the language but don't have that model" rather than a wrong guess. In production
+      you'd map every detected language to its own model the same way.
+    </p>
+
+    <p class="crumbs"><a href="../wild/">← Wild</a> · <a href="../">Back to mBERT language detection</a> · Related: <a href="/web-ai-showcase/models/marianmt-translation/">MarianMT translation →</a></p>
+
+    <script type="module">
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      import { langName, langFlag, escapeHTML } from "../mbertlid.js";
+      const style = document.createElement("style");
+      style.textContent = `
+        .mm-step { display: grid; grid-template-columns: auto 1fr; gap: .7rem; align-items: start;
+          border: 1px solid var(--border); border-radius: 10px; background: var(--bg-raised); padding: .7rem .9rem; }
+        .mm-num { display: grid; place-items: center; inline-size: 1.7rem; block-size: 1.7rem; border-radius: 999px;
+          background: var(--accent); color: var(--accent-ink); font-family: var(--font-mono); font-weight: 700; font-size: .9rem; }
+        .mm-title { font-family: var(--font-mono); font-size: .78rem; color: var(--muted); margin-bottom: .2rem; }
+        .mm-body { font-size: .95rem; }
+        .mm-body .lang { display: inline-flex; align-items: baseline; gap: .4rem; font-family: var(--font-display); font-size: 1.2rem; }
+        .mm-body .conf { font-family: var(--font-mono); font-size: .78rem; color: var(--muted); margin-inline-start: .4rem; }
+        .mm-body .model { font-family: var(--font-mono); font-size: .74rem; color: var(--muted); }
+        .mm-body.warn { color: var(--muted); }
+        .mm-arrow { text-align: center; font-family: var(--font-mono); font-size: .78rem; color: var(--muted); margin: .35rem 0; }
+        .readout { display: flex; flex-wrap: wrap; gap: 1rem; font-family: var(--font-mono); font-size: .78rem; color: var(--muted); margin-top: .6rem; }
+        .readout b { color: var(--color); font-weight: 600; }
+        .chip { font: inherit; font-size: .78rem; padding: .2rem .6rem; border-radius: 999px; border: 1px solid var(--border); background: var(--bg-raised); color: var(--color); cursor: pointer; }
+        .chip:hover { border-color: var(--accent); }`;
+      document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+
+      const SAMPLES = {
+        fr: "Bonjour, je voudrais savoir si ma commande a bien été expédiée.",
+        de: "Guten Tag, mein Paket ist beschädigt angekommen. Was soll ich tun?",
+        es: "Hola, el pago fue rechazado tres veces. ¿Pueden ayudarme, por favor?",
+        it: "Buongiorno, ho bisogno di cambiare l'indirizzo di spedizione del mio ordine.",
+        ru: "Здравствуйте, я до сих пор не получил свой заказ. Можете проверить статус?",
+        nl: "Hallo, ik kan niet inloggen op mijn account. Kunt u mij helpen?",
+        zh: "你好，我的包裹还没有送到，能帮我查一下吗？",
+      };
+
+      // Two-model worker client.
+      const worker = new Worker("./pipeline-worker.js", { type: "module" });
+      let ready = false, onProg = null, loadWaiters = [], pending = new Map(), gid = 0, device = "wasm";
+      worker.addEventListener("message", (e) => {
+        const m = e.data;
+        if (m.type === "progress") onProg?.(m.p);
+        else if (m.type === "stage") { $("runStatus").hidden = false; $("runStatus").classList.remove("err"); $("runStatus").textContent = m.stage; }
+        else if (m.type === "ready") { ready = true; device = m.device; onProg = null; loadWaiters.forEach((w) => w()); loadWaiters = []; }
+        else if (m.type === "result") { pending.get(m.id)?.resolve(m); pending.delete(m.id); }
+        else if (m.type === "error") {
+          if (m.id != null && pending.has(m.id)) { pending.get(m.id).reject(new Error(m.message)); pending.delete(m.id); }
+          else loadWaiters.forEach((w) => w(new Error(m.message)));
+        }
+      });
+      const engine = {
+        get device() { return device; },
+        load: (p) => { onProg = p; return new Promise((res, rej) => { if (ready) return res(); loadWaiters.push((err) => err ? rej(err) : res()); worker.postMessage({ type: "load" }); }); },
+        run: (text) => { const id = ++gid; return new Promise((resolve, reject) => { pending.set(id, { resolve, reject }); worker.postMessage({ type: "run", id, text }); }); },
+      };
+
+      let loaded = false;
+      for (const b of document.querySelectorAll("[data-sample]")) {
+        b.addEventListener("click", () => { $("text").value = SAMPLES[b.dataset.sample]; run(); });
+      }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/language_detection-ONNX", runtime: "transformers.js", dtype: "q8", sizeMB: 28, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("text").disabled = false; $("run").disabled = false; loaded = true; run(); },
+      });
+
+      $("run").addEventListener("click", run);
+      async function run() {
+        if (!loaded) return;
+        const text = $("text").value.trim();
+        if (!text) return;
+        $("run").disabled = true;
+        $("runStatus").hidden = false; $("runStatus").classList.remove("err"); $("runStatus").textContent = "Detecting…";
+        try {
+          const r = await engine.run(text);
+          $("mmDetect").innerHTML = `<span class="lang">${langFlag(r.detected)} ${langName(r.detected)}</span>` +
+            `<span class="conf">${r.detected} · ${(r.confidence * 100).toFixed(1)}%</span>`;
+          const tr = $("mmTranslate");
+          if (r.route === "already-english") {
+            tr.className = "mm-body warn"; tr.textContent = "Already English — no translation needed.";
+          } else if (r.route === "no-translator") {
+            tr.className = "mm-body warn"; tr.textContent = `Detected ${langName(r.detected)}, but no MarianMT ${r.detected}→en model is bundled in this demo.`;
+          } else {
+            tr.className = "mm-body";
+            tr.innerHTML = `<div>${escapeHTML(r.translation)}</div>` +
+              `<div class="model">via ${escapeHTML(r.modelId)}</div>`;
+          }
+          $("pipe").hidden = false;
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rDet").textContent = r.detectMs + " ms";
+          $("rTr").textContent = r.translated ? r.translateMs + " ms" : "–";
+          $("runStatus").hidden = true;
+        } catch (err) { $("runStatus").hidden = false; $("runStatus").textContent = "Failed: " + err.message; $("runStatus").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      }
+    </script>
+  </body>
+</html>

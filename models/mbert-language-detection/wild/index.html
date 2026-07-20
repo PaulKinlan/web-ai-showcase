@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>mBERT Language Detection Wild — short, ambiguous & mixed text · Web AI Showcase</title>
+    <meta name="description" content="Watch language detection get honestly uncertain on one-word inputs, shared vocabulary, and code-switched sentences — the confidence distribution tells the real story. Runs in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🗣️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">mBERT language detection</a></p>
+
+    <header>
+      <p class="eyebrow">use case · wild</p>
+      <h1>Wild: where language detection gets hard</h1>
+      <p class="lede">
+        Real text is messy. A single word can belong to several languages; a sentence can switch languages
+        mid-way; a proper noun carries almost no signal. A good detector doesn't pretend — it spreads its
+        probability, and that spread is the honest answer. Click a tricky example and read the distribution,
+        not just the top label.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <div style="display:flex;gap:.4rem;flex-wrap:wrap;margin:.5rem 0">
+        <button class="chip" type="button" data-sample="oneword">One word ("no")</button>
+        <button class="chip" type="button" data-sample="shared">Shared word</button>
+        <button class="chip" type="button" data-sample="switch">Code-switch</button>
+        <button class="chip" type="button" data-sample="proper">Proper nouns</button>
+        <button class="chip" type="button" data-sample="latin">Romanised</button>
+      </div>
+
+      <label for="text" style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">
+        Text
+        <textarea id="text" rows="3" disabled style="font:inherit;padding:.5rem;border:1px solid var(--border);border-radius:6px;background:var(--bg-raised);color:var(--color)">No.</textarea>
+      </label>
+      <p class="muted" id="note" style="font-size:.82rem;margin:.4rem 0 0"></p>
+
+      <div id="topResult" aria-live="polite" style="margin-top:.6rem"></div>
+      <div class="li-bars" id="bars" hidden style="margin-top:.6rem"></div>
+      <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>latency <b id="rMs">–</b></span><span>chars <b id="rChars">–</b></span></div>
+    </section>
+
+    <p class="muted" style="font-size:.85rem">
+      Notice how the top confidence drops and the runner-up bars rise as the input gets shorter or more mixed.
+      For a product this is the cue to fall back — ask the user, wait for more text, or send it to a human —
+      rather than trusting a coin-flip guess.
+    </p>
+
+    <p class="crumbs"><a href="../practical/">← Practical</a> · <a href="../">Back to mBERT language detection</a> · Next: <a href="../multi-model/">Multi-model →</a></p>
+
+    <script type="module">
+      import { LangIdEngine, renderTop, renderBars, LANGID_CSS } from "../mbertlid.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = LANGID_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new LangIdEngine();
+      let loaded = false;
+
+      const SAMPLES = {
+        oneword: { text: "No.", note: "\"No\" is valid English, Spanish, Italian, Polish and more — one word barely constrains the answer." },
+        shared: { text: "Information", note: "Spelled identically in English, French, German and others; without context the model can only guess." },
+        switch: { text: "I love this café, c'est vraiment magnifique and the coffee is incredible.", note: "Code-switching: the sentence is mostly English with a French clause — watch the mass split." },
+        proper: { text: "Cristiano Ronaldo, Toyota, Samsung, Ikea.", note: "Proper nouns carry almost no grammatical signal, so the distribution stays flat and unsure." },
+        latin: { text: "Konnichiwa, genki desu ka? Watashi wa totemo genki desu.", note: "Japanese written in Latin script (romaji) — the model was trained on native scripts, so this trips it up honestly." },
+      };
+      function apply(name) {
+        const s = SAMPLES[name];
+        $("text").value = s.text;
+        $("note").textContent = s.note;
+        if (loaded) run();
+      }
+      for (const b of document.querySelectorAll("[data-sample]")) {
+        b.addEventListener("click", () => apply(b.dataset.sample));
+      }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/language_detection-ONNX", runtime: "transformers.js", dtype: "q8", sizeMB: 28, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("text").disabled = false; loaded = true; apply("oneword"); },
+      });
+
+      let timer = null;
+      $("text").addEventListener("input", () => { $("note").textContent = ""; clearTimeout(timer); timer = setTimeout(run, 350); });
+      async function run() {
+        if (!loaded) return;
+        const text = $("text").value.trim();
+        if (!text) return;
+        try {
+          const r = await engine.detect(text);
+          renderTop($("topResult"), r.scores);
+          renderBars($("bars"), r.scores);
+          $("bars").hidden = false;
+          $("readout").hidden = false; $("rBackend").textContent = r.device.toUpperCase(); $("rMs").textContent = r.ms + " ms"; $("rChars").textContent = text.length;
+        } catch (err) { $("runStatus").hidden = false; $("runStatus").textContent = "Failed: " + err.message; $("runStatus").classList.add("err"); }
+      }
+    </script>
+  </body>
+</html>

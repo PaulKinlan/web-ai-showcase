@@ -1,0 +1,126 @@
+{
+  "schemaVersion": 1,
+  "id": "mbert-language-detection",
+  "revision": 1,
+  "reviewedAt": "2026-07-20T00:00:00Z",
+  "reviewer": "agent build+matrix pass (runnability verified standalone AND on-page in headless Chrome; real classification head [1,201] with correct top language across 6 languages; auto-init; desktop+mobile layout checked at 0px overflow), revision 1",
+  "frontend": true,
+  "rubric": [
+    {
+      "dimension": "real-inference",
+      "score": 5,
+      "severity": "info",
+      "evidence": "RUNNABILITY VERIFIED twice (headless Chrome, WASM, transformers.js@3.7.5 CDN build). Standalone probe: pipeline('text-classification','onnx-community/language_detection-ONNX',{dtype:'q8'}) returned the correct top language on 7/7 multi-language samples — fra_Latn 0.998, deu_Latn 0.9999, eng_Latn 0.983, spa_Latn 0.995, jpn_Jpan 0.9999, rus_Cyrl 0.916, ita_Latn 0.981 — and AutoModelForSequenceClassification returned real logits with dims [1, 201] (sample values 0.462, 1.318, 0.308, -4.059). On the built page: model auto-loaded and detected across en/fr/ja/ar/ko/zu (eng_Latn 99.2%, fra_Latn 99.7%, jpn_Jpan 100%, ars_Arab 67.1%, kor_Hang 100%, zul_Latn 99.3%), latency ~6 ms, ZERO console errors.",
+      "notes": "Inference runs off the main thread in a dedicated module Worker; full softmax over all 201 classes returned via top_k: 201."
+    },
+    {
+      "dimension": "io-shape",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Expected output = a real classification head: logits shape [1, 201] → softmax → sorted [{label, score}] over 201 FLORES-200 codes. Verified directly (out.logits.dims === [1,201]) and via the pipeline's sorted score list. NOT a head-less encoder (last_hidden_state) — a genuine 201-way language classifier.",
+      "notes": "Labels are FLORES-200 codes (iso639-3_Script). The page shows friendly names for common ones and an honest parsed 'iso · Script' fallback for the long tail (e.g. ars_Arab rendered 'ars · Arabic'); the raw code is always shown."
+    },
+    {
+      "dimension": "runtime-config",
+      "score": 5,
+      "severity": "info",
+      "evidence": "At-a-glance declares the exact model id (onnx-community/language_detection-ONNX, linked), the base (alexneakameni/language_detection), the task (text-classification), architecture (BertForSequenceClassification, multilingual BERT), backend (WASM), quantisation (q8, model_quantized.onnx — verified non-degenerate), size (~28 MB) and license (MIT, base model). Inference is off the main thread.",
+      "notes": "dtype q8 disclosed AND validated: 7/7 correct with high confidence — no degenerate collapse. Materially distinct from the built XLM-RoBERTa 20-language demo (different architecture + 201 vs 20 labels)."
+    },
+    {
+      "dimension": "cache-init",
+      "score": 5,
+      "severity": "info",
+      "evidence": "The page loads through the shared createModelLoader auto-init architecture (modelId onnx-community/language_detection-ONNX, sizeMB 28). Verified on-page: the loader auto-initialised and detection ran on load; a Clear-cached-model control is exposed once ready. Absent model would show Download (no silent auto-download of a large model).",
+      "notes": "At ~28 MB the q8 build is small enough to be practical on mobile, unlike the 270 MB XLM-R detector."
+    },
+    {
+      "dimension": "states",
+      "score": 4,
+      "severity": "info",
+      "evidence": "Loading/detecting state is announced in role=status aria-live regions; the shared loader exposes a Retry recovery path on failure; a Detecting… status line reports progress and errors surface on the page ('Detection failed: …'). Console + network stayed clean across load + detection.",
+      "notes": "Debounced detect-as-you-type (350 ms) keeps the input responsive."
+    },
+    {
+      "dimension": "controls",
+      "score": 4,
+      "severity": "info",
+      "evidence": "Every control is real and keyboard-operable: the text textarea (detect-on-input), language sample chips (English/Français/日本語/العربية/한국어/isiZulu/Code-switch), and per-page controls — practical adds a multi-line messages box + Detect & route button; wild adds tricky-example chips; multi-model adds a Detect & translate button chaining a MarianMT translator.",
+      "notes": "Sample chips exercise the wide net — Korean and Zulu are NOT in the built 20-language XLM-R demo, making the distinctness tangible."
+    },
+    {
+      "dimension": "no-fake-output",
+      "score": 5,
+      "severity": "info",
+      "evidence": "No canned output — the worker runs the real transformers.js text-classification pipeline; the top result, probability bars and the FLORES codes are all derived from the real 201-way softmax. The standalone probe confirmed the exact logits [1,201] the UI renders.",
+      "notes": "Long-tail languages with no curated name show the honest parsed code (e.g. ars · Arabic), never a fabricated name."
+    },
+    {
+      "dimension": "accessibility",
+      "score": 5,
+      "severity": "info",
+      "evidence": "All chips/buttons have accessible names; results use aria-live regions; the probability bars are labelled with language name + FLORES code + percentage. Light+dark use the WCAG-AA design system.",
+      "notes": ""
+    },
+    {
+      "dimension": "responsive",
+      "score": 4,
+      "severity": "info",
+      "evidence": "Verified 0px horizontal overflow at mobile (360×740, DPR3, touch) and clean desktop (1280×800) via scripts/responsive-check. The bar grid uses minmax(8rem,12rem) 1fr auto and ellipsis on long language labels; chips flex-wrap; textareas are inline-size:100%.",
+      "notes": "support seeded via responsive-check; sub-24px flags are inline prose/table links (WCAG target-size exempt)."
+    },
+    {
+      "dimension": "performance",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Inference runs off the main thread in a Web Worker; a single BERT forward pass over a short input classifies in ~6 ms on WASM (measured on-page). The bar render is a bounded top-6 slice of the sorted distribution — no main-thread inference, no unbounded loop.",
+      "notes": "INP kept low — detection never blocks the interface even when typing."
+    }
+  ],
+  "guidanceConsulted": [
+    {
+      "query": "keep INP low; run text classification off the main thread without janking input",
+      "id": "break-up-long-tasks",
+      "recommendation": "Move inference off the main thread; keep any main-thread loop bounded.",
+      "appliedOrException": "applied — classification runs in a dedicated module Web Worker; the bar render is a bounded top-6 slice; detect-as-you-type is debounced (350 ms).",
+      "evidence": "worker.js off-thread; ~6 ms latency measured on-page; console clean; UI responsive while typing"
+    },
+    {
+      "query": "responsive result list / probability bars without horizontal overflow on narrow mobile",
+      "id": "css-layout",
+      "recommendation": "Fluid grid with intrinsic min sizing (minmax) + text-overflow ellipsis; logical properties; flex-wrap chips; avoid fixed widths.",
+      "appliedOrException": "applied — li-bar-row grid minmax(8rem,12rem) 1fr auto; long language labels ellipsis; chips flex-wrap; textarea inline-size:100%.",
+      "evidence": "0px mobile overflow measured at 360×740 in headless Chrome via responsive-check"
+    },
+    {
+      "query": "accessible live region status updates for detection results and labelled probability bars",
+      "id": "accessibility",
+      "recommendation": "Announce loading/ready/error via role=status aria-live; label every control; give each bar an accessible name.",
+      "appliedOrException": "applied — shared loader + page status use role=status aria-live; chips/buttons carry accessible names; bars label name + FLORES code + percentage.",
+      "evidence": "buttons-have-names + live-status-region conformance pass"
+    },
+    {
+      "id": "cross-document-transitions",
+      "recommendation": "Use cross-document view transitions for catalogue↔page navigation.",
+      "appliedOrException": "applied — @view-transition navigation:auto in public/styles.css (invariant 6).",
+      "evidence": "shared design system"
+    }
+  ],
+  "openQuestions": [
+    "The curated friendly-name map covers ~100 of the 201 FLORES codes; the long tail shows the honest parsed 'iso · Script' fallback. Worth expanding the map for more of the low-resource languages that are the whole point of the 201-language net.",
+    "On closely related same-script pairs (e.g. Croatian/Bosnian/Serbian-Latin, or Arabic regional variants) the model spreads probability — worth a dedicated 'confusable languages' surface quantifying that spread."
+  ],
+  "followUpGoals": [
+    {
+      "goal": "Expand the FLORES-200 friendly-name map to cover more of the low-resource long tail so the 201-language breadth reads as names, not codes, for more inputs.",
+      "kind": "targeted-fix",
+      "priority": "low"
+    },
+    {
+      "goal": "Add a 'confusable languages' wild surface that quantifies how the softmax mass splits across closely related same-script languages (e.g. hr/bs/sr-Latn, Arabic variants).",
+      "kind": "new-demo",
+      "priority": "low"
+    }
+  ],
+  "summary": "Revision-1 build+matrix pass for mbert-language-detection (onnx-community/language_detection-ONNX, text-classification, q8, ~28 MB — a multilingual BERT / BertForSequenceClassification fine-tune, base alexneakameni/language_detection, over 201 FLORES-200 languages). A materially DISTINCT model from the built 20-language XLM-RoBERTa 'language-identification' demo: different architecture and ~10x the languages. REAL classification head VERIFIED — logits shape [1,201] (standalone), correct top language 7/7 (fr/de/en/es/ja/ru/it) standalone and 6/6 on-page (en/fr/ja/ar/ko/zu), ~6 ms latency, 0px mobile overflow, ZERO console/network errors. Ladder: basics (detect a language + full distribution), practical (route messages to per-language queues), wild (short/ambiguous/code-switched), multi-model (detect then route to the matching MarianMT translator into English, keyed on FLORES codes). License MIT (base model)."
+}
