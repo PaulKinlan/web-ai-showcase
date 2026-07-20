@@ -1,0 +1,352 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>I-JEPA — self-supervised image features by prediction in representation space · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Meta's I-JEPA (Image Joint-Embedding Predictive Architecture): a label-free image encoder trained by predicting the REPRESENTATIONS of masked regions — no pixel reconstruction, no contrastive pairs, no [CLS] token. Build a live similarity matrix, retrieve images, inspect the patch grid, and see how predictive pretraining differs from DINOv2. Real in-browser inference, no server."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🧠</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">image-feature-extraction · vision · WASM · ~636 MB</p>
+      <h1>I-JEPA — image features learned by <em>predicting</em>, not reconstructing</h1>
+      <p class="lede">
+        I-JEPA turns any image into a general-purpose descriptor with no labels — but it got there by a
+        route no other vision model here takes. Instead of reconstructing masked pixels (MAE) or pulling
+        two augmented views together (DINO/CLIP), it <strong>predicts the encoder's own representations</strong>
+        of masked target regions from a visible context block — learning <strong>in representation space</strong>.
+        The backbone is a plain ViT with <strong>no [CLS] token and no register tokens</strong>: the whole
+        output is the patch grid, and the image descriptor is their mean. Add a few images and watch it
+        build a live similarity matrix; then look inside at the patch features predictive pretraining
+        produces. Nothing leaves your device.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <div class="matrix-scroll">
+        <table class="inside-table">
+          <tbody>
+            <tr><th>Model</th><td><a href="https://huggingface.co/onnx-community/ijepa_vith14_1k" target="_blank" rel="noopener">onnx-community/ijepa_vith14_1k</a> (ONNX build of <a href="https://huggingface.co/facebook/ijepa_vith14_1k" target="_blank" rel="noopener">facebook/ijepa_vith14_1k</a>)</td></tr>
+            <tr><th>Task / pipeline</th><td><code>image-feature-extraction</code></td></tr>
+            <tr><th>Architecture</th><td>ViT-<strong>Huge</strong>/14 @ 224px (~630M params) → a <strong>16×16 = 256-patch</strong> grid, hidden size <strong>1280</strong>. <strong>No [CLS], no register tokens</strong> — the descriptor is the <strong>mean</strong> of the patch tokens.</td></tr>
+            <tr><th>The I-JEPA idea</th><td>a <em>context</em> encoder sees a visible block; a <em>predictor</em> must predict the (EMA) target encoder's REPRESENTATIONS of several masked blocks — <strong>prediction in representation space</strong>, no pixel decoder, no contrastive negatives, no hand-crafted augmentations — <em>Self-Supervised Learning from Images with a Joint-Embedding Predictive Architecture</em>, Assran et al., 2023</td></tr>
+            <tr><th>Training</th><td>Self-supervised, <strong>no labels</strong> — ImageNet-1k</td></tr>
+            <tr><th>Descriptor</th><td>the <strong>mean patch token</strong> (1280-d), L2-normalized → cosine = dot product</td></tr>
+            <tr><th>Quantization</th><td>q8 (8-bit) ONNX — <code>onnx/model_quantized.onnx</code></td></tr>
+            <tr><th>Backend</th><td>WebAssembly (runs anywhere; no WebGPU needed)</td></tr>
+            <tr><th>Download</th><td><strong>~636 MB</strong>, cached after first load — a heavy one-time download (ViT-Huge). Best on desktop / good connectivity.</td></tr>
+            <tr><th>License</th><td><strong>CC-BY-NC-4.0 (non-commercial)</strong> — Meta AI. Fine for research/showcase; not for commercial use.</td></tr>
+            <tr><th>Web APIs</th><td>WebAssembly, Web Workers, File API — all Baseline widely available</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="muted" style="font-size:.82rem;margin-top:.6rem">
+        Distinct from <a href="/web-ai-showcase/models/dinov2-registers/">DINOv2-with-registers</a> and
+        <a href="/web-ai-showcase/models/clip-zero-shot/">CLIP</a>: same task, but a
+        <strong>predictive</strong> pretraining objective (predict representations of masked regions) rather
+        than DINO's self-distillation or CLIP's image–text contrast — and no [CLS]/register tokens at all.
+        Compare the patch maps across the pages.
+      </p>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it — image similarity matrix</h3>
+      <p class="muted">Start with the sample set (two cats, two cars, a mountain, a flower) or add your own.
+        The model embeds each image; the matrix shows the cosine similarity between every pair — 1.00 down the
+        diagonal, higher where two images look alike. Uploaded images never leave your browser.</p>
+
+      <div id="model-loader"></div>
+
+      <div id="tray" class="img-tray" aria-label="Images to compare"></div>
+      <label class="dropzone" id="dropzone" tabindex="0" role="button">
+        <input type="file" id="file" accept="image/*" multiple hidden />
+        Drop images here, or press to choose. Your files stay on-device.
+      </label>
+
+      <div style="margin:.6rem 0;display:flex;gap:.4rem;flex-wrap:wrap">
+        <button id="run" type="button" disabled>Embed &amp; compare</button>
+        <button id="reset" type="button" class="secondary">Reset samples</button>
+      </div>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+
+      <div class="matrix-scroll" id="matrix" aria-live="polite"></div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+        <span>images <b id="rN">–</b></span>
+        <span>dims <b id="rDim">–</b></span>
+        <span>patches <b id="rPatch">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside — the patch grid &amp; the global descriptor</h3>
+      <p class="muted">
+        I-JEPA splits the image into a grid of 14×14-pixel patches and produces one feature vector per
+        patch — and that's <em>all</em> it produces (no [CLS], no registers). Two heatmaps read the grid.
+        <strong>Cosine-to-descriptor</strong> shows which patches most define "what this image is" (the
+        foreground the mean descriptor is dominated by). <strong>Patch norm</strong> shows the raw feature
+        magnitude across the grid. Because I-JEPA is trained to predict masked-region representations from
+        context, its patch features are smooth and semantically organised — no [CLS]-token bottleneck to
+        route global information through.
+      </p>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Embed some images to inspect their features.</div>
+      <div id="insideWrap" hidden class="grid-2">
+        <div>
+          <label style="font-size:.82rem;display:flex;gap:.4rem;align-items:center;flex-wrap:wrap">
+            Inspect image
+            <select id="pick"></select>
+          </label>
+          <div style="display:flex;gap:.4rem;flex-wrap:wrap;margin:.5rem 0" role="group" aria-label="Heatmap mode">
+            <button id="modeSim" type="button" class="chip" aria-pressed="true">cosine to descriptor</button>
+            <button id="modeNorm" type="button" class="chip" aria-pressed="false">patch norm</button>
+          </div>
+          <div class="pg-wrap" id="pgWrap">
+            <img id="pgImg" alt="Selected image with patch-feature heatmap overlay" />
+            <div class="pg-over" id="pgOver"></div>
+          </div>
+          <p class="muted" style="font-size:.76rem;margin-top:.3rem" id="gridNote"></p>
+        </div>
+        <div>
+          <div class="readout" style="margin-top:0">
+            <span>dimensions <b>1280</b></span>
+            <span>patches <b id="iPatch">256</b></span>
+            <span>pre-norm ‖mean‖ <b id="iNorm">–</b></span>
+            <span>post-norm ‖v‖ <b>1.000</b></span>
+          </div>
+          <p class="muted" style="font-size:.78rem;margin:.6rem 0 .2rem">First 96 of the 1280 descriptor dimensions (blue = positive, orange = negative, brighter = larger):</p>
+          <div class="vec-strip" id="vecStrip"></div>
+          <p class="muted" style="font-size:.78rem;font-family:var(--font-mono);margin-top:.5rem;word-break:break-all" id="vecHead"></p>
+        </div>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        A general-purpose image descriptor is the vision equivalent of a text embedding — and because I-JEPA
+        is trained without labels, it isn't boxed into a fixed list of classes. Its predictive objective is
+        interesting precisely because it skips the expensive parts of other self-supervised recipes: no pixel
+        decoder to reconstruct fine detail, and no bank of augmentations/negatives to hand-tune. That makes it
+        a clean, efficient backbone whose features you can index, compare, and line up between images — here,
+        entirely in a browser tab, without uploading a single photo.
+      </p>
+      <ul>
+        <li><strong>Visual deduplication</strong> — find near-identical photos, re-uploads, or slightly-edited copies in a library.</li>
+        <li><strong>Reverse image search</strong> — "find more like this" over a private set, entirely client-side.</li>
+        <li><strong>Dense correspondence</strong> — match the same regions across two photos (registration, tracking, part alignment) using the patch features.</li>
+        <li><strong>Few-shot classification</strong> — embed a handful of examples per class, then label new images by nearest match — no fine-tuning.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Two images in, one similarity number out — plus the patch heatmap and norm map for each.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Near-duplicate finder and reverse-image-search over a small on-device set.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Dense patch correspondence — colour-match the same regions across two images.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">Retrieve the nearest image with I-JEPA, then label it with a ViT classifier.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>The image-feature-extraction pipeline is the whole recipe; drop to the raw model for patch features:</p>
+      <pre><code>import { pipeline, RawImage } from "@huggingface/transformers";
+
+const extractor = await pipeline(
+  "image-feature-extraction",
+  "onnx-community/ijepa_vith14_1k",
+); // downloads + caches ~636 MB once
+
+// Simple path: one pooled 1280-d descriptor per image (mean of patch tokens).
+const out = await extractor("cat.jpg", { pool: true });
+const vec = out.tolist()[0]; // 1280 numbers
+
+// unit-normalize, then cosine similarity is just the dot product:
+const norm = (v) =&gt; { const n = Math.hypot(...v); return v.map((x) =&gt; x / n); };
+const sim = (a, b) =&gt; a.reduce((s, x, i) =&gt; s + x * b[i], 0);
+
+// Deeper path: the raw model gives the per-PATCH sequence — no [CLS], no registers.
+const image = await RawImage.read("cat.jpg");
+const inputs = await extractor.processor(image);
+const { last_hidden_state } = await extractor.model(inputs);
+// last_hidden_state: [1, 256, 1280] — 256 patch tokens on a 16×16 grid.
+// the image descriptor = mean over the 256 tokens.</code></pre>
+      <p class="muted">
+        This page computes the mean descriptor plus each patch token's norm and cosine-to-descriptor, so
+        "See inside" can show the real magnitudes and the patch map. Inference runs in a Web Worker so
+        building the matrix never janks the page.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/facebook/ijepa_vith14_1k" target="_blank" rel="noopener">Model card — facebook/ijepa_vith14_1k</a></li>
+        <li><a href="https://huggingface.co/onnx-community/ijepa_vith14_1k" target="_blank" rel="noopener">ONNX build — onnx-community/ijepa_vith14_1k</a></li>
+        <li><a href="https://arxiv.org/abs/2301.08243" target="_blank" rel="noopener">Paper — Self-Supervised Learning from Images with a Joint-Embedding Predictive Architecture (Assran et al., 2023, arXiv:2301.08243)</a></li>
+        <li><a href="https://github.com/facebookresearch/ijepa" target="_blank" rel="noopener">Code — facebookresearch/ijepa</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { IJepaEngine, simMatrix, renderImageMatrix, renderPatchGrid, fileToDataURL, IJEPA_CSS }
+        from "./ijepa.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = IJEPA_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new IJepaEngine();
+      const SAMPLES = [
+        { src: "samples/cat-1.jpg", name: "cat A" },
+        { src: "samples/cat-2.jpg", name: "cat B" },
+        { src: "samples/car-1.jpg", name: "car A" },
+        { src: "samples/car-2.jpg", name: "car B" },
+        { src: "samples/mountain-1.jpg", name: "mountain" },
+        { src: "samples/flower-1.jpg", name: "flower" },
+      ];
+      let items = SAMPLES.slice();
+      let last = null; // { items, results }
+      let mode = "sim";
+
+      function renderTray() {
+        $("tray").replaceChildren(...items.map((it, i) => {
+          const fig = document.createElement("figure");
+          fig.className = "img-tile";
+          fig.innerHTML = `<img src="${it.src}" alt="${it.name}" /><figcaption>${it.name}</figcaption>` +
+            `<button class="rm" type="button" aria-label="Remove ${it.name}" data-i="${i}">×</button>`;
+          return fig;
+        }));
+        for (const b of $("tray").querySelectorAll(".rm")) {
+          b.addEventListener("click", () => { items.splice(+b.dataset.i, 1); renderTray(); });
+        }
+      }
+      renderTray();
+
+      $("reset").addEventListener("click", () => { items = SAMPLES.slice(); renderTray(); });
+
+      const dz = $("dropzone");
+      dz.addEventListener("click", () => $("file").click());
+      dz.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); $("file").click(); } });
+      $("file").addEventListener("change", (e) => addFiles(e.target.files));
+      dz.addEventListener("dragover", (e) => { e.preventDefault(); dz.classList.add("drag"); });
+      dz.addEventListener("dragleave", () => dz.classList.remove("drag"));
+      dz.addEventListener("drop", (e) => { e.preventDefault(); dz.classList.remove("drag"); addFiles(e.dataTransfer.files); });
+      async function addFiles(fileList) {
+        for (const f of fileList) {
+          if (!f.type.startsWith("image/")) continue;
+          const src = await fileToDataURL(f);
+          items.push({ src, name: f.name.length > 14 ? f.name.slice(0, 13) + "…" : f.name });
+        }
+        renderTray();
+      }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: {
+          modelId: "onnx-community/ijepa_vith14_1k",
+          runtime: "transformers.js",
+          dtype: "q8",
+          sizeMB: 636,
+          requiresWebGPU: false,
+        },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("run").disabled = false; },
+      });
+
+      $("run").addEventListener("click", run);
+      async function run() {
+        if (items.length < 2) {
+          $("status").hidden = false; $("status").textContent = "Add at least two images."; $("status").classList.add("err"); return;
+        }
+        $("status").hidden = false; $("status").classList.remove("err"); $("run").disabled = true;
+        try {
+          const results = [];
+          let totalMs = 0, device = "wasm", dim = 0, patches = 0;
+          for (let i = 0; i < items.length; i++) {
+            $("status").textContent = `Embedding image ${i + 1} of ${items.length}…`;
+            const r = await engine.embed(items[i].src);
+            results.push(r); totalMs += r.ms; device = r.device; dim = r.dim; patches = r.numPatches;
+          }
+          last = { items: items.slice(), results, embs: results.map((r) => r.clsEmb) };
+          renderImageMatrix($("matrix"), simMatrix(last.embs), last.items);
+          $("readout").hidden = false;
+          $("rBackend").textContent = device.toUpperCase();
+          $("rMs").textContent = totalMs + " ms";
+          $("rN").textContent = items.length;
+          $("rDim").textContent = dim;
+          $("rPatch").textContent = patches;
+          fillInside();
+          $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (err) {
+          $("status").textContent = "Failed: " + err.message; $("status").classList.add("err");
+        } finally {
+          $("run").disabled = false;
+        }
+      }
+
+      $("modeSim").addEventListener("click", () => setMode("sim"));
+      $("modeNorm").addEventListener("click", () => setMode("norm"));
+      function setMode(m) {
+        mode = m;
+        $("modeSim").setAttribute("aria-pressed", String(m === "sim"));
+        $("modeNorm").setAttribute("aria-pressed", String(m === "norm"));
+        if (last) showInside(+$("pick").value);
+      }
+
+      function fillInside() {
+        $("insideEmpty").hidden = true;
+        $("insideWrap").hidden = false;
+        $("pick").replaceChildren(...last.items.map((it, i) => {
+          const o = document.createElement("option"); o.value = String(i); o.textContent = `${i + 1} — ${it.name}`; return o;
+        }));
+        showInside(0);
+      }
+      $("pick").addEventListener("change", (e) => showInside(+e.target.value));
+      function showInside(i) {
+        if (!last) return;
+        const r = last.results[i];
+        $("pgImg").src = last.items[i].src;
+        const values = mode === "norm" ? r.patchNorms : r.patchSims;
+        renderPatchGrid($("pgOver"), values, r.gridSize, mode);
+        $("gridNote").textContent = `${r.gridSize}×${r.gridSize} patch grid · ${r.numPatches} patches · ` +
+          (mode === "norm"
+            ? "brighter = higher patch-token norm"
+            : "brighter = more similar to the global (mean) descriptor");
+        $("iNorm").textContent = r.clsPreNorm.toFixed(2);
+        $("iPatch").textContent = r.numPatches;
+        const v = r.clsEmb;
+        const maxAbs = Math.max(...v.map(Math.abs)) || 1;
+        $("vecStrip").replaceChildren(...v.slice(0, 96).map((val) => {
+          const cell = document.createElement("span");
+          cell.className = "vec-cell";
+          const t = Math.abs(val) / maxAbs;
+          const hue = val >= 0 ? "var(--accent)" : "var(--warn)";
+          cell.style.background = `color-mix(in srgb, ${hue} ${(t * 100).toFixed(0)}%, var(--bg-raised))`;
+          cell.title = val.toFixed(4);
+          return cell;
+        }));
+        $("vecHead").textContent = "[" + v.slice(0, 8).map((x) => x.toFixed(4)).join(", ") + ", … ] (1280-d unit vector)";
+      }
+    </script>
+  </body>
+</html>
