@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Arctic-embed-m-v2.0 Basics — do two passages mean the same thing? · Web AI Showcase</title>
+    <meta name="description" content="The fundamental move: embed two passages — across languages or a paraphrase — and get one cosine number for how close their meaning is. Runs entirely in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>❄️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Arctic-embed-m-v2.0</a></p>
+
+    <header>
+      <p class="eyebrow">use case · basics</p>
+      <h1>Basics: one number for "same meaning?"</h1>
+      <p class="lede">
+        The simplest thing arctic-embed does: turn two passages into 768-number vectors and measure the cosine
+        between them. Same meaning across languages, or a faithful paraphrase, scores high; unrelated text
+        scores low — even when the two are written in different languages. Edit either box and re-run.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <div class="grid-2" style="margin-top:.6rem">
+        <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">
+          Passage A
+          <textarea id="a" rows="3" disabled>How long does the battery last on a single charge?</textarea>
+        </label>
+        <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">
+          Passage B
+          <textarea id="b" rows="3" disabled>一回の充電でバッテリーはどのくらいもちますか？</textarea>
+        </label>
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.5rem 0">
+        <button id="run" type="button" disabled>Compare</button>
+        <button class="chip" type="button" data-a="How long does the battery last on a single charge?" data-b="一回の充電でバッテリーはどのくらいもちますか？">EN ↔ JA (same)</button>
+        <button class="chip" type="button" data-a="The refund policy allows returns within 30 days." data-b="La política de reembolso permite devoluciones en un plazo de 30 días.">EN ↔ ES (same)</button>
+        <button class="chip" type="button" data-a="The central bank raised interest rates." data-b="I planted tomatoes in the garden this weekend.">unrelated</button>
+      </div>
+
+      <div class="readout" id="out" hidden>
+        <span>cosine <b id="cos">–</b></span>
+        <span>verdict <b id="verdict">–</b></span>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+      </div>
+      <div class="result-bar" id="bar" hidden style="max-inline-size:520px;margin-top:.5rem"><div class="result-fill" id="fill" style="inline-size:0%"></div></div>
+    </section>
+
+    <p class="muted" style="font-size:.85rem">
+      Cosine runs from −1 to 1; for arctic-embed dense vectors, cross-lingual paraphrases typically land around
+      0.7–0.85 and unrelated pairs well below 0.4. There's no hard threshold — it's a smooth similarity, and
+      you pick the cut-off that fits your task.
+    </p>
+
+    <p class="crumbs"><a href="../">← Back to Arctic-embed-m-v2.0</a> · Next: <a href="../practical/">Practical →</a></p>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via 🤗 Transformers.js.
+      <a href="../">← Back to Arctic-embed-m-v2.0</a>
+    </footer>
+
+    <script type="module">
+      import { ArcticEngine, cosine, ARCTIC_CSS } from "../arctic.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = ARCTIC_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new ArcticEngine();
+      let loaded = false;
+
+      for (const c of document.querySelectorAll(".chip")) c.addEventListener("click", () => { $("a").value = c.dataset.a; $("b").value = c.dataset.b; if (loaded) run(); });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Snowflake/snowflake-arctic-embed-m-v2.0", runtime: "transformers.js", dtype: "q8", sizeMB: 310, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("a").disabled = false; $("b").disabled = false; $("run").disabled = false; loaded = true; run(); },
+      });
+
+      $("run").addEventListener("click", run);
+      async function run() {
+        if (!loaded) return;
+        const a = $("a").value.trim(), b = $("b").value.trim();
+        if (!a || !b) { $("runStatus").hidden = false; $("runStatus").textContent = "Fill in both passages."; $("runStatus").classList.add("err"); return; }
+        $("run").disabled = true;
+        $("runStatus").hidden = false; $("runStatus").classList.remove("err"); $("runStatus").textContent = "Embedding…";
+        try {
+          const r = await engine.embed([a, b]);
+          const c = cosine(r.embeddings[0], r.embeddings[1]);
+          $("out").hidden = false; $("bar").hidden = false;
+          $("cos").textContent = c.toFixed(4);
+          $("verdict").textContent = c > 0.7 ? "same meaning" : c > 0.45 ? "related" : "different";
+          $("fill").style.inlineSize = (Math.max(0, Math.min(1, c)) * 100).toFixed(1) + "%";
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = r.ms + " ms";
+          $("runStatus").hidden = true;
+        } catch (err) { $("runStatus").textContent = "Failed: " + err.message; $("runStatus").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      }
+    </script>
+  </body>
+</html>

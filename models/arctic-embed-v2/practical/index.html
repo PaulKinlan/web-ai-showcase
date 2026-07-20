@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Arctic-embed-m-v2.0 Practical — cross-language semantic search · Web AI Showcase</title>
+    <meta name="description" content="Search a mixed-language knowledge base of long passages by meaning. Ask in one language; arctic-embed ranks passages in any language by how well they answer. Runs in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>❄️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Arctic-embed-m-v2.0</a></p>
+
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Practical: cross-language semantic search</h1>
+      <p class="lede">
+        A real knowledge base keeps each article in whatever language it was written in. Embed all of them into
+        one 768-d space, embed the query (with the model's <code>"query: "</code> retrieval prefix), and rank by
+        cosine. A question in English surfaces the right answer even if it's written in Spanish, Japanese or
+        German — no per-language index, no translation up front.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Retrieve across languages</h3>
+      <div id="model-loader"></div>
+      <p class="muted">A mixed-language knowledge base of long passages. Ask in any language; arctic-embed ranks
+        every passage by meaning regardless of language.</p>
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">
+        Passages (one per line, any languages)
+        <textarea id="corpus" rows="8" disabled>Si la batterie gonfle ou se déforme, cessez immédiatement de l'utiliser et apportez l'appareil à un centre de service agréé — ne la remplacez pas vous-même.
+El pedido se entrega normalmente en un plazo de tres a cinco días hábiles, y recibirás un enlace de seguimiento por correo electrónico.
+デバイスが濡れた場合は、電源を切り、48時間乾かしてから再び電源を入れてください。
+Our warranty covers manufacturing defects for two years from the date of purchase but excludes accidental damage.
+Wenn Sie den Akku schonen möchten, reduzieren Sie die Bildschirmhelligkeit und deaktivieren Sie die Hintergrundaktualisierung.
+El dispositivo es resistente al agua hasta un metro de profundidad durante 30 minutos.</textarea>
+      </label>
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;max-inline-size:34rem;margin-top:.5rem">
+        Query
+        <span style="display:flex;gap:.4rem;flex-wrap:wrap">
+          <input id="query" type="text" value="What should I do if my battery swells up?" style="flex:1;min-inline-size:12rem" disabled />
+          <button id="search" type="button" disabled>Search</button>
+        </span>
+      </label>
+      <div style="margin:.4rem 0;display:flex;gap:.4rem;flex-wrap:wrap" id="presets" role="group" aria-label="Ask in another language"></div>
+      <p class="muted" style="font-size:.76rem;margin:.3rem 0">Green badge = a hit in a <em>different</em> language from your query.</p>
+      <div class="sent-list" id="ranked" aria-live="polite"></div>
+      <div class="readout" id="rReadout" hidden><span>backend <b id="rBackend">–</b></span><span>latency <b id="rMs">–</b></span></div>
+    </section>
+
+    <p class="muted" style="font-size:.85rem">
+      This is the retrieval half of multilingual RAG: one shared-space embedder over the whole corpus. Because
+      arctic-embed is Matryoshka-trained, in production you could store 256-d truncated vectors to shrink the
+      index — see the <a href="../wild/">Wild</a> demo.
+    </p>
+
+    <p class="crumbs" style="margin-top:1.5rem"><a href="../wild/">Next: Wild — Matryoshka truncation →</a></p>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via 🤗 Transformers.js.
+      <a href="../">← Back to Arctic-embed-m-v2.0</a>
+    </footer>
+
+    <script type="module">
+      import { ArcticEngine, cosine, parseLines, guessLang, renderRanked, ARCTIC_CSS } from "../arctic.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = ARCTIC_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new ArcticEngine();
+      let loaded = false;
+
+      const PRESETS = {
+        English: "What should I do if my battery swells up?",
+        "Español": "¿Qué hago si mi batería se hincha?",
+        "日本語": "バッテリーが膨らんだらどうすればいいですか？",
+        "Deutsch": "Was soll ich tun, wenn mein Akku anschwillt?",
+      };
+      for (const [label, text] of Object.entries(PRESETS)) {
+        const b = document.createElement("button");
+        b.type = "button"; b.className = "chip"; b.textContent = "Ask in " + label;
+        b.addEventListener("click", () => { $("query").value = text; if (loaded) search(); });
+        $("presets").append(b);
+      }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Snowflake/snowflake-arctic-embed-m-v2.0", runtime: "transformers.js", dtype: "q8", sizeMB: 310, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("corpus").disabled = false; $("query").disabled = false; $("search").disabled = false; loaded = true; search(); },
+      });
+
+      $("search").addEventListener("click", search);
+      $("query").addEventListener("keydown", (e) => { if (e.key === "Enter") search(); });
+      async function search() {
+        if (!loaded) return;
+        const q = $("query").value.trim();
+        const texts = parseLines($("corpus").value);
+        if (!q || texts.length < 1) return;
+        $("search").disabled = true;
+        try {
+          const qLang = guessLang(q);
+          const [qr, dr] = await Promise.all([engine.embed(["query: " + q]), engine.embed(texts)]);
+          const qv = qr.embeddings[0];
+          const hits = dr.texts.map((text, i) => {
+            const l = guessLang(text);
+            return { text, score: cosine(qv, dr.embeddings[i]), tag: `${l.flag} ${l.name}`, langCode: l.code };
+          }).sort((a, b) => b.score - a.score);
+          renderRanked($("ranked"), hits, { queryLang: qLang.code });
+          $("rReadout").hidden = false;
+          $("rBackend").textContent = dr.device.toUpperCase();
+          $("rMs").textContent = (qr.ms + dr.ms) + " ms";
+        } catch (err) { $("ranked").textContent = "Search failed: " + err.message; }
+        finally { $("search").disabled = false; }
+      }
+    </script>
+  </body>
+</html>
