@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MicroDehazeNet — clear haze & fog from a photo on-device · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run MicroDehazeNet locally via ONNX Runtime Web: hand it a hazy or foggy photo and it recovers the clear scene — restored contrast, colour, and distant detail — entirely on your device. No image ever leaves the tab."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🌫️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">image-to-image (dehazing) · vision · WASM · ~4 MB</p>
+      <h1>MicroDehazeNet — clear the haze from a photo</h1>
+      <p class="lede">
+        Give this model a <strong>hazy</strong> or <strong>foggy</strong> photo — a washed-out landscape, a
+        misty street, an aerial shot lost in atmosphere — and it recovers the <strong>clear</strong> scene:
+        restored contrast, revived colour, distant detail pulled back out of the murk. MicroDehazeNet is a
+        tiny (~1M-parameter) single-image dehazing network trained on the Haze4K benchmark. It's not a
+        contrast slider — it estimates and removes the scene's haze the way physics laid it down. Runs
+        entirely on your device via ONNX Runtime Web; the photo never leaves the tab.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/Vive-k-kumar/micro-dehaze-net" target="_blank" rel="noopener">Vive-k-kumar/micro-dehaze-net</a> — MicroDehazeNet (996K params, base_channels 24), trained on Haze4K</td></tr>
+          <tr><th>Task</th><td><code>image-to-image</code> (single-image dehazing) — run via raw ONNX Runtime Web (see note below)</td></tr>
+          <tr><th>Runtime</th><td>onnxruntime-web 1.21 (transformers.js has no dehazing class / no dehazing task)</td></tr>
+          <tr><th>Input</th><td><code>hazy_input</code> <code>[1, 3, H, W]</code> float32 in 0–1 — the hazy image, plain RGB (no normalisation), H/W rounded to a multiple of 8</td></tr>
+          <tr><th>Output</th><td><code>dehazed_output</code> <code>[1, 3, H, W]</code> float32 in ~0–1 — the haze-removed image, resized back to your photo's aspect</td></tr>
+          <tr><th>Quantization</th><td>fp32 ONNX (weights in an external-data sidecar) — runs on the plain WASM execution provider, no WebGPU needed</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (single-threaded on GitHub Pages) — a 512-px pass is under a second</td></tr>
+          <tr><th>Download</th><td>~4 MB (0.2 MB graph + 3.8 MB weights), cached after first load (auto-inits on return)</td></tr>
+          <tr><th>License</th><td>MIT · trained on Haze4K</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers, OffscreenCanvas, ImageBitmap — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Pick an outdoor photo and add a known haze so you can watch the network clear it — or
+        drop your own genuinely hazy photo. Drag the divider to compare hazy vs dehazed.</p>
+
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="two-col">
+        <div>
+          <div class="reveal" id="reveal">
+            <canvas class="reveal-before" id="before" width="640" height="480" role="img" aria-label="Hazy input"></canvas>
+            <canvas class="reveal-after" id="after" width="640" height="480" role="img" aria-label="MicroDehazeNet dehazed output"></canvas>
+            <span class="reveal-handle" id="handle"></span>
+            <input class="reveal-range" id="revealRange" type="range" min="0" max="100" value="55"
+              aria-label="Reveal dehazed result — drag to wipe between hazy and dehazed" />
+          </div>
+          <div class="reveal-labels"><span>◀ hazy input</span><span>dehazed ▶</span></div>
+          <div id="gallery" style="margin-top:.7rem"></div>
+          <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop your own hazy photo">
+            <span id="dropText">Drop / choose your own hazy photo (a real foggy or misty shot works best)</span>
+            <input type="file" id="file" accept="image/*" hidden />
+          </div>
+        </div>
+
+        <div>
+          <div class="param-grid">
+            <div class="param">
+              <label for="hazeAmount">Add haze (to demo the fix) <b id="hazeVal">0.7</b></label>
+              <input type="range" id="hazeAmount" min="0" max="0.9" step="0.05" value="0.7" />
+            </div>
+            <div class="param">
+              <label for="airlight">Airlight (haze brightness) <b id="airVal">235</b></label>
+              <input type="range" id="airlight" min="180" max="255" step="5" value="235" />
+            </div>
+          </div>
+          <div class="controls-row">
+            <button id="run" type="button" disabled>Dehaze</button>
+          </div>
+          <div id="resultWrap" hidden>
+            <div class="readout" id="readout">
+              <span>backend <b id="rBackend">–</b></span>
+              <span>inference <b id="rInf">–</b></span>
+              <span>+ composite <b id="rMs">–</b></span>
+              <span>contrast <b id="rContrast">–</b></span>
+            </div>
+            <p class="slow-note">The wipe above is the real evidence — slide it to watch the murk lift.
+              “Contrast” is the RMS contrast of luminance (the standard clarity measure) before → after;
+              haze flattens it and dehazing restores it, landing near the un-hazed scene's own contrast.</p>
+          </div>
+        </div>
+      </div>
+      <p class="privacy-note">Everything runs on your device — the photo and every dehazed pixel never
+        leave the tab. Gallery images are rights-cleared samples (see each caption for the source).</p>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside</h3>
+      <p class="muted">
+        Where did the model actually <em>do</em> something? This is the <strong>haze-removed map</strong>:
+        the per-pixel difference between the hazy input and the dehazed output, amplified. It glows in the
+        regions the model cleared — usually the distant, low-transmission areas where the haze was
+        thickest — and stays dark where little needed removing. It's a proxy for the scene's transmission
+        map: how much atmosphere each pixel was seen through.
+      </p>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Dehaze a photo to see where the model cleared it.</div>
+      <div id="insideWrap" hidden>
+        <div class="two-col">
+          <div>
+            <h4 style="font-family:var(--font-body);font-size:.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:.6rem 0 .3rem">Haze-removed map (where the model cleared it)</h4>
+            <canvas class="haze-canvas" id="haze" width="300" height="300" role="img" aria-label="Per-pixel difference between hazy and dehazed, amplified"></canvas>
+          </div>
+          <div>
+            <h4 style="font-family:var(--font-body);font-size:.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:.6rem 0 .3rem">How to read it</h4>
+            <p class="muted" style="font-size:.85rem">Warm amber = big change (thick haze lifted); dark teal =
+              untouched. A flat contrast filter would change every pixel by roughly the same amount;
+              MicroDehazeNet removes more where the atmosphere was denser, which is why the map traces
+              depth — brightest toward the horizon, dim in the foreground.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        Haze, fog and atmospheric murk wash out contrast, mute colour and hide distant structure. On-device
+        dehazing recovers the clear scene privately, with no upload and no per-image cloud cost:
+      </p>
+      <ul>
+        <li><strong>Outdoor & travel photo apps</strong> — a "clear the haze" button that runs client-side on the user's phone, restoring flat, foggy holiday shots.</li>
+        <li><strong>Drones, dashcams & surveillance</strong> — recover visibility in mist or smog so scenes (and downstream detectors) can see distance again.</li>
+        <li><strong>Mapping & remote sensing</strong> — de-haze aerial and satellite-style imagery in a static web tool with zero backend.</li>
+        <li><strong>Pre-processing for other models</strong> — feed a cleared image into detection, OCR or depth so they see real contrast instead of atmosphere.</li>
+      </ul>
+      <p class="muted">MicroDehazeNet estimates and removes <em>plausible</em> haze; it can't invent detail
+        that dense fog erased completely. Heavy haze clears partially — it's a rescue, not X-ray vision.</p>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Haze a photo, then watch the network clear it — wipe between hazy and dehazed and see the contrast jump back.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Restore a real foggy landscape or drone shot so distance and colour come back, then download the cleared image.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Push it: crank the haze to a whiteout and find the point where dehazing starts to give up.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">Dehaze → detect: clear the haze, then run object detection on the result to find things the fog was hiding.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>transformers.js has no dehazing class and no dehazing task, so we run the ONNX graph directly with
+        ONNX Runtime Web. In goes the hazy image, out comes the clear one:</p>
+      <pre><code>import * as ort from "onnxruntime-web";
+
+// the .onnx graph references its weights in an external-data sidecar (.onnx.data)
+const session = await ort.InferenceSession.create(graphBytes, {
+  executionProviders: ["wasm"],
+  externalData: [{ path: "micro_dehaze_net.onnx.data", data: weightBytes }],
+});
+
+// hazy image → [1,3,H,W] float32 in [0,1] (plain RGB, no normalisation)
+const input = new ort.Tensor("float32", toNCHW(hazy, W, H), [1, 3, H, W]);
+const { dehazed_output } = await session.run({ hazy_input: input });
+
+// dehazed_output is [1,3,H,W] in [0,1] → clamp to RGBA and resize back to the original aspect
+const clear = tensorToImage(dehazed_output.data, W, H);</code></pre>
+      <p class="muted">
+        Inference and the whole output composite run in a Web Worker so the UI never blocks, and the ~4 MB
+        model is fetched through Cache Storage, so a returning visit auto-initialises with no re-download.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/Vive-k-kumar/micro-dehaze-net" target="_blank" rel="noopener">Model card — Vive-k-kumar/micro-dehaze-net (MicroDehazeNet, MIT)</a></li>
+        <li><a href="https://arxiv.org/abs/2209.11448" target="_blank" rel="noopener">Haze4K — the dehazing benchmark it was trained on</a></li>
+        <li><a href="https://onnxruntime.ai/docs/tutorials/web/" target="_blank" rel="noopener">ONNX Runtime Web documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://onnxruntime.ai/docs/tutorials/web/" target="_blank" rel="noopener">ONNX Runtime Web</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { DehazeEngine, DEHAZE_CSS, addHaze, drawBitmapFit, RevealCompare, toBitmap, urlToBitmap } from "./dehaze.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      import { createExampleGallery } from "/web-ai-showcase/lib/example-gallery.js";
+
+      const style = document.createElement("style");
+      style.textContent = DEHAZE_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new DehazeEngine();
+      const reveal = new RevealCompare($("reveal"));
+      const state = { bmp: null, hazy: null, synthetic: true };
+
+      async function preview() {
+        if (!state.bmp) return;
+        const amount = state.synthetic ? +$("hazeAmount").value : 0;
+        const airlight = +$("airlight").value;
+        const hazy = await addHaze(await createImageBitmap(state.bmp), { amount, airlight });
+        state.hazy = hazy;
+        drawBitmapFit($("before"), hazy);
+        drawBitmapFit($("after"), hazy);
+        $("resultWrap").hidden = true;
+        $("insideWrap").hidden = true;
+        $("insideEmpty").hidden = false;
+      }
+      async function setImage(bitmap) { state.bmp = bitmap; await preview(); }
+
+      createExampleGallery({
+        mount: $("gallery"),
+        manifestUrl: "/web-ai-showcase/media/manifest.json",
+        filter: (a) => /street|mountain|market|night|bicycle|dog/.test(a.id),
+        onSelect: async (asset) => { state.synthetic = true; await setImage(await urlToBitmap(asset.url)); },
+      }).then((g) => { if (g?.assets?.length) g.selectId(g.assets[0].id); });
+
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      file.addEventListener("change", async () => {
+        if (!file.files[0]) return;
+        state.synthetic = false;
+        await setImage(await toBitmap(file.files[0]));
+        $("dropText").textContent = file.files[0].name + " (treated as already hazy)";
+      });
+      drop.addEventListener("drop", async (e) => {
+        const f = e.dataTransfer?.files?.[0];
+        if (!f?.type.startsWith("image/")) return;
+        state.synthetic = false;
+        await setImage(await toBitmap(f));
+        $("dropText").textContent = f.name + " (treated as already hazy)";
+      });
+
+      $("hazeAmount").addEventListener("input", () => { $("hazeVal").textContent = (+$("hazeAmount").value).toFixed(2); if (state.synthetic) preview(); });
+      $("airlight").addEventListener("input", () => { $("airVal").textContent = $("airlight").value; if (state.synthetic) preview(); });
+
+      const autoRun = new URLSearchParams(location.search).has("auto");
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Vive-k-kumar/micro-dehaze-net", runtime: "onnxruntime-web", dtype: "fp32", sizeMB: 4, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: () => { $("run").disabled = false; if (autoRun) $("run").click(); },
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!state.hazy) { $("status").textContent = "Pick a photo first."; return; }
+        $("run").disabled = true; $("status").classList.remove("err", "ok");
+        $("status").textContent = "Dehazing… (a 512-px pass on WASM takes about a second)";
+        try {
+          const res = await engine.dehaze(await createImageBitmap(state.hazy), { maxSide: 512 });
+          reveal.set(await createImageBitmap(state.hazy), res.dehazedBmp);
+          $("resultWrap").hidden = false;
+          $("rBackend").textContent = res.device.toUpperCase();
+          $("rInf").textContent = res.infMs + " ms";
+          $("rMs").textContent = (res.ms - res.infMs) + " ms";
+          $("rContrast").textContent = res.inContrast.toFixed(4) + " → " + res.outContrast.toFixed(4);
+          $("insideEmpty").hidden = true; $("insideWrap").hidden = false;
+          drawBitmapFit($("haze"), res.hazeBmp, 300);
+          $("status").textContent = "Done — drag the divider to compare."; $("status").classList.add("ok");
+        } catch (err) {
+          $("status").textContent = "Dehazing failed: " + err.message; $("status").classList.add("err");
+        } finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>

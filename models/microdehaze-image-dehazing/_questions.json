@@ -1,0 +1,120 @@
+{
+  "schemaVersion": 1,
+  "id": "microdehaze-image-dehazing",
+  "revision": 1,
+  "reviewedAt": "2026-07-20T00:00:00Z",
+  "reviewer": "agent build+matrix pass (runnability verified standalone in headless Chrome BEFORE building — the real ONNX graph, loaded with its external-data sidecar, removed synthetic atmospheric haze and restored luminance contrast to the un-hazed reference; then the full demo was driven end-to-end via a headless-Chrome CDP page-driver across all 5 pages; desktop+mobile 0px overflow measured), revision 1",
+  "frontend": true,
+  "rubric": [
+    {
+      "dimension": "real-inference",
+      "score": 5,
+      "severity": "info",
+      "evidence": "RUNNABILITY VERIFIED in headless Chrome (onnxruntime-web 1.21, WASM, fresh profile) BEFORE building. The real MicroDehazeNet ONNX graph (Vive-k-kumar/micro-dehaze-net, micro_dehaze_net.onnx + micro_dehaze_net.onnx.data) was loaded via ort.InferenceSession.create with the session externalData:[{path:'micro_dehaze_net.onnx.data', data}] option (external-data sidecar, confirmed working). inputNames=['hazy_input'], outputNames=['dehazed_output']. On a street scene hazed with the physical scattering model I=J·t+A·(1−t), the dehazed output's RMS-contrast of luminance rose 0.117 -> 0.274 (2.34x) and landed on the un-hazed clean reference (0.261) — real haze removal, not a flat curve. Confirmed on a non-square 320x512 input too (0.130 -> 0.263). Then the deployed demo ran end-to-end: Dehaze produced real output at inference 596 ms + composite 3 ms (contrast 0.085 -> 0.235). NOT faked, NOT identity, NOT a global contrast stretch.",
+      "notes": "Inference AND the dense RGBA composite run off the main thread in a dedicated module Worker (new Worker(worker.js,{type:'module'})); the dehazed ImageBitmap + haze-removed map are transferred (not cloned) back to the page."
+    },
+    {
+      "dimension": "io-shape",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Expected output = a haze-removed image [1,3,H,W] float32 in ~[0,1], same spatial size as the (multiple-of-8-rounded) input. The worker clamps to RGBA, resizes back to the display aspect, and also derives a 'haze-removed map' = amplified per-pixel |out−in|. Semantic sanity: the map traces DEPTH (brightest toward the horizon where haze is thickest, dim in the foreground) rather than lighting every high-contrast edge, which is what a flat contrast filter would do — evidence the model estimates transmission, not just stretches contrast.",
+      "notes": "A DISTINCT capability vs every built vision demo: dehazing removes atmospheric haze (deblur removes motion/defocus blur; low-light lifts exposure; super-res adds resolution; inpainting fills holes). Trained on Haze4K (PSNR 26.78 / SSIM 0.956 per the model card)."
+    },
+    {
+      "dimension": "runtime-config",
+      "score": 5,
+      "severity": "info",
+      "evidence": "At-a-glance declares the exact model id (Vive-k-kumar/micro-dehaze-net, linked to its card), the task (image-to-image / single-image dehazing), runtime (onnxruntime-web 1.21 — noting transformers.js has no dehazing class/task), the real I/O tensor names + shapes (hazy_input / dehazed_output [1,3,H,W]), quantisation (fp32 with an external-data sidecar), backend (WASM, single-threaded on GitHub Pages), download (~4 MB) and license (MIT). No invented API surface.",
+      "notes": "onnxruntime-web is pinned in THIS worker only (the isolated per-worker ORT-web escape hatch, like nafnet/iat/lama) — shared lib/webai.js is untouched."
+    },
+    {
+      "dimension": "cache-init",
+      "score": 5,
+      "severity": "info",
+      "evidence": "The page loads through the shared createModelLoader auto-init architecture (model {modelId:'Vive-k-kumar/micro-dehaze-net', runtime:'onnxruntime-web', dtype:'fp32', sizeMB:4}). Both files are fetched THROUGH Cache Storage (cache name microdehaze-onnx-cache) so lib/model-cache.js scans '/Vive-k-kumar/micro-dehaze-net/' and a returning visit auto-initialises with NO Download click; first visit shows an explicit Download (~4 MB). Verified in headless Chrome: fresh profile showed Download, clicking it downloaded and flipped the loader to ready (state='ready'). A per-model clear-cache control is offered once ready.",
+      "notes": "Small model (~4 MB) so re-download cost is low, but the never-silently-re-download guarantee still holds via the shared loader."
+    },
+    {
+      "dimension": "states",
+      "score": 4,
+      "severity": "info",
+      "evidence": "Loading/progress/ready/error states are announced in role=status aria-live regions (shared loader + page #status). Download progress streams a combined percent across the two files. Errors surface on the page (status .err: 'Dehazing failed: …'); the shared loader exposes a Retry recovery path on failure. No WebGPU required — runs on the WASM path everywhere (conformance runs-without-webgpu-fallback holds).",
+      "notes": "Measured 0 console errors and 0 network failures on load AND run across all 5 pages."
+    },
+    {
+      "dimension": "controls",
+      "score": 4,
+      "severity": "info",
+      "evidence": "Every control is real and keyboard-operable: the haze-amount + airlight range sliders (live-updating the preview), the accessible before/after reveal range (aria-valuetext '% dehazed'), the sample gallery (rights-safe thumbnails as labelled buttons), the upload/drop dropzone (role=button, Enter/Space activates the file picker, drag+drop), the Dehaze button, and on the practical page a Download-dehazed anchor. Ladder pages add: wild's haze-strength push with a recovery-ratio verdict; multi-model's YOLOv10 chain.",
+      "notes": "Same proven control pattern as the built nafnet/iat image-to-image demos; the reveal wipe uses a native range input for full keyboard support."
+    },
+    {
+      "dimension": "no-fake-output",
+      "score": 5,
+      "severity": "info",
+      "evidence": "No canned output — the worker runs the real ONNX graph and the displayed image + contrast numbers + haze-removed map are all derived from the real dehazed_output tensor. The synthetic haze is applied transparently on the client (the user chooses the haze and watches it removed, exactly like nafnet's synthetic blur); uploaded photos are treated as already-hazy and passed straight through with no added degradation.",
+      "notes": "Honest by construction: 'Add haze' is disclosed in every label; a real foggy upload skips it entirely."
+    },
+    {
+      "dimension": "accessibility",
+      "score": 5,
+      "severity": "info",
+      "evidence": "All canvases carry role=img + descriptive aria-labels (hazy input / dehazed output / haze-removed map); every button has an accessible name (conformance buttons-have-names pass); the loader status uses role=status aria-live (live-status-region pass); the reveal range exposes aria-valuetext. Light+dark inherit the WCAG-AA design system (no raw hex for text/bg). Gallery thumbnails are real buttons with aria-pressed + license attribution shown on selection.",
+      "notes": "Consulted modern-web-guidance for accessible live-region status + canvas labelling; applied."
+    },
+    {
+      "dimension": "responsive",
+      "score": 4,
+      "severity": "info",
+      "evidence": "Mobile+desktop MATRIX measured 0 px horizontal overflow on ALL 5 pages at mobile (360×740, DPR3) AND desktop (1280×800). The two-col layout is flex-wrap with flex:1 1 300px + min-inline-size:0; the param-grid is auto-fit minmax(min(100%,220px),1fr); reveal/canvases are inline-size:100%; readout flex-wraps. scripts/responsive-check on the index reported desktop clean · mobile clean.",
+      "notes": "Automated pre-scan clean on both classes; agent matrix pass (real headless viewport probe) flips support to ok. Mobile download cost (~4 MB fp32) surfaced in at-a-glance."
+    },
+    {
+      "dimension": "performance",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Inference AND the dense-output canvas composite (getImageData/putImageData + resize) run in the Web Worker; the dehazed ImageBitmap + haze-removed map are transferred, not cloned (invariant 15's dense-output-off-main-thread rule). The main thread only draws a bounded fit-canvas + the reveal composite. A 512-px pass is ~0.6 s on single-thread WASM; the UI never blocks — INP stays low.",
+      "notes": "The haze synthesis is a bounded per-pixel pass on a ≤640-px working copy, redrawn only on slider input."
+    }
+  ],
+  "guidanceConsulted": [
+    {
+      "query": "keep INP low move heavy image work off main thread web worker; dense output composite without blocking",
+      "id": "performance",
+      "recommendation": "Move heavy work off the main thread and keep interactions responsive (INP); avoid long blocking tasks; break up / offload heavy synchronous processing.",
+      "appliedOrException": "applied — all inference AND the dense getImageData/putImageData composite + resize run in a dedicated module Web Worker; the dehazed ImageBitmap and haze-removed map are transferred back (zero-copy). The main thread does only bounded canvas draws.",
+      "evidence": "worker.js off-thread + transfer([dehazedBmp, hazeBmp]); UI responsive during dehazing; conformance inference-off-main-thread pass"
+    },
+    {
+      "query": "responsive two column control panel with canvas image output and before/after reveal without horizontal overflow",
+      "id": "css-layout",
+      "recommendation": "Reach for intrinsic sizing, logical properties and flexible tracks (fr/minmax) before fixed widths; content-first flexbox with flex-wrap; use min-inline-size:0 so flex children can shrink — fewer media queries, no overflow.",
+      "appliedOrException": "applied — two-col is flex-wrap with flex:1 1 300px + min-inline-size:0; param-grid is grid auto-fit minmax(min(100%,220px),1fr); reveal/canvases inline-size:100% block-size:auto; logical properties throughout.",
+      "evidence": "0px horizontal overflow measured on all 5 pages at mobile 360×740 DPR3 AND desktop 1280×800"
+    },
+    {
+      "query": "accessible live region status updates for model loading progress; expose canvas-rendered content to assistive tech",
+      "id": "html",
+      "recommendation": "Announce loading/ready/error via role=status aria-live; give every control an accessible name; give canvas-rendered content a meaningful accessible name.",
+      "appliedOrException": "applied — shared loader + page status use role=status aria-live; canvases carry role=img + aria-label; the reveal range exposes aria-valuetext; every button has a name.",
+      "evidence": "buttons-have-names + live-status-region conformance pass; canvas aria-labels present"
+    }
+  ],
+  "openQuestions": [
+    "No quantised (q8/int8) export exists for this checkpoint — it is already tiny (~4 MB fp32), so a quant variant would save little; not worth chasing.",
+    "A bundled REAL hazy/foggy photo (rights-safe) would strengthen the gallery beyond synthetic haze on clear scenes; the atmospheric-scattering synthesis is honest but a genuine haze sample would be more convincing. Candidate: a CC-licensed foggy landscape added to media/manifest.json in a later pass."
+  ],
+  "followUpGoals": [
+    {
+      "goal": "Add one rights-safe genuinely-hazy/foggy sample to media/manifest.json (with full provenance) so the dehazing gallery shows real atmospheric haze, not only synthetic.",
+      "kind": "targeted-fix",
+      "priority": "low"
+    },
+    {
+      "goal": "If a stronger browser-runnable dehazing ONNX lands (e.g. a clean single-file DehazeFormer/FFA-Net export that runs on the WASM EP without a WebGPU-only fp16 kernel), add it as a NEW higher-quality dehazing demo alongside this one (additive, never replacing).",
+      "kind": "new-demo",
+      "priority": "low"
+    }
+  ],
+  "summary": "Revision-1 build+matrix pass for microdehaze-image-dehazing (Vive-k-kumar/micro-dehaze-net, image-to-image single-image dehazing, fp32 + external-data sidecar, ~4 MB — a DISTINCT vision capability not previously built: removing atmospheric haze/fog). RUNNABILITY VERIFIED FIRST in headless Chrome: the real ONNX graph (loaded with its .onnx.data sidecar via the session externalData option) removed synthetic atmospheric haze and restored luminance RMS-contrast 0.117 -> 0.274 (2.34x), landing on the un-hazed clean reference (0.261) — real dehazing, not a flat curve; the haze-removed delta map traces depth. transformers.js has no dehazing class, so it runs the ONNX directly via a per-worker onnxruntime-web pin. Full demo driven end-to-end via a headless-Chrome CDP page-driver: Download ~4 MB -> auto-init ready -> real output on the index + all 4 ladder pages (basics/practical/wild contrast rose ~2.6-3.0x; multi-model chained YOLOv10 and clearing the haze surfaced 2 more objects, 2->4). responsive-check 0 px overflow on all 5 pages at desktop 1280x800 + mobile 360x740 DPR3, 0 console errors, 0 network failures. Ladder: basics (haze then clear), practical (clear a foggy shot + download), wild (whiteout breaking point with a recovery ratio), multi-model (dehaze -> YOLOv10 detect what the fog hid). MIT license, recorded in at-a-glance + footer + models.json."
+}

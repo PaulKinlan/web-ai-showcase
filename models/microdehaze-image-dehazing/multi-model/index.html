@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Multi-model — dehaze → detect what the fog hid · MicroDehazeNet</title>
+    <meta name="description" content="Chain MicroDehazeNet into the on-device YOLOv10 object detector: clear the haze from a photo, then detect on both the hazy and the cleared image to see the objects the fog was hiding — two models, all local." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🌫️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">MicroDehazeNet dehazing</a></p>
+    <header>
+      <p class="eyebrow">Multi-model · dehazing → object detection · WASM</p>
+      <h1>Dehaze, then detect what the fog hid</h1>
+      <p class="lede">Haze doesn't just look bad — it blinds downstream vision. Here MicroDehazeNet clears the
+        image first, then the on-device <a href="../../yolov10-detection/">YOLOv10 detector</a> runs on both
+        the hazy and the cleared version, so you can see the objects the fog was smothering. Two models,
+        chained, entirely local.</p>
+    </header>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Two models load below (MicroDehazeNet ~4 MB, YOLOv10n ~9 MB). Pick an outdoor sample,
+        haze it, then run the pipeline — we detect on the hazy image and on the cleared one so you can see
+        the gain.</p>
+      <div style="display:grid;gap:.5rem">
+        <div><small class="muted">1 · MicroDehazeNet (dehazing)</small><div id="loader-dehaze"></div></div>
+        <div><small class="muted">2 · YOLOv10 (object detection)</small><div id="loader-detect"></div></div>
+      </div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+      <div id="gallery" style="margin-top:.7rem"></div>
+      <div class="param-grid">
+        <div class="param">
+          <label for="hazeAmount">Haze <b id="hazeVal">0.65</b></label>
+          <input type="range" id="hazeAmount" min="0.3" max="0.9" step="0.05" value="0.65" />
+        </div>
+      </div>
+      <div class="controls-row"><button id="run" type="button" disabled>Run pipeline</button></div>
+      <div class="two-col">
+        <div>
+          <h4 style="font-family:var(--font-body);font-size:.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:.6rem 0 .3rem">Hazy → detected <span id="beforeCount"></span></h4>
+          <div class="canvas-frame"><canvas class="fit-canvas" id="canvasBefore" width="480" height="360" role="img" aria-label="Hazy image with detection boxes"></canvas></div>
+        </div>
+        <div>
+          <h4 style="font-family:var(--font-body);font-size:.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:.6rem 0 .3rem">Dehazed → detected <span id="afterCount"></span></h4>
+          <div class="canvas-frame"><canvas class="fit-canvas" id="canvasAfter" width="480" height="360" role="img" aria-label="Dehazed image with detection boxes"></canvas></div>
+        </div>
+      </div>
+      <div class="readout" id="resultWrap" hidden><span>dehaze <b id="rDehaze">–</b></span><span>detect <b id="rDetect">–</b></span><span>objects <b id="rObjects">–</b></span></div>
+      <p class="privacy-note">Both models run on-device; the image, the cleared result and the boxes never leave the tab.</p>
+    </section>
+
+    <section aria-labelledby="note-h">
+      <h2 id="note-h">Why chain them</h2>
+      <p>Dehazing is a force-multiplier for downstream vision: a detector, OCR model or classifier all see
+        cleaner structure once the atmosphere is removed. This is the on-device version of a classic
+        "see through the fog" pipeline for dashcams, drones and surveillance — no server, no upload, each
+        stage a real model running in your browser.</p>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>.
+      <a href="../">← Back to MicroDehazeNet dehazing</a>
+    </footer>
+
+    <script type="module">
+      import { DehazeEngine, DEHAZE_CSS, addHaze, drawBitmapFit, urlToBitmap } from "../dehaze.js";
+      import { YoloEngine, drawDetections } from "/web-ai-showcase/models/yolov10-detection/yolo.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      import { createExampleGallery } from "/web-ai-showcase/lib/example-gallery.js";
+      const style = document.createElement("style"); style.textContent = DEHAZE_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const dehaze = new DehazeEngine();
+      const detect = new YoloEngine();
+      const ready = { dehaze: false, detect: false };
+      const state = { bmp: null, hazy: null };
+      function maybeEnable() { $("run").disabled = !(ready.dehaze && ready.detect && state.hazy); }
+      async function preview() {
+        if (!state.bmp) return;
+        state.hazy = await addHaze(await createImageBitmap(state.bmp), { amount: +$("hazeAmount").value });
+        drawBitmapFit($("canvasBefore"), state.hazy, 480); drawBitmapFit($("canvasAfter"), state.hazy, 480);
+        $("resultWrap").hidden = true; $("beforeCount").textContent = ""; $("afterCount").textContent = "";
+        maybeEnable();
+      }
+      async function setImage(b) { state.bmp = b; await preview(); }
+      createExampleGallery({ mount: $("gallery"), manifestUrl: "/web-ai-showcase/media/manifest.json", filter: (a) => /market|bicycle|dog|street|mountain/.test(a.id), onSelect: async (a) => { await setImage(await urlToBitmap(a.url)); } }).then((g) => { if (!g?.assets?.length) return; const pref = g.assets.find((a) => /market|bicycle|dog/.test(a.id)) || g.assets[0]; g.selectId(pref.id); });
+      $("hazeAmount").addEventListener("input", () => { $("hazeVal").textContent = (+$("hazeAmount").value).toFixed(2); preview(); });
+      createModelLoader({ mount: $("loader-dehaze"), model: { modelId: "Vive-k-kumar/micro-dehaze-net", runtime: "onnxruntime-web", dtype: "fp32", sizeMB: 4, requiresWebGPU: false }, load: (p) => dehaze.load(p), onReady: () => { ready.dehaze = true; maybeEnable(); } });
+      createModelLoader({ mount: $("loader-detect"), model: { modelId: "onnx-community/yolov10n", runtime: "onnxruntime-web", dtype: "fp32", sizeMB: 9, requiresWebGPU: false }, load: (p) => detect.load(p), onReady: () => { ready.detect = true; maybeEnable(); } });
+      $("run").addEventListener("click", async () => {
+        if (!state.hazy) return;
+        $("run").disabled = true; $("status").classList.remove("err", "ok"); $("status").textContent = "Detecting on the hazy image, then dehazing and detecting again…";
+        try {
+          const detB = await detect.detect(await createImageBitmap(state.hazy));
+          drawDetections($("canvasBefore"), await createImageBitmap(state.hazy), detB.detections);
+          $("beforeCount").textContent = `(${detB.detections.length})`;
+          const res = await dehaze.dehaze(await createImageBitmap(state.hazy), { maxSide: 640 });
+          const detA = await detect.detect(await createImageBitmap(res.dehazedBmp));
+          drawDetections($("canvasAfter"), await createImageBitmap(res.dehazedBmp), detA.detections);
+          $("afterCount").textContent = `(${detA.detections.length})`;
+          $("resultWrap").hidden = false; $("rDehaze").textContent = res.ms + " ms"; $("rDetect").textContent = (detB.ms + detA.ms) + " ms";
+          $("rObjects").textContent = `${detB.detections.length} → ${detA.detections.length}`;
+          const gain = detA.detections.length - detB.detections.length;
+          $("status").textContent = gain > 0 ? `Clearing the haze surfaced ${gain} more object(s).` : "Pipeline done — compare the two panels.";
+          $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Pipeline failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>
