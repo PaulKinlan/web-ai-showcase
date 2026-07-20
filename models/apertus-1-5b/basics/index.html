@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Basics — ask Apertus 1.5B on the CPU · Web AI Showcase</title>
+    <meta name="description" content="The fundamental loop: type a question, watch a capable instruct LLM stream the answer token by token — running on the CPU via WebAssembly." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='13'>🇨🇭</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/models/apertus-1-5b/">← Apertus 1.5B</a></p>
+
+    <header>
+      <p class="eyebrow">Basics · text-generation · WebAssembly (CPU)</p>
+      <h1>Ask a question, watch it stream</h1>
+      <p class="lede">
+        The core capability, plainly: one question in, one answer out — streamed token by token from a
+        1.5B fully-open instruct model running entirely on your CPU. No GPU, no server, no key.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="chips" id="chips" aria-label="Example questions">
+        <button type="button" class="chip" data-p="What is the difference between TCP and UDP?">TCP vs UDP</button>
+        <button type="button" class="chip" data-p="Suggest a name for a privacy-first note-taking app and say why.">Name my app</button>
+        <button type="button" class="chip" data-p="Explain how a hash map works in three sentences.">How a hash map works</button>
+        <button type="button" class="chip" data-p="Turn this into a polite reminder: pay the invoice.">Rewrite politely</button>
+      </div>
+
+      <div class="composer">
+        <label for="q" class="visually-hidden">Your question</label>
+        <textarea id="q" rows="2" placeholder="Ask anything…" disabled></textarea>
+        <button id="ask" type="button" disabled>Ask</button>
+        <button id="stop" type="button" class="secondary" hidden>Stop</button>
+      </div>
+
+      <div class="answer" id="answer" aria-live="polite"><span class="muted">The answer appears here, streaming as it's generated.</span></div>
+
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>tokens <b id="rTok">–</b></span>
+        <span>1st token <b id="rFirst">–</b></span>
+        <span>tok/s <b id="rTps">–</b></span>
+      </div>
+    </section>
+
+    <section aria-labelledby="how-h">
+      <h2 id="how-h">What's happening</h2>
+      <p>
+        Each question is wrapped in Apertus's chat template with a short system prompt, then generated with
+        greedy-ish sampling. Because generation runs in a Web Worker, the page stays responsive while the
+        CPU works. Try a few — short factual questions return fastest.
+      </p>
+      <p class="muted">Next rung: <a href="../practical/">Practical — structured extraction to JSON →</a></p>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      🤗 Transformers.js on WebAssembly. <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <style>
+      .visually-hidden { position:absolute; width:1px; height:1px; margin:-1px; padding:0; overflow:hidden; clip:rect(0 0 0 0); border:0; }
+      .answer { margin-top:.7rem; padding:.7rem .9rem; border:1px solid var(--border); border-radius:var(--radius);
+        background:var(--bg-raised); min-block-size:3rem; line-height:1.6; white-space:pre-wrap; overflow-wrap:anywhere; }
+      .caret { display:inline-block; inline-size:.5rem; block-size:1rem; background:var(--accent); vertical-align:text-bottom; animation:qblink 1s steps(2) infinite; }
+      @keyframes qblink { 50% { opacity:0; } }
+      @media (prefers-reduced-motion: reduce) { .caret { animation:none; } }
+    </style>
+
+    <script type="module">
+      import { ApertusEngine, escapeHTML, APERTUS_CSS } from "../engine.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = APERTUS_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new ApertusEngine();
+      let loaded = false, backend = "WASM", generating = false;
+
+      for (const chip of document.querySelectorAll("#chips .chip")) {
+        chip.addEventListener("click", () => { $("q").value = chip.dataset.p; $("q").focus(); });
+      }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/Apertus-v1.1-1.5B-Instruct-QAD-INT4-ONNX", runtime: "transformers.js", dtype: "q4", sizeMB: 1765, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: (device) => { loaded = true; backend = String(device || "wasm").toUpperCase(); $("q").disabled = false; $("ask").disabled = false; },
+      });
+
+      async function ask() {
+        if (!loaded || generating) return;
+        const text = $("q").value.trim();
+        if (!text) return;
+        generating = true;
+        $("ask").disabled = true; $("q").disabled = true; $("stop").hidden = false;
+        $("status").classList.remove("err"); $("status").textContent = "Generating on the CPU…";
+        $("answer").innerHTML = '<span class="caret"></span>'; $("readout").hidden = true;
+        let acc = "";
+        const messages = [
+          { role: "system", content: "You are a helpful, concise assistant. Answer directly." },
+          { role: "user", content: text },
+        ];
+        try {
+          const res = await engine.chat(messages, {
+            maxTokens: 220, doSample: true, temperature: 0.5, topP: 0.9,
+            onToken: (tok) => { acc += tok; $("answer").innerHTML = escapeHTML(acc) + '<span class="caret"></span>'; },
+          });
+          const finalText = (res.text && res.text.trim()) ? res.text : acc;
+          $("answer").textContent = finalText || "(no output)";
+          $("readout").hidden = false;
+          $("rBackend").textContent = backend; $("rTok").textContent = res.tokens;
+          $("rFirst").textContent = res.firstTokenMs != null ? res.firstTokenMs + " ms" : "–";
+          $("rTps").textContent = res.ms ? (res.tokens / (res.ms / 1000)).toFixed(1) : "–";
+          $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (err) {
+          $("answer").textContent = acc || "(generation failed)";
+          $("status").textContent = "Generation failed: " + err.message; $("status").classList.add("err");
+        } finally {
+          generating = false; $("ask").disabled = false; $("q").disabled = false; $("stop").hidden = true; $("q").focus();
+        }
+      }
+      $("ask").addEventListener("click", ask);
+      $("q").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); ask(); } });
+      $("stop").addEventListener("click", () => engine.stop());
+
+      if ("serviceWorker" in navigator) navigator.serviceWorker.register("/web-ai-showcase/sw.js").catch(() => {});
+    </script>
+  </body>
+</html>
