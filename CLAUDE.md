@@ -237,7 +237,12 @@ argmaxes to class 1 `.` by a ~9-logit margin with zero sentence-boundary/questio
 predicts a full stop after every word; NOT a quantization artifact [fp16 preserves the head yet is
 identically degenerate]; q4/q4f16 are an oversized 823 MB MatMulNBits export that stalls at session
 creation; no other punctuation model ships a working browser ONNX — unblock = a faithful ONNX re-export;
-don't relabel NER/POS as punctuation). Never mislabel a substitute as the blocked family.
+don't relabel NER/POS as punctuation), **mms-tts-turkish** (no Turkish MMS-TTS VITS ships a
+transformers.js-loadable ONNX — Xenova ships 12 mms-tts languages [incl. kor] but NOT tur
+[`Xenova/mms-tts-tur`→401]; onnx-community has only kan/aka; `facebook/mms-tts-tur` is
+safetensors/pytorch-only; a sweep of all 14 `mms-tts-tur*` repos found zero `.onnx`; don't relabel
+another language's MMS-TTS. NOTE: the block is language-specific — Xenova's other mms-tts languages
+[e.g. kor/vie/hin/…] remain buildable). Never mislabel a substitute as the blocked family.
 
 **Version-pin escape hatch (isolated).** A model whose class exists only in a transformers.js newer
 than the shared 3.7.5 pin (e.g. SAM2 — `Sam2Model` lands in 4.2.0, absent from 3.7.5) may pin the

@@ -124,7 +124,11 @@ short version for tools that look for `AGENTS.md`.
   zero sentence-boundary/question sensitivity, so it "restores" a full stop after every word; not a
   quantization artifact [fp16 preserves the head yet is identically degenerate]; q4/q4f16 are an oversized
   823 MB MatMulNBits export that stalls at session creation. No other punctuation model ships a working
-  browser ONNX. Unblock = a faithful ONNX re-export; don't relabel NER/POS as punctuation).
+  browser ONNX. Unblock = a faithful ONNX re-export; don't relabel NER/POS as punctuation),
+  **mms-tts-turkish** (no Turkish MMS-TTS VITS ships a transformers.js-loadable ONNX — Xenova ships 12
+  mms-tts languages but NOT tur [401]; `facebook/mms-tts-tur` is safetensors-only; sweep of all 14
+  `mms-tts-tur*` repos found zero `.onnx`. Language-specific — Xenova's other mms-tts languages remain
+  buildable; don't relabel another language's MMS-TTS).
   Never mislabel a substitute as the blocked family.
 - **Version-pin escape hatch (isolated).** If a model's class exists only in a transformers.js newer
   than the shared 3.7.5 pin (e.g. SAM2's `Sam2Model` needs 4.2.0), pin the newer version LOCALLY in

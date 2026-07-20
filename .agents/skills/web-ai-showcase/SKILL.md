@@ -129,7 +129,10 @@ of every model you can genuinely run in a browser — not a token set. Read `CLA
   ONNX [auto-converted from kredor/punctuate-all], is BROKEN — raw-logit inspection [fp16 AND q8] shows
   near-constant output, every content token argmaxes to class 1 `.` with zero context sensitivity; not a
   quant artifact; q4 is an oversized 823 MB export that stalls; unblock = a faithful re-export; don't
-  relabel NER/POS). Never mislabel a substitute as the blocked family.
+  relabel NER/POS), **mms-tts-turkish** (no Turkish MMS-TTS VITS ships a browser ONNX — Xenova ships 12
+  mms-tts languages but not tur [401], `facebook/mms-tts-tur` is safetensors-only, all 14 `mms-tts-tur*`
+  repos have zero `.onnx`; language-specific — other mms-tts languages remain buildable). Never mislabel
+  a substitute as the blocked family.
 - **Version-pin escape hatch:** a model needing a transformers.js class newer than the shared 3.7.5
   (e.g. SAM2 needs 4.2.0) may pin the newer version LOCALLY in its own `worker.js` only — never bump
   shared `lib/webai.js`. model-cache is version-agnostic so auto-init still works. Precedent:
