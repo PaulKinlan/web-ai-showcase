@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>BERTimbau Multi-model — Portuguese-native vs multilingual · Web AI Showcase</title>
+    <meta name="description" content="Run the same Portuguese [MASK] sentence through a Portuguese-only BERTimbau and multilingual mBERT, side by side, and measure exactly where the specialist and the generalist disagree — two real models, both on your device." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🇧🇷</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">BERTimbau</a></p>
+
+    <header>
+      <p class="eyebrow">use case · multi-model</p>
+      <h1>Multi-model: Portuguese-native vs multilingual</h1>
+      <p class="lede">
+        Two masked-LMs, one sentence. BERTimbau spent its whole 29k-token vocabulary on Brazilian
+        Portuguese; multilingual mBERT split a 119k-token vocabulary across ~104 languages. Both use
+        <code>[MASK]</code>, so we can run the exact same Portuguese cloze through each and measure where the
+        specialist and the generalist agree — and where they don't. Everything runs locally.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Load both models</h3>
+      <p class="muted">BERTimbau (~528 MB, fp32) loads first; the multilingual mBERT (~180 MB) loads on
+        demand for the comparison. Both are real off-thread forward passes.</p>
+      <div class="probe-grid two">
+        <div><h4 style="font-family:var(--font-mono);font-size:.8rem;margin:0 0 .3rem">🇧🇷 BERTimbau</h4><div id="pt-loader"></div></div>
+        <div><h4 style="font-family:var(--font-mono);font-size:.8rem;margin:0 0 .3rem">🌍 mBERT (multilingual)</h4><div id="ml-loader"></div></div>
+      </div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.6rem 0 .5rem" id="chips" role="group" aria-label="Frases de exemplo">
+        <button class="mask-chip" type="button" data-set="A capital do Brasil é [MASK].">capital</button>
+        <button class="mask-chip" type="button" data-set="No café da manhã eu como um [MASK].">café da manhã</button>
+        <button class="mask-chip" type="button" data-set="O trem parte pontualmente da [MASK].">estação</button>
+        <button class="mask-chip" type="button" data-set="No inverno cai muita [MASK] nas montanhas.">neve</button>
+      </div>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">
+        A sua frase (com <code>[MASK]</code>)
+        <input id="text" class="mask-input" disabled value="A capital do Brasil é [MASK]." />
+      </label>
+    </section>
+
+    <section class="panel" aria-labelledby="cmp-h">
+      <h3 id="cmp-h">Side by side</h3>
+      <p class="status" id="cmpStatus" role="status" aria-live="polite" hidden></p>
+      <div class="probe-grid two" id="grid" hidden>
+        <div class="probe-card"><h4>🇧🇷 BERTimbau <span class="lang-tag">Portuguese-only</span></h4><div id="ptList" class="pred-list"></div></div>
+        <div class="probe-card"><h4>🌍 mBERT <span class="lang-tag">multilingual</span></h4><div id="mlList" class="pred-list"></div></div>
+      </div>
+      <div class="readout" id="readout" hidden>
+        <span>top-1 agree <b id="rAgree">–</b></span>
+        <span>rank overlap (top-6) <b id="rOverlap">–</b></span>
+        <span>backend <b id="rBackend">–</b></span>
+      </div>
+      <p class="muted" id="verdict" style="font-size:.9rem;margin-top:.5rem"></p>
+    </section>
+
+    <p class="crumbs"><a href="../wild/">← Wild</a> · <a href="../">Back to BERTimbau →</a></p>
+
+    <script type="module">
+      import { PortugueseFillMaskEngine, MbertFillMaskEngine, PORTUGUESE_CSS, MASK, renderPredictions, escapeHTML } from "../fillmask.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = PORTUGUESE_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const pt = new PortugueseFillMaskEngine();
+      const ml = new MbertFillMaskEngine();
+      let ptReady = false, mlReady = false;
+
+      for (const c of document.querySelectorAll("#chips .mask-chip")) c.addEventListener("click", () => { $("text").value = c.dataset.set; run(); });
+      $("text").addEventListener("change", run);
+
+      createModelLoader({
+        mount: $("pt-loader"),
+        model: { modelId: "luiseduardobrito/bert-base-portuguese-cased-onnx", runtime: "transformers.js", dtype: "fp32", sizeMB: 528, requiresWebGPU: false },
+        load: async (onProgress) => { await pt.load(onProgress); return pt; },
+        onReady: () => { ptReady = true; $("text").disabled = false; run(); },
+      });
+      createModelLoader({
+        mount: $("ml-loader"),
+        model: { modelId: "Xenova/bert-base-multilingual-cased", runtime: "transformers.js", dtype: "q8", sizeMB: 180, requiresWebGPU: false },
+        load: async (onProgress) => { await ml.load(onProgress); return ml; },
+        onReady: () => { mlReady = true; run(); },
+      });
+
+      async function run() {
+        if (!ptReady) return;
+        const text = $("text").value;
+        if (!text.includes(MASK)) {
+          $("cmpStatus").hidden = false; $("cmpStatus").classList.remove("err");
+          $("cmpStatus").textContent = "Add a [MASK] token to your sentence."; $("grid").hidden = true; $("readout").hidden = true; return;
+        }
+        $("cmpStatus").hidden = false; $("cmpStatus").classList.remove("err");
+        $("cmpStatus").textContent = mlReady ? "Running both models…" : "Running BERTimbau (load mBERT for the comparison)…";
+        try {
+          const tasks = [pt.fill(text, 6)];
+          if (mlReady) tasks.push(ml.fill(text, 6));
+          const [ptR, mlR] = await Promise.all(tasks);
+          $("cmpStatus").hidden = true; $("grid").hidden = false;
+          renderPredictions($("ptList"), ptR.masks[0].predictions, null);
+          if (mlR) {
+            renderPredictions($("mlList"), mlR.masks[0].predictions, null);
+            const ptTok = ptR.masks[0].predictions.map((p) => p.token.toLowerCase());
+            const mlTok = mlR.masks[0].predictions.map((p) => p.token.toLowerCase());
+            const agree = ptTok[0] === mlTok[0];
+            const overlap = ptTok.filter((t) => mlTok.includes(t)).length;
+            $("readout").hidden = false;
+            $("rAgree").textContent = agree ? "yes ✓" : "no ✗";
+            $("rOverlap").textContent = overlap + " / 6";
+            $("rBackend").textContent = ptR.device.toUpperCase();
+            $("verdict").textContent = agree
+              ? `Both models' top word is "${ptR.masks[0].predictions[0].token}". On this sentence the Portuguese specialist and the multilingual generalist agree — ${overlap}/6 of the top candidates overlap.`
+              : `They disagree: Portuguese-only picks "${ptR.masks[0].predictions[0].token}", mBERT picks "${mlR.masks[0].predictions[0].token}". Only ${overlap}/6 top candidates overlap — the specialist's Portuguese-native vocabulary is pulling in a different direction.`;
+          } else {
+            $("mlList").innerHTML = '<p class="muted" style="font-size:.85rem">Load mBERT above to compare.</p>';
+            $("readout").hidden = true; $("verdict").textContent = "";
+          }
+        } catch (err) {
+          $("cmpStatus").hidden = false; $("cmpStatus").classList.add("err");
+          $("cmpStatus").textContent = "Comparison failed: " + err.message;
+        }
+      }
+    </script>
+  </body>
+</html>
