@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>DINOv2 × ALIKED+LightGlue — retrieve &amp; verify · Web AI Showcase</title>
+    <meta name="description" content="The standard visual place recognition pipeline on-device: DINOv2 embeddings shortlist the closest gallery image, then ALIKED + LightGlue geometrically verify the top match." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='13'>🔗</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">ALIKED + LightGlue</a></p>
+    <header>
+      <p class="eyebrow">Multi-model · embeddings → matching · WASM</p>
+      <h1>Retrieve, then verify</h1>
+      <p class="lede">Real visual search is two stages. <strong>DINOv2</strong> embeddings give a fast global shortlist — which gallery images <em>look</em> like the query. Then <strong>ALIKED + LightGlue</strong> geometrically verifies the top hit: do concrete local features actually correspond? That turns a soft similarity into a hard match — the pipeline behind place recognition and re-localisation, all on-device.</p>
+    </header>
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Loads two models the first time: DINOv2 (~90 MB) and ALIKED + LightGlue (~51 MB).</p>
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+      <p class="muted" style="font-size:.82rem">Gallery:</p>
+      <div class="sample-strip" id="gallery" aria-label="Gallery images"></div>
+      <p class="muted" style="font-size:.82rem;margin-top:.4rem">Query — a chosen scene, rotated + scaled (so the right answer is known), or upload your own:</p>
+      <div class="field-row">
+        <label>Query scene <select id="querySel"></select></label>
+        <button id="upQ" type="button" class="secondary">Upload query</button><input type="file" id="fileQ" accept="image/*" hidden />
+      </div>
+      <div class="pane" style="max-inline-size:260px"><h4>Query</h4><canvas id="cvQ" aria-label="Query image"></canvas></div>
+      <div class="field-row"><button id="run" type="button" disabled>Retrieve &amp; verify</button></div>
+      <div id="verdict" class="verdict" hidden></div>
+      <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>retrieval <b id="rRetr">–</b></span><span>verify <b id="rVerify">–</b></span></div>
+    </section>
+    <section class="panel" aria-labelledby="rank-h">
+      <h3 id="rank-h">DINOv2 similarity ranking</h3>
+      <p class="muted" id="rankEmpty" style="font-family:var(--font-mono);font-size:.8rem">Run to rank the gallery by global similarity, then verify the top hit.</p>
+      <table class="inside-table" id="rankTable" hidden><thead><tr><th>rank</th><th>scene</th><th>DINOv2 cosine</th><th>verified?</th></tr></thead><tbody id="rankRows"></tbody></table>
+    </section>
+    <section aria-labelledby="next-h"><h2 id="next-h">Next</h2>
+      <div class="model-grid">
+        <a class="model-card" href="../basics/"><h3>Basics →</h3><p class="muted">Match under a known transform.</p></a>
+        <a class="model-card" href="../practical/"><h3>Practical →</h3><p class="muted">Same-scene detector.</p></a>
+        <a class="model-card" href="../wild/"><h3>Wild →</h3><p class="muted">Auto-align two views.</p></a>
+      </div>
+    </section>
+    <footer class="byline">Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. DINOv2 via 🤗 Transformers.js, ALIKED + LightGlue via <a href="https://onnxruntime.ai/docs/tutorials/web/" target="_blank" rel="noopener">ONNX Runtime Web</a>. <a href="../">← Back to ALIKED + LightGlue</a></footer>
+    <script type="module">
+      import { RetrieveVerifyEngine, escapeHTML } from "../mm.js";
+      import { decodeImage, fileToDataURL, toBitmap, transformView, MATCH_CSS } from "../match.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style=document.createElement("style");style.textContent=MATCH_CSS;document.head.append(style);
+      const $=id=>document.getElementById(id); const engine=new RetrieveVerifyEngine();
+      const MEDIA="/web-ai-showcase/media/assets/";
+      const GALLERY=[{src:MEDIA+"city-street.jpg",name:"City street"},{src:MEDIA+"mountain-landscape.jpg",name:"Mountain"},{src:MEDIA+"market-crowd.jpg",name:"Market"},{src:MEDIA+"fruit-still-life.jpg",name:"Fruit"}];
+      let galleryImgs=[],queryImg=null,queryUpload=false;
+      const setStatus=(m,c)=>{$("status").textContent=m;$("status").classList.remove("err","ok");if(c)$("status").classList.add(c);};
+      const draw=(cv,img)=>{const w=img.naturalWidth,h=img.naturalHeight;cv.width=w;cv.height=h;cv.getContext("2d").drawImage(img,0,0);};
+      // build gallery + query selector
+      Promise.all(GALLERY.map(g=>decodeImage(g.src))).then(imgs=>{galleryImgs=imgs;
+        $("gallery").replaceChildren(...GALLERY.map((g,i)=>{const im=document.createElement("img");im.className="sample-thumb";im.src=g.src;im.alt=g.name;im.title=g.name;return im;}));
+        $("querySel").replaceChildren(...GALLERY.map((g,i)=>{const o=document.createElement("option");o.value=i;o.textContent=g.name+" (rotated)";return o;}));
+        makeQuery();
+      });
+      async function makeQuery(){ if(queryUpload)return; const i=+$("querySel").value; const c=transformView(galleryImgs[i],{rotate:22,scale:0.88}); queryImg=await decodeImage(c.toDataURL("image/jpeg",0.92)); draw($("cvQ"),queryImg); resetOut(); }
+      function resetOut(){$("verdict").hidden=true;$("readout").hidden=true;$("rankEmpty").hidden=false;$("rankTable").hidden=true;}
+      $("querySel").addEventListener("change",()=>{queryUpload=false;makeQuery();});
+      $("upQ").addEventListener("click",()=>$("fileQ").click());
+      $("fileQ").addEventListener("change",async()=>{const f=$("fileQ").files[0];if(!f)return;queryUpload=true;queryImg=await decodeImage(await fileToDataURL(f));draw($("cvQ"),queryImg);resetOut();});
+      createModelLoader({mount:$("model-loader"),model:{modelId:"bukuroo/ALIKED-LightGlue-ONNX",runtime:"onnxruntime-web",dtype:"fp32",sizeMB:141,requiresWebGPU:false},load:async op=>{await engine.load(op);return engine;},onReady:()=>{$("run").disabled=!queryImg;setStatus("Both models ready.","ok");}});
+      $("run").addEventListener("click",async()=>{
+        if(!engine.ready||!queryImg||!galleryImgs.length)return;$("run").disabled=true;setStatus("Embedding + ranking, then verifying…");
+        try{
+          const q=await toBitmap(queryImg); const gs=await Promise.all(galleryImgs.map(toBitmap));
+          const res=await engine.run(q,gs,{onRanked:()=>{}});
+          $("rankEmpty").hidden=true;$("rankTable").hidden=false;
+          $("rankRows").replaceChildren(...res.ranked.map((r,rank)=>{const tr=document.createElement("tr");const isTop=r.index===res.top;const ver=isTop?(res.verified?`yes — ${res.verify.strong} strong matches`:`no — only ${res.verify.strong} strong`):"—";tr.innerHTML=`<td>${rank+1}</td><td>${escapeHTML(GALLERY[r.index].name)}</td><td>${r.sim.toFixed(3)}</td><td>${ver}</td>`;if(isTop)tr.style.fontWeight="600";return tr;}));
+          $("rBackend").textContent=res.device.toUpperCase();$("rRetr").textContent=res.retrMs+" ms";$("rVerify").textContent=res.verifyMs+" ms";$("readout").hidden=false;
+          $("verdict").className="verdict "+(res.verified?"yes":"no");$("verdict").hidden=false;
+          $("verdict").textContent=res.verified?`Match confirmed: "${GALLERY[res.top].name}" is the top DINOv2 hit AND passes geometric verification (${res.verify.strong} strong LightGlue correspondences).`:`Top DINOv2 hit was "${GALLERY[res.top].name}", but geometric verification is weak (${res.verify.strong} strong matches) — treat as unconfirmed.`;
+          setStatus("Done.","ok");
+        }catch(e){setStatus("Failed: "+e.message,"err");}finally{$("run").disabled=false;}
+      });
+    </script>
+  </body>
+</html>

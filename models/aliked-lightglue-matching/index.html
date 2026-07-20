@@ -1,0 +1,291 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ALIKED + LightGlue — local-feature matching in your browser · Web AI Showcase</title>
+    <meta name="description" content="Run ALIKED + LightGlue locally: detect up to 1000 local keypoints per image and match them across TWO photos with a learned matcher — find where two images overlap, on-device." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='13'>🔗</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">keypoint-detection + matching · vision · WASM · ~51 MB</p>
+      <h1>ALIKED + LightGlue — match two images by their features</h1>
+      <p class="lede">
+        A different vision task from the pose and landmark demos: <strong>local-feature matching</strong>.
+        <a href="https://github.com/Shiaoming/ALIKED" target="_blank" rel="noopener">ALIKED</a> detects and
+        describes up to 1000 distinctive keypoints in each image; <a href="https://github.com/cvg/LightGlue" target="_blank" rel="noopener">LightGlue</a>,
+        a learned attention matcher, finds the <em>correspondences</em> — the keypoint pairs that land on
+        the <strong>same physical point</strong> across both photos. That's the engine behind panorama
+        stitching, visual place recognition, duplicate detection, and AR tracking — running entirely on
+        your device.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Models</th><td><a href="https://huggingface.co/bukuroo/ALIKED-LightGlue-ONNX" target="_blank" rel="noopener">bukuroo/ALIKED-LightGlue-ONNX</a> — ALIKED-N16rot (top-1000, 640px) + LightGlue</td></tr>
+          <tr><th>Task</th><td><code>keypoint-detection</code> + learned matching (two-image correspondence)</td></tr>
+          <tr><th>Pipeline</th><td>ALIKED extracts keypoints + 128-d descriptors per image → LightGlue matches the two descriptor sets</td></tr>
+          <tr><th>Output</th><td>Per image: up to 1000 keypoints; across the pair: M matched index pairs + a confidence each</td></tr>
+          <tr><th>Quantization</th><td>fp32 (both ONNX graphs)</td></tr>
+          <tr><th>Runtime</th><td>onnxruntime-web (raw ONNX Runtime Web) — no transformers.js matcher class exists</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (runs anywhere; no WebGPU needed)</td></tr>
+          <tr><th>Download</th><td>~51 MB total (ALIKED ~6 MB + LightGlue ~45 MB), cached after first load</td></tr>
+          <tr><th>License</th><td>ALIKED (BSD-3) · LightGlue (Apache-2.0) · ONNX exports per the repo card</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers, OffscreenCanvas, Canvas, FileReader — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Pick a scene (image B is that scene rotated + scaled, so the correspondences have known ground truth), or upload two of your own photos. Then hit Match.</p>
+
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="sample-strip" id="samples" aria-label="Sample scenes"></div>
+
+      <div class="pair-grid">
+        <div class="pane">
+          <h4>Image A</h4>
+          <canvas id="cvA" aria-label="Image A"></canvas>
+          <div class="field-row" style="margin:.4rem 0 0">
+            <button id="upA" type="button" class="secondary">Upload A</button>
+            <input type="file" id="fileA" accept="image/*" hidden />
+          </div>
+        </div>
+        <div class="pane">
+          <h4>Image B</h4>
+          <canvas id="cvB" aria-label="Image B"></canvas>
+          <div class="field-row" style="margin:.4rem 0 0">
+            <button id="upB" type="button" class="secondary">Upload B</button>
+            <input type="file" id="fileB" accept="image/*" hidden />
+          </div>
+        </div>
+      </div>
+
+      <div class="slider-row"><label for="rot">View B rotation</label><input type="range" id="rot" min="-45" max="45" step="1" value="12" /><output id="rotOut">12°</output></div>
+      <div class="slider-row"><label for="scl">View B scale</label><input type="range" id="scl" min="0.6" max="1.4" step="0.05" value="0.9" /><output id="sclOut">0.90×</output></div>
+      <div class="slider-row"><label for="minsc">Min match confidence</label><input type="range" id="minsc" min="0" max="0.9" step="0.05" value="0" /><output id="minscOut">0.00</output></div>
+
+      <div class="field-row">
+        <button id="run" type="button" disabled>Match</button>
+        <label style="flex-direction:row;align-items:center;gap:.4rem"><input type="checkbox" id="showKp" /> Show all keypoints</label>
+        <label style="flex-direction:row;align-items:center;gap:.4rem"><input type="checkbox" id="stack" /> Stack vertically</label>
+      </div>
+
+      <div class="canvas-wrap">
+        <canvas id="stage" class="match-canvas" tabindex="0" aria-label="The two images with lines connecting matched keypoints"></canvas>
+      </div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>keypoints A/B <b id="rKp">–</b></span>
+        <span>matches <b id="rMatches">–</b></span>
+        <span>extract <b id="rExt">–</b></span>
+        <span>match <b id="rMatchMs">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside — match confidence</h3>
+      <p class="muted">
+        LightGlue assigns every correspondence a confidence in [0, 1]. Strong, repeatable structure
+        (corners, textured edges) matches with high confidence; flat or ambiguous regions don't match at
+        all. This is the real distribution of the current match set.
+      </p>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Match a pair to see the confidence histogram.</div>
+      <div id="insideWrap" hidden>
+        <canvas id="hist" class="match-canvas" style="max-block-size:160px" aria-label="Histogram of match confidences"></canvas>
+        <div class="readout"><span>median confidence <b id="rMed">–</b></span><span>strong (≥0.5) <b id="rStrong">–</b></span></div>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        Feature matching is the geometric backbone of computer vision. Doing it on-device — no upload, no
+        API — unlocks private, offline tools that reason about <em>where</em> images relate, not just what
+        they contain.
+      </p>
+      <ul>
+        <li><strong>Panorama &amp; document stitching</strong> — align overlapping photos or scanned pages from their shared features.</li>
+        <li><strong>Duplicate &amp; near-duplicate detection</strong> — decide if two photos show the same scene, robust to crop, rotation, and lighting.</li>
+        <li><strong>Visual place recognition &amp; AR</strong> — relocalise a camera against a reference image, or anchor an overlay to a tracked surface.</li>
+        <li><strong>Change detection</strong> — align a before/after pair, then diff the registered images.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Match a scene against a rotated/scaled copy and watch the correspondence lines track the transform.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Duplicate detector: upload two photos and get a "same scene?" verdict from the match count + inliers.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Auto-align: estimate the rotation/scale between two views from the matches and overlay B onto A.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">Retrieve &amp; verify: DINOv2 embeddings shortlist the closest gallery image, then LightGlue confirms it geometrically.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>No transformers.js matcher class exists, so we run the two ONNX graphs directly with onnxruntime-web:</p>
+      <pre><code>import * as ort from "onnxruntime-web";
+const aliked = await ort.InferenceSession.create(alikedBytes);   // ~6 MB
+const lightglue = await ort.InferenceSession.create(lgBytes);    // ~45 MB
+
+// ALIKED: image [1,3,640,640] (RGB, /255) → keypoints [1000,2] (normalised),
+//         descriptors [1000,128], scores [1000]
+const a = await aliked.run({ image: tensorA });
+const b = await aliked.run({ image: tensorB });
+
+// LightGlue: add a batch dim; match the two descriptor sets
+const m = await lightglue.run({
+  kpts0: batch(a.keypoints), kpts1: batch(b.keypoints),
+  desc0: batch(a.descriptors), desc1: batch(b.descriptors),
+});
+// m.matches0 → [M, 2] index pairs · m.mscores0 → [M] confidences</code></pre>
+      <p class="muted">This page runs exactly that in a Web Worker (with the resize on an OffscreenCanvas), maps the normalised keypoints back to pixels, and draws a line per correspondence.</p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/bukuroo/ALIKED-LightGlue-ONNX" target="_blank" rel="noopener">Model card — bukuroo/ALIKED-LightGlue-ONNX</a></li>
+        <li><a href="https://arxiv.org/abs/2304.03608" target="_blank" rel="noopener">ALIKED: A Lighter Keypoint and Descriptor Extraction Network (arXiv:2304.03608)</a></li>
+        <li><a href="https://arxiv.org/abs/2306.13643" target="_blank" rel="noopener">LightGlue: Local Feature Matching at Light Speed (arXiv:2306.13643)</a></li>
+        <li><a href="https://onnxruntime.ai/docs/tutorials/web/" target="_blank" rel="noopener">ONNX Runtime Web documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://onnxruntime.ai/docs/tutorials/web/" target="_blank" rel="noopener">ONNX Runtime Web</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { MatchEngine, decodeImage, fileToDataURL, urlToBitmap, toBitmap, transformView, drawMatches, escapeHTML, MATCH_CSS } from "./match.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style"); style.textContent = MATCH_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new MatchEngine();
+      const MEDIA = "/web-ai-showcase/media/assets/";
+      const SAMPLES = [
+        { src: MEDIA + "city-street.jpg", alt: "A city street" },
+        { src: MEDIA + "mountain-landscape.jpg", alt: "A mountain landscape" },
+        { src: MEDIA + "market-crowd.jpg", alt: "A market crowd" },
+        { src: MEDIA + "fruit-still-life.jpg", alt: "A fruit still life" },
+      ];
+      let baseImg = null;    // the source image for transform-based sample pairs
+      let imgA = null, imgB = null, lastResult = null, bMode = "transform";
+
+      function setStatus(m, c) { $("status").textContent = m; $("status").classList.remove("err","ok"); if (c) $("status").classList.add(c); }
+      function draw(cv, img) { const w = img.naturalWidth || img.width, h = img.naturalHeight || img.height; cv.width = w; cv.height = h; cv.getContext("2d").drawImage(img, 0, 0); }
+
+      // Build sample thumbnails
+      $("samples").replaceChildren(...SAMPLES.map((s, i) => {
+        const b = document.createElement("img"); b.className = "sample-thumb" + (i === 0 ? " active" : ""); b.src = s.src; b.alt = s.alt; b.tabIndex = 0; b.setAttribute("role", "button");
+        b.addEventListener("click", () => pickSample(s, b));
+        b.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(s, b); } });
+        return b;
+      }));
+
+      async function makeB() {
+        if (bMode !== "transform" || !baseImg) return;
+        const c = transformView(baseImg, { rotate: +$("rot").value, scale: +$("scl").value });
+        imgB = await decodeImage(c.toDataURL("image/jpeg", 0.92));
+        draw($("cvB"), imgB);
+      }
+      async function pickSample(s, el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        baseImg = await decodeImage(s.src);
+        imgA = baseImg; bMode = "transform";
+        draw($("cvA"), imgA);
+        await makeB();
+        $("run").disabled = !engine.ready;
+        resetResult();
+      }
+      function resetResult() { $("readout").hidden = true; $("insideWrap").hidden = true; $("insideEmpty").hidden = false; lastResult = null; const s = $("stage"); s.getContext("2d")?.clearRect(0,0,s.width,s.height); }
+
+      // Uploads (independent)
+      function wireUpload(btnId, fileId, which) {
+        $(btnId).addEventListener("click", () => $(fileId).click());
+        $(fileId).addEventListener("change", async () => {
+          const f = $(fileId).files[0]; if (!f) return;
+          const img = await decodeImage(await fileToDataURL(f));
+          if (which === "A") { imgA = img; baseImg = img; if (bMode === "transform") await makeB(); draw($("cvA"), imgA); }
+          else { imgB = img; bMode = "upload"; draw($("cvB"), imgB); }
+          for (const t of $("samples").children) t.classList.remove("active");
+          $("run").disabled = !engine.ready; resetResult();
+        });
+      }
+      wireUpload("upA", "fileA", "A"); wireUpload("upB", "fileB", "B");
+
+      $("rot").addEventListener("input", async () => { $("rotOut").textContent = $("rot").value + "°"; if (bMode === "transform") { await makeB(); resetResult(); } });
+      $("scl").addEventListener("input", async () => { $("sclOut").textContent = (+$("scl").value).toFixed(2) + "×"; if (bMode === "transform") { await makeB(); resetResult(); } });
+      $("minsc").addEventListener("input", () => { $("minscOut").textContent = (+$("minsc").value).toFixed(2); if (lastResult) render(lastResult); });
+      $("showKp").addEventListener("change", () => lastResult && render(lastResult));
+      $("stack").addEventListener("change", () => lastResult && render(lastResult));
+
+      const autoRun = new URLSearchParams(location.search).has("auto");
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "bukuroo/ALIKED-LightGlue-ONNX", runtime: "onnxruntime-web", dtype: "fp32", sizeMB: 51, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("run").disabled = !(imgA && imgB); setStatus("Model ready.", "ok"); if (autoRun && imgA && imgB) $("run").click(); },
+      });
+      pickSample(SAMPLES[0], $("samples").firstElementChild);
+
+      function render(r) {
+        lastResult = r;
+        const min = +$("minsc").value;
+        const pairs = r.pairs.filter((p) => p.score >= min);
+        drawMatches($("stage"), imgA, imgB, pairs, { stack: $("stack").checked, maxMatches: 300, showKeypoints: $("showKp").checked, keypointsA: r.keypointsA, keypointsB: r.keypointsB });
+        $("rBackend").textContent = r.device.toUpperCase();
+        $("rKp").textContent = r.numKeypointsA + " / " + r.numKeypointsB;
+        $("rMatches").textContent = pairs.length;
+        $("rExt").textContent = r.extMs + " ms";
+        $("rMatchMs").textContent = r.matchMs + " ms";
+        $("readout").hidden = false;
+        // histogram
+        $("insideEmpty").hidden = true; $("insideWrap").hidden = false;
+        drawHist(pairs.map((p) => p.score));
+        const scs = pairs.map((p) => p.score).sort((a, b) => a - b);
+        $("rMed").textContent = scs.length ? scs[scs.length >> 1].toFixed(3) : "–";
+        $("rStrong").textContent = pairs.filter((p) => p.score >= 0.5).length;
+      }
+      function drawHist(scores) {
+        const cv = $("hist"), W = 600, H = 160; cv.width = W; cv.height = H;
+        const ctx = cv.getContext("2d"); ctx.clearRect(0, 0, W, H);
+        const bins = new Array(20).fill(0);
+        for (const s of scores) bins[Math.min(19, Math.max(0, Math.floor(s * 20)))]++;
+        const max = Math.max(1, ...bins);
+        const bw = W / 20;
+        const css = getComputedStyle(document.body);
+        ctx.fillStyle = css.getPropertyValue("--accent") || "#3b5bdb";
+        bins.forEach((v, i) => { const bh = (v / max) * (H - 20); ctx.fillRect(i * bw + 2, H - bh - 12, bw - 4, bh); });
+        ctx.fillStyle = css.getPropertyValue("--muted") || "#888"; ctx.font = "11px system-ui";
+        ctx.fillText("0.0", 2, H - 1); ctx.fillText("confidence", W / 2 - 30, H - 1); ctx.fillText("1.0", W - 22, H - 1);
+      }
+
+      $("run").addEventListener("click", async () => {
+        if (!engine.ready || !imgA || !imgB) return;
+        $("run").disabled = true; setStatus("Extracting features + matching…");
+        try {
+          const [bmA, bmB] = await Promise.all([toBitmap(imgA), toBitmap(imgB)]);
+          const r = await engine.match(bmA, bmB, {});
+          render(r);
+          setStatus(`${r.numMatches} correspondences found.`, "ok");
+        } catch (e) { setStatus("Matching failed: " + e.message, "err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>
