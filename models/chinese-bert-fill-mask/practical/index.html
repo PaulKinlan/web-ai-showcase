@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Chinese BERT Practical — proofreading assistant · Web AI Showcase</title>
+    <meta name="description" content="A Chinese proofreading assistant built on character-level BERT: click any character to see whether the model agrees it belongs there (typo / OCR check), and settle confusable characters like 的 / 得 / 地 by their probability. In your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='13'>汉</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Chinese BERT</a></p>
+
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Practical: a Chinese proofreading assistant</h1>
+      <p class="lede">
+        Because the model scores a character in context, it can check writing. Below, two real tools: click
+        any character in a sentence to see whether BERT agrees it belongs there (a typo / OCR check), and
+        settle confusable characters — 的 / 得 / 地 — by the exact probability the model assigns each.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="ck-h">
+      <h3 id="ck-h">Check a character — does BERT agree?</h3>
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.2rem 0 .5rem" id="chips" role="group" aria-label="句子">
+        <button class="mask-chip" type="button" data-set="他每天早上都喝一杯咖啡。">咖啡</button>
+        <button class="mask-chip" type="button" data-set="长城是中国最著名的建筑。">建筑</button>
+        <button class="mask-chip" type="button" data-set="我昨天去图书馆借了三本书。">借书</button>
+      </div>
+      <p class="hint-mask">Click any character below to mask it and see what BERT would put there.</p>
+      <div id="sentence" class="char-strip" style="font-size:1.35rem" hidden></div>
+
+      <div id="checkResult" hidden>
+        <p class="pred-head">At the masked position, BERT expects:</p>
+        <div id="preds"></div>
+        <p class="hint-mask" id="verdict"></p>
+      </div>
+      <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>latency <b id="rMs">–</b></span></div>
+    </section>
+
+    <section class="panel" aria-labelledby="reg-h">
+      <h3 id="reg-h">Which character? — 的 / 得 / 地 and other confusables</h3>
+      <p class="muted">Chinese has homophone characters that even native writers mix up. Pick a sentence and
+        BERT scores each candidate at the <code>[MASK]</code> — a grammar check in one forward pass.</p>
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.2rem 0 .5rem" id="regChips" role="group" aria-label="选择">
+        <button class="mask-chip" type="button" data-probe="de" aria-pressed="true">的 / 得 / 地</button>
+        <button class="mask-chip" type="button" data-probe="zai">在 / 再</button>
+        <button class="mask-chip" type="button" data-probe="ta">他 / 她 / 它</button>
+      </div>
+      <div id="regSentence" class="filled-sentence" style="font-size:1.2rem" hidden></div>
+      <div class="probe-card" id="regCard" hidden><div id="regList"></div></div>
+    </section>
+
+    <p class="crumbs"><a href="../basics/">← Basics</a> · Next: <a href="../wild/">Wild →</a></p>
+
+    <script type="module">
+      import { ChineseFillMaskEngine, CHINESE_CSS, MASK, renderPredictions, escapeHTML } from "../fillmask.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = CHINESE_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new ChineseFillMaskEngine();
+      let loaded = false;
+      let currentSentence = "他每天早上都喝一杯咖啡。";
+
+      const REG = {
+        de: ["他跑[MASK]很快。", ["的", "得", "地"]],
+        zai: ["我们明天[MASK]见面。", ["在", "再"]],
+        ta: ["这是[MASK]的书。", ["他", "她", "它"]],
+      };
+      let regCurrent = "de";
+
+      for (const c of document.querySelectorAll("#chips .mask-chip")) c.addEventListener("click", () => { currentSentence = c.dataset.set; renderSentence(); });
+      for (const b of document.querySelectorAll("#regChips .mask-chip")) {
+        b.addEventListener("click", () => {
+          regCurrent = b.dataset.probe;
+          for (const x of document.querySelectorAll("#regChips .mask-chip")) x.setAttribute("aria-pressed", String(x === b));
+          runRegister();
+        });
+      }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/bert-base-chinese", runtime: "transformers.js", dtype: "q8", sizeMB: 103, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { loaded = true; renderSentence(); runRegister(); },
+      });
+
+      // Render the current sentence as clickable character chips; clicking one masks THAT position.
+      function renderSentence() {
+        const chars = [...currentSentence];
+        $("sentence").hidden = false;
+        $("sentence").replaceChildren(...chars.map((ch, i) => {
+          const b = document.createElement("button");
+          b.type = "button";
+          b.className = "char-chip";
+          b.textContent = ch;
+          b.setAttribute("aria-label", `Check character ${ch} at position ${i + 1}`);
+          b.addEventListener("click", () => checkAt(i, ch));
+          return b;
+        }));
+        $("checkResult").hidden = true; $("readout").hidden = true;
+      }
+
+      async function checkAt(index, original) {
+        if (!loaded) return;
+        const chars = [...currentSentence];
+        chars[index] = MASK;
+        const masked = chars.join("");
+        // highlight the chosen chip
+        [...$("sentence").children].forEach((c, i) => c.classList.toggle("is-mask", i === index));
+        $("runStatus").hidden = true;
+        try {
+          const r = await engine.fill(masked, 6);
+          const preds = r.masks[0].predictions;
+          renderPredictions($("preds"), preds, null);
+          $("checkResult").hidden = false;
+          const topOk = preds[0].token === original;
+          const originalRank = preds.findIndex((p) => p.token === original);
+          $("verdict").textContent = topOk
+            ? `✓ BERT's top choice is “${original}” — the character as written looks right.`
+            : originalRank >= 0
+            ? `“${original}” is BERT's #${originalRank + 1} choice — plausible, but it prefers “${preds[0].token}”.`
+            : `“${original}” is not in BERT's top ${preds.length} — a possible typo; it expects “${preds[0].token}”.`;
+          $("readout").hidden = false; $("rBackend").textContent = r.device.toUpperCase(); $("rMs").textContent = r.ms + " ms";
+        } catch (err) { $("runStatus").hidden = false; $("runStatus").textContent = "Check failed: " + err.message; $("runStatus").classList.add("err"); }
+      }
+
+      async function runRegister() {
+        if (!loaded) return;
+        const [sentence, cands] = REG[regCurrent];
+        $("regSentence").hidden = false;
+        $("regSentence").innerHTML = escapeHTML(sentence).replace(MASK, `<span class="slot">${escapeHTML(cands[0])}</span>`);
+        try {
+          const r = await engine.scoreCandidates(sentence, cands);
+          const max = Math.max(1e-6, ...r.scores.map((s) => s.prob));
+          const rows = [...r.scores].sort((a, b) => b.prob - a.prob).map((s) => {
+            const row = document.createElement("div"); row.className = "cand-row";
+            row.innerHTML = `<span class="cand-word">${escapeHTML(s.word)}</span><span class="cand-bar"><span class="cand-fill" style="inline-size:${(s.prob / max * 100).toFixed(1)}%"></span></span><span class="cand-num">${(s.prob * 100).toFixed(2)}%</span>`;
+            return row;
+          });
+          $("regList").replaceChildren(...rows);
+          $("regCard").hidden = false;
+        } catch (err) { $("regCard").hidden = false; $("regList").textContent = "Scoring failed: " + err.message; }
+      }
+    </script>
+  </body>
+</html>

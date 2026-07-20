@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Chinese BERT Multi-model — fill then translate · Web AI Showcase</title>
+    <meta name="description" content="Two models in a chain: Chinese BERT fills a masked Chinese sentence, then a MarianMT model translates the completed sentence to English so you can read what it produced. All in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='13'>汉</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Chinese BERT</a></p>
+
+    <header>
+      <p class="eyebrow">use case · multi-model</p>
+      <h1>Multi-model: fill the mask, then translate</h1>
+      <p class="lede">
+        A two-stage on-device pipeline. First Chinese BERT fills your <code>[MASK]</code> with the most
+        likely character. Then a second model — a MarianMT Chinese→English translator — reads the
+        <em>completed</em> sentence and renders it in English, so you can see exactly what the fill means.
+        Two jobs, chained locally, nothing leaving the tab.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="load-h">
+      <h3 id="load-h" class="sr-only" style="position:absolute;left:-9999px">Models</h3>
+      <p class="muted" style="font-size:.85rem">This demo loads TWO models: the ~103 MB Chinese fill-mask
+        model (the one the other demos use, cached if you've run them) and a ~75 MB translator.</p>
+      <div style="display:grid;gap:.6rem">
+        <div><p class="hint-mask">1 · Fill-mask model</p><div id="loader-fill"></div></div>
+        <div><p class="hint-mask">2 · Translation model (zh→en)</p><div id="loader-tr"></div></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.2rem 0 .5rem" id="chips" role="group" aria-label="示例">
+        <button class="mask-chip" type="button" data-set="北京是中国的[MASK]都。">首都</button>
+        <button class="mask-chip" type="button" data-set="我最喜欢的季节是[MASK]天。">季节</button>
+        <button class="mask-chip" type="button" data-set="他每天都喝一杯[MASK]。">饮品</button>
+        <button class="mask-chip" type="button" data-set="长城是一座非常古老的[MASK]。">名词</button>
+      </div>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">
+        句子 (含 <code>[MASK]</code>)
+        <input id="text" class="mask-input" disabled value="北京是中国的[MASK]都。" />
+      </label>
+      <div style="margin:.5rem 0"><button id="run" type="button" disabled>Fill &amp; translate</button></div>
+
+      <div id="filled" class="filled-sentence" hidden></div>
+      <div id="english" class="en-out" hidden></div>
+      <div class="readout" id="readout" hidden><span>fill <b id="rFill">–</b></span><span>translate <b id="rTr">–</b></span><span>backend <b id="rBackend">–</b></span></div>
+
+      <p class="muted" style="font-size:.85rem">
+        The translator runs on the <em>filled-in</em> Chinese sentence, so the chain is honest end-to-end:
+        the character BERT predicted is literally part of what gets translated.
+      </p>
+    </section>
+
+    <p class="crumbs"><a href="../wild/">← Wild</a> · <a href="../">Back to Chinese BERT</a></p>
+
+    <script type="module">
+      import { ChineseFillMaskEngine, CHINESE_CSS, MASK, escapeHTML } from "../fillmask.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = CHINESE_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+
+      const fill = new ChineseFillMaskEngine();
+      const trWorker = new Worker("./translate-worker.js", { type: "module" });
+      const trPending = new Map(); let trId = 0; const trWaiters = [];
+      trWorker.addEventListener("message", (e) => {
+        const m = e.data;
+        if (m.type === "ready") { for (const w of trWaiters) w(); trWaiters.length = 0; }
+        else if (m.type === "translation") { trPending.get(m.id)?.(m); trPending.delete(m.id); }
+        else if (m.type === "error" && m.id != null) { trPending.get(m.id)?.(Promise.reject(new Error(m.message))); trPending.delete(m.id); }
+      });
+      function translate(text) { const id = ++trId; return new Promise((res) => { trPending.set(id, res); trWorker.postMessage({ type: "translate", id, text }); }); }
+
+      let fillReady = false, trReady = false;
+      const maybeEnable = () => { if (fillReady && trReady) { $("text").disabled = false; $("run").disabled = false; } };
+
+      createModelLoader({
+        mount: $("loader-fill"),
+        model: { modelId: "Xenova/bert-base-chinese", runtime: "transformers.js", dtype: "q8", sizeMB: 103, requiresWebGPU: false },
+        load: async (onProgress) => { await fill.load(onProgress); return fill; },
+        onReady: () => { fillReady = true; maybeEnable(); },
+      });
+      createModelLoader({
+        mount: $("loader-tr"),
+        model: { modelId: "Xenova/opus-mt-zh-en", runtime: "transformers.js", dtype: "q8", sizeMB: 75, requiresWebGPU: false },
+        load: (onProgress) => new Promise((resolve, reject) => {
+          trWaiters.push(resolve);
+          const onMsg = (e) => { if (e.data.type === "progress") onProgress(e.data.p); if (e.data.type === "error") { trWorker.removeEventListener("message", onMsg); reject(new Error(e.data.message)); } };
+          trWorker.addEventListener("message", onMsg);
+          trWorker.postMessage({ type: "load" });
+        }),
+        onReady: () => { trReady = true; maybeEnable(); },
+      });
+
+      for (const c of document.querySelectorAll(".mask-chip")) c.addEventListener("click", () => { $("text").value = c.dataset.set; });
+
+      $("run").addEventListener("click", async () => {
+        const text = $("text").value;
+        if (!text.includes(MASK)) { $("runStatus").hidden = false; $("runStatus").classList.add("err"); $("runStatus").textContent = "Add a [MASK] token first."; return; }
+        $("run").disabled = true; $("runStatus").hidden = false; $("runStatus").classList.remove("err"); $("runStatus").textContent = "Filling the mask…";
+        try {
+          const r = await fill.fill(text, 5);
+          const top = r.masks[0].predictions[0].token;
+          const filledSentence = text.replaceAll(MASK, top);
+          $("filled").innerHTML = escapeHTML(text).replaceAll(MASK, `<span class="slot">${escapeHTML(top)}</span>`);
+          $("filled").hidden = false;
+          $("runStatus").textContent = "Translating to English…";
+          const tr = await translate(filledSentence);
+          $("english").textContent = "→ " + tr.english;
+          $("english").hidden = false;
+          $("readout").hidden = false; $("rFill").textContent = r.ms + " ms"; $("rTr").textContent = tr.ms + " ms"; $("rBackend").textContent = r.device.toUpperCase();
+          $("runStatus").hidden = true;
+        } catch (err) {
+          $("runStatus").hidden = false; $("runStatus").classList.add("err"); $("runStatus").textContent = "Failed: " + err.message;
+        } finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>
