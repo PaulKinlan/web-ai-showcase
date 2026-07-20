@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>DiT Practical — mailroom auto-sorter · Web AI Showcase</title>
+    <meta name="description" content="A practical DiT use case: drop a batch of scanned pages and watch them auto-sort into per-type inbox queues, with a confidence gate that escalates ambiguous pages to a review lane — all in the browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>📄</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">DiT document classification</a></p>
+
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Practical: a mailroom auto-sorter</h1>
+      <p class="lede">
+        The everyday business job. A stack of incoming scans lands; each needs to go to the right team —
+        <code>invoice</code> to finance, <code>resume</code> to HR, <code>form</code> to intake. DiT reads
+        each page's layout and drops it into a queue, and a <strong>confidence gate</strong> escalates the
+        pages it isn't sure about to a human review lane instead of mis-filing them. Nothing leaves the
+        browser.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+
+      <div class="field-row" style="align-items:end">
+        <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Add document images to the batch" style="flex:1 1 240px">
+          <span id="dropText">Drop document images to add to the batch, or click to choose</span>
+          <input type="file" id="file" accept="image/*" multiple hidden />
+        </div>
+        <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;flex:0 0 auto">
+          Auto-file confidence ≥ <span id="thVal">60</span>%
+          <input type="range" id="th" min="30" max="90" value="60" style="min-inline-size:180px" />
+        </label>
+        <button id="run" type="button" disabled>Sort inbox</button>
+      </div>
+      <p class="status" id="runStatus" role="status" aria-live="polite"></p>
+      <p class="muted" style="font-size:.82rem">Batch (<span id="batchN">0</span> pages) — click a page to remove it:</p>
+      <div class="sample-strip" id="batch" aria-label="Batch of documents to sort"></div>
+
+      <div class="sorter" id="sorter" hidden>
+        <div class="readout" id="readout"><span>sorted <b id="rSorted">–</b></span><span>auto-filed <b id="rFiled">–</b></span><span>needs review <b id="rReview">–</b></span><span>avg latency <b id="rMs">–</b></span></div>
+        <div class="queues" id="queues"></div>
+      </div>
+    </section>
+
+    <p class="muted" style="font-size:.85rem">
+      This is the shape of a real ingest pipeline: a cheap on-device classifier is the dispatcher, and the
+      confidence gate decides what a human needs to look at. Raise the threshold and more borderline pages
+      route to review; lower it and the machine files more on its own. The per-page confidence is the
+      normalised top-1 probability from the softmax over all 16 types.
+    </p>
+
+    <p class="crumbs"><a href="../basics/">← Basics</a> · <a href="../">Back to DiT</a> · Next: <a href="../wild/">Wild →</a></p>
+
+    <script type="module">
+      import { ClassifierEngine, fileToDataURL, escapeHTML, CLASSIFY_CSS } from "/web-ai-showcase/lib/classify-ui.js";
+      import { DOC_WORKER_URL, DOC_CSS, prettyDocType } from "../doc.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style");
+      style.textContent = CLASSIFY_CSS + DOC_CSS + `
+        .queues { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: .8rem; margin-top: .8rem; }
+        .queue { border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-raised); padding: .6rem .7rem; min-inline-size: 0; }
+        .queue h4 { margin: 0 0 .4rem; font-family: var(--font-body); font-size: .95rem; display: flex; justify-content: space-between; gap: .5rem; }
+        .queue.review { border-color: var(--warn); }
+        .queue .cnt { font-family: var(--font-mono); font-size: .72rem; color: var(--muted); }
+        .qitem { display: flex; align-items: center; gap: .5rem; padding: .25rem 0; border-block-start: 1px solid var(--border); }
+        .qitem:first-of-type { border-block-start: 0; }
+        .qitem img { inline-size: 34px; block-size: 44px; object-fit: cover; border: 1px solid var(--border); border-radius: 3px; background:#fff; }
+        .qitem .qmeta { min-inline-size: 0; font-size: .78rem; }
+        .qitem .qc { font-family: var(--font-mono); color: var(--muted); font-size: .72rem; }
+        .batch-thumb { position: relative; }
+        .batch-thumb::after { content: "✕"; position: absolute; inset-block-start: 2px; inset-inline-end: 4px; color:#fff; background: rgba(0,0,0,.6); border-radius: 999px; inline-size: 15px; block-size: 15px; font-size: 10px; line-height: 15px; text-align: center; }
+      `;
+      document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new ClassifierEngine(DOC_WORKER_URL, "DiT");
+
+      // Seeded batch: the bundled sample pages. Each item = { src, url }.
+      const SEED = ["form", "invoice", "email", "memo", "pub"].map((n) => `../sample-${n}.png`);
+      let batch = [];
+
+      async function addSrc(src, name) {
+        const blob = await (await fetch(src)).blob();
+        const url = await fileToDataURL(new File([blob], name || "s", { type: blob.type }));
+        batch.push({ src, url, name: name || src.split("/").pop() });
+        renderBatch();
+      }
+      async function addFile(f) {
+        const url = await fileToDataURL(f);
+        batch.push({ src: url, url, name: f.name });
+        renderBatch();
+      }
+      function renderBatch() {
+        $("batchN").textContent = batch.length;
+        $("batch").replaceChildren(...batch.map((it, i) => {
+          const img = document.createElement("img");
+          img.className = "sample-thumb batch-thumb";
+          img.src = it.src; img.alt = it.name; img.tabIndex = 0; img.setAttribute("role", "button");
+          img.title = "Remove " + it.name;
+          const remove = () => { batch.splice(i, 1); renderBatch(); };
+          img.addEventListener("click", remove);
+          img.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); remove(); } });
+          return img;
+        }));
+        $("run").disabled = batch.length === 0 || !ready;
+      }
+
+      const file = $("file"), drop = $("drop");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      file.addEventListener("change", () => { for (const f of file.files) addFile(f); });
+      drop.addEventListener("drop", (e) => { for (const f of e.dataTransfer?.files || []) if (f.type.startsWith("image/")) addFile(f); });
+
+      $("th").addEventListener("input", () => { $("thVal").textContent = $("th").value; });
+
+      let ready = false;
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/dit-base-finetuned-rvlcdip", runtime: "transformers.js", dtype: "q8", sizeMB: 88, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { ready = true; renderBatch(); },
+      });
+
+      // Seed the initial batch once.
+      (async () => { for (const s of SEED) await addSrc(s, s.split("/").pop()); })();
+
+      $("run").addEventListener("click", async () => {
+        $("run").disabled = true; $("runStatus").classList.remove("err", "ok");
+        const th = Number($("th").value) / 100;
+        const buckets = new Map(); // type -> [{it, conf}]
+        const review = [];
+        let total = 0, filed = 0, msSum = 0;
+        for (let i = 0; i < batch.length; i++) {
+          $("runStatus").textContent = `Sorting ${i + 1}/${batch.length}…`;
+          const it = batch[i];
+          const r = await engine.classify(it.url, 3);
+          const winner = r.top[0];
+          const conf = winner.prob;
+          msSum += r.ms; total++;
+          if (conf >= th) {
+            filed++;
+            const key = winner.label;
+            if (!buckets.has(key)) buckets.set(key, []);
+            buckets.get(key).push({ it, conf });
+          } else {
+            review.push({ it, conf, guess: winner.label });
+          }
+        }
+        $("sorter").hidden = false;
+        $("rSorted").textContent = total;
+        $("rFiled").textContent = filed;
+        $("rReview").textContent = review.length;
+        $("rMs").textContent = total ? Math.round(msSum / total) + " ms" : "–";
+        const cols = [];
+        for (const [type, items] of [...buckets.entries()].sort((a, b) => b[1].length - a[1].length)) {
+          cols.push(queueEl(prettyDocType(type), items.map((x) => ({ it: x.it, sub: (x.conf * 100).toFixed(0) + "%" })), false));
+        }
+        if (review.length) {
+          cols.push(queueEl("Needs review", review.map((x) => ({ it: x.it, sub: "guess " + prettyDocType(x.guess) + " · " + (x.conf * 100).toFixed(0) + "%" })), true));
+        }
+        $("queues").replaceChildren(...cols);
+        $("runStatus").textContent = "Sorted " + total + " page(s).";
+        $("runStatus").classList.add("ok");
+        $("run").disabled = false;
+      });
+
+      function queueEl(title, items, isReview) {
+        const q = document.createElement("div");
+        q.className = "queue" + (isReview ? " review" : "");
+        q.innerHTML = `<h4><span>${escapeHTML(title)}</span><span class="cnt">${items.length}</span></h4>`;
+        for (const { it, sub } of items) {
+          const row = document.createElement("div");
+          row.className = "qitem";
+          row.innerHTML = `<img src="${escapeHTML(it.src)}" alt="${escapeHTML(it.name)}" /><div class="qmeta">${escapeHTML(it.name)}<div class="qc">${escapeHTML(sub)}</div></div>`;
+          q.append(row);
+        }
+        return q;
+      }
+    </script>
+  </body>
+</html>

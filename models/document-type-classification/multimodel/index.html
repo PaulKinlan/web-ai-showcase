@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>DiT Multi-model — classify → route → extract · Web AI Showcase</title>
+    <meta name="description" content="Chain two on-device document models: DiT names the document type, then routes a type-appropriate question to Donut, which reads the page and answers it — an in-browser classify → route → extract pipeline." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>📄</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">DiT document classification</a></p>
+
+    <header>
+      <p class="eyebrow">use case · multi-model</p>
+      <h1>Multi-model: classify → route → extract</h1>
+      <p class="lede">
+        A classifier is the cheap dispatcher in front of expensive extraction. Here <strong>DiT</strong>
+        names the document type (it reads layout, so it's fast and robust), and that type decides
+        <em>which question to ask next</em> — an <code>invoice</code> gets "what is the total?", a
+        <code>memo</code> gets "what is the subject?". Then
+        <a href="/web-ai-showcase/models/donut-docvqa/"><strong>Donut</strong></a>, a document-VQA model,
+        reads the same page and answers. Two models, one drop, all on your device.
+      </p>
+    </header>
+
+    <section class="panel">
+      <p class="muted" style="font-size:.85rem;margin-top:0">Stage 1 — document classifier (DiT, ~88 MB)</p>
+      <div id="dit-loader"></div>
+      <p class="muted" style="font-size:.85rem">Stage 2 — document-VQA reader (Donut, ~215 MB)</p>
+      <div id="donut-loader"></div>
+
+      <div class="field-row" style="align-items:stretch;margin-top:.6rem">
+        <div style="flex:1 1 260px;min-inline-size:0">
+          <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop a document image">
+            <span id="dropText">Drop a document image, or click to choose</span>
+            <input type="file" id="file" accept="image/*" hidden />
+          </div>
+          <div class="sample-strip" id="samples">
+            <img class="sample-thumb active" src="../sample-invoice.png" data-src="../sample-invoice.png" alt="An invoice" tabindex="0" role="button" />
+            <img class="sample-thumb" src="../sample-memo.png" data-src="../sample-memo.png" alt="An office memo" tabindex="0" role="button" />
+            <img class="sample-thumb" src="../sample-email.png" data-src="../sample-email.png" alt="A printed email" tabindex="0" role="button" />
+            <img class="sample-thumb" src="../sample-pub.png" data-src="../sample-pub.png" alt="A scientific paper" tabindex="0" role="button" />
+          </div>
+          <div class="preview-wrap"><img class="preview-img doc" id="preview" src="../sample-invoice.png" alt="Selected document" /></div>
+        </div>
+        <div style="flex:1 1 260px;min-inline-size:0">
+          <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">
+            Or ask your own question (leave blank to auto-route by type)
+            <input type="text" id="q" placeholder="e.g. What is the total amount?" style="inline-size:100%" />
+          </label>
+          <button id="run" type="button" disabled style="margin-top:.5rem">Classify &amp; extract</button>
+          <p class="status" id="runStatus" role="status" aria-live="polite"></p>
+          <p class="muted" style="font-size:.78rem;margin:.5rem 0 .2rem">1 · Document type (DiT)</p>
+          <div class="doc-result" id="result" hidden></div>
+          <div class="route-box" id="route" hidden></div>
+          <p class="muted" style="font-size:.78rem;margin:.6rem 0 .2rem">2 · Answer (Donut)</p>
+          <div class="caption-box" id="answer" aria-live="polite"></div>
+          <div class="readout" id="readout" hidden><span>classify <b id="rDit">–</b></span><span>extract <b id="rDon">–</b></span></div>
+        </div>
+      </div>
+      <p class="muted" style="font-size:.85rem">
+        Why chain them? Running a heavy VQA model on <em>every</em> page and every possible question is
+        wasteful. The classifier triages first, so you only ask the questions that make sense for the type
+        in front of you — the pattern behind real document-understanding pipelines.
+      </p>
+    </section>
+
+    <p class="crumbs"><a href="../wild/">← Wild</a> · <a href="../">Back to DiT</a></p>
+
+    <script type="module">
+      import { ClassifierEngine, fileToDataURL, escapeHTML, CLASSIFY_CSS } from "/web-ai-showcase/lib/classify-ui.js";
+      import { DOC_WORKER_URL, DOC_CSS, DOC_ICON, prettyDocType, questionForType } from "../doc.js";
+      import { DonutEngine } from "/web-ai-showcase/models/donut-docvqa/donut.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = CLASSIFY_CSS + DOC_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const dit = new ClassifierEngine(DOC_WORKER_URL, "DiT");
+      const donut = new DonutEngine();
+      let currentImageURL = null, ditReady = false, donutReady = false;
+
+      function maybeEnable() { if (ditReady && donutReady) $("run").disabled = false; }
+
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        const blob = await (await fetch(el.dataset.src)).blob();
+        currentImageURL = await fileToDataURL(new File([blob], "s", { type: blob.type }));
+        $("preview").src = el.dataset.src;
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } });
+      }
+      pickSample($("samples").firstElementChild);
+
+      const file = $("file"), drop = $("drop");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) { for (const t of $("samples").children) t.classList.remove("active"); currentImageURL = await fileToDataURL(f); $("preview").src = currentImageURL; $("dropText").textContent = f.name; }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
+
+      createModelLoader({
+        mount: $("dit-loader"),
+        model: { modelId: "Xenova/dit-base-finetuned-rvlcdip", runtime: "transformers.js", dtype: "q8", sizeMB: 88, requiresWebGPU: false },
+        load: async (onProgress) => { await dit.load(onProgress); return dit; },
+        onReady: () => { ditReady = true; maybeEnable(); },
+      });
+      createModelLoader({
+        mount: $("donut-loader"),
+        model: { modelId: "Xenova/donut-base-finetuned-docvqa", runtime: "transformers.js", dtype: "q8", sizeMB: 215, requiresWebGPU: false },
+        load: async (onProgress) => { await donut.load(onProgress); return donut; },
+        onReady: () => { donutReady = true; maybeEnable(); },
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!currentImageURL) { $("runStatus").textContent = "Pick a document first."; return; }
+        $("run").disabled = true; $("runStatus").classList.remove("err", "ok"); $("runStatus").textContent = "1/2 — classifying…";
+        $("answer").innerHTML = ""; $("route").hidden = true;
+        try {
+          const c = await dit.classify(currentImageURL, 3);
+          const winner = c.top[0];
+          $("result").hidden = false;
+          $("result").innerHTML = `${DOC_ICON}<div><div class="rt">${escapeHTML(prettyDocType(winner.label))}</div><div class="rb">${(winner.prob * 100).toFixed(0)}% confident</div></div>`;
+          const typed = $("q").value.trim();
+          const question = typed || questionForType(winner.label);
+          $("route").hidden = false;
+          $("route").innerHTML = typed
+            ? `Your question → <strong>${escapeHTML(question)}</strong>`
+            : `Type <strong>${escapeHTML(prettyDocType(winner.label))}</strong> routes to → <strong>${escapeHTML(question)}</strong>`;
+          $("runStatus").textContent = "2/2 — reading the page…";
+          $("answer").innerHTML = '<span class="cursor">&nbsp;</span>'; let text = "";
+          const a = await donut.ask(currentImageURL, question, {
+            maxTokens: 48,
+            onToken: (m) => { text += m.token; $("answer").innerHTML = escapeHTML(text) + '<span class="cursor">&nbsp;</span>'; },
+          });
+          $("answer").textContent = a.answer || "(no answer)";
+          $("readout").hidden = false; $("rDit").textContent = c.ms + " ms"; $("rDon").textContent = a.ms + " ms";
+          $("runStatus").textContent = "Done."; $("runStatus").classList.add("ok");
+        } catch (err) { $("runStatus").textContent = "Failed: " + err.message; $("runStatus").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>
