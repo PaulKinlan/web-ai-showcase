@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>XLSR Multi-model — Spanish ASR → English translation · Web AI Showcase</title>
+    <meta name="description" content="Chain two models in your browser: XLSR-53 transcribes Spanish speech to text, then OPUS-MT translates it to English — a full non-English speech understanding pipeline, all on-device." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='13'>🗣️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">wav2vec2-XLSR-53 (Spanish)</a></p>
+
+    <header>
+      <p class="eyebrow">use case · multi-model</p>
+      <h1>Multi-model: Spanish speech → English meaning</h1>
+      <p class="lede">
+        One model rarely does the whole job. Here XLSR-53 turns Spanish <strong>speech</strong> into
+        Spanish <strong>text</strong>, then <a href="../../marianmt-translation/">OPUS-MT</a> (MarianMT)
+        turns that Spanish text into <strong>English</strong>. Speech in a language you may not read becomes
+        something you understand — two models chained in your browser, nothing uploaded.
+      </p>
+    </header>
+
+    <section class="panel">
+      <h3>Step 1 — XLSR-53 (Spanish speech-to-text)</h3>
+      <div id="asr-loader"></div>
+      <h3 style="margin-top:1rem">Step 2 — OPUS-MT (Spanish → English)</h3>
+      <div id="mt-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+
+      <div class="audio-row" style="margin-top:.8rem">
+        <button id="upload" type="button" class="secondary" disabled>Upload Spanish audio</button>
+        <input type="file" id="file" accept="audio/*" hidden />
+        <span class="muted" style="font-size:.82rem">or a sample:</span>
+        <span class="sample-row" id="samples">
+          <button class="chip" type="button" data-src="../sample-spa.wav" data-label="Spanish — Bécquer (Public Domain, 12s)">Spanish sample</button>
+        </span>
+      </div>
+
+      <div class="audio-row"><audio id="player" controls preload="metadata"></audio>
+        <span class="muted" id="clipLabel" style="font-size:.82rem">Spanish — Bécquer (Public Domain, 12s)</span></div>
+      <button id="run" type="button" disabled>Transcribe &amp; translate</button>
+
+      <h3>Spanish transcript (XLSR-53)</h3>
+      <div class="transcript" id="es" aria-live="polite" lang="es">Pick a clip and run.</div>
+      <h3>English translation (OPUS-MT)</h3>
+      <div class="caption-box" id="en" aria-live="polite">…</div>
+      <div class="readout" id="readout" hidden>
+        <span>ASR backend <b id="rAsr">–</b></span><span>ASR time <b id="rAsrMs">–</b></span>
+        <span>MT backend <b id="rMt">–</b></span><span>MT time <b id="rMtMs">–</b></span>
+      </div>
+    </section>
+
+    <section aria-labelledby="how-h">
+      <h2 id="how-h">What's happening</h2>
+      <p>
+        Both models run in their own Web Workers, so neither the CTC forward pass nor the autoregressive
+        translation decoder blocks the page. The only thing crossing between them is a short Spanish
+        string. This is the shape of real multilingual understanding on the edge: a speech model plus a
+        translation model, composed client-side, working offline once both are cached.
+      </p>
+    </section>
+
+    <p class="crumbs"><a href="../wild/">← Wild</a> · <a href="../">Back to XLSR-53</a></p>
+
+    <script type="module">
+      import { SpanishXlsrEngine, urlToMono16k, ES_XLSR_CSS } from "../spanish.js";
+      import { Translator } from "./translate.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = ES_XLSR_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const asr = new SpanishXlsrEngine();
+      const mt = new Translator();
+      let pcm = null, audioDur = 0, asrReady = false, mtReady = false;
+
+      function sync() { $("run").disabled = !(asrReady && mtReady && pcm); }
+
+      async function useAudio(url, label, { revoke = false } = {}) {
+        $("player").src = url; if (label) $("clipLabel").textContent = label;
+        $("es").textContent = "Ready — hit Transcribe & translate."; $("en").textContent = "…"; $("readout").hidden = true;
+        try { const d = await urlToMono16k(url); pcm = d.pcm; audioDur = d.duration; sync(); }
+        catch (err) { $("status").hidden = false; $("status").textContent = "Couldn't decode: " + err.message; $("status").classList.add("err"); pcm = null; }
+        if (revoke) $("player").addEventListener("emptied", () => URL.revokeObjectURL(url), { once: true });
+      }
+      for (const chip of $("samples").children) chip.addEventListener("click", () => useAudio(chip.dataset.src, chip.dataset.label));
+      useAudio("../sample-spa.wav", "Spanish — Bécquer (Public Domain, 12s)");
+      $("upload").addEventListener("click", () => $("file").click());
+      $("file").addEventListener("change", async () => { const f = $("file").files[0]; if (f) await useAudio(URL.createObjectURL(f), f.name, { revoke: true }); });
+
+      createModelLoader({
+        mount: $("asr-loader"),
+        model: { modelId: "FinDIT-Studio/wav2vec2-large-xlsr-53-spanish-onnx", runtime: "transformers.js", dtype: "fp32", sizeMB: 1200, requiresWebGPU: false },
+        load: async (onProgress) => ({ device: await asr.load((p) => onProgress(p)) }),
+        onReady: () => { asrReady = true; $("upload").disabled = false; sync(); },
+      });
+      createModelLoader({
+        mount: $("mt-loader"),
+        model: { modelId: "Xenova/opus-mt-es-en", runtime: "transformers.js", dtype: "q8", sizeMB: 120, requiresWebGPU: false },
+        load: async (onProgress) => ({ device: await mt.load((p) => onProgress(p)) }),
+        onReady: () => { mtReady = true; sync(); },
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!pcm) return;
+        $("run").disabled = true; $("status").hidden = false; $("status").classList.remove("err", "ok");
+        $("en").textContent = "…";
+        try {
+          $("status").textContent = "Step 1 — transcribing Spanish (CTC)…";
+          const a = await asr.transcribe(pcm, audioDur);
+          const t = (a.text || "").trim();
+          $("es").textContent = t || "(nothing heard)";
+          $("rAsr").textContent = a.device.toUpperCase(); $("rAsrMs").textContent = (a.ms / 1000).toFixed(2) + " s";
+          if (!t) { $("en").textContent = "(no speech detected)"; $("status").textContent = "Done."; $("run").disabled = false; return; }
+          $("status").textContent = "Step 2 — translating to English…";
+          const r = await mt.translate(t);
+          $("en").textContent = r.text || "(no translation)";
+          $("readout").hidden = false; $("rMt").textContent = r.device.toUpperCase(); $("rMtMs").textContent = (r.ms / 1000).toFixed(2) + " s";
+          $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+      if ("serviceWorker" in navigator) navigator.serviceWorker.register("/web-ai-showcase/sw.js").catch(() => {});
+    </script>
+  </body>
+</html>
