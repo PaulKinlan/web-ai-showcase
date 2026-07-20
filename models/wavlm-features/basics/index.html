@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>WavLM Basics — audio similarity matrix · Web AI Showcase</title>
+    <meta name="description" content="The fundamental WavLM move: embed a bank of clips on-device and read the full pairwise cosine-similarity matrix. Same voices score high. Nothing uploaded." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🌊</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">WavLM</a></p>
+
+    <header>
+      <p class="eyebrow">use case · basics</p>
+      <h1>Basics: the audio similarity matrix</h1>
+      <p class="lede">
+        The whole idea, plainly. Embed a bank of clips on this device, then compare every pair by cosine
+        similarity. Read the matrix like a heatmap: bright = alike in WavLM's feature space (same voice,
+        language or content), dim = different. The strongest off-diagonal pair is called out below.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+
+      <p class="muted">Clips in the bank (add your own with Upload):</p>
+      <div class="sample-row" id="bank" aria-label="Clip bank"></div>
+      <div class="audio-row">
+        <button id="upload" type="button" class="secondary" disabled>Upload a clip</button>
+        <input type="file" id="file" accept="audio/*" hidden />
+      </div>
+
+      <button id="run" type="button" disabled>Embed &amp; compare all</button>
+
+      <div id="result" hidden>
+        <p id="topPair" class="muted" aria-live="polite" style="margin:.8rem 0 .4rem"></p>
+        <div class="matrix-scroll"><div id="matrix"></div></div>
+        <div class="readout" id="readout" hidden>
+          <span>backend <b id="rBackend">–</b></span>
+          <span>clips <b id="rClips">–</b></span>
+          <span>compute <b id="rMs">–</b></span>
+        </div>
+      </div>
+    </section>
+
+    <p class="crumbs"><a href="../">← Back to WavLM</a> · Next: <a href="../practical/">Practical →</a></p>
+
+    <script type="module">
+      import { WavLMEngine, urlToMono16k, renderMatrix, WAVLM_CSS } from "../wavlm.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = WAVLM_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new WavLMEngine();
+
+      const bank = [
+        { src: "../jfk.wav", name: "JFK" },
+        { src: "../ted.wav", name: "TED" },
+        { src: "../sample-spa.wav", name: "Spanish" },
+        { src: "../sample-deu.wav", name: "German" },
+        { src: "../sample-rus.wav", name: "Russian" },
+      ];
+
+      function renderBank() {
+        $("bank").innerHTML = "";
+        bank.forEach((c) => {
+          const chip = document.createElement("span");
+          chip.className = "chip";
+          chip.style.cursor = "default";
+          chip.textContent = c.name;
+          $("bank").append(chip);
+        });
+      }
+      renderBank();
+
+      $("upload").addEventListener("click", () => $("file").click());
+      $("file").addEventListener("change", async () => {
+        const f = $("file").files[0];
+        if (!f) return;
+        bank.push({ src: URL.createObjectURL(f), name: f.name.slice(0, 10), revoke: true });
+        renderBank();
+      });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/wavlm-base-plus", runtime: "transformers.js", dtype: "q8", sizeMB: 95, requiresWebGPU: false },
+        load: async (onProgress) => ({ device: await engine.load((p) => onProgress(p)) }),
+        onReady: () => { $("upload").disabled = false; $("run").disabled = false; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        $("run").disabled = true;
+        $("status").hidden = false; $("status").classList.remove("err", "ok");
+        $("status").textContent = "Decoding and embedding " + bank.length + " clips…";
+        try {
+          const clips = [];
+          for (const c of bank) {
+            const d = await urlToMono16k(c.src);
+            clips.push({ name: c.name, audio: d.pcm });
+          }
+          const r = await engine.similarity(clips);
+          renderMatrix($("matrix"), r.names, r.matrix);
+          // strongest off-diagonal pair
+          let best = { v: -Infinity, i: 0, j: 1 };
+          for (let i = 0; i < r.matrix.length; i++)
+            for (let j = i + 1; j < r.matrix.length; j++)
+              if (r.matrix[i][j] > best.v) best = { v: r.matrix[i][j], i, j };
+          $("topPair").innerHTML = `Closest pair: <strong>${r.names[best.i]}</strong> ↔ <strong>${r.names[best.j]}</strong> (cosine ${best.v.toFixed(2)}).`;
+          $("result").hidden = false;
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rClips").textContent = clips.length;
+          $("rMs").textContent = (r.ms / 1000).toFixed(2) + " s";
+          $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (err) {
+          $("status").textContent = "Failed: " + err.message; $("status").classList.add("err");
+        } finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>
