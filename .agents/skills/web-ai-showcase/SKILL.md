@@ -55,20 +55,25 @@ of every model you can genuinely run in a browser — not a token set. Read `CLA
   `visual-question-answering` pipeline / no ONNX), **kosmos-2** (no `kosmos` class in
   transformers.js; no browser ONNX), **mask2former** (no `Mask2Former...` class in transformers.js
   3.7.5/4.2 — only the image processor; no browser ONNX), **internvl** (no `internvl` class →
-  `Unsupported model type: internvl`), **audio-captioning** (no audio-captioning pipeline task in
-  transformers.js + ZERO ONNX exports for any audio captioner [whisper-captioners/CNN14/BEATs — all
-  pytorch/espnet w/ custom generate()]; don't relabel CLAP/ASR), **deplot / pix2struct
-  chart-to-table** (no `Pix2Struct` class/processor in 3.7.5 or 4.2 — DePlot/MatCha/ChartQA are all
-  Pix2Struct; ONNX exists but no library support; don't relabel a captioner), **monot5**
-  (T5ForConditionalGeneration class IS supported but no monoT5 checkpoint ships a
-  transformers.js-loadable ONNX — all safetensors-only; don't relabel a cross-encoder), **yi-1.5** /
-  **internlm2.5** / **starcoder2** / **codegemma** (distinct LLM families with no browser-runnable
-  path: not in WebLLM prebuiltAppConfig AND no transformers.js-loadable ONNX — Yi/StarCoder2 have
-  the llama/gpt_bigcode class but no ONNX on the Hub [only ORT-GenAI DirectML exports w/ 404
-  configs]; InternLM has no class in 3.7.5/4.2; CodeGemma has no browser-feasible ONNX. Don't
-  relabel Gemma/Qwen-Coder/other LLMs), **nomic-embed-v2-moe** (no ONNX export exists anywhere
-  [~200-repo scan: safetensors/GGUF/ExecuTorch only] AND transformers.js registers only dense
-  `nomic_bert`, not the MoE expert-routing — don't relabel the dense v1.5), **videomae /
+  `Unsupported model type: internvl`), **madlad-400** (smallest checkpoint is 3B; the one ONNX
+  export is ~4.94GB INT8 w/ non-standard layout [404s on encoder/decoder_merged] — exceeds wasm32
+  4GB; don't relabel NLLB), **image-orientation** (every candidate is missing config/preprocessor
+  [404] OR GATED/access-restricted — unusable from a static site; never fake with EXIF/heuristic),
+  **canine** (no `canine` class in transformers.js 3.7.5/4.2 → `Unsupported model type: canine`;
+  safetensors-only, only raw ONNX lacks config; don't relabel ByT5/subword), **audio-captioning**
+  (no audio-captioning pipeline task in transformers.js + ZERO ONNX exports for any audio captioner
+  [whisper-captioners/CNN14/BEATs — all pytorch/espnet w/ custom generate()]; don't relabel
+  CLAP/ASR), **deplot / pix2struct chart-to-table** (no `Pix2Struct` class/processor in 3.7.5 or 4.2
+  — DePlot/MatCha/ChartQA are all Pix2Struct; ONNX exists but no library support; don't relabel a
+  captioner), **monot5** (T5ForConditionalGeneration class IS supported but no monoT5 checkpoint
+  ships a transformers.js-loadable ONNX — all safetensors-only; don't relabel a cross-encoder),
+  **yi-1.5** / **internlm2.5** / **starcoder2** / **codegemma** (distinct LLM families with no
+  browser-runnable path: not in WebLLM prebuiltAppConfig AND no transformers.js-loadable ONNX —
+  Yi/StarCoder2 have the llama/gpt_bigcode class but no ONNX on the Hub [only ORT-GenAI DirectML
+  exports w/ 404 configs]; InternLM has no class in 3.7.5/4.2; CodeGemma has no browser-feasible
+  ONNX. Don't relabel Gemma/Qwen-Coder/other LLMs), **nomic-embed-v2-moe** (no ONNX export exists
+  anywhere [~200-repo scan: safetensors/GGUF/ExecuTorch only] AND transformers.js registers only
+  dense `nomic_bert`, not the MoE expert-routing — don't relabel the dense v1.5), **videomae /
   video-classification** (no videomae class AND `video-classification` is not a supported pipeline
   task in transformers.js 3.7.5/4.2; no browser ONNX), **parler-tts** (no `parler_tts` class in
   3.7.5/4.2 → `Unsupported model type: parler_tts`; custom T5+DAC-codec+description-cross-attn
