@@ -1,0 +1,276 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Spanish sentiment (RoBERTuito) — read the mood of Spanish text in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Type Spanish and this RoBERTuito model — a RoBERTa pre-trained only on Spanish tweets — scores it negativo / neutral / positivo, locally in your browser. Watch the real class probabilities and which words moved the verdict. A Spanish specialist, distinct from English-only and multilingual sentiment models. No server."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🇪🇸</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">text-classification · text · WASM · ~104 MB</p>
+      <h1>Spanish sentiment — a Spanish-native reader of the mood</h1>
+      <p class="lede">
+        Most sentiment models are English-first. <strong>RoBERTuito</strong> is the opposite: a RoBERTa
+        pre-trained on about <strong>500 million Spanish tweets</strong> — emoji, hashtags and @-mentions
+        included — then fine-tuned for sentiment. It reads Spanish morphology, diminutives and regional
+        slang as first-class signal and scores text as <strong>negativo</strong>, <strong>neutral</strong>
+        or <strong>positivo</strong>. Type something in Spanish below and watch the real class
+        probabilities; then look inside to see which words moved the verdict. Nothing leaves your device.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/Xenova/robertuito-sentiment-analysis" target="_blank" rel="noopener">Xenova/robertuito-sentiment-analysis</a></td></tr>
+          <tr><th>Base model</th><td><a href="https://huggingface.co/pysentimiento/robertuito-sentiment-analysis" target="_blank" rel="noopener">pysentimiento/robertuito-sentiment-analysis</a> (RoBERTuito, fine-tuned on TASS)</td></tr>
+          <tr><th>Task / pipeline</th><td><code>text-classification</code> — three classes: negativo · neutral · positivo</td></tr>
+          <tr><th>How it works</th><td>RoBERTuito encodes the Spanish text, then a small head predicts the 3-class softmax (config id2label: <code>0 NEG · 1 NEU · 2 POS</code>)</td></tr>
+          <tr><th>Architecture</th><td>RoBERTa base (~108M params), pre-trained on ~500M Spanish tweets (user/hashtag/emoji tokens), fine-tuned on the TASS sentiment corpus</td></tr>
+          <tr><th>Language</th><td><strong>Spanish only</strong> — a language specialist, not a multilingual model</td></tr>
+          <tr><th>Quantization</th><td>q8 (8-bit) ONNX (<code>model_quantized.onnx</code>)</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (runs anywhere; no WebGPU needed)</td></tr>
+          <tr><th>Download</th><td>~104 MB, cached after first load</td></tr>
+          <tr><th>License</th><td>Research model (pysentimiento) — cite the RoBERTuito / pysentimiento papers</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Type or paste some Spanish, or pick a sample. The verdict updates as you type; the
+        class bars show the full probability split.</p>
+
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <label style="display:flex;flex-direction:column;gap:.3rem;font-size:.82rem;margin-top:.6rem">
+        Texto para analizar (Spanish text)
+        <textarea id="text" class="senti-input" rows="3" disabled>Me encanta este lugar, la comida estaba increíble 😍</textarea>
+      </label>
+      <div class="sample-row" id="samples" role="group" aria-label="Sample Spanish posts"></div>
+
+      <div id="resultWrap" hidden>
+        <div id="verdict" class="senti-verdict" aria-live="polite"></div>
+        <div class="prob-list" id="probs" aria-live="polite"></div>
+        <div class="readout" id="readout" hidden>
+          <span>backend <b id="rBackend">–</b></span>
+          <span>latency <b id="rMs">–</b></span>
+          <span>model <b id="rModel">RoBERTuito</b></span>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside — which words moved the verdict</h3>
+      <p class="muted">
+        The model never matches "sentiment words" from a list — it reads the whole sentence through one
+        Spanish encoder. To make that legible we run <strong>occlusion attribution</strong>: re-score the
+        text with each word removed and measure how far the winning class's confidence drops (in
+        log-odds). A word tinted in the verdict colour was <em>pushing</em> that verdict; a grey word was
+        pulling against it. Because the tokenizer decides what a "word" contributes, a diminutive
+        (<em>-ito/-ita</em>), an intensifier or an emoji all carry real weight.
+      </p>
+      <div><button id="explain" type="button" class="secondary" disabled>Explain the last verdict</button></div>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem;margin-top:.5rem">Analyse some text, then explain it to inspect word-level attribution.</div>
+      <div id="insideWrap" hidden>
+        <div class="attr-strip" id="attrStrip"></div>
+        <p class="muted" id="attrNote" style="font-size:.76rem;margin-top:.5rem"></p>
+      </div>
+
+      <hr style="border:0;border-top:1px solid var(--border);margin:1.2rem 0" />
+      <h4 style="margin:.2rem 0">Spanish-native vs multilingual</h4>
+      <p class="muted">
+        A <a href="/web-ai-showcase/models/multilingual-sentiment/">multilingual model</a> (XLM-R) spreads
+        one embedding space across ~100 languages — brilliant when your text could be in any of them.
+        RoBERTuito goes the other way: <strong>all</strong> of its ~108M parameters and its entire
+        vocabulary are Spanish, pre-trained on Spanish social text. On idiomatic Spanish — slang, heavy
+        diminutives, code-mixed regional forms — a specialist often reads the register a generalist
+        flattens. The <a href="multi-model/">multi-model demo</a> runs both side by side so you can see
+        where they agree and where they part.
+      </p>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        Spanish is one of the most-spoken languages on earth, and a lot of opinion data — reviews, DMs,
+        support tickets, social posts — arrives in it. A model that was actually pre-trained on Spanish
+        reads its register, not a translated approximation, and it runs in a tab, so that text never has
+        to leave the device.
+      </p>
+      <ul>
+        <li><strong>Spanish review monitoring</strong> — triage a feed of Spanish reviews, negatives first, on-device.</li>
+        <li><strong>Private social listening</strong> — score Spanish-market sentiment without shipping posts to an API.</li>
+        <li><strong>Community moderation signal</strong> — flag a sharp negative turn in a Spanish-language thread.</li>
+        <li><strong>Emoji- and slang-aware analytics</strong> — trained on tweets, so 😍, 🤬 and slang count as the signal they are.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Type Spanish, get negativo / neutral / positivo with the full probability split.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Paste a batch of Spanish reviews and get a sorted, colour-coded monitoring board.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Break it: regional slang, sarcasm, diminutives and emoji-only messages.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">Spanish-native RoBERTuito vs a multilingual XLM-R model on the same text.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>The pipeline takes a string and returns labelled class scores. Ask for all three with <code>top_k</code>:</p>
+      <pre><code>import { pipeline } from "@huggingface/transformers";
+
+const clf = await pipeline(
+  "text-classification",
+  "Xenova/robertuito-sentiment-analysis",
+  { dtype: "q8" },
+); // downloads + caches ~104 MB once
+
+const out = await clf("Me encanta este lugar 😍", { top_k: 3 });
+// → [{ label: "POS", score: 0.98 },
+//    { label: "NEU", score: 0.02 },
+//    { label: "NEG", score: 0.00 }]</code></pre>
+      <p class="muted">
+        The labels come from the model config (<code>0 NEG · 1 NEU · 2 POS</code>); this page maps them to
+        negativo / neutral / positivo. "See inside" reuses the same loaded instance to re-score occluded
+        variants of the text and read off each word's pull. All of it runs in a Web Worker so the UI never
+        janks.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/Xenova/robertuito-sentiment-analysis" target="_blank" rel="noopener">Model card — Xenova/robertuito-sentiment-analysis (ONNX)</a></li>
+        <li><a href="https://huggingface.co/pysentimiento/robertuito-sentiment-analysis" target="_blank" rel="noopener">Base model — pysentimiento/robertuito-sentiment-analysis</a></li>
+        <li><a href="https://arxiv.org/abs/2111.09453" target="_blank" rel="noopener">Paper — RoBERTuito: a pre-trained language model for social media text in Spanish (Pérez et al., 2022)</a></li>
+        <li><a href="https://arxiv.org/abs/2106.09462" target="_blank" rel="noopener">Paper — pysentimiento: a Python toolkit for opinion mining and social NLP</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { SentimentEngine, renderVerdict, renderProbs, renderAttribution, debounce, SENTI_CSS } from "./sentiment.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = SENTI_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new SentimentEngine();
+      let loaded = false;
+      let lastText = "";
+
+      const SAMPLES = [
+        "Me encanta este lugar, la comida estaba increíble 😍",
+        "Qué porquería de servicio, una pérdida total de dinero.",
+        "El pedido llegó a tiempo, todo correcto.",
+        "Está chido el celular, la batería aguanta un montón 🔋",
+        "Vaya, otra vez cancelaron el vuelo. Genial. 🙄",
+        "No está mal, pero esperaba algo mejor por el precio.",
+        "¡Qué ilusión, por fin llegaron las vacaciones! 🎉",
+        "El soporte no responde mis mensajes desde hace días 😡",
+      ];
+      const samplesEl = $("samples");
+      for (const s of SAMPLES) {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "chip";
+        b.textContent = s.length > 40 ? s.slice(0, 38) + "…" : s;
+        b.addEventListener("click", () => { $("text").value = s; run(); });
+        samplesEl.append(b);
+      }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: {
+          modelId: "Xenova/robertuito-sentiment-analysis",
+          runtime: "transformers.js",
+          dtype: "q8",
+          sizeMB: 104,
+          requiresWebGPU: false,
+        },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => {
+          $("text").disabled = false;
+          $("explain").disabled = false;
+          loaded = true;
+          run();
+        },
+      });
+
+      const debouncedRun = debounce(run, 350);
+      $("text").addEventListener("input", () => { if (loaded) debouncedRun(); });
+      $("explain").addEventListener("click", explain);
+
+      async function run() {
+        if (!loaded) return;
+        const text = $("text").value.trim();
+        if (!text) { $("resultWrap").hidden = true; return; }
+        lastText = text;
+        $("runStatus").hidden = false;
+        $("runStatus").classList.remove("err", "ok");
+        $("runStatus").textContent = "Scoring…";
+        try {
+          const r = await engine.classify(text);
+          $("resultWrap").hidden = false;
+          renderVerdict($("verdict"), r.dist, r.label);
+          renderProbs($("probs"), r.dist, r.label);
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = r.ms + " ms";
+          $("runStatus").textContent = "Done.";
+          $("runStatus").classList.add("ok");
+        } catch (err) {
+          $("runStatus").textContent = "Scoring failed: " + err.message;
+          $("runStatus").classList.add("err");
+        }
+      }
+
+      async function explain() {
+        if (!loaded) return;
+        const text = $("text").value.trim() || lastText;
+        if (!text) return;
+        $("explain").disabled = true;
+        $("runStatus").hidden = false;
+        $("runStatus").classList.remove("err", "ok");
+        $("runStatus").textContent = "Measuring each word's pull (one pass per word)…";
+        try {
+          const r = await engine.attribute(text);
+          renderAttribution($("attrStrip"), r.words, r.attributions, r.target);
+          $("insideEmpty").hidden = true;
+          $("insideWrap").hidden = false;
+          $("attrNote").textContent =
+            `Winning class: ${r.target}. ${r.capped ? "Only the first 40 words were scored. " : ""}` +
+            `Hover a word for its exact log-odds pull. ${r.ms} ms.`;
+          $("runStatus").textContent = "Done.";
+          $("runStatus").classList.add("ok");
+        } catch (err) {
+          $("runStatus").textContent = "Attribution failed: " + err.message;
+          $("runStatus").classList.add("err");
+        } finally {
+          $("explain").disabled = false;
+        }
+      }
+    </script>
+  </body>
+</html>

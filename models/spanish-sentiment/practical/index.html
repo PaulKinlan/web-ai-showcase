@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Practical — a Spanish review monitoring board · Spanish sentiment · Web AI Showcase</title>
+    <meta name="description" content="Paste a batch of Spanish reviews or comments and get a sorted, colour-coded sentiment board with counts — negatives first — all scored on-device by RoBERTuito." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🇪🇸</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/models/spanish-sentiment/">← Spanish sentiment</a></p>
+
+    <header>
+      <p class="eyebrow">Practical · Spanish review monitoring</p>
+      <h1>A Spanish review monitoring board</h1>
+      <p class="lede">
+        A Spanish-market feedback feed, triaged on-device. Paste one review per line and this builds a
+        sorted board: negativos first (the ones to answer today), then neutrales, then positivos, with a
+        running count and a positive-share meter. Every line is scored by RoBERTuito in the tab; nothing
+        is uploaded.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Paste your reviews (one per line)</h3>
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <label style="display:flex;flex-direction:column;gap:.3rem;font-size:.82rem;margin-top:.6rem">
+        Una reseña por línea
+        <textarea id="lines" class="senti-input" rows="8" disabled></textarea>
+      </label>
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.5rem 0">
+        <button id="score" type="button" disabled>Score &amp; sort</button>
+        <button id="loadSample" type="button" class="secondary" disabled>Load a sample batch</button>
+        <label style="display:inline-flex;align-items:center;gap:.35rem;font-size:.82rem">
+          <input type="checkbox" id="worstFirst" checked /> worst first
+        </label>
+      </div>
+
+      <div id="summary" class="summary-bar" hidden></div>
+      <div id="meter" class="pos-meter" hidden aria-hidden="true"><span id="meterFill"></span></div>
+      <div id="board" class="review-board" hidden></div>
+    </section>
+
+    <section aria-labelledby="learn-h">
+      <h2 id="learn-h">Where this fits</h2>
+      <ul>
+        <li><strong>Triage:</strong> sort a day's Spanish feedback so the angriest reviews rise to the top.</li>
+        <li><strong>Dashboards:</strong> the counts drive a live positivo/neutral/negativo ratio for the Spanish market.</li>
+        <li><strong>Privacy:</strong> because it runs in the tab, customer text never touches a third-party API.</li>
+      </ul>
+      <p><a href="../wild/">Next: try to break it with sarcasm, slang and emoji →</a></p>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { SentimentEngine, CLASS_META, CLASS_ORDER, escapeHTML, SENTI_CSS } from "../sentiment.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = SENTI_CSS + `
+        .summary-bar { display: flex; flex-wrap: wrap; gap: .5rem; margin: .8rem 0 .4rem; }
+        .summary-pill { font-family: var(--font-mono); font-size: .8rem; padding: .25rem .7rem; border-radius: 999px;
+          border: 1px solid var(--border); background: var(--bg-raised); }
+        .pos-meter { block-size: .6rem; border-radius: 999px; overflow: hidden; margin: .2rem 0 .8rem;
+          background: var(--bad); border: 1px solid var(--border); }
+        .pos-meter span { display:block; block-size:100%; background: var(--good); inline-size: 0; transition: inline-size .3s ease; }
+        .review-board { display: grid; gap: .5rem; }
+        .review-row { display: grid; grid-template-columns: auto 1fr auto; gap: .6rem; align-items: center;
+          border: 1px solid var(--border); border-inline-start-width: 4px; border-radius: 8px;
+          background: var(--bg-raised); padding: .5rem .7rem; }
+        .review-row .rv-emoji { font-size: 1.3rem; }
+        .review-row .rv-text { font-size: .92rem; overflow-wrap: anywhere; }
+        .review-row .rv-score { font-family: var(--font-mono); font-size: .74rem; color: var(--muted); white-space: nowrap; }
+      `;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new SentimentEngine();
+      let loaded = false;
+
+      const SAMPLE = [
+        "La aplicación se cierra cada vez que abro la cámara. Inservible.",
+        "Me encanta la nueva actualización, mucho más rápida 🎉",
+        "La entrega llegó con dos semanas de retraso, muy decepcionado.",
+        "Funciona perfectamente, estoy muy satisfecho.",
+        "Está bien. Hace lo que dice, nada del otro mundo.",
+        "El soporte técnico no responde mis mensajes desde hace tres días 😡",
+        "Excelente relación calidad-precio, lo recomiendo a todos.",
+        "El paquete llegó dañado 😠",
+        "Cumple su función, aunque el empaque podría mejorar.",
+        "¡Qué maravilla de producto, mil gracias! 😍",
+      ].join("\n");
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/robertuito-sentiment-analysis", runtime: "transformers.js", dtype: "q8", sizeMB: 104, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => {
+          $("lines").disabled = false;
+          $("score").disabled = false;
+          $("loadSample").disabled = false;
+          loaded = true;
+          if (!$("lines").value.trim()) { $("lines").value = SAMPLE; score(); }
+        },
+      });
+
+      $("loadSample").addEventListener("click", () => { $("lines").value = SAMPLE; score(); });
+      $("score").addEventListener("click", score);
+      $("worstFirst").addEventListener("change", () => { if (lastResults) render(lastResults); });
+
+      let lastResults = null;
+      const RANK = { negative: 0, neutral: 1, positive: 2 };
+
+      async function score() {
+        if (!loaded) return;
+        const lines = $("lines").value.split("\n").map((l) => l.trim()).filter(Boolean);
+        if (!lines.length) { $("runStatus").hidden = false; $("runStatus").textContent = "Add at least one line."; $("runStatus").classList.add("err"); return; }
+        $("score").disabled = true;
+        $("runStatus").hidden = false;
+        $("runStatus").classList.remove("err", "ok");
+        const results = [];
+        for (let i = 0; i < lines.length; i++) {
+          $("runStatus").textContent = `Scoring ${i + 1} / ${lines.length}…`;
+          const r = await engine.classify(lines[i]);
+          results.push({ text: lines[i], label: r.label, conf: r.dist[r.label] });
+        }
+        lastResults = results;
+        render(results);
+        $("runStatus").textContent = `Scored ${results.length} review(s).`;
+        $("runStatus").classList.add("ok");
+        $("score").disabled = false;
+      }
+
+      function render(results) {
+        const counts = { negative: 0, neutral: 0, positive: 0 };
+        for (const r of results) counts[r.label]++;
+        const summary = $("summary");
+        summary.hidden = false;
+        summary.replaceChildren(...CLASS_ORDER.map((c) => {
+          const meta = CLASS_META[c];
+          const pill = document.createElement("span");
+          pill.className = "summary-pill";
+          pill.style.borderColor = `var(${meta.varName})`;
+          pill.textContent = `${meta.emoji} ${meta.label}: ${counts[c]}`;
+          return pill;
+        }));
+        const total = results.length || 1;
+        $("meter").hidden = false;
+        $("meterFill").style.inlineSize = ((counts.positive / total) * 100).toFixed(1) + "%";
+
+        const worstFirst = $("worstFirst").checked;
+        const sorted = [...results].sort((a, b) => {
+          const ra = RANK[a.label], rb = RANK[b.label];
+          if (ra !== rb) return worstFirst ? ra - rb : rb - ra;
+          return b.conf - a.conf;
+        });
+        const board = $("board");
+        board.hidden = false;
+        board.replaceChildren(...sorted.map((r) => {
+          const meta = CLASS_META[r.label];
+          const row = document.createElement("div");
+          row.className = "review-row";
+          row.style.borderInlineStartColor = `var(${meta.varName})`;
+          row.innerHTML =
+            `<span class="rv-emoji" aria-hidden="true">${meta.emoji}</span>` +
+            `<span class="rv-text">${escapeHTML(r.text)}</span>` +
+            `<span class="rv-score">${meta.label} · ${(r.conf * 100).toFixed(0)}%</span>`;
+          return row;
+        }));
+      }
+    </script>
+  </body>
+</html>
