@@ -1,0 +1,127 @@
+{
+  "schemaVersion": 1,
+  "id": "bart-zero-shot",
+  "revision": 1,
+  "reviewedAt": "2026-07-20T00:00:00Z",
+  "reviewer": "retrospective critique backfill (code-grounded + existing conformance suite), revision 1",
+  "frontend": true,
+  "rubric": [
+    {
+      "dimension": "real-inference",
+      "score": 5,
+      "severity": "info",
+      "evidence": "worker.js loads a REAL transformers.js zero-shot-classification pipeline (loadPipeline({task:'zero-shot-classification', model:'Xenova/bart-large-mnli', backend:'wasm', dtype:'q4f16'})) — THE canonical zero-shot classifier (facebook/bart-large fine-tuned on MultiNLI). It calls pipe(text, labels, {hypothesis_template:'This example is {}.', multi_label}) on-device and reuses the model instance to expose raw 3-way NLI logits. Conformance calls-real-inference (source) + loads-clean (console-clean) tested pass; io-shape-semantic manual-evidenced. No measured latency fabricated.",
+      "notes": "IMPORTANT DTYPE HONESTY (from the worker header): this demo ships q4f16, NOT the usual q8. The code documents that the q8 (int8) build of this model is BADLY DEGRADED in-browser — near-uniform scores, frequently the wrong label (e.g. 'the phone overheats' → 'billing problem'). q4f16 (4-bit weights + fp16 compute) restores full discrimination (→ 'hardware fault') at a SMALLER download than q8 and still runs on WASM. This is a measured, disclosed choice of the smallest dtype that genuinely works — a strong example of honest engineering, and models.json correctly records dtype q4f16 (matched by the declares-quantisation assertion)."
+    },
+    {
+      "dimension": "io-shape",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Expected output = labels ranked by entailment score. worker.js returns scored[] from the pipeline plus nli[]: raw [contradiction,neutral,entailment] logits + softmax per hypothesis (classNamesOf reads pipe.model.config.id2label). It also has a contrast mode that runs the SAME text+labels through DeBERTa-v3-xsmall for a side-by-side, and a classifyWith backbone selector for the multi-model cascade. io-shape-semantic conformance assertion covers real ranked labels.",
+      "notes": "multi_label toggles softmax-over-labels vs independent per-label entailment — real pipeline semantics."
+    },
+    {
+      "dimension": "runtime-config",
+      "score": 5,
+      "severity": "info",
+      "evidence": "At-a-glance declares Xenova/bart-large-mnli (linked, 5 occurrences), the zero-shot-classification task, q4f16 dtype, WASM backend, ~309 MB and MIT license — matching models.json. declares-model-id/task/backend/quantisation conformance assertions tested pass (quant test string q4f16).",
+      "notes": "The contrast model Xenova/nli-deberta-v3-xsmall (~70 MB) is loaded lazily only when the user asks for a comparison — disclosed. Inference off the main thread."
+    },
+    {
+      "dimension": "cache-init",
+      "score": 5,
+      "severity": "info",
+      "evidence": "The page uses the shared createModelLoader auto-init (modelId Xenova/bart-large-mnli, q4f16, ~309 MB, requiresWebGPU:false); a valid current cached copy auto-initialises with no Load click. The contrast DeBERTa is loaded on demand via a separate loadCompare path. shared-auto-init-loader conformance assertion tested pass.",
+      "notes": "~309 MB primary + optional ~70 MB contrast — the never-silently-re-download guarantee + Clear-cache matter; sizes surfaced in at-a-glance."
+    },
+    {
+      "dimension": "states",
+      "score": 4,
+      "severity": "info",
+      "evidence": "runStatus + a second contrast status are role=status aria-live (2 role=status regions, 5 aria-live regions on the page); worker errors surface on the page; shared loader adds checking→initialising→ready + Retry; the contrast path has its own cmpProgress/cmpReady messages. live-status-region + errors-on-the-page conformance assertions tested pass; honest-progress-retry-offline / runs-without-webgpu-fallback manual-evidenced.",
+      "notes": "WASM-only. The separate progress channel for the contrast model keeps its download state honest and distinct from the primary model."
+    },
+    {
+      "dimension": "controls",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Real, labelled controls: the text <textarea>, the candidate-labels input, a multi-label toggle, a Run button, and a contrast control that runs both backbones. All keyboard-operable. controls-operable conformance assertion is manual-evidenced.",
+      "notes": "The contrast mode is a genuine model-vs-model interpretability control, not decorative — it loads the second backbone and shows both rankings + timings."
+    },
+    {
+      "dimension": "no-fake-output",
+      "score": 5,
+      "severity": "info",
+      "evidence": "No canned scores: ranked labels, the 3-way NLI bars and the contrast rankings/timings are all from the real pipeline(s). no-fake-output conformance assertion is manual-evidenced.",
+      "notes": "The dtype choice itself is an anti-fake measure: shipping q4f16 instead of the broken q8 ensures the visible scores are actually discriminative rather than near-uniform noise."
+    },
+    {
+      "dimension": "accessibility",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Run + contrast buttons carry names (buttons-have-names tested pass); both status regions are role=status aria-live; result/contrast regions aria-live; page lang=en; WCAG-AA light+dark. images-have-alt tested pass.",
+      "notes": "Score bars and NLI bars are DOM with text percentages, inspectable by assistive tech."
+    },
+    {
+      "dimension": "responsive",
+      "score": 4,
+      "severity": "info",
+      "evidence": "responsive-desktop/responsive-mobile (no-horizontal-overflow) conformance assertions present; design-system panels + flex-wrap bars. models.json support is needs-review on both classes (automated pre-scan flagged sub-24px tap targets — 12 desktop / 6 mobile), pending an agent matrix pass to confirm tap sizes and flip to ok.",
+      "notes": "This page has the most flagged sub-24px targets in the batch (the label chips + contrast controls); recorded honestly as needs-review."
+    },
+    {
+      "dimension": "performance",
+      "score": 4,
+      "severity": "info",
+      "evidence": "All inference (primary, per-label NLI passes, and the contrast backbone) runs in the Web Worker; the main thread only renders bars. inference-off-main-thread conformance assertion tested pass; inp-stays-low manual-evidenced.",
+      "notes": "BART-large is the heaviest of the two backbones; each label is a separate forward pass, so many labels + contrast mode is compute-heavy — but off-thread, so INP is protected. Perceived latency (not INP) is the cost here."
+    }
+  ],
+  "guidanceConsulted": [
+    {
+      "query": "keep INP low move heavy work off main thread web worker",
+      "id": "performance",
+      "recommendation": "Run heavy inference off the main thread; keep INP low even during compute-heavy runs.",
+      "appliedOrException": "applied — primary BART, per-label NLI passes and the contrast DeBERTa all run in the worker; the main thread only paints scores.",
+      "evidence": "worker.js off-thread; inference-off-main-thread conformance assertion tested pass"
+    },
+    {
+      "query": "accessible form labels text input textarea",
+      "id": "forms",
+      "recommendation": "Label every input; keyboard-operable; invent-your-own labels as a plain text field.",
+      "appliedOrException": "applied — text, candidate-labels, multi-label and contrast controls are labelled and keyboard-operable.",
+      "evidence": "labelled controls; controls-operable manual-evidenced"
+    },
+    {
+      "query": "accessible live region status role status aria-live",
+      "id": "accessibility",
+      "recommendation": "Announce state via role=status aria-live; use distinct regions for distinct async work.",
+      "appliedOrException": "applied — primary and contrast each have their own role=status aria-live region; Run/contrast buttons named.",
+      "evidence": "live-status-region (2 role=status regions) + buttons-have-names conformance assertions tested pass"
+    },
+    {
+      "query": "responsive control panel without horizontal overflow flex grid",
+      "id": "css-layout",
+      "recommendation": "Fluid flex/grid with wrapping; avoid fixed widths.",
+      "appliedOrException": "applied — design-system panels; score/NLI/contrast bars flex-wrap.",
+      "evidence": "responsive assertions present; support needs-review (12/6 sub-24px flags) pending agent matrix pass"
+    }
+  ],
+  "openQuestions": [
+    "This page carries the most flagged sub-24px tap targets in the batch (12 desktop / 6 mobile) — which specific chips/controls need a min-height bump to clear the ≈44px guideline?",
+    "Should the page state its q4f16-over-q8 rationale in the UI (it's currently in the worker header), so users understand why this demo's dtype differs from the sibling text demos?"
+  ],
+  "followUpGoals": [
+    {
+      "goal": "Surface the q4f16-vs-q8 rationale in the page UI (the q8 build is measurably degraded), so the honest dtype choice is visible to users, not only in code.",
+      "kind": "targeted-fix",
+      "priority": "low"
+    },
+    {
+      "goal": "Run the mobile+desktop responsive matrix, raise the flagged sub-24px tap targets (12 desktop / 6 mobile), and flip models.json support to ok.",
+      "kind": "targeted-fix",
+      "priority": "medium"
+    }
+  ],
+  "summary": "Retrospective, code-grounded revision-1 critique for bart-zero-shot (Xenova/bart-large-mnli, zero-shot-classification, q4f16, ~309 MB, MIT — THE canonical NLI zero-shot classifier). worker.js runs the transformers.js pipeline off the main thread, exposes raw 3-way NLI logits, and offers a genuine contrast mode running the SAME text+labels through DeBERTa-v3-xsmall side-by-side. STANDOUT honesty: the demo ships q4f16, NOT q8, because the code measured the q8 build to be badly degraded (near-uniform, wrong labels) — q4f16 restores discrimination at a smaller download; models.json + the declares-quantisation assertion correctly record q4f16. Auto-init via createModelLoader; two distinct role=status aria-live regions; no fake output. Verified against the immutable conformance suite (calls-real-inference, loads-clean, declares-*, inference-off-main-thread, shared-auto-init-loader, live-status-region, buttons-have-names tested pass; io-shape/parity/inp manual-evidenced). No fabricated numbers. Honest weaknesses: most sub-24px tap-target flags in the batch (12 desktop / 6 mobile), support needs-review; the q4f16 rationale lives only in code; cost scales with label count + contrast mode (off-thread, so perceived latency not INP)."
+}

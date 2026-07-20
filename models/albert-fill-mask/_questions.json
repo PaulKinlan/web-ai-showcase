@@ -1,0 +1,127 @@
+{
+  "schemaVersion": 1,
+  "id": "albert-fill-mask",
+  "revision": 1,
+  "reviewedAt": "2026-07-20T00:00:00Z",
+  "reviewer": "retrospective critique backfill (code-grounded + existing conformance suite), revision 1",
+  "frontend": true,
+  "rubric": [
+    {
+      "dimension": "real-inference",
+      "score": 5,
+      "severity": "info",
+      "evidence": "worker.js loads the tokenizer + model MANUALLY (AutoTokenizer + AutoModelForMaskedLM from Xenova/albert-base-v2, dtype q8, device wasm) rather than the fill-mask pipeline, so the See-inside surface reads the EXACT masked-token logits at each [MASK] and softmaxes them in the worker. Conformance calls-real-inference (source) + loads-clean (console-clean) tested pass; io-shape-semantic manual-evidenced. No measured latency fabricated.",
+      "notes": "ALBERT base v2: a 'lite' BERT reusing ONE transformer block across all 12 layers (cross-layer parameter sharing) + factorised embedding (vocab→128→768) — ~11.8M params vs BERT-base's ~110M, hence the tiny ~45 MB download."
+    },
+    {
+      "dimension": "io-shape",
+      "score": 5,
+      "severity": "info",
+      "evidence": "For each [MASK], worker.js returns top-k {tokenId, token, logit, prob} from the real logits row; supports fill / fillMany / scoreCandidates. SentencePiece decode surfaces the ▁ word-boundary marker, cleaned via cleanToken() for display. io-shape-semantic conformance assertion covers real per-mask predictions.",
+      "notes": "cleanToken replaces ▁ with a space and trims — a display fix specific to ALBERT's SentencePiece tokenizer (vs BERT's WordPiece ## prefix)."
+    },
+    {
+      "dimension": "runtime-config",
+      "score": 5,
+      "severity": "info",
+      "evidence": "At-a-glance declares Xenova/albert-base-v2 (linked, 5 occurrences), the fill-mask task, q8 dtype, WASM backend, ~45 MB and Apache-2.0 license — matching models.json. declares-model-id/task/backend/quantisation conformance assertions tested pass.",
+      "notes": "Smallest model in this NLP batch (~45 MB). Inference off the main thread; WASM everywhere, no WebGPU needed."
+    },
+    {
+      "dimension": "cache-init",
+      "score": 5,
+      "severity": "info",
+      "evidence": "The page uses the shared createModelLoader auto-init (modelId Xenova/albert-base-v2, q8, ~45 MB, requiresWebGPU:false); a valid current cached copy auto-initialises with no Load click. shared-auto-init-loader conformance assertion tested pass.",
+      "notes": "env.allowLocalModels=false so the library owns Cache Storage (no SW double-store). At ~45 MB the first download is quick even on mobile."
+    },
+    {
+      "dimension": "states",
+      "score": 4,
+      "severity": "info",
+      "evidence": "runStatus role=status aria-live; worker errors surface on the page; shared loader adds checking→initialising→ready + Retry. live-status-region + errors-on-the-page tested pass; honest-progress-retry-offline / runs-without-webgpu-fallback manual-evidenced.",
+      "notes": "scoreCandidates is a graceful no-op (empty scores) when the text has no [MASK]."
+    },
+    {
+      "dimension": "controls",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Real, labelled controls: the masked-text input, a top-k range slider, a fill button, and the candidate-scoring surface. All keyboard-operable. controls-operable conformance assertion is manual-evidenced.",
+      "notes": "Note: firstTokenId uses the v3 encode signature encode(word, {add_special_tokens:false}) — the worker comment records that passing null as the second arg (the old signature) crashes reading text_pair, so the code deliberately uses the correct options-object form. A real, fixed footgun."
+    },
+    {
+      "dimension": "no-fake-output",
+      "score": 5,
+      "severity": "info",
+      "evidence": "No canned predictions: every token, logit and probability is computed from the real logits row. no-fake-output conformance assertion is manual-evidenced.",
+      "notes": ""
+    },
+    {
+      "dimension": "accessibility",
+      "score": 5,
+      "severity": "info",
+      "evidence": "fill button + controls carry names (buttons-have-names tested pass); status role=status aria-live; results aria-live; slider labelled; page lang=en; WCAG-AA light+dark. images-have-alt tested pass.",
+      "notes": "Prediction bars are DOM with text logits/probabilities."
+    },
+    {
+      "dimension": "responsive",
+      "score": 4,
+      "severity": "info",
+      "evidence": "responsive-desktop/responsive-mobile (no-horizontal-overflow) conformance assertions present; design-system panels + flex-wrap prediction rows. models.json support is needs-review on both classes (automated pre-scan flagged sub-24px tap targets), pending an agent matrix pass to confirm slider/button tap sizes and flip to ok.",
+      "notes": "Recorded honestly as needs-review."
+    },
+    {
+      "dimension": "performance",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Forward pass + top-k/softmax over the vocab run in the Web Worker; the main thread only renders bars. inference-off-main-thread conformance assertion tested pass; inp-stays-low manual-evidenced.",
+      "notes": "The tiny model makes runs fast; the work is off-thread and bounded so INP stays low."
+    }
+  ],
+  "guidanceConsulted": [
+    {
+      "query": "keep INP low move heavy work off main thread web worker",
+      "id": "performance",
+      "recommendation": "Run the forward pass and vocab-wide softmax/top-k off the main thread; keep INP low.",
+      "appliedOrException": "applied — inference and the top-k/softmax run in the worker; the main thread only paints prediction bars.",
+      "evidence": "worker.js off-thread; inference-off-main-thread conformance assertion tested pass"
+    },
+    {
+      "query": "accessible form labels text input range slider",
+      "id": "forms",
+      "recommendation": "Label every control; echo slider value; keyboard-operable.",
+      "appliedOrException": "applied — masked-text input, top-k slider and candidate controls are labelled and keyboard-operable.",
+      "evidence": "labelled controls; controls-operable manual-evidenced"
+    },
+    {
+      "query": "accessible live region status role status aria-live",
+      "id": "accessibility",
+      "recommendation": "Announce state via role=status aria-live; give controls accessible names.",
+      "appliedOrException": "applied — runStatus role=status aria-live; results aria-live; fill button named.",
+      "evidence": "live-status-region + buttons-have-names conformance assertions tested pass"
+    },
+    {
+      "query": "responsive control panel without horizontal overflow flex grid",
+      "id": "css-layout",
+      "recommendation": "Fluid layout with wrapping; avoid fixed widths.",
+      "appliedOrException": "applied — design-system panels; prediction rows and candidate chips flex-wrap.",
+      "evidence": "responsive assertions present; support needs-review pending agent matrix pass"
+    }
+  ],
+  "openQuestions": [
+    "Multi-token candidates are compared by first subword only (disclosed) — worth an optional full-word scoring mode for fairness?",
+    "ALBERT-base is tiny (~11.8M params); should the page contrast its predictions with the larger BERT demo so users see the capacity trade-off directly?"
+  ],
+  "followUpGoals": [
+    {
+      "goal": "Add a side-by-side ALBERT-vs-BERT fill-mask comparison (they share the demo shell + manual-tokenizer path) so users can see the lite-model capacity trade-off on the same masked prompt.",
+      "kind": "additive-demo",
+      "priority": "low"
+    },
+    {
+      "goal": "Run the mobile+desktop responsive matrix, confirm/raise slider and button tap targets, and flip models.json support to ok.",
+      "kind": "targeted-fix",
+      "priority": "medium"
+    }
+  ],
+  "summary": "Retrospective, code-grounded revision-1 critique for albert-fill-mask (Xenova/albert-base-v2, fill-mask, q8, ~45 MB, Apache-2.0 — the smallest model in this NLP batch, ~11.8M params via cross-layer parameter sharing). Real masked-LM: worker.js loads AutoModelForMaskedLM directly so the See-inside surface reads the EXACT masked-token logits and softmaxes them in the worker (with a SentencePiece ▁-marker cleanup for display); supports fill, fillMany and scoreCandidates. Auto-init via createModelLoader (env.allowLocalModels=false, no SW double-store); role=status aria-live states; no fake output. The code also records a real fixed footgun: firstTokenId uses the correct v3 encode(word,{add_special_tokens:false}) signature. Verified against the immutable conformance suite (calls-real-inference, loads-clean, declares-*, inference-off-main-thread, shared-auto-init-loader, live-status-region, buttons-have-names tested pass; io-shape/parity/inp manual-evidenced). No fabricated numbers. Honest weaknesses: first-subword-only candidate comparison (disclosed); tiny model capacity; models.json support needs-review pending a tap-target matrix pass."
+}

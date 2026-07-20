@@ -1,0 +1,127 @@
+{
+  "schemaVersion": 1,
+  "id": "bert-fill-mask",
+  "revision": 1,
+  "reviewedAt": "2026-07-20T00:00:00Z",
+  "reviewer": "retrospective critique backfill (code-grounded + existing conformance suite), revision 1",
+  "frontend": true,
+  "rubric": [
+    {
+      "dimension": "real-inference",
+      "score": 5,
+      "severity": "info",
+      "evidence": "worker.js loads the tokenizer + model MANUALLY (AutoTokenizer + AutoModelForMaskedLM from Xenova/bert-base-uncased, dtype q8, device wasm) rather than the fill-mask pipeline, specifically so the See-inside surface can read the EXACT masked-token logits (raw pre-softmax scores) at each [MASK] position and softmax them in the worker. Conformance calls-real-inference (source pattern includes createModelLoader/classifier/extractor) + loads-clean (console-clean) tested pass; io-shape-semantic manual-evidenced. No measured latency fabricated.",
+      "notes": "Using AutoModelForMaskedLM directly (not the pipeline) is a deliberate, disclosed choice to expose real logits — a stronger honesty guarantee than a pipeline's rounded top-k."
+    },
+    {
+      "dimension": "io-shape",
+      "score": 5,
+      "severity": "info",
+      "evidence": "For each [MASK] in the input, worker.js returns predictions = top-k {tokenId, token, logit, prob} computed from the real logits row (subarray at pos*vocab). It supports fill (one text), fillMany (a batch, for bias probes) and scoreCandidates (fixed candidate set at the mask). io-shape-semantic conformance assertion covers real per-mask predictions.",
+      "notes": "topkFromRow does a partial top-k over the ~30k vocab without a full sort — an efficiency choice that returns the same top-k a full sort would."
+    },
+    {
+      "dimension": "runtime-config",
+      "score": 5,
+      "severity": "info",
+      "evidence": "At-a-glance declares Xenova/bert-base-uncased (linked, 5 occurrences), the fill-mask task, q8 dtype, WASM backend, ~110 MB and Apache-2.0 license — matching models.json. declares-model-id/task/backend/quantisation conformance assertions tested pass.",
+      "notes": "BERT base UNCASED — the model lowercases input, so casing is not distinguished; relevant to interpreting candidate scores. Inference off the main thread."
+    },
+    {
+      "dimension": "cache-init",
+      "score": 5,
+      "severity": "info",
+      "evidence": "The page uses the shared createModelLoader auto-init (modelId Xenova/bert-base-uncased, q8, ~110 MB, requiresWebGPU:false); a valid current cached copy auto-initialises with no Load click. shared-auto-init-loader conformance assertion tested pass.",
+      "notes": "env.allowLocalModels=false in the worker so the library owns its Cache Storage and does not fight the service worker (no double-store)."
+    },
+    {
+      "dimension": "states",
+      "score": 4,
+      "severity": "info",
+      "evidence": "runStatus role=status aria-live; worker errors surface on the page; shared loader adds checking→initialising→ready + Retry. live-status-region + errors-on-the-page conformance assertions tested pass; honest-progress-retry-offline / runs-without-webgpu-fallback manual-evidenced.",
+      "notes": "WASM-only. scoreCandidates returns an empty scores array (no error thrown) if the text has no [MASK] — a graceful no-op the page handles."
+    },
+    {
+      "dimension": "controls",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Real, labelled controls: the masked-text input (must contain [MASK]), a top-k range slider, a fill button, and the bias-probe candidate-scoring surface. All keyboard-operable. controls-operable conformance assertion is manual-evidenced.",
+      "notes": "The bias-probe (scoreCandidates) lets you compare, e.g., P('nurse') vs P('engineer') at a mask across templates — a real, model-grounded interpretability control."
+    },
+    {
+      "dimension": "no-fake-output",
+      "score": 5,
+      "severity": "info",
+      "evidence": "No canned predictions: every token, logit and probability is computed from the real logits row of the loaded model. no-fake-output conformance assertion is manual-evidenced.",
+      "notes": ""
+    },
+    {
+      "dimension": "accessibility",
+      "score": 5,
+      "severity": "info",
+      "evidence": "fill button + controls carry names (buttons-have-names tested pass); status role=status aria-live; results aria-live; slider labelled with value; page lang=en; WCAG-AA light+dark. images-have-alt tested pass.",
+      "notes": "Prediction bars are DOM with text logits/probabilities, inspectable by assistive tech."
+    },
+    {
+      "dimension": "responsive",
+      "score": 4,
+      "severity": "info",
+      "evidence": "responsive-desktop/responsive-mobile (no-horizontal-overflow) conformance assertions present; design-system panels + flex-wrap prediction rows. models.json support is needs-review on both classes (automated pre-scan flagged sub-24px tap targets), pending an agent matrix pass to confirm slider/button tap sizes and flip to ok.",
+      "notes": "Recorded honestly as needs-review."
+    },
+    {
+      "dimension": "performance",
+      "score": 5,
+      "severity": "info",
+      "evidence": "The forward pass and the top-k / softmax over the ~30k vocab all run in the Web Worker; the main thread only renders bars. inference-off-main-thread conformance assertion tested pass; inp-stays-low manual-evidenced.",
+      "notes": "Partial top-k avoids a full vocab sort; the loop is bounded and off-thread so it does not affect INP."
+    }
+  ],
+  "guidanceConsulted": [
+    {
+      "query": "keep INP low move heavy work off main thread web worker",
+      "id": "performance",
+      "recommendation": "Run heavy work (forward pass, vocab-wide softmax/top-k) off the main thread; keep INP low.",
+      "appliedOrException": "applied — the model call and the top-k/softmax over the vocab run in the worker; the main thread only paints prediction bars.",
+      "evidence": "worker.js off-thread; inference-off-main-thread conformance assertion tested pass"
+    },
+    {
+      "query": "accessible form labels text input range slider",
+      "id": "forms",
+      "recommendation": "Label every control; echo slider value; keyboard-operable.",
+      "appliedOrException": "applied — the masked-text input, top-k slider (with value) and candidate-scoring controls are labelled and keyboard-operable.",
+      "evidence": "labelled controls; controls-operable manual-evidenced"
+    },
+    {
+      "query": "accessible live region status role status aria-live",
+      "id": "accessibility",
+      "recommendation": "Announce state via role=status aria-live; give controls accessible names.",
+      "appliedOrException": "applied — runStatus role=status aria-live; results aria-live; fill button named.",
+      "evidence": "live-status-region + buttons-have-names conformance assertions tested pass"
+    },
+    {
+      "query": "responsive control panel without horizontal overflow flex grid",
+      "id": "css-layout",
+      "recommendation": "Fluid layout with wrapping; avoid fixed widths.",
+      "appliedOrException": "applied — design-system panels; prediction rows and candidate chips flex-wrap.",
+      "evidence": "responsive assertions present; support needs-review pending agent matrix pass"
+    }
+  ],
+  "openQuestions": [
+    "Multi-token candidate words are compared by their FIRST subword only (a disclosed simplification in scoreCandidates) — should the page score the full candidate via product-of-conditionals for fairness, or is the first-subword proxy clear enough as labelled?",
+    "Should the uncased nature of the model be surfaced more prominently, since it affects how candidate casing is interpreted?"
+  ],
+  "followUpGoals": [
+    {
+      "goal": "Offer an optional full-word candidate scoring mode (sum/mean of subword log-probs) alongside the disclosed first-subword proxy, for fairer multi-token bias probes.",
+      "kind": "targeted-fix",
+      "priority": "low"
+    },
+    {
+      "goal": "Run the mobile+desktop responsive matrix, confirm/raise slider and button tap targets, and flip models.json support to ok.",
+      "kind": "targeted-fix",
+      "priority": "medium"
+    }
+  ],
+  "summary": "Retrospective, code-grounded revision-1 critique for bert-fill-mask (Xenova/bert-base-uncased, fill-mask, q8, ~110 MB, Apache-2.0). Real masked-LM: worker.js loads AutoModelForMaskedLM directly (not the pipeline) so the See-inside surface reads the EXACT masked-token logits and softmaxes them in the worker; it supports fill, batch fillMany (bias probes) and scoreCandidates. Auto-init via createModelLoader (env.allowLocalModels=false to avoid SW double-store); role=status aria-live states; no fake output. Verified against the immutable conformance suite (calls-real-inference, loads-clean, declares-*, inference-off-main-thread, shared-auto-init-loader, live-status-region, buttons-have-names tested pass; io-shape/parity/inp manual-evidenced). No fabricated numbers. Honest weaknesses flagged: multi-token candidates are compared by first subword only (disclosed simplification); the model is uncased; models.json support needs-review pending a tap-target matrix pass."
+}

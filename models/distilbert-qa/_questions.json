@@ -1,0 +1,127 @@
+{
+  "schemaVersion": 1,
+  "id": "distilbert-qa",
+  "revision": 1,
+  "reviewedAt": "2026-07-20T00:00:00Z",
+  "reviewer": "retrospective critique backfill (code-grounded + existing conformance suite), revision 1",
+  "frontend": true,
+  "rubric": [
+    {
+      "dimension": "real-inference",
+      "score": 5,
+      "severity": "info",
+      "evidence": "worker.js loads a REAL transformers.js question-answering pipeline (loadPipeline({task:'question-answering', model:'Xenova/distilbert-base-cased-distilled-squad', backend:'wasm', dtype:'q8'})) and calls pipe(question, context, {top_k}) on the visitor's device — no canned result. The conformance suite backs this with calls-real-inference (source pattern pipeline\\(|createModelLoader — present) and loads-clean (console-clean), both tested pass; io-shape-semantic (a real run produces an answer span drawn from the supplied context) is manual-evidenced. No measured latency is claimed here — this is a code-grounded retrospective backfill; the page itself reports the real per-request ms it measures at runtime.",
+      "notes": "Extractive QA: the model outputs start/end logit distributions over the context tokens; the answer is the span maximising start(i)+end(j) for i<=j. Grounded output — it can only return a substring of the passage, so it cannot hallucinate a fact absent from the context."
+    },
+    {
+      "dimension": "io-shape",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Expected output = a ranked list of {answer, score, start, end} spans. worker.js maps the pipeline output to answers, and the page renders the top span as a <mark> inside the passage plus a candidate list with probabilities (renderHighlighted / renderCandidates in qa.js). io-shape-semantic conformance assertion covers 'a real run produces an answer span drawn from the supplied context'.",
+      "notes": "Span char offsets are recovered with context.indexOf(a.answer). Honest limitation: if the exact answer substring occurs more than once in the passage, indexOf highlights the FIRST occurrence, which may not be the one the model scored — a display-only edge, not an inference error."
+    },
+    {
+      "dimension": "runtime-config",
+      "score": 5,
+      "severity": "info",
+      "evidence": "At-a-glance declares the exact model id Xenova/distilbert-base-cased-distilled-squad (linked to its HF card, 5 occurrences on the page), the real pipeline task question-answering, the q8 dtype, the WASM backend, ~65 MB download and the Apache-2.0 license — matching the models.json entry. Conformance declares-model-id / declares-task / declares-backend / declares-quantisation all tested pass against these exact strings.",
+      "notes": "Inference runs off the main thread in a dedicated module Worker (new Worker(WORKER_URL, {type:'module'}))."
+    },
+    {
+      "dimension": "cache-init",
+      "score": 5,
+      "severity": "info",
+      "evidence": "The page loads through the shared createModelLoader auto-init architecture (model {modelId:'Xenova/distilbert-base-cased-distilled-squad', runtime:'transformers.js', dtype:'q8', sizeMB:65, requiresWebGPU:false}); a valid current on-device copy auto-initialises with no Load click (onReady enables the controls and runs the first question). shared-auto-init-loader conformance assertion (source pattern createModelLoader) tested pass.",
+      "notes": "The shared loader surfaces only Download / Re-download / Update / Retry / Clear cached model per its documented state machine — never a silent re-download of the ~65 MB weights."
+    },
+    {
+      "dimension": "states",
+      "score": 4,
+      "severity": "info",
+      "evidence": "runStatus is role=status aria-live=polite; it reports 'Reading the passage…' → 'Done.' and, on empty input, an .err message ('Give both a passage and a question.'). Inference failures are caught and shown on the page ('Answering failed: ' + message). The shared loader adds checking→initialising→ready plus a Retry recovery path. live-status-region (dom) and errors-on-the-page (source) conformance assertions tested pass; honest-progress-retry-offline and runs-without-webgpu-fallback are manual-evidenced.",
+      "notes": "WASM-only — no WebGPU required, so it runs everywhere; the WebGPU-missing degraded path is not exercised because it is not needed."
+    },
+    {
+      "dimension": "controls",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Every control is real and keyboard-operable: the context <textarea>, the question <input> (Enter submits), four sample-question chips (real <button data-q>), and the 'Answer the question' button. Controls start disabled and are enabled by onReady, so nothing is clickable before the model is live. controls-operable conformance assertion is manual-evidenced.",
+      "notes": "The chips set the question and auto-run once loaded — a low-friction way to try the model without typing."
+    },
+    {
+      "dimension": "no-fake-output",
+      "score": 5,
+      "severity": "info",
+      "evidence": "No hardcoded answers: the highlighted span, the candidate list, the readout (backend/latency/top score) and the token-probability strip are all derived from the real pipeline output and the raw start_logits/end_logits read from the same loaded model instance (pipe.model + pipe.tokenizer). no-fake-output conformance assertion is manual-evidenced.",
+      "notes": "The low-confidence note (start-distribution peak < 35%) is computed from the real softmaxed logits, not a canned string."
+    },
+    {
+      "dimension": "accessibility",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Buttons all carry text labels (buttons-have-names conformance assertion, script check, tested pass); the answer/candidate/context regions use aria-live=polite; status is role=status aria-live; the page is lang=en; light+dark use the WCAG-AA design-system variables. images-have-alt tested pass (no unlabelled images).",
+      "notes": "The token-probability strip is DOM (spans with title tooltips) not canvas, so it is inspectable by assistive tech and the numeric probability is available in the title."
+    },
+    {
+      "dimension": "responsive",
+      "score": 4,
+      "severity": "info",
+      "evidence": "responsive-desktop and responsive-mobile conformance assertions (no-horizontal-overflow) exist for both classes. The qa-grid uses grid-template-columns: repeat(auto-fit, minmax(280px,1fr)) and the token strip is flex-wrap, so it reflows to one column on narrow mobile. models.json support is currently needs-review on both classes (automated pre-scan flagged sub-24px tap targets — the sample chips), awaiting an agent matrix pass to confirm ≈44px targets and flip to ok.",
+      "notes": "The chip row is the flagged tap-target concern; a targeted min-height bump would raise the small chips to the 44px guideline. Recorded as an open item, not a passed claim."
+    },
+    {
+      "dimension": "performance",
+      "score": 5,
+      "severity": "info",
+      "evidence": "All inference (the pipeline call AND the raw-logit second pass) runs in the Web Worker; the main thread only renders results, so INP stays low. The token strip is a bounded map over the context tokens (not the full sequence) redrawn once per answer. inference-off-main-thread conformance assertion (source pattern new Worker|worker.js) tested pass; inp-stays-low is manual-evidenced.",
+      "notes": "No unbounded main-thread loop; softmax is computed in the worker over the context region only."
+    }
+  ],
+  "guidanceConsulted": [
+    {
+      "query": "keep INP low move heavy work off main thread web worker",
+      "id": "performance",
+      "recommendation": "Move heavy synchronous work off the main thread and keep interactions responsive (INP); avoid long blocking tasks.",
+      "appliedOrException": "applied — the pipeline call and the raw start/end-logit pass both run in a dedicated module Worker; the main thread only paints the answer, candidates and token strip.",
+      "evidence": "worker.js off-thread; inference-off-main-thread conformance assertion tested pass"
+    },
+    {
+      "query": "accessible live region status role status aria-live",
+      "id": "accessibility",
+      "recommendation": "Announce loading/ready/error via role=status aria-live; give every control an accessible name.",
+      "appliedOrException": "applied — runStatus is role=status aria-live=polite; sample chips and the Answer button carry text names; answer/candidate regions are aria-live.",
+      "evidence": "live-status-region + buttons-have-names conformance assertions tested pass"
+    },
+    {
+      "query": "responsive control panel without horizontal overflow flex grid",
+      "id": "css-layout",
+      "recommendation": "Use fluid grid/flex with intrinsic sizing and wrapping; avoid fixed widths that force horizontal overflow.",
+      "appliedOrException": "applied — qa-grid is repeat(auto-fit, minmax(280px,1fr)); the token strip and chip row flex-wrap; textarea/input are full-width.",
+      "evidence": "responsive-desktop/responsive-mobile assertions (no-horizontal-overflow); support needs-review pending agent matrix pass"
+    },
+    {
+      "query": "accessible form labels text input textarea",
+      "id": "forms",
+      "recommendation": "Associate a visible label with every input; make controls keyboard-operable.",
+      "appliedOrException": "applied — the context textarea and question input each have a wrapping <label>; the question input submits on Enter.",
+      "evidence": "labelled context/question controls; controls-operable manual-evidenced"
+    }
+  ],
+  "openQuestions": [
+    "Should the answer-span highlight use the pipeline's own char offsets (when available in a future transformers.js) instead of context.indexOf, to correctly locate a duplicated answer substring?",
+    "Are the sample-question chips large enough to clear the ≈44px tap-target guideline on a 360px viewport, or do they need a targeted min-height bump before support flips to ok?"
+  ],
+  "followUpGoals": [
+    {
+      "goal": "Run the mobile+desktop responsive matrix (360×740 DPR3 + 1280×800) and, if the sample chips are under ≈44px, apply a targeted min-height fix, then flip models.json support from needs-review to ok.",
+      "kind": "targeted-fix",
+      "priority": "medium"
+    },
+    {
+      "goal": "Add a no-answer/SQuAD-2 style demo (a model that CAN abstain) as a new sibling page so the ladder shows honest 'this passage doesn't contain the answer' handling rather than only the low-confidence proxy.",
+      "kind": "additive-demo",
+      "priority": "low"
+    }
+  ],
+  "summary": "Retrospective, code-grounded revision-1 critique for distilbert-qa (Xenova/distilbert-base-cased-distilled-squad, question-answering, q8, ~65 MB, Apache-2.0). Real extractive QA: worker.js runs the transformers.js question-answering pipeline off the main thread and reuses the same model instance to expose raw start/end token distributions for the 'See inside' surface. Auto-init via the shared createModelLoader; role=status aria-live states; real highlighted answer span + candidate probabilities; no fake output. Verified against the existing immutable conformance suite (calls-real-inference, loads-clean, declares-model-id/task/backend/quantisation, inference-off-main-thread, shared-auto-init-loader, live-status-region, buttons-have-names all tested pass; io-shape/parity/inp manual-evidenced). No measured latency fabricated. Honest weaknesses flagged: indexOf-based span location can mislocate a duplicated answer substring; a SQuAD-1.1 model cannot truly abstain (a low start-peak proxy is shown); models.json support is needs-review pending a mobile tap-target matrix pass."
+}

@@ -1,0 +1,127 @@
+{
+  "schemaVersion": 1,
+  "id": "distilbart-summarization",
+  "revision": 1,
+  "reviewedAt": "2026-07-20T00:00:00Z",
+  "reviewer": "retrospective critique backfill (code-grounded + existing conformance suite), revision 1",
+  "frontend": true,
+  "rubric": [
+    {
+      "dimension": "real-inference",
+      "score": 5,
+      "severity": "info",
+      "evidence": "worker.js loads a REAL transformers.js summarization pipeline (pipeline('summarization', 'Xenova/distilbart-cnn-6-6', {device:'wasm', dtype:'q8'})) and calls pipe(text, gen) on-device with real max_new_tokens/min_new_tokens/num_beams/no_repeat_ngram_size/length_penalty. Streaming uses transformers.js TextStreamer so the per-token timeline is the model's own decode cadence, not a synthetic animation. Conformance calls-real-inference (source) + loads-clean (console-clean) tested pass; io-shape-semantic manual-evidenced. No measured latency fabricated — the page reports the real per-request ms and per-token intervals it measures at runtime.",
+      "notes": "Per-token streaming timing is only meaningful for greedy decoding (beams===1); with beam search tokens are reordered at the end, so the worker deliberately skips the streamer and reports aggregate timing only — an honest, disclosed choice in the code."
+    },
+    {
+      "dimension": "io-shape",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Expected output = summary_text (abstractive). worker.js returns {summary, inTokens, outTokens, inChars, outChars, intervals, beams, ms} — the real input_ids length via tokenCount() and the real output. The page streams the partial summary and draws the per-token decode intervals on a <canvas> timeline. io-shape-semantic conformance assertion covers a real summary shorter than the input.",
+      "notes": "Honest output guard: the worker caps max_new_tokens to ~90% of the input token count (max(24, ceil(inTokens*0.9))) so short inputs cannot pad/loop into a summary longer than the source — keeps summaries honest."
+    },
+    {
+      "dimension": "runtime-config",
+      "score": 5,
+      "severity": "info",
+      "evidence": "At-a-glance declares Xenova/distilbart-cnn-6-6 (linked, 5 occurrences), the summarization task, q8 dtype, WASM backend, ~250 MB download and Apache-2.0 license — matching models.json. declares-model-id/task/backend/quantisation conformance assertions tested pass.",
+      "notes": "DistilBART CNN 6-6: 6 encoder + 6 decoder layers distilled from BART-large-CNN. Inference off the main thread; ~1024-token BART input window."
+    },
+    {
+      "dimension": "cache-init",
+      "score": 5,
+      "severity": "info",
+      "evidence": "The page uses the shared createModelLoader auto-init (modelId Xenova/distilbart-cnn-6-6, q8, ~250 MB, requiresWebGPU:false); a valid current cached copy auto-initialises with no Load click. shared-auto-init-loader conformance assertion tested pass.",
+      "notes": "~250 MB is a meaningful download; the never-silently-re-download guarantee and the Clear-cache control matter here more than for the tiny models. Surfaced in at-a-glance."
+    },
+    {
+      "dimension": "states",
+      "score": 4,
+      "severity": "info",
+      "evidence": "runStatus is role=status aria-live; the streaming partial summary appears incrementally in an aria-live region; recap posts recap-step/recap-done progress. Errors are caught in the worker and surfaced on the page; the shared loader adds checking→initialising→ready + Retry. live-status-region + errors-on-the-page conformance assertions tested pass; honest-progress-retry-offline / runs-without-webgpu-fallback manual-evidenced.",
+      "notes": "WASM-only. On a memory-constrained mobile device the ~250 MB model may be evicted; the shared loader's Re-download path handles that honestly."
+    },
+    {
+      "dimension": "controls",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Real, labelled controls: the text <textarea>, three range sliders — Max length (id=maxLen, live value maxVal), Min length (id=minLen/minVal) and Beams (id=beams/beamVal) — a Summarize button and a recursive recap control. All keyboard-operable; the slider values are echoed in adjacent text. controls-operable conformance assertion is manual-evidenced.",
+      "notes": "Beams>1 switches off per-token streaming (documented), so the See-inside timeline is empty for beam search — the control's effect on the visualisation is a real, explained trade-off."
+    },
+    {
+      "dimension": "no-fake-output",
+      "score": 5,
+      "severity": "info",
+      "evidence": "No canned summary: the streamed text, token counts, per-token intervals and recap chain are all produced by the real pipeline. no-fake-output conformance assertion is manual-evidenced.",
+      "notes": "The recap loop feeds each summary back in with a shrinking budget and stops on real stopping criteria (stops shrinking / single short sentence) — no scripted result."
+    },
+    {
+      "dimension": "accessibility",
+      "score": 4,
+      "severity": "info",
+      "evidence": "Summarize/recap buttons carry names (buttons-have-names tested pass); status is role=status aria-live; the summary region is aria-live so the streamed text is announced; sliders have labels with live text values; page lang=en; WCAG-AA light+dark. images-have-alt tested pass.",
+      "notes": "The per-token timeline is a <canvas>; consulted guidance expose-canvas-content-to-browser-features. The numeric token counts and per-token intervals are ALSO shown as text in the readout, so the canvas is a redundant visual, not the only source of the information — but the canvas itself would benefit from an explicit aria-label (open item)."
+    },
+    {
+      "dimension": "responsive",
+      "score": 4,
+      "severity": "info",
+      "evidence": "responsive-desktop/responsive-mobile (no-horizontal-overflow) conformance assertions present; the layout uses design-system panels and the canvas is width-constrained. models.json support is needs-review on both classes (automated pre-scan flagged sub-24px tap targets), pending an agent matrix pass to confirm slider thumb / button tap sizes and flip to ok.",
+      "notes": "Range sliders and their thumbs are the tap-target concern on mobile; recorded honestly as needs-review."
+    },
+    {
+      "dimension": "performance",
+      "score": 5,
+      "severity": "info",
+      "evidence": "All generation runs in the Web Worker; tokens stream to the main thread which only appends text and draws a bounded canvas timeline. inference-off-main-thread conformance assertion tested pass; inp-stays-low manual-evidenced.",
+      "notes": "Streaming keeps the UI responsive during a long decode; the canvas draw is bounded per-token, not per-sample."
+    }
+  ],
+  "guidanceConsulted": [
+    {
+      "query": "keep INP low move heavy work off main thread web worker",
+      "id": "performance",
+      "recommendation": "Run heavy generation off the main thread and stream progress; keep INP low.",
+      "appliedOrException": "applied — summarization + recap run in the worker; tokens stream in via TextStreamer so the UI never blocks on a long decode.",
+      "evidence": "worker.js off-thread streaming; inference-off-main-thread conformance assertion tested pass"
+    },
+    {
+      "query": "expose canvas content to assistive technology accessible name",
+      "id": "expose-canvas-content-to-browser-features",
+      "recommendation": "Give canvas-rendered content a meaningful accessible name / a text equivalent.",
+      "appliedOrException": "partially applied — the per-token timeline canvas is mirrored by a text readout (input/output token counts, per-token intervals, latency); adding an explicit aria-label to the canvas is a recorded follow-up.",
+      "evidence": "text readout duplicates the canvas data; canvas aria-label is an open item"
+    },
+    {
+      "query": "accessible form labels text input textarea range slider",
+      "id": "forms",
+      "recommendation": "Label every control; echo slider values in text; keep controls keyboard-operable.",
+      "appliedOrException": "applied — Max/Min length and Beams sliders each have a label and a live value readout (maxVal/minVal/beamVal); the source textarea is labelled.",
+      "evidence": "labelled sliders with live values; controls-operable manual-evidenced"
+    },
+    {
+      "query": "responsive control panel without horizontal overflow flex grid",
+      "id": "css-layout",
+      "recommendation": "Fluid layout with wrapping; keep the canvas within its container.",
+      "appliedOrException": "applied — design-system panels; the timeline canvas is width-constrained to its container so it never forces horizontal overflow.",
+      "evidence": "responsive assertions present; support needs-review pending agent matrix pass"
+    }
+  ],
+  "openQuestions": [
+    "Should the per-token timeline <canvas> get an explicit aria-label summarising the decode cadence, given a11y-conscious users who cannot read the visual?",
+    "Is the ~250 MB q8 download acceptable on a mid-range mobile device, or should the page more prominently warn before the first (auto-init) load on metered connections?"
+  ],
+  "followUpGoals": [
+    {
+      "goal": "Add an aria-label to the per-token timeline canvas describing the decode-cadence visualisation, and confirm the text readout stays in sync.",
+      "kind": "targeted-fix",
+      "priority": "low"
+    },
+    {
+      "goal": "Run the mobile+desktop responsive matrix, confirm/raise slider and button tap targets, and flip models.json support to ok.",
+      "kind": "targeted-fix",
+      "priority": "medium"
+    }
+  ],
+  "summary": "Retrospective, code-grounded revision-1 critique for distilbart-summarization (Xenova/distilbart-cnn-6-6, summarization, q8, ~250 MB, Apache-2.0). Real abstractive summarization: worker.js runs the transformers.js pipeline off the main thread with genuine length/beam controls, streams tokens via TextStreamer (per-token timeline is the real decode cadence), caps output to ~90% of input to keep summaries honest, and offers a recursive recap that collapses toward one sentence on real stopping criteria. Auto-init via createModelLoader; role=status aria-live states; a <canvas> decode timeline mirrored by a text readout. Verified against the immutable conformance suite (calls-real-inference, loads-clean, declares-*, inference-off-main-thread, shared-auto-init-loader, live-status-region, buttons-have-names tested pass; io-shape/parity/inp manual-evidenced). No fabricated numbers. Honest weaknesses: the timeline canvas lacks an explicit aria-label (mitigated by the text readout); beam search disables per-token streaming (disclosed); ~250 MB is heavy on mobile; models.json support needs-review pending a tap-target matrix pass."
+}
