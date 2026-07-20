@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Multilingual zero-shot Practical — route a mixed-language inbox · Web AI Showcase</title>
+    <meta name="description" content="Route a support inbox where every message is in a different language into your own business categories — one model, no per-language rules. Runs locally in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🌐</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Multilingual zero-shot</a></p>
+
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Practical: route a mixed-language support inbox</h1>
+      <p class="lede">
+        A real support queue arrives in every language at once. Define your business categories once, and
+        this one model routes each message — German, Spanish, French, Chinese, Arabic — to the best-fitting
+        team, on-device, no translation step and no per-language rules.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <label class="mzs-field">Your routing categories (comma-separated)
+        <input id="labels" class="mzs-input" type="text" dir="auto" disabled value="billing, shipping delay, technical bug, refund request, product feedback" /></label>
+      <div style="margin:.6rem 0"><button id="run" type="button" disabled>Route the inbox</button></div>
+
+      <div id="inbox" class="subgrid"></div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>messages <b id="rN">–</b></span>
+        <span>total latency <b id="rMs">–</b></span>
+      </div>
+    </section>
+
+    <p class="crumbs"><a href="../basics/">← Basics</a> · <a href="../">Model home</a> · Next: <a href="../wild/">Wild →</a></p>
+
+    <style>
+      .msg-card { border:1px solid var(--border); border-radius:10px; background:var(--bg-raised); padding:.7rem .9rem; }
+      .msg-lang { font-family:var(--font-mono); font-size:.7rem; color:var(--muted); }
+      .msg-text { margin:.35rem 0 .5rem; font-size:.95rem; }
+      .msg-route { display:inline-flex; align-items:center; gap:.4rem; font-weight:600; font-size:.9rem; }
+      .msg-route .pct { font-family:var(--font-mono); font-size:.74rem; color:var(--accent); }
+      .msg-pending { color:var(--muted); font-style:italic; }
+    </style>
+
+    <script type="module">
+      import { ZeroShotEngine, parseLabels, escapeHTML, ZEROSHOT_CSS } from "../mzeroshot.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = ZEROSHOT_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new ZeroShotEngine();
+      let loaded = false;
+
+      // A mixed-language support queue.
+      const MESSAGES = [
+        { lang: "German", dir: "ltr", text: "Mein Paket ist seit einer Woche unterwegs und immer noch nicht angekommen." },
+        { lang: "Spanish", dir: "ltr", text: "Me cobraron dos veces este mes en mi tarjeta, necesito que lo revisen." },
+        { lang: "French", dir: "ltr", text: "L'application plante à chaque fois que j'essaie de me connecter." },
+        { lang: "Chinese", dir: "ltr", text: "我想退货并申请全额退款，产品和描述不符。" },
+        { lang: "Arabic", dir: "rtl", text: "التطبيق رائع لكن أتمنى إضافة الوضع الليلي في التحديث القادم." },
+      ];
+
+      function renderCards(results) {
+        $("inbox").replaceChildren(...MESSAGES.map((m, i) => {
+          const card = document.createElement("div"); card.className = "msg-card";
+          const r = results[i];
+          const route = r ? `<span class="msg-route">→ ${escapeHTML(r.scored[0].label)} <span class="pct">${(r.scored[0].score*100).toFixed(0)}%</span></span>` : `<span class="msg-pending">routing…</span>`;
+          card.innerHTML = `<div class="msg-lang">${m.lang}</div><div class="msg-text" dir="${m.dir}">${escapeHTML(m.text)}</div>${route}`;
+          return card;
+        }));
+      }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "MoritzLaurer/mDeBERTa-v3-base-mnli-xnli", runtime: "transformers.js", dtype: "q8", sizeMB: 339, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("labels").disabled = false; $("run").disabled = false; loaded = true; renderCards([]); run(); },
+      });
+
+      $("run").addEventListener("click", run);
+      async function run() {
+        if (!loaded) return;
+        const labels = parseLabels($("labels").value);
+        if (labels.length < 2) { $("runStatus").hidden = false; $("runStatus").textContent = "Give at least two categories."; $("runStatus").classList.add("err"); return; }
+        $("runStatus").hidden = false; $("runStatus").classList.remove("err"); $("runStatus").textContent = "Routing…"; $("run").disabled = true;
+        const results = new Array(MESSAGES.length).fill(null); renderCards(results);
+        const t0 = performance.now();
+        try {
+          for (let i = 0; i < MESSAGES.length; i++) {
+            results[i] = await engine.classify(MESSAGES[i].text, labels, false, "This example is {}.");
+            renderCards(results);
+          }
+          $("readout").hidden = false; $("rBackend").textContent = engine.device.toUpperCase(); $("rN").textContent = MESSAGES.length; $("rMs").textContent = Math.round(performance.now()-t0) + " ms";
+          $("runStatus").textContent = "Routed " + MESSAGES.length + " messages."; $("runStatus").classList.add("ok");
+        } catch (err) { $("runStatus").textContent = "Routing failed: " + err.message; $("runStatus").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      }
+    </script>
+  </body>
+</html>
