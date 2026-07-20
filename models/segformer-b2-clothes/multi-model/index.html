@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Clothes Parsing Multi-model — outfit → CLIP style · Web AI Showcase</title>
+    <meta name="description" content="Two on-device models composed: SegFormer clothes parsing extracts just the outfit, then CLIP classifies its style against labels you type — both run locally, nothing uploaded." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🧵</text></svg>" />
+    <style>
+      .bars { display:flex; flex-direction:column; gap:.55rem; margin-top:.5rem; }
+      .bar-head { display:flex; justify-content:space-between; gap:.5rem; font-size:.85rem; }
+      .bar-val { font-family:var(--font-mono); color:var(--muted); }
+      .bar-track { block-size:.7rem; background:var(--bg-raised); border:1px solid var(--border); border-radius:999px; overflow:hidden; margin-top:.15rem; }
+      .bar-fill { block-size:100%; background:var(--muted); border-radius:999px; transition:inline-size .35s ease; }
+      .bar-top .bar-fill { background:var(--accent); } .bar-top .bar-label { font-weight:600; }
+      textarea { inline-size:100%; }
+    </style>
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Clothes Parsing</a></p>
+
+    <header>
+      <p class="eyebrow">use case · multi-model</p>
+      <h1>Multi-model: outfit → CLIP style</h1>
+      <p class="lede">
+        Compose two on-device models. <strong>SegFormer clothes parsing</strong> extracts <em>just the
+        garments</em> — the outfit on a clean background, with the face, hair, and scene removed. Then
+        <strong>CLIP</strong> scores that outfit against any style labels you type. The parse focuses CLIP
+        on the clothing, not the person or setting. Two downloads, then everything runs locally.
+      </p>
+    </header>
+
+    <section class="panel">
+      <p class="muted" style="font-size:.82rem;margin:0 0 .3rem"><strong>Model 1 — SegFormer clothes parsing</strong> (~29 MB)</p>
+      <div id="loader-parse"></div>
+      <p class="muted" style="font-size:.82rem;margin:.6rem 0 .3rem"><strong>Model 2 — CLIP ViT-B/16</strong> (~90 MB)</p>
+      <div id="loader-clip"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop a photo of a person">
+        <span id="dropText">Drop a photo of a person, or click to choose</span>
+        <input type="file" id="file" accept="image/*" hidden />
+      </div>
+      <div class="sample-strip" id="samples">
+        <img class="sample-thumb active" src="../sample-portrait.jpg" data-src="../sample-portrait.jpg" data-credit="Jones, W. A. — via Wikimedia Commons — Public domain" alt="Studio portrait of a young woman in a striped cardigan and skirt, 1940s" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-crowd.jpg" data-src="../sample-crowd.jpg" data-credit="Francisco Anzola — via Wikimedia Commons — CC BY 3.0" alt="A market crowd of people in varied clothing" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-street.jpg" data-src="../sample-street.jpg" data-credit="Ken &amp; Nyetta — via Wikimedia Commons — CC BY 2.0" alt="A street scene with people walking" tabindex="0" role="button" />
+      </div>
+      <p class="credit" id="credit"></p>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin:.5rem 0">
+        Style labels (comma-separated)
+        <textarea id="labels" rows="2">a formal outfit, a casual outfit, sportswear, a dress, streetwear, vintage clothing, business attire</textarea>
+      </label>
+      <div style="margin:.4rem 0"><button id="run" type="button" disabled>Extract outfit + classify style</button></div>
+
+      <div class="canvas-grid">
+        <div class="canvas-card"><h4>Extracted outfit (CLIP input)</h4><canvas class="viz-canvas" id="outfit" aria-label="The outfit extracted from the photo, given to CLIP"></canvas></div>
+        <div class="canvas-card"><h4>CLIP style scores</h4><div class="bars" id="bars"><span class="muted" style="font-size:.82rem">Run to classify the outfit's style.</span></div></div>
+      </div>
+      <div class="readout" id="readout" hidden><span>parse <b id="rParse">–</b></span><span>CLIP <b id="rClip">–</b></span><span>garment px <b id="rPx">–</b></span></div>
+      <p class="muted" style="font-size:.85rem">Clothes parsing runs once to build the outfit cut-out; re-typing labels re-runs only CLIP over the cached cut-out. Nothing is uploaded.</p>
+    </section>
+
+    <p class="crumbs"><a href="../wild/">← Wild</a> · <a href="../">Clothes Parsing</a></p>
+
+    <script type="module">
+      import { ClothesEngine, fileToDataURL, urlToDataURL, loadImage, paintPhoto, cutoutClasses, escapeHTML, CLOTHES_CSS } from "../clothes.js";
+      import { ClipEngine, parseLabels } from "../../clip-zero-shot-image/clip.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = CLOTHES_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+
+      const parseEngine = new ClothesEngine();
+      const clipEngine = new ClipEngine();
+      let currentImageURL = null, currentImg = null, parseResult = null, outfitURL = null;
+      let parseReady = false, clipReady = false;
+      function maybeEnable() { $("run").disabled = !(parseReady && clipReady); }
+
+      async function useURL(url, preview, credit) {
+        currentImageURL = url; currentImg = await loadImage(preview || url); parseResult = null; outfitURL = null;
+        $("readout").hidden = true; $("credit").textContent = credit || "";
+        $("bars").replaceChildren(Object.assign(document.createElement("span"), { className:"muted", textContent:"Run to classify the outfit's style.", style:"font-size:.82rem" }));
+        const oc = $("outfit"); oc.width = currentImg.naturalWidth; oc.height = currentImg.naturalHeight; oc.getContext("2d").clearRect(0,0,oc.width,oc.height);
+        paintPhoto(oc, currentImg);
+      }
+      async function pickSample(el) { for (const t of $("samples").children) t.classList.toggle("active", t === el); await useURL(await urlToDataURL(el.dataset.src), el.dataset.src, el.dataset.credit); }
+      for (const thumb of $("samples").children) { thumb.addEventListener("click", () => pickSample(thumb)); thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } }); }
+      pickSample($("samples").firstElementChild);
+
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) { for (const t of $("samples").children) t.classList.remove("active"); const u = await fileToDataURL(f); await useURL(u, u, ""); $("dropText").textContent = f.name; }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
+
+      createModelLoader({ mount: $("loader-parse"), model: { modelId: "Xenova/segformer_b2_clothes", runtime: "transformers.js", dtype: "q8", sizeMB: 29, requiresWebGPU: false }, load: (p) => parseEngine.load(p), onReady: () => { parseReady = true; maybeEnable(); } });
+      createModelLoader({ mount: $("loader-clip"), model: { modelId: "Xenova/clip-vit-base-patch16", runtime: "transformers.js", dtype: "q8", sizeMB: 90, requiresWebGPU: false }, load: (p) => clipEngine.load(p), onReady: () => { clipReady = true; maybeEnable(); } });
+
+      $("run").addEventListener("click", async () => {
+        if (!currentImageURL) { $("status").textContent = "Pick a photo first."; return; }
+        const labels = parseLabels($("labels").value);
+        if (labels.length < 2) { $("status").textContent = "Give at least two style labels."; $("status").classList.add("err"); return; }
+        $("run").disabled = true; $("status").classList.remove("err", "ok"); $("status").textContent = "Extracting outfit + classifying…";
+        try {
+          if (!parseResult) {
+            parseResult = await parseEngine.segment(currentImageURL);
+            $("rParse").textContent = parseResult.ms + " ms";
+            // Build the outfit cut-out: keep only garment classes, on a white background for CLIP.
+            const keep = new Set(parseResult.classes.filter((c)=>c.isGarment).map((c)=>`${c.r},${c.g},${c.b}`));
+            const px = cutoutClasses($("outfit"), currentImg, parseResult.overlay, parseResult.width, parseResult.height, keep, { checker:false });
+            // Composite onto white so CLIP sees garments on a neutral field.
+            whiteBehind($("outfit"));
+            $("rPx").textContent = px.toLocaleString();
+            outfitURL = $("outfit").toDataURL("image/png");
+          }
+          const r = await clipEngine.classify(outfitURL, labels);
+          $("rClip").textContent = r.ms + " ms"; $("readout").hidden = false;
+          renderBars(labels.map((label, i) => ({ label, prob: r.probs[i] })));
+          $("status").textContent = "Done — CLIP ranked the outfit's style."; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Composition failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+
+      // Re-typing labels re-runs only CLIP over the cached cut-out.
+      $("labels").addEventListener("change", () => { /* next Run re-uses parseResult/outfitURL */ });
+
+      function whiteBehind(canvas) {
+        const w = canvas.width, h = canvas.height;
+        const tmp = document.createElement("canvas"); tmp.width = w; tmp.height = h; const tx = tmp.getContext("2d");
+        tx.fillStyle = "#ffffff"; tx.fillRect(0,0,w,h); tx.drawImage(canvas, 0, 0);
+        canvas.getContext("2d").drawImage(tmp, 0, 0);
+      }
+      function renderBars(items) {
+        const sorted = [...items].sort((a,b)=>b.prob-a.prob); const top = sorted[0]?.label;
+        $("bars").replaceChildren(...sorted.map((it) => {
+          const row = document.createElement("div"); row.className = "bar-row" + (it.label===top?" bar-top":"");
+          const pct = (it.prob*100).toFixed(1);
+          row.innerHTML = `<div class="bar-head"><span class="bar-label">${escapeHTML(it.label)}</span><span class="bar-val">${pct}%</span></div>` +
+            `<div class="bar-track" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}" aria-label="${escapeHTML(it.label)}: ${pct} percent"><div class="bar-fill" style="inline-size:${pct}%"></div></div>`;
+          return row;
+        }));
+      }
+
+      if (new URLSearchParams(location.search).has("auto")) {
+        (async () => {
+          await pickSample($("samples").firstElementChild); const t0 = Date.now();
+          const kick = (m) => { const b = $(m).querySelector(".loader-actions button"); if (b && /download/i.test(b.textContent)) b.click(); };
+          while ($("run").disabled && Date.now() - t0 < 260000) { kick("loader-parse"); kick("loader-clip"); await new Promise((r) => setTimeout(r, 500)); }
+          if (!$("run").disabled) $("run").click();
+        })();
+      }
+    </script>
+  </body>
+</html>
