@@ -1,0 +1,283 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Fast Neural Style Transfer — repaint a photo as art on-device · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run the classic ONNX Model Zoo fast-neural-style networks locally via ONNX Runtime Web: repaint any photo in a famous artistic style (Candy, Mosaic, Udnie, Pointilism, Rain Princess) — entirely on your device. No image ever leaves the tab."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🖼️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">image-to-image (neural style transfer) · vision · WASM · ~6.6 MB / style</p>
+      <h1>Fast Neural Style Transfer — repaint a photo as art</h1>
+      <p class="lede">
+        Give this model any <strong>photo</strong> and it repaints it in a famous <strong>artistic style</strong>
+        — the swirls of <em>Rain Princess</em>, the mosaic tiles of <em>Mosaic</em>, the pointillist dots of
+        <em>Pointilism</em>. These are the classic <strong>fast neural style transfer</strong> networks
+        (Johnson et al. 2016) — the feed-forward models that first made real-time style transfer possible: one
+        tiny generator per style, each trained to reproduce one painting's look. Runs entirely on your device
+        via ONNX Runtime Web; the photo never leaves the tab.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/onnxmodelzoo/candy-9" target="_blank" rel="noopener">onnxmodelzoo/{candy,mosaic,udnie,pointilism,rain-princess}-9</a> — fast-neural-style, one ONNX per style</td></tr>
+          <tr><th>Task</th><td><code>image-to-image</code> (neural style transfer) — run via raw ONNX Runtime Web (see note below)</td></tr>
+          <tr><th>Runtime</th><td>onnxruntime-web 1.21 (transformers.js has no style-transfer class / no neural-style task)</td></tr>
+          <tr><th>Input</th><td><code>input1</code> <code>[1, 3, 224, 224]</code> float32 in <strong>0–255</strong> — <strong>NCHW</strong>, a <strong>fixed</strong> 224×224 (the photo is stretched to fit, then the result is resized back)</td></tr>
+          <tr><th>Output</th><td><code>output1</code> <code>[1, 3, 224, 224]</code> float32 in ~0–255 — the painted image, clamped and resized to your photo's aspect</td></tr>
+          <tr><th>Quantization</th><td>fp32 ONNX (single file per style) — runs on the plain WASM execution provider, no WebGPU needed</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (single-threaded on GitHub Pages) — ~0.4 s per pass (the fixed 224² makes it fast)</td></tr>
+          <tr><th>Download</th><td>~6.6 MB per style, cached after first load (styles load lazily; auto-inits on return)</td></tr>
+          <tr><th>License</th><td>Apache-2.0 (ONNX Model Zoo)</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers, OffscreenCanvas, ImageBitmap — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Pick a photo, choose an artistic style, and repaint it. Drag the divider to compare the
+        photo with its painted version.</p>
+
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="two-col">
+        <div>
+          <div class="reveal" id="reveal">
+            <canvas class="reveal-before" id="before" width="640" height="480" role="img" aria-label="Source photo"></canvas>
+            <canvas class="reveal-after" id="after" width="640" height="480" role="img" aria-label="Style-transferred painting"></canvas>
+            <span class="reveal-handle" id="handle"></span>
+            <input class="reveal-range" id="revealRange" type="range" min="0" max="100" value="55"
+              aria-label="Reveal painted result — drag to wipe between photo and painting" />
+          </div>
+          <div class="reveal-labels"><span>◀ photo</span><span>painting ▶</span></div>
+          <div id="gallery" style="margin-top:.7rem"></div>
+          <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop your own photo">
+            <span id="dropText">Drop / choose your own photo</span>
+            <input type="file" id="file" accept="image/*" hidden />
+          </div>
+        </div>
+
+        <div>
+          <div class="param">
+            <label id="styleLabel">Art style</label>
+            <div class="style-row" id="styleRow" role="group" aria-labelledby="styleLabel">
+              <button class="style-chip" type="button" data-style="candy" aria-pressed="true">Candy</button>
+              <button class="style-chip" type="button" data-style="mosaic" aria-pressed="false">Mosaic</button>
+              <button class="style-chip" type="button" data-style="udnie" aria-pressed="false">Udnie</button>
+              <button class="style-chip" type="button" data-style="pointilism" aria-pressed="false">Pointilism</button>
+              <button class="style-chip" type="button" data-style="rain-princess" aria-pressed="false">Rain Princess</button>
+            </div>
+          </div>
+          <div class="controls-row">
+            <button id="run" type="button" disabled>Paint it</button>
+            <a id="download" class="button" hidden download="painting.png" style="text-decoration:none">Download painting</a>
+          </div>
+          <div id="resultWrap" hidden>
+            <div class="readout" id="readout">
+              <span>backend <b id="rBackend">–</b></span>
+              <span>style <b id="rStyle">–</b></span>
+              <span>inference <b id="rInf">–</b></span>
+              <span>restyle amount <b id="rDelta">–</b></span>
+            </div>
+            <p class="slow-note">The wipe above is the real evidence — slide it to watch the photo become a
+              painting. “Restyle amount” is the mean per-pixel change from the photo; it's far above what a
+              colour filter would do, because a whole feed-forward network repaints the image.</p>
+          </div>
+        </div>
+      </div>
+      <p class="privacy-note">Everything runs on your device — the photo and every painted pixel never leave
+        the tab. Gallery images are rights-cleared samples (see each caption for the source).</p>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside</h3>
+      <p class="muted">
+        Each style is a <em>separate trained network</em>, not a filter with parameters. Johnson's method
+        trains one small feed-forward generator per target painting, so at run time a single pass produces the
+        style — no slow optimisation loop like the original Gatys method. That's why it's called <em>fast</em>
+        style transfer, and why each style is its own ~6.6 MB model. Switch styles below and re-run the same
+        photo to see how differently each network paints it.
+      </p>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Paint a photo, then switch styles and run again to compare.</div>
+      <div id="insideWrap" hidden>
+        <div class="two-col">
+          <div>
+            <h4 style="font-family:var(--font-body);font-size:.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:.6rem 0 .3rem">Current painting (<span id="insStyle">Candy</span>)</h4>
+            <div class="canvas-frame"><canvas class="fit-canvas" id="insOut" width="320" height="320" role="img" aria-label="The painting in the current style"></canvas></div>
+          </div>
+          <div>
+            <h4 style="font-family:var(--font-body);font-size:.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:.6rem 0 .3rem">How to read it</h4>
+            <p class="muted" style="font-size:.85rem">Notice the model doesn't just recolour — it imposes the
+              target painting's brushwork: mosaic tiles, pointillist dots, swirling strokes. That structural
+              texture, learned from one artwork, is what makes it read as a painting rather than a filtered
+              photo. The fixed 224² network keeps it fast; the result is resized to your photo's shape.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        Turning a photo into a painting on-device makes art from any picture, privately and free per image:
+      </p>
+      <ul>
+        <li><strong>Creative & social apps</strong> — a one-tap "paint my photo" that runs client-side, no server, no per-image cost.</li>
+        <li><strong>Art & print</strong> — turn holiday snaps into stylised prints or posters entirely in the browser.</li>
+        <li><strong>Backgrounds & assets</strong> — restyle stock photos into painterly backdrops for slides, sites or games.</li>
+        <li><strong>Teaching</strong> — a live, tangible demo of the paper that kicked off real-time neural style transfer.</li>
+      </ul>
+      <p class="muted">These are the original fixed-style networks — one model per look. They render a
+        <em>stylistic interpretation</em>, and the fixed 224² input means very fine detail is simplified.</p>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Pick a photo and a style, then paint it — wipe between the photo and its painted version.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Turn your own photo into a painting and download it as a PNG for a print or poster.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Gallery wall: run all five styles on one photo side by side and compare the painters.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">Paint → anime: run a fine-art style, then AnimeGANv2, to see two very different stylizers on one photo.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>transformers.js has no style-transfer class and no neural-style task, so we run the ONNX graph
+        directly with ONNX Runtime Web. Note the <strong>fixed 224×224</strong> input and the 0–255 range:</p>
+      <pre><code>import * as ort from "onnxruntime-web";
+
+const session = await ort.InferenceSession.create(styleBytes, { executionProviders: ["wasm"] });
+
+// photo stretched to 224×224 → [1,3,224,224] float32 in [0,255] (NCHW, un-normalised bytes)
+const input = new ort.Tensor("float32", toNCHW255(photo, 224, 224), [1, 3, 224, 224]);
+const { output1 } = await session.run({ input1: input });
+
+// output1 is [1,3,224,224] in ~[0,255] → clamp to RGBA and resize back to the photo's aspect
+const painting = tensorToImage(output1.data, 224, 224);</code></pre>
+      <p class="muted">
+        Inference and the whole output composite run in a Web Worker so the UI never blocks; each ~6.6 MB
+        style is fetched through Cache Storage the first time you pick it, so a returning visit auto-initialises
+        with no re-download.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/onnxmodelzoo/candy-9" target="_blank" rel="noopener">Model — onnxmodelzoo/candy-9 (Apache-2.0)</a> · <a href="https://huggingface.co/onnxmodelzoo/mosaic-9" target="_blank" rel="noopener">mosaic</a> · <a href="https://huggingface.co/onnxmodelzoo/udnie-9" target="_blank" rel="noopener">udnie</a> · <a href="https://huggingface.co/onnxmodelzoo/pointilism-9" target="_blank" rel="noopener">pointilism</a> · <a href="https://huggingface.co/onnxmodelzoo/rain-princess-9" target="_blank" rel="noopener">rain-princess</a></li>
+        <li><a href="https://arxiv.org/abs/1603.08155" target="_blank" rel="noopener">Paper — Perceptual Losses for Real-Time Style Transfer (Johnson et al. 2016)</a></li>
+        <li><a href="https://github.com/onnx/models/tree/main/validated/vision/style_transfer/fast_neural_style" target="_blank" rel="noopener">ONNX Model Zoo — fast neural style</a></li>
+        <li><a href="https://onnxruntime.ai/docs/tutorials/web/" target="_blank" rel="noopener">ONNX Runtime Web documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://onnxruntime.ai/docs/tutorials/web/" target="_blank" rel="noopener">ONNX Runtime Web</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { StyleEngine, STYLE_CSS, STYLE_LABELS, drawBitmapFit, RevealCompare, toBitmap, urlToBitmap } from "./style.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      import { createExampleGallery } from "/web-ai-showcase/lib/example-gallery.js";
+
+      const styleEl = document.createElement("style");
+      styleEl.textContent = STYLE_CSS;
+      document.head.append(styleEl);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new StyleEngine();
+      const reveal = new RevealCompare($("reveal"));
+      const state = { bmp: null, style: "candy" };
+
+      async function preview() {
+        if (!state.bmp) return;
+        drawBitmapFit($("before"), await createImageBitmap(state.bmp));
+        drawBitmapFit($("after"), await createImageBitmap(state.bmp));
+        $("resultWrap").hidden = true;
+        $("insideWrap").hidden = true;
+        $("insideEmpty").hidden = false;
+        $("download").hidden = true;
+      }
+      async function setImage(bitmap) { state.bmp = bitmap; await preview(); }
+
+      createExampleGallery({
+        mount: $("gallery"),
+        manifestUrl: "/web-ai-showcase/media/manifest.json",
+        filter: (a) => !/silhouette/.test(a.id),
+        onSelect: async (asset) => { await setImage(await urlToBitmap(asset.url)); },
+      }).then((g) => { if (g?.assets?.length) g.selectId(g.assets[0].id); });
+
+      for (const chip of $("styleRow").querySelectorAll(".style-chip")) {
+        chip.addEventListener("click", () => {
+          for (const c of $("styleRow").querySelectorAll(".style-chip")) c.setAttribute("aria-pressed", "false");
+          chip.setAttribute("aria-pressed", "true");
+          state.style = chip.dataset.style;
+        });
+      }
+
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      file.addEventListener("change", async () => {
+        if (!file.files[0]) return;
+        await setImage(await toBitmap(file.files[0]));
+        $("dropText").textContent = file.files[0].name;
+      });
+      drop.addEventListener("drop", async (e) => {
+        const f = e.dataTransfer?.files?.[0];
+        if (!f?.type.startsWith("image/")) return;
+        await setImage(await toBitmap(f));
+        $("dropText").textContent = f.name;
+      });
+
+      const autoRun = new URLSearchParams(location.search).has("auto");
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnxmodelzoo/candy-9", runtime: "onnxruntime-web", dtype: "fp32", sizeMB: 7, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress, "candy"),
+        onReady: () => { $("run").disabled = false; if (autoRun) $("run").click(); },
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!state.bmp) { $("status").textContent = "Pick a photo first."; return; }
+        $("run").disabled = true; $("status").classList.remove("err", "ok");
+        $("status").textContent = `Painting (${STYLE_LABELS[state.style]})… first use of a style downloads ~6.6 MB`;
+        try {
+          const res = await engine.stylize(await createImageBitmap(state.bmp), { style: state.style, maxSide: 640 });
+          reveal.set(await createImageBitmap(state.bmp), res.styledBmp);
+          $("resultWrap").hidden = false;
+          $("rBackend").textContent = res.device.toUpperCase();
+          $("rStyle").textContent = res.style;
+          $("rInf").textContent = res.infMs + " ms";
+          $("rDelta").textContent = res.styleDelta.toFixed(4);
+          $("insideEmpty").hidden = true; $("insideWrap").hidden = false;
+          $("insStyle").textContent = STYLE_LABELS[res.style].split(" ")[0];
+          drawBitmapFit($("insOut"), await createImageBitmap(res.styledBmp), 320);
+          const c = document.createElement("canvas"); c.width = res.styledBmp.width; c.height = res.styledBmp.height; c.getContext("2d").drawImage(res.styledBmp, 0, 0);
+          $("download").href = c.toDataURL("image/png"); $("download").hidden = false;
+          $("status").textContent = "Done — drag the divider to compare."; $("status").classList.add("ok");
+        } catch (err) {
+          $("status").textContent = "Painting failed: " + err.message; $("status").classList.add("err");
+        } finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>

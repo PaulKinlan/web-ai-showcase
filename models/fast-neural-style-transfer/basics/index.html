@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Basics — repaint a photo as art · Fast Neural Style Transfer</title>
+    <meta name="description" content="The fundamental capability: pick a photo and an artistic style, then repaint it on-device with a before/after wipe." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🖼️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Fast Neural Style Transfer</a></p>
+    <header>
+      <p class="eyebrow">Basics · image-to-image (style transfer) · WASM</p>
+      <h1>Repaint a photo as art</h1>
+      <p class="lede">The plain capability: pick a photo and an artistic style, and let a fast-neural-style
+        network repaint it. Drag the divider to wipe between the photo and its painted version.</p>
+    </header>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+      <div class="reveal" id="reveal">
+        <canvas class="reveal-before" id="before" width="640" height="480" role="img" aria-label="Source photo"></canvas>
+        <canvas class="reveal-after" id="after" width="640" height="480" role="img" aria-label="Painting"></canvas>
+        <span class="reveal-handle" id="handle"></span>
+        <input class="reveal-range" id="revealRange" type="range" min="0" max="100" value="55" aria-label="Reveal painted result" />
+      </div>
+      <div class="reveal-labels"><span>◀ photo</span><span>painting ▶</span></div>
+      <div id="gallery" style="margin-top:.7rem"></div>
+      <div class="param">
+        <label id="styleLabel">Art style</label>
+        <div class="style-row" id="styleRow" role="group" aria-labelledby="styleLabel">
+          <button class="style-chip" type="button" data-style="candy" aria-pressed="true">Candy</button>
+          <button class="style-chip" type="button" data-style="mosaic" aria-pressed="false">Mosaic</button>
+          <button class="style-chip" type="button" data-style="udnie" aria-pressed="false">Udnie</button>
+          <button class="style-chip" type="button" data-style="pointilism" aria-pressed="false">Pointilism</button>
+          <button class="style-chip" type="button" data-style="rain-princess" aria-pressed="false">Rain Princess</button>
+        </div>
+      </div>
+      <div class="controls-row"><button id="run" type="button" disabled>Paint it</button></div>
+      <div class="readout" id="resultWrap" hidden><span>backend <b id="rBackend">–</b></span><span>style <b id="rStyle">–</b></span><span>latency <b id="rMs">–</b></span><span>restyle amount <b id="rDelta">–</b></span></div>
+    </section>
+
+    <section aria-labelledby="note-h">
+      <h2 id="note-h">What you're seeing</h2>
+      <p>Each style is a whole feed-forward network trained to reproduce one painting's brushwork — mosaic
+        tiles, pointillist dots, swirling strokes. Watch the "restyle amount" (mean per-pixel change): it's far
+        larger than a colour filter, because the model rebuilt the picture's texture, not just its palette.</p>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>.
+      <a href="../">← Back to Fast Neural Style Transfer</a>
+    </footer>
+
+    <script type="module">
+      import { StyleEngine, STYLE_CSS, drawBitmapFit, RevealCompare, urlToBitmap } from "../style.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      import { createExampleGallery } from "/web-ai-showcase/lib/example-gallery.js";
+      const styleEl = document.createElement("style"); styleEl.textContent = STYLE_CSS; document.head.append(styleEl);
+      const $ = (id) => document.getElementById(id);
+      const engine = new StyleEngine();
+      const reveal = new RevealCompare($("reveal"));
+      const state = { bmp: null, style: "candy" };
+      async function preview() { if (!state.bmp) return; drawBitmapFit($("before"), await createImageBitmap(state.bmp)); drawBitmapFit($("after"), await createImageBitmap(state.bmp)); $("resultWrap").hidden = true; }
+      async function setImage(b) { state.bmp = b; await preview(); }
+      createExampleGallery({ mount: $("gallery"), manifestUrl: "/web-ai-showcase/media/manifest.json", filter: (a) => !/silhouette/.test(a.id), onSelect: async (a) => { await setImage(await urlToBitmap(a.url)); } }).then((g) => { if (g?.assets?.length) g.selectId(g.assets[0].id); });
+      for (const chip of $("styleRow").querySelectorAll(".style-chip")) { chip.addEventListener("click", () => { for (const c of $("styleRow").querySelectorAll(".style-chip")) c.setAttribute("aria-pressed", "false"); chip.setAttribute("aria-pressed", "true"); state.style = chip.dataset.style; }); }
+      const autoRun = new URLSearchParams(location.search).has("auto");
+      createModelLoader({ mount: $("model-loader"), model: { modelId: "onnxmodelzoo/candy-9", runtime: "onnxruntime-web", dtype: "fp32", sizeMB: 7, requiresWebGPU: false }, load: (p) => engine.load(p, "candy"), onReady: () => { $("run").disabled = false; if (autoRun) $("run").click(); } });
+      $("run").addEventListener("click", async () => {
+        if (!state.bmp) return;
+        $("run").disabled = true; $("status").classList.remove("err", "ok"); $("status").textContent = "Painting…";
+        try {
+          const res = await engine.stylize(await createImageBitmap(state.bmp), { style: state.style, maxSide: 640 });
+          reveal.set(await createImageBitmap(state.bmp), res.styledBmp);
+          $("resultWrap").hidden = false; $("rBackend").textContent = res.device.toUpperCase(); $("rStyle").textContent = res.style; $("rMs").textContent = res.ms + " ms";
+          $("rDelta").textContent = res.styleDelta.toFixed(4);
+          $("status").textContent = "Done — drag to compare."; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>
