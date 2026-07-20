@@ -131,7 +131,10 @@ of every model you can genuinely run in a browser — not a token set. Read `CLA
   quant artifact; q4 is an oversized 823 MB export that stalls; unblock = a faithful re-export; don't
   relabel NER/POS), **mms-tts-turkish** (no Turkish MMS-TTS VITS ships a browser ONNX — Xenova ships 12
   mms-tts languages but not tur [401], `facebook/mms-tts-tur` is safetensors-only, all 14 `mms-tts-tur*`
-  repos have zero `.onnx`; language-specific — other mms-tts languages remain buildable). Never mislabel
+  repos have zero `.onnx`; language-specific — other mms-tts languages remain buildable), **mms-tts-korean**
+  (`Xenova/mms-tts-kor` is `is_uroman:true`, 25-symbol Latin-only vocab [no Hangul] → Hangul input
+  gives empty `input_ids` and VITS aborts; runs only on pre-romanized Latin — check `is_uroman` before
+  selecting any mms-tts). Never mislabel
   a substitute as the blocked family.
 - **Version-pin escape hatch:** a model needing a transformers.js class newer than the shared 3.7.5
   (e.g. SAM2 needs 4.2.0) may pin the newer version LOCALLY in its own `worker.js` only — never bump

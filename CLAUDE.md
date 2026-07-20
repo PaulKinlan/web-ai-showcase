@@ -241,8 +241,14 @@ don't relabel NER/POS as punctuation), **mms-tts-turkish** (no Turkish MMS-TTS V
 transformers.js-loadable ONNX — Xenova ships 12 mms-tts languages [incl. kor] but NOT tur
 [`Xenova/mms-tts-tur`→401]; onnx-community has only kan/aka; `facebook/mms-tts-tur` is
 safetensors/pytorch-only; a sweep of all 14 `mms-tts-tur*` repos found zero `.onnx`; don't relabel
-another language's MMS-TTS. NOTE: the block is language-specific — Xenova's other mms-tts languages
-[e.g. kor/vie/hin/…] remain buildable). Never mislabel a substitute as the blocked family.
+another language's MMS-TTS. NOTE: the block is language-specific — many other Xenova mms-tts
+languages [e.g. vie (built), hin, …] remain buildable), **mms-tts-korean** (`Xenova/mms-tts-kor` is
+`is_uroman:true` with a 25-symbol LATIN-only vocab [NO Hangul] — feeding Hangul yields empty
+`input_ids` and the VITS graph aborts on the WASM EP; it runs ONLY on pre-romanized Latin, and
+transformers.js ships no uroman romanizer, so a Latin-input box labeled "Korean" while Hangul crashes
+is not honest Hangul Korean TTS; q4 doesn't exist [`Unsupported model type: vits`], fp16 fails at
+session creation. Applies to every `is_uroman:true` mms-tts checkpoint — check the config before
+selecting). Never mislabel a substitute as the blocked family.
 
 **Version-pin escape hatch (isolated).** A model whose class exists only in a transformers.js newer
 than the shared 3.7.5 pin (e.g. SAM2 — `Sam2Model` lands in 4.2.0, absent from 3.7.5) may pin the

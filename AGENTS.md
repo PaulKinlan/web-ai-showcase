@@ -128,7 +128,10 @@ short version for tools that look for `AGENTS.md`.
   **mms-tts-turkish** (no Turkish MMS-TTS VITS ships a transformers.js-loadable ONNX — Xenova ships 12
   mms-tts languages but NOT tur [401]; `facebook/mms-tts-tur` is safetensors-only; sweep of all 14
   `mms-tts-tur*` repos found zero `.onnx`. Language-specific — Xenova's other mms-tts languages remain
-  buildable; don't relabel another language's MMS-TTS).
+  buildable; don't relabel another language's MMS-TTS), **mms-tts-korean** (`Xenova/mms-tts-kor` is
+  `is_uroman:true` with a 25-symbol Latin-only vocab [no Hangul] — Hangul input → empty `input_ids` →
+  VITS aborts on the WASM EP; runs only on pre-romanized Latin [no uroman in transformers.js]; applies
+  to every `is_uroman:true` mms-tts checkpoint — check the config first).
   Never mislabel a substitute as the blocked family.
 - **Version-pin escape hatch (isolated).** If a model's class exists only in a transformers.js newer
   than the shared 3.7.5 pin (e.g. SAM2's `Sam2Model` needs 4.2.0), pin the newer version LOCALLY in
