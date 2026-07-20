@@ -164,3 +164,14 @@ test("PHASE_LABEL covers every phase the reducer can emit", () => {
     assert.ok(PHASE_LABEL[p], `missing label for ${p}`);
   }
 });
+
+test("paused phase: a paused file (not downloading/verifying) yields phase 'paused'", () => {
+  const t = createDownloadTracker();
+  t.ingest({ status: "initiate", file: "onnx/a.onnx", total: 900 });
+  t.ingest({ status: "progress", file: "onnx/a.onnx", loaded: 300, total: 900 });
+  let s = t.ingest({ status: "file-paused", file: "onnx/a.onnx" });
+  assert.equal(s.phase, "paused");
+  // resuming (a fresh progress) leaves paused
+  s = t.ingest({ status: "progress", file: "onnx/a.onnx", loaded: 400, total: 900 });
+  assert.equal(s.phase, "downloading");
+});

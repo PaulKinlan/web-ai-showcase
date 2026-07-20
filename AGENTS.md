@@ -242,8 +242,16 @@ short version for tools that look for `AGENTS.md`.
     per-file bytes), `webllmAdapter` (WebLLM overall fraction → runtime-owned aggregate), `mediapipeAdapter`
     (no progress → honest indeterminate). The reducer (`lib/download-tracker.mjs`) gained an `aggregate`
     event so runtime-owned downloads surface an overall fraction **without fabricating per-file byte
-    counts** (`snapshot().aggregate.runtimeOwned`). Next: the `<model-download-status>` component → central
-    adoption via `createModelLoader` → crawler + CI adoption gate.
+    counts** (`snapshot().aggregate.runtimeOwned`).
+  - **Phase 3 (done): the `<model-download-status>` custom element** (`lib/model-download-status.mjs`) — the
+    reusable presentation/control BOUNDARY. Feed it a tracker snapshot (`el.update(snap)` / `el.snapshot=`);
+    it renders native `<progress>`/`<details>`/`<button>` + one polite live region, and with
+    `auto-controls`+`can-pause` it derives the standard controls per phase and emits
+    `CustomEvent("mds-action",{detail:{action}})` (`download`/`pause`/`resume`/`discard`/`retry`/`clear`).
+    Deliberate **light DOM** (documented in the file) for shared-style/theme reuse + testability; declarative
+    fallback (no blank UI pre-upgrade); multi-instance safe; disconnect suppresses stale snapshots. Adopted
+    on all 5 PaliGemma routes via `lib/resumable-loader.mjs` (0 console errors). Next: central adoption via
+    `createModelLoader` for the other families (using `lib/download-adapters.mjs`) → crawler + CI adoption gate.
 - **Off-main-thread reference architecture (measure, don't infer).** All inference AND any pre/post
   that could exceed an 8ms frame slice runs off-main-thread; verify by measuring long tasks/INP +
   code paths. Use `lib/worker-protocol.js` (typed/versioned protocol, request ids, transfer not
