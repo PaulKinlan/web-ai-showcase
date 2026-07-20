@@ -115,7 +115,9 @@ short version for tools that look for `AGENTS.md`.
   **wav2vec2-large-xlsr-53-dutch** / **wav2vec2-large-xlsr-53-arabic** (no Dutch/Arabic XLSR-53 ASR ships a
   browser ONNX — full Hub enumeration of every wav2vec2-large-xlsr ONNX [327 candidates] has no NL/AR export;
   the multilingual-56 model transliterates Arabic to Latin and relabeling it as the NL/AR family is forbidden.
-  Other XLSR languages with ONNX mirrors [zh/ja/ko/th/tr/fi …] remain buildable — block is language-specific),
+  ALSO no XLSR-53 ONNX (blocked): **Greek**, **Polish** (Polish shipped instead as the smaller base-VoxPopuli
+  `polish-voxpopuli-asr`, honestly labeled "Not XLSR-53"). XLSR langs with ONNX [zh/ja/ko/th + it/pt/es/fr/ru
+  built] remain buildable — these blocks are language-specific, not the whole ASR seam),
   **gte-multilingual-reranker-base** (custom `new`/`NewForSequenceClassification` model_type absent from
   transformers.js 3.7.5 AND 4.2.0 → `Unsupported model type: new`; don't relabel a built reranker/embedder),
   **punctuation-restoration / punctuate-all** (the only browser ONNX is onnx-community/punctuate-all-ONNX, an

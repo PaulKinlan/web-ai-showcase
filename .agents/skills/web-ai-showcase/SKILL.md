@@ -123,7 +123,8 @@ of every model you can genuinely run in a browser — not a token set. Read `CLA
   ONNX — the only exports are head-less feature-extraction [`logits===undefined`] or the wrong head;
   don't relabel a multilingual model), **wav2vec2-large-xlsr-53-dutch** / **wav2vec2-large-xlsr-53-arabic**
   (no Dutch/Arabic XLSR-53 ASR ships a browser ONNX; full Hub enumeration of every wav2vec2-large-xlsr ONNX
-  found no NL/AR export — but other XLSR languages [zh/ja/ko/th/tr/fi …] with ONNX mirrors remain buildable),
+  found no NL/AR export; ALSO blocked: **Greek**, **Polish** XLSR-53 (Polish shipped as base-VoxPopuli instead,
+  "Not XLSR-53") — other XLSR langs [zh/ja/ko/th + it/pt/es/fr/ru built] remain buildable, language-specific),
   **gte-multilingual-reranker-base** (custom `new` model_type → `Unsupported model type: new` in 3.7.5 and
   4.2.0), **punctuation-restoration / punctuate-all** (onnx-community/punctuate-all-ONNX, the only browser
   ONNX [auto-converted from kredor/punctuate-all], is BROKEN — raw-logit inspection [fp16 AND q8] shows

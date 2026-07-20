@@ -226,8 +226,12 @@ don't relabel a multilingual MLM), **wav2vec2-large-xlsr-53-dutch** / **wav2vec2
 fr/de/it/ja/ko/pt/es/en/fi/faroese/icelandic/ru/tr + one multilingual-56] found NO Dutch and NO Arabic
 export; the one NL NeMo ONNX declares `model_type: wav2vec2-ctc` → `Unsupported model type`; the
 multilingual-56 model runs but transliterates Arabic to Latin and using it as the NL/AR family would be
-forbidden relabeling. NOTE: other XLSR languages WITH ONNX mirrors [zh/ja/ko/th/tr/fi …] remain buildable —
-this block is language-specific, not the whole XLSR seam), **gte-multilingual-reranker-base** (Alibaba GTE
+forbidden relabeling. ALSO confirmed no XLSR-53 ONNX (blocked): **Greek** and **Polish** (canonical
+jonatasgrosman fine-tunes are PyTorch/Flax-only; Polish shipped instead as the smaller `wav2vec2-base-10k-
+voxpopuli-ft-pl` under slug `polish-voxpopuli-asr`, honestly labeled "Not XLSR-53" — Greek has no
+wav2vec2/w2v-bert/VoxPopuli CTC ONNX at all). NOTE: XLSR languages WITH ONNX mirrors [zh/ja/ko/th + it/pt/es/
+fr/ru built] remain buildable; the base-VoxPopuli ONNX seam covers some langs XLSR-53 doesn't (fi/pl) —
+these blocks are language-specific, not the whole ASR seam), **gte-multilingual-reranker-base** (Alibaba GTE
 multilingual reranker uses a custom `new`/`NewForSequenceClassification` model_type absent from transformers.js
 3.7.5 AND 4.2.0 → `Unsupported model type: new`; the same `new` type affects gte-multilingual base variants —
 don't relabel a built reranker/embedder), **punctuation-restoration / punctuate-all** (the only browser ONNX
