@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>BEN2 — matte the subject out of any photo in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run PramaLLC's BEN2 confidence-guided matting model locally: drop in a photo and it separates the subject with crisp, detailed edges — producing a soft alpha matte and a transparent-PNG cutout. No upload, no server. Compare its edge crispness against RMBG."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🪄</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">image-segmentation · vision · WebGPU / WASM (fp16) · ~219 MB</p>
+      <h1>BEN2 — matte the subject out of any photo</h1>
+      <p class="lede">
+        BEN2 (Background Erase Network 2) is a <strong>confidence-guided matting</strong> model: it decides,
+        pixel by pixel, how much each pixel belongs to the foreground — and it's tuned for
+        <strong>crisp, detailed edges</strong> (hair, fur, thin structures). You get a soft
+        <em>alpha matte</em> and a transparent cutout, entirely on your device. Nothing is uploaded.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/onnx-community/BEN2-ONNX" target="_blank" rel="noopener">onnx-community/BEN2-ONNX</a> (ONNX build of <a href="https://huggingface.co/PramaLLC/BEN2" target="_blank" rel="noopener">PramaLLC/BEN2</a>)</td></tr>
+          <tr><th>Task / pipeline</th><td><code>image-segmentation</code> — one foreground alpha matte (confidence-guided matting)</td></tr>
+          <tr><th>Architecture</th><td>BEN2 matting network (transformers.js custom <code>ben</code> architecture), input 1024×1024, output a 0–1 confidence map</td></tr>
+          <tr><th>Precision</th><td>fp16 (the only exported precision) on both WebGPU and the WASM fallback</td></tr>
+          <tr><th>Backend</th><td>WebGPU where available (fast); WebAssembly fallback runs too, but a single 1024² matte can take ~30–60 s on CPU</td></tr>
+          <tr><th>Download</th><td>~219 MB, cached after first load</td></tr>
+          <tr><th>License</th><td>MIT</td></tr>
+          <tr><th>Web APIs</th><td>WebGPU (optional, for speed), Web Workers, OffscreenCanvas, Canvas 2D, FileReader</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Pick or drop a photo, then remove the background. The result sits on a checkerboard so you can see exactly where it made the image transparent.</p>
+
+      <div id="model-loader"></div>
+      <p class="slow-note" id="slowNote" hidden>No WebGPU adapter here — BEN2 will run on the WASM backend. A single 1024×1024 matte can take <strong>~30–60 seconds</strong> on CPU. It still runs entirely on your device.</p>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+
+      <div class="controls-row">
+        <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image" style="flex:1 1 240px">
+          <span id="dropText">Drop a photo, or click to choose</span>
+          <input type="file" id="file" accept="image/*" hidden />
+        </div>
+      </div>
+      <div class="sample-strip" id="samples" aria-label="Sample images">
+        <img class="sample-thumb active" src="sample-portrait.jpg" data-src="sample-portrait.jpg" alt="Two cats on a couch" tabindex="0" role="button" />
+        <img class="sample-thumb" src="sample-product.jpg" data-src="sample-product.jpg" alt="A sunlit bedroom scene" tabindex="0" role="button" />
+        <img class="sample-thumb" src="sample-pet.jpg" data-src="sample-pet.jpg" alt="A swan on a river at golden hour" tabindex="0" role="button" />
+      </div>
+
+      <button id="run" type="button" disabled>Remove background</button>
+
+      <div class="canvas-grid">
+        <div class="canvas-card">
+          <h4>Input</h4>
+          <img class="preview-img" id="preview" src="sample-portrait.jpg" alt="Selected photo" />
+        </div>
+        <div class="canvas-card">
+          <h4>Cutout (on transparency)</h4>
+          <canvas class="viz-canvas" id="cutout" width="480" height="360" aria-label="Subject cut out on a transparent checkerboard"></canvas>
+        </div>
+      </div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+        <span>kept <b id="rCoverage">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside</h3>
+      <p class="muted">
+        BEN2 never sees "a cat" — it outputs an <strong>alpha matte</strong>: a confidence from 0
+        (background) to 255 (subject) for every pixel. The cutout above is just the photo with that matte
+        stamped into its transparency. The soft, in-between values along the boundary are where the model
+        expresses <em>partial</em> coverage — wisps of fur, hair, motion blur — and BEN2's confidence-guided
+        design is built to keep those edges crisp and detailed.
+      </p>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Remove a background to see the matte.</div>
+      <div id="insideWrap" hidden>
+        <div class="canvas-grid">
+          <div class="canvas-card">
+            <h4>Alpha matte (0–255)</h4>
+            <canvas class="viz-canvas" id="matte" width="480" height="360" aria-label="Grayscale alpha matte"></canvas>
+          </div>
+          <div class="canvas-card">
+            <h4>Soft-edge detail</h4>
+            <canvas class="viz-canvas" id="edge" width="480" height="360" aria-label="Highlighted soft edge pixels"></canvas>
+          </div>
+        </div>
+        <table class="inside-table">
+          <tbody>
+            <tr><th>matte resolution</th><td id="iDims">–</td></tr>
+            <tr><th>foreground coverage</th><td id="iCov">–</td></tr>
+            <tr><th>soft-edge pixels</th><td id="iEdge">–</td></tr>
+          </tbody>
+        </table>
+        <h4 style="font-family:var(--font-body);font-size:.8rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:.9rem 0 0">Alpha distribution (background → subject)</h4>
+        <div class="histo" id="histo" role="img" aria-label="Histogram of alpha values, background on the left to subject on the right"></div>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        "Remove the background" used to mean a round-trip to a paid API or twenty minutes in Photoshop.
+        BEN2 does it in a web page, on-device — and its confidence-guided matting is aimed squarely at the
+        hard part: <strong>edges</strong>. That changes what you can build:
+      </p>
+      <ul>
+        <li><strong>Product shots</strong> — drop any catalogue photo onto a clean white or brand-colour backdrop, consistently, at scale.</li>
+        <li><strong>Avatars &amp; profile pics</strong> — swap a background live, with the image never leaving the browser.</li>
+        <li><strong>Stickers &amp; cutouts</strong> — turn a photo into a transparent PNG (or an outlined sticker) for chat, decks, and design tools.</li>
+        <li><strong>Hair &amp; fur</strong> — the crisp-edge matte is where a matting model earns its keep vs a hard segmentation mask.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">One photo in, a clean cutout on transparency out.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Product-shot maker — swap in any colour or backdrop, export a PNG.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Hair &amp; fur stress test — zoom the soft-edge matte on the hardest boundaries.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">BEN2 matte → classify the cutout subject with an on-device image model.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>BEN2 uses a custom architecture (<code>model_type: "ben"</code>), which transformers.js registers as a custom image-segmentation model. Load the model + processor directly and read the alpha tensor:</p>
+      <pre><code>import { AutoModel, AutoProcessor, RawImage } from "@huggingface/transformers";
+
+const model = await AutoModel.from_pretrained("onnx-community/BEN2-ONNX", {
+  device: "webgpu", dtype: "fp16",   // fp16 is the only exported precision
+});
+const processor = await AutoProcessor.from_pretrained("onnx-community/BEN2-ONNX");
+
+const image = await RawImage.read(imageURL);
+const { pixel_values } = await processor(image);          // [1,3,1024,1024]
+const { alphas } = await model({ pixel_values });          // [1,1,1024,1024], 0..1
+
+// Scale to 0–255 and resize the matte back to the original photo:
+const matte = (await RawImage.fromTensor(alphas[0].mul(255).to("uint8")))
+  .resize(image.width, image.height);
+// then copy `matte` into the image's alpha channel → the cutout</code></pre>
+      <p class="muted">
+        This page runs that in a Web Worker and does the per-pixel composite in the worker too
+        (OffscreenCanvas → <code>transferToImageBitmap</code>), so the main thread only draws the finished
+        cutout — the interface never janks even at full resolution.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/onnx-community/BEN2-ONNX" target="_blank" rel="noopener">Model card — onnx-community/BEN2-ONNX</a></li>
+        <li><a href="https://huggingface.co/PramaLLC/BEN2" target="_blank" rel="noopener">Original model — PramaLLC/BEN2</a></li>
+        <li><a href="/web-ai-showcase/models/rmbg-background-removal/" >Compare — RMBG-1.4 background removal</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { Ben2Engine, fileToDataURL, urlToDataURL, loadImage, composeCutout, renderMatte, renderEdge, BEN2_CSS }
+        from "./ben2.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = BEN2_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new Ben2Engine();
+      let currentImageURL = null, currentSrc = null;
+
+      // Honest heads-up when there's no GPU adapter — BEN2's fp16 matte is slow on WASM.
+      (async () => {
+        let gpu = false;
+        try { gpu = "gpu" in navigator && !!(await navigator.gpu.requestAdapter()); } catch { gpu = false; }
+        $("slowNote").hidden = gpu;
+      })();
+
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        currentSrc = el.dataset.src;
+        currentImageURL = await urlToDataURL(el.dataset.src);
+        $("preview").src = el.dataset.src;
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } });
+      }
+      pickSample($("samples").firstElementChild);
+
+      const file = $("file"), drop = $("drop");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) { for (const t of $("samples").children) t.classList.remove("active"); currentImageURL = await fileToDataURL(f); currentSrc = currentImageURL; $("preview").src = currentImageURL; $("dropText").textContent = f.name; }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/BEN2-ONNX", runtime: "transformers.js", dtype: "fp16", sizeMB: 219, requiresWebGPU: false },
+        load: async (onProgress) => { const device = await engine.load((p) => onProgress(p)); return { device }; },
+        onReady: () => { $("run").disabled = false; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!currentImageURL) { $("status").hidden = false; $("status").textContent = "Pick a photo first."; return; }
+        $("run").disabled = true; $("status").hidden = false; $("status").classList.remove("err", "ok");
+        $("status").textContent = engine.device === "webgpu" ? "Matting on the GPU…" : "Matting on the CPU (this can take ~30–60 s)…";
+        try {
+          const r = await engine.segment(currentImageURL);
+          const img = await loadImage(currentSrc);
+          composeCutout($("cutout"), img, r.width, r.height, r.alpha, { backdrop: "checker", cutout: r.cutout });
+          renderMatte($("matte"), r.width, r.height, r.alpha);
+          renderEdge($("edge"), r.width, r.height, r.alpha);
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase() + (r.dtype ? " · " + r.dtype : "");
+          $("rMs").textContent = r.ms + " ms";
+          $("rCoverage").textContent = (r.coverage * 100).toFixed(1) + "%";
+          $("insideEmpty").hidden = true; $("insideWrap").hidden = false;
+          $("iDims").textContent = `${r.width} × ${r.height}`;
+          $("iCov").textContent = (r.coverage * 100).toFixed(1) + "% of pixels";
+          $("iEdge").textContent = r.softEdge.toLocaleString() + " px";
+          const max = Math.max(...r.hist, 1);
+          $("histo").replaceChildren(...r.hist.map((c) => { const s = document.createElement("span"); s.style.blockSize = (c / max * 100).toFixed(1) + "%"; s.title = c.toLocaleString() + " px"; return s; }));
+          $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (err) { $("status").hidden = false; $("status").textContent = "Background removal failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+
+      if (new URLSearchParams(location.search).has("auto")) {
+        (async () => {
+          await pickSample($("samples").firstElementChild);
+          const btn = $("model-loader").querySelector(".loader-actions button");
+          if (btn) btn.click(); // first visit → Download; cached → loader auto-inits, no button
+          const t0 = Date.now();
+          while (!engine.ready && Date.now() - t0 < 120000) await new Promise((r) => setTimeout(r, 200));
+          if (engine.ready) $("run").click();
+        })();
+      }
+    </script>
+  </body>
+</html>

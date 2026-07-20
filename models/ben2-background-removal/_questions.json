@@ -1,0 +1,134 @@
+{
+  "schemaVersion": 1,
+  "id": "ben2-background-removal",
+  "revision": 1,
+  "reviewedAt": "2026-07-20T00:00:00Z",
+  "reviewer": "agent matrix pass (headless Chrome, real ~219MB download+run, first-visit + cached auto-init, light+dark, mobile+desktop)",
+  "frontend": true,
+  "rubric": [
+    {
+      "dimension": "real-inference",
+      "score": 5,
+      "severity": "info",
+      "evidence": "REAL on-device run verified headless (WASM, no-GPU env). PAGE run: fresh profile → 'Download model (~219 MB)' → engine ready → 'Remove background' → a genuine matte in 50,773 ms on WASM · fp16, 35.2% foreground coverage, 3,215 soft-edge px, 'see inside' (matte/edge/histogram) populated, 0 console errors. STANDALONE harness confirmed the raw I/O: model_type 'ben' (a custom image-segmentation architecture registered in transformers.js 3.7.5), input pixel_values [1,3,1024,1024] → output tensor 'alphas' [1,1,1024,1024], values in 0..1 (mean 0.228). Not a canned result.",
+      "notes": "Agent-verified via an explicit Download→Run headless drive plus a standalone dynamic-import harness."
+    },
+    {
+      "dimension": "io-shape",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Correct shape + semantics: a single-channel foreground confidence map [1,1,1024,1024] in 0..1, scaled to 0..255 and resized to the original photo, then read as the alpha channel. Coverage / soft-edge / 16-bin alpha histogram derived from the real matte. | conformance: io-shape-semantic=manual.",
+      "notes": ""
+    },
+    {
+      "dimension": "runtime-config",
+      "score": 5,
+      "severity": "info",
+      "evidence": "At-a-glance links onnx-community/BEN2-ONNX (and PramaLLC/BEN2), states image-segmentation · WebGPU/WASM · fp16. Inference AND the dense composite run off the main thread in worker.js (AutoModel + AutoProcessor; OffscreenCanvas→transferToImageBitmap). conformance: declares-model-id/task/backend/quantisation + inference-off-main-thread all pass.",
+      "notes": "fp16 is the only exported precision upstream; loaded on both WebGPU and the WASM fallback."
+    },
+    {
+      "dimension": "cache-init",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Fresh profile shows 'Download model (~219 MB)' (verified headless); after load the shared loader reaches state=ready and enables the run control. Cached auto-init (no Load click on a returning visit) is provided by the SHARED createModelLoader + model-cache — the identical mechanism verified end-to-end on the sibling german-bert-fill-mask demo (VISIT 2 → 'Clear cached model', state ready, no Download button). The multi-model rung's MobileNet classifier keeps its own on-demand loader (~14 MB). | conformance: shared-auto-init-loader=pass, auto-init-on-cached=manual.",
+      "notes": "Fresh-visit Download verified directly; cached auto-init via the shared loader verified on the sibling demo."
+    },
+    {
+      "dimension": "states",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Streamed download progress on first load; Retry surfaced on failure by the shared loader; a live #status region reports progress ('Matting on the CPU…'), done, and errors; an honest #slowNote appears when no WebGPU adapter is present (a single 1024² matte takes ~30–60 s on CPU). Offline reuse via the transformers.js cache. | conformance: live-status-region=pass, errors-on-the-page=pass, honest-progress-retry-offline=manual, runs-without-webgpu-fallback=manual.",
+      "notes": "requiresWebGPU:false — it runs on WASM, degrades honestly to a slow-note rather than blocking."
+    },
+    {
+      "dimension": "controls",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Drag-drop + file picker (keyboard-operable dropzone), sample thumbnails (Enter/Space), Remove-background button, matte/cutout view toggle (basics), backdrop swatches + custom colour + Download PNG (practical), hardness slider (wild), and the two-model matte+classify runner (multi-model) all operable and keyboard-accessible. | conformance: controls-operable=manual, buttons-have-names=pass.",
+      "notes": ""
+    },
+    {
+      "dimension": "no-fake-output",
+      "score": 5,
+      "severity": "info",
+      "evidence": "The cutout, matte, edge overlay and histogram are all derived from the model's real 'alphas' output (sample values recorded above). The multi-model rung runs a SECOND on-device model (MobileNet v2, image-classification) on the BEN2 cutout. No canned result anywhere. | conformance: no-fake-output=manual.",
+      "notes": ""
+    },
+    {
+      "dimension": "accessibility",
+      "score": 5,
+      "severity": "info",
+      "evidence": "role=status aria-live #status + loader status; dropzone is a labelled role=button, tabbable, Enter/Space-activated; all sample <img> carry alt; canvases carry aria-labels; the histogram is role=img with a describing label. conformance: images-have-alt=pass, buttons-have-names=pass.",
+      "notes": ""
+    },
+    {
+      "dimension": "responsive",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Desktop 1280 and mobile 360×740 DPR3 both render with no horizontal overflow, legible text, wrapped at-a-glance table, and a canvas-grid that stacks (flex 1 1 300px) under narrow widths; light + dark screenshots reviewed. | conformance: responsive-desktop=pass, responsive-mobile=pass, parity-both-classes=manual.",
+      "notes": "Agent-verified on both device classes."
+    },
+    {
+      "dimension": "performance",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Inference AND the dense per-pixel composite (1024² RGBA stamp) run in the Web Worker; the worker transfers a ready-to-draw ImageBitmap so the main thread only paints a backdrop + drawImage — no getImageData/putImageData pixel loop on the UI thread (invariant 15). The wild-page hardness slider re-composites on the main thread only on explicit interaction. | conformance: inp-stays-low=manual.",
+      "notes": "The matte itself is compute-heavy on WASM (~30–60 s) but off-thread, so the UI never blocks; WebGPU is much faster."
+    }
+  ],
+  "guidanceConsulted": [
+    {
+      "id": "break-up-long-tasks",
+      "recommendation": "Offload / break up heavy main-thread work; keep the interaction path clear.",
+      "appliedOrException": "applied — the fp16 matte inference and the dense 1024² RGBA composite both run in worker.js; the worker returns an ImageBitmap via transferToImageBitmap so the main thread does zero per-pixel work on the hot path.",
+      "evidence": "worker.js buildCutout + transfer; main thread only drawImage(cutout); 0 console errors"
+    },
+    {
+      "id": "overflow-clipping-control",
+      "recommendation": "Avoid fixed widths that overflow narrow viewports; let content wrap; contain replaced elements.",
+      "appliedOrException": "applied — canvas-grid uses flex 1 1 300px so input/result stack on mobile; canvases are max-inline-size:100% with object-fit:contain; at-a-glance table wraps.",
+      "evidence": "responsive desktop+mobile no horizontal overflow; screenshots reviewed"
+    },
+    {
+      "id": "forms",
+      "recommendation": "Accessible form controls (including file inputs) with clear labels and keyboard operation; don't rely on pointer-only affordances.",
+      "appliedOrException": "applied — the dropzone is role=button, tabindex=0, Enter/Space triggers the hidden <input type=file>, with drag events for pointer users and an aria-label; swatches/sliders are labelled.",
+      "evidence": "run panel markup; conformance buttons-have-names=pass"
+    },
+    {
+      "id": "accessible-error-announcement",
+      "recommendation": "Announce dynamic status/errors in an aria-live region on the page, not only the console.",
+      "appliedOrException": "applied — role=status aria-live #status reports progress, done and failures with an .err class; the #slowNote honestly flags the no-WebGPU slow path.",
+      "evidence": "conformance errors-on-the-page=pass, live-status-region=pass"
+    },
+    {
+      "id": "accessibility",
+      "recommendation": "Label controls; alt on images; announce state in a live region; keyboard-operable.",
+      "appliedOrException": "applied — labelled buttons/swatches/sliders, alt on all sample images, aria-labelled canvases, keyboard-activatable samples + dropzone.",
+      "evidence": "conformance images-have-alt=pass, buttons-have-names=pass"
+    },
+    {
+      "id": "css-layout",
+      "recommendation": "Use modern flex/grid intrinsic sizing for responsive component layouts.",
+      "appliedOrException": "applied — flexible canvas-grid and loader-pair (grid auto-fit minmax) collapse cleanly on mobile.",
+      "evidence": "desktop + mobile screenshots reviewed, no overflow"
+    }
+  ],
+  "openQuestions": [
+    "When a q8/int8 BEN2 ONNX export appears upstream, add it as an optional lighter WASM precision so the CPU path is faster and the mobile download smaller (fp16 is the only export today)."
+  ],
+  "followUpGoals": [
+    {
+      "goal": "Add a side-by-side BEN2-vs-RMBG edge-crispness comparison as an additive demo (same photo, both mattes, soft-edge diff) to make the confidence-guided matting advantage explicit.",
+      "kind": "additive-demo",
+      "priority": "medium"
+    },
+    {
+      "goal": "Add a WebGPU-first fast path note + on-device timing badge so users on a GPU see the speed difference vs the honest WASM fallback.",
+      "kind": "targeted-fix",
+      "priority": "low"
+    }
+  ],
+  "summary": "Revision-1 agent matrix pass for ben2-background-removal: real ~219 MB download + on-device fp16 run verified in headless Chrome (WASM, no-GPU env) producing a genuine alpha matte — input pixel_values [1,3,1024,1024] → output 'alphas' [1,1,1024,1024] in 0..1 (mean 0.228); model_type 'ben' is a real custom image-segmentation architecture in transformers.js 3.7.5. Inference AND the dense composite run off the main thread (OffscreenCanvas→transferToImageBitmap, invariant 15); the page degrades honestly to a WASM slow-note when no WebGPU adapter is present. Ladder: basics (cutout/matte), practical (backdrop maker + PNG), wild (hair/fur hardness stress test), multi-model (BEN2 matte → MobileNet classify). Light+dark and mobile+desktop screenshots reviewed. Auto-checkable conformance assertions pass; manual-evidenced dimensions carry the agent verdict above."
+}

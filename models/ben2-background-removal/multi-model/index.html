@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>BEN2 Multi-model — matte then classify the subject · Web AI Showcase</title>
+    <meta name="description" content="Compose two models: BEN2 cuts the subject out, then MobileNet classifies the isolated subject on a clean backdrop — so the label describes the subject, not its background. Two on-device models, composed live." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🏷️</text></svg>" />
+    <style>
+      .loader-pair { display:grid; gap:1rem; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); margin:.6rem 0; }
+      .loader-title { font-family:var(--font-mono); font-size:.78rem; color:var(--muted); margin:0 0 .3rem; text-transform:uppercase; letter-spacing:.05em; }
+      .label-row { display:grid; grid-template-columns:11rem 1fr 3.6rem; align-items:center; gap:.5rem; margin:.2rem 0; }
+      .label-name { font-family:var(--font-mono); font-size:.82rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+      .label-bar { block-size:.65rem; border-radius:999px; background:var(--bg-secondary); border:1px solid var(--border); overflow:hidden; }
+      .label-fill { display:block; block-size:100%; background:var(--accent); }
+      .label-num { font-family:var(--font-mono); font-size:.76rem; text-align:end; color:var(--muted); }
+      @media (max-width:560px){ .label-row{ grid-template-columns:8rem 1fr 3rem; } }
+    </style>
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">BEN2</a></p>
+
+    <header>
+      <p class="eyebrow">use case · multi-model</p>
+      <h1>Multi-model: matte, then classify the subject</h1>
+      <p class="lede">
+        <a href="../">BEN2</a> cuts the subject out; <a href="../../mobilenet-classification/">MobileNet v2</a>
+        then classifies <em>just the subject</em> on a clean backdrop — so the label describes the object,
+        not a busy background. We classify the original photo <strong>and</strong> the cutout, side by side,
+        to show how removing the background can sharpen a classifier's answer. Two models, composed live.
+      </p>
+    </header>
+
+    <section class="panel">
+      <p class="muted">This page composes <strong>two</strong> on-device models (~233 MB combined, cached after first load). Each initialises on its own below — a cached copy auto-starts, no button.</p>
+      <div class="loader-pair">
+        <div>
+          <p class="loader-title">BEN2 — background removal</p>
+          <div id="model-loader-ben2"></div>
+        </div>
+        <div>
+          <p class="loader-title">MobileNet v2 — image classification</p>
+          <div id="model-loader-cls"></div>
+        </div>
+      </div>
+      <p class="slow-note" id="slowNote" hidden>No WebGPU adapter here — BEN2 runs on WASM, so the matte step can take ~30–60 s. Classification is quick.</p>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+
+      <div class="sample-strip" id="samples">
+        <img class="sample-thumb active" src="../sample-pet.jpg" data-src="../sample-pet.jpg" alt="A swan on a river" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-portrait.jpg" data-src="../sample-portrait.jpg" alt="Two cats on a couch" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-product.jpg" data-src="../sample-product.jpg" alt="A sunlit bedroom scene" tabindex="0" role="button" />
+      </div>
+      <div class="controls-row">
+        <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image" style="flex:1 1 220px"><span id="dropText">…or drop / choose your own</span><input type="file" id="file" accept="image/*" hidden /></div>
+        <button id="run" type="button" disabled>Matte + classify</button>
+      </div>
+
+      <div class="canvas-grid">
+        <div class="canvas-card">
+          <h4>Subject on white (fed to the classifier)</h4>
+          <canvas class="viz-canvas" id="cutout" width="480" height="360" style="background:#fff" aria-label="Subject cut out on white"></canvas>
+        </div>
+        <div class="canvas-card">
+          <h4>Labels</h4>
+          <div style="font-size:.78rem;color:var(--muted);font-family:var(--font-mono);margin:.2rem 0">Original photo</div>
+          <div id="origLabels"></div>
+          <div style="font-size:.78rem;color:var(--muted);font-family:var(--font-mono);margin:.6rem 0 .2rem">BEN2 cutout (subject only)</div>
+          <div id="cutLabels"></div>
+        </div>
+      </div>
+      <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>matte <b id="rMatteMs">–</b></span><span>classify <b id="rClsMs">–</b></span></div>
+      <p class="muted" style="font-size:.85rem">
+        The classifier only ever sees pixels the matting model kept. When a photo has a distracting
+        background, isolating the subject first often pushes the right label up the ranking — a simple, real
+        example of composing a segmentation model with a classifier.
+      </p>
+    </section>
+
+    <p class="crumbs"><a href="../wild/">← Wild</a> · <a href="../">BEN2</a> · See also: <a href="../../mobilenet-classification/">MobileNet →</a></p>
+
+    <script type="module">
+      import { Ben2Engine, ClassifyEngine, urlToDataURL, fileToDataURL, loadImage, composeCutout, cutoutToPNG, BEN2_CSS } from "../ben2.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = BEN2_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const ben2 = new Ben2Engine(), cls = new ClassifyEngine();
+      let currentImageURL = null, currentSrc = null;
+
+      (async () => { let g=false; try{ g="gpu" in navigator && !!(await navigator.gpu.requestAdapter()); }catch{} $("slowNote").hidden = g; })();
+
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        currentSrc = el.dataset.src; currentImageURL = await urlToDataURL(el.dataset.src);
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } });
+      }
+      pickSample($("samples").firstElementChild);
+
+      const file = $("file"), drop = $("drop");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) { for (const t of $("samples").children) t.classList.remove("active"); currentImageURL = await fileToDataURL(f); currentSrc = currentImageURL; $("dropText").textContent = f.name; }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
+
+      function renderLabels(container, labels) {
+        const max = Math.max(1e-6, ...labels.map((l) => l.score));
+        container.replaceChildren(...labels.map((l) => {
+          const row = document.createElement("div"); row.className = "label-row";
+          row.innerHTML = `<span class="label-name" title="${l.label}">${l.label}</span><span class="label-bar"><span class="label-fill" style="inline-size:${(l.score / max * 100).toFixed(1)}%"></span></span><span class="label-num">${(l.score * 100).toFixed(1)}%</span>`;
+          return row;
+        }));
+      }
+
+      function maybeEnableRun() { if (ben2.ready && cls.ready) $("run").disabled = false; }
+      createModelLoader({
+        mount: $("model-loader-ben2"),
+        model: { modelId: "onnx-community/BEN2-ONNX", runtime: "transformers.js", dtype: "fp16", sizeMB: 219, requiresWebGPU: false },
+        load: async (onProgress) => { const device = await ben2.load((p) => onProgress(p)); return { device }; },
+        onReady: maybeEnableRun,
+      });
+      createModelLoader({
+        mount: $("model-loader-cls"),
+        model: { modelId: "onnx-community/mobilenet_v2_1.0_224", runtime: "transformers.js", dtype: "q8", sizeMB: 14, requiresWebGPU: false },
+        load: async (onProgress) => { const device = await cls.load((p) => onProgress(p)); return { device }; },
+        onReady: maybeEnableRun,
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!currentImageURL) { $("status").hidden = false; $("status").textContent = "Pick a photo first."; return; }
+        $("run").disabled = true; $("status").hidden = false; $("status").classList.remove("err", "ok");
+        $("status").textContent = ben2.device === "webgpu" ? "Matting + classifying…" : "Matting on the CPU (this can take ~30–60 s)…";
+        try {
+          const R = await ben2.segment(currentImageURL);
+          const img = await loadImage(currentSrc);
+          // Composite the subject on white and hand the classifier a data URL of just the subject.
+          composeCutout($("cutout"), img, R.width, R.height, R.alpha, { backdrop: "#ffffff", cutout: null });
+          const cutURL = $("cutout").toDataURL("image/png");
+          const [orig, cut] = await Promise.all([cls.classify(currentImageURL, 5), cls.classify(cutURL, 5)]);
+          renderLabels($("origLabels"), orig.labels);
+          renderLabels($("cutLabels"), cut.labels);
+          $("readout").hidden = false; $("rBackend").textContent = R.device.toUpperCase() + (R.dtype ? " · " + R.dtype : "");
+          $("rMatteMs").textContent = R.ms + " ms"; $("rClsMs").textContent = cut.ms + " ms";
+          $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+
+      if (new URLSearchParams(location.search).has("auto")) {
+        (async () => {
+          await pickSample($("samples").firstElementChild);
+          for (const id of ["model-loader-ben2", "model-loader-cls"]) {
+            const btn = $(id).querySelector(".loader-actions button");
+            if (btn) btn.click();
+          }
+          const t0 = Date.now();
+          while (!(ben2.ready && cls.ready) && Date.now() - t0 < 150000) await new Promise((r) => setTimeout(r, 200));
+          if (ben2.ready && cls.ready) $("run").click();
+        })();
+      }
+    </script>
+  </body>
+</html>
