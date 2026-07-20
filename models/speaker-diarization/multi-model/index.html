@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Speaker diarization — Multi-model: speaker-attributed transcript · Web AI Showcase</title>
+    <meta name="description" content="Chain two on-device models: wav2vec2 transcribes the audio with per-word timings, pyannote works out who spoke when, and we merge them into a speaker-labelled transcript — all in the browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🗣️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Speaker diarization</a></p>
+    <header>
+      <p class="eyebrow">Multi-model · ASR + diarization · WASM</p>
+      <h1>Multi-model: speaker-attributed transcript</h1>
+      <p class="lede">
+        Diarization tells you <em>who</em> and <em>when</em>; a recogniser tells you <em>what</em>. Put
+        them together and you get a labelled transcript. <a href="/web-ai-showcase/models/wav2vec2-asr/">wav2vec2</a>
+        transcribes the audio with per-word timings, pyannote produces speaker segments, and we attribute
+        each word to whoever was speaking at that moment — an end-to-end "Speaker 1: … / Speaker 2: …"
+        pipeline, all on-device.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="loader-asr"></div>
+      <div id="loader-diar"></div>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+
+      <div class="sample-strip" id="samples" style="margin-top:.6rem">
+        <button class="chip" type="button" data-src="../jfk.wav" data-label="JFK — inaugural (11s)">JFK inaugural</button>
+        <button class="chip" type="button" data-src="../ted.wav" data-label="TED clip">TED clip</button>
+      </div>
+      <audio id="player" controls preload="metadata" style="inline-size:100%;margin:.4rem 0"></audio>
+      <div class="diar-controls"><button id="run" type="button" disabled>Transcribe &amp; attribute</button><span class="muted" id="clipLabel" style="font-size:.8rem">TED talk clip</span></div>
+
+      <div id="timeline" class="timeline" aria-live="polite"></div>
+      <h4 style="font-family:var(--font-body);font-size:.85rem;margin:.8rem 0 .3rem">Speaker-attributed transcript</h4>
+      <div id="transcript" aria-live="polite"><p class="muted">Run the pipeline to see the labelled transcript.</p></div>
+      <div class="readout" id="readout" hidden>
+        <span>ASR <b id="rAsr">–</b></span>
+        <span>diarization <b id="rDiar">–</b></span>
+        <span>speakers <b id="rSpk">–</b></span>
+      </div>
+      <p class="muted" style="margin-top:.8rem;font-size:.82rem">
+        wav2vec2 emits uppercase, unpunctuated words — attribution is by time overlap, so very short or
+        overlapped words can land on the wrong speaker. Both models run on the CPU (WASM), no GPU needed.
+      </p>
+    </section>
+
+    <p class="crumbs"><a href="../wild/">← Wild</a> · <a href="../">Speaker diarization</a></p>
+
+    <script type="module">
+      import { DiarizeEngine, renderTimeline, speakerColor, DIARIZE_CSS } from "../diarize.js";
+      import { Wav2VecEngine, urlToMono16k } from "/web-ai-showcase/models/wav2vec2-asr/wav2vec2.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = DIARIZE_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const asr = new Wav2VecEngine();
+      const diar = new DiarizeEngine();
+      let pcm = null, dur = 0, asrReady = false, diarReady = false;
+      function maybeEnable() { $("run").disabled = !(asrReady && diarReady && pcm); }
+
+      async function useAudio(srcKey, label) {
+        const url = srcKey;
+        $("player").src = url; $("clipLabel").textContent = label; $("status").hidden = true;
+        try { const d = await urlToMono16k(url); pcm = d.pcm; dur = d.duration; } catch (err) { $("status").hidden = false; $("status").textContent = "Couldn't decode: " + err.message; $("status").classList.add("err"); pcm = null; }
+        maybeEnable();
+      }
+      for (const c of $("samples").children) c.addEventListener("click", () => useAudio(c.dataset.src, c.dataset.label));
+      useAudio("../ted.wav", "TED talk clip");
+
+      createModelLoader({
+        mount: $("loader-asr"),
+        model: { modelId: "Xenova/wav2vec2-base-960h", runtime: "transformers.js", dtype: "q8", sizeMB: 95, requiresWebGPU: false },
+        load: async (onProgress) => { await asr.load(onProgress); return asr; },
+        onReady: () => { asrReady = true; maybeEnable(); },
+      });
+      createModelLoader({
+        mount: $("loader-diar"),
+        model: { modelId: "onnx-community/pyannote-segmentation-3.0", runtime: "transformers.js", dtype: "fp32", sizeMB: 6, requiresWebGPU: false },
+        load: (onProgress) => diar.load(onProgress),
+        onReady: () => { diarReady = true; maybeEnable(); },
+      });
+
+      // Which speaker segment contains a given time? Return speaker id or null.
+      function speakerAt(segments, t) {
+        let best = null;
+        for (const s of segments) if (t >= s.start && t < s.end) { if (!best || s.confidence > best.confidence) best = s; }
+        return best ? best.id : null;
+      }
+
+      function renderTranscript(words, segments) {
+        // Group consecutive words by attributed speaker.
+        const groups = [];
+        for (const w of words) {
+          const mid = (w.start + w.end) / 2;
+          let sid = speakerAt(segments, mid);
+          if (sid == null) sid = groups.length ? groups[groups.length - 1].id : (segments[0]?.id ?? 0);
+          const last = groups[groups.length - 1];
+          if (last && last.id === sid) last.words.push(w.text);
+          else groups.push({ id: sid, words: [w.text] });
+        }
+        $("transcript").innerHTML = groups.map((g) =>
+          `<p style="margin:.35rem 0"><span class="seg-dot" style="background:${speakerColor(g.id)}"></span><b style="color:${speakerColor(g.id)}">Speaker ${g.id + 1}:</b> ${g.words.join(" ").toLowerCase()}</p>`
+        ).join("") || '<p class="muted">No words transcribed.</p>';
+      }
+
+      $("run").addEventListener("click", async () => {
+        if (!pcm) return;
+        $("run").disabled = true; $("status").hidden = false; $("status").classList.remove("err", "ok"); $("status").textContent = "1/2 · transcribing with wav2vec2…";
+        try {
+          const a = await asr.transcribe(pcm, dur);
+          $("rAsr").textContent = a.ms + " ms";
+          $("status").textContent = "2/2 · diarizing…";
+          const r = await diar.diarize(pcm);
+          renderTimeline($("timeline"), r.segments, r.speakerIds, r.durationSec);
+          renderTranscript(a.words || [], r.segments);
+          $("rDiar").textContent = r.ms + " ms";
+          $("rSpk").textContent = r.speakerIds.length;
+          $("readout").hidden = false;
+          $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Pipeline failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>

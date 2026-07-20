@@ -230,7 +230,14 @@ forbidden relabeling. NOTE: other XLSR languages WITH ONNX mirrors [zh/ja/ko/th/
 this block is language-specific, not the whole XLSR seam), **gte-multilingual-reranker-base** (Alibaba GTE
 multilingual reranker uses a custom `new`/`NewForSequenceClassification` model_type absent from transformers.js
 3.7.5 AND 4.2.0 → `Unsupported model type: new`; the same `new` type affects gte-multilingual base variants —
-don't relabel a built reranker/embedder). Never mislabel a substitute as the blocked family.
+don't relabel a built reranker/embedder), **punctuation-restoration / punctuate-all** (the only browser ONNX
+is onnx-community/punctuate-all-ONNX, an auto-conversion of kredor/punctuate-all, and it is BROKEN:
+raw-logit inspection in headless Chrome [fp16 AND q8] shows near-constant output — every content token
+argmaxes to class 1 `.` by a ~9-logit margin with zero sentence-boundary/question sensitivity, so it
+predicts a full stop after every word; NOT a quantization artifact [fp16 preserves the head yet is
+identically degenerate]; q4/q4f16 are an oversized 823 MB MatMulNBits export that stalls at session
+creation; no other punctuation model ships a working browser ONNX — unblock = a faithful ONNX re-export;
+don't relabel NER/POS as punctuation). Never mislabel a substitute as the blocked family.
 
 **Version-pin escape hatch (isolated).** A model whose class exists only in a transformers.js newer
 than the shared 3.7.5 pin (e.g. SAM2 — `Sam2Model` lands in 4.2.0, absent from 3.7.5) may pin the

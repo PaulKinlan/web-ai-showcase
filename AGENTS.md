@@ -117,7 +117,14 @@ short version for tools that look for `AGENTS.md`.
   the multilingual-56 model transliterates Arabic to Latin and relabeling it as the NL/AR family is forbidden.
   Other XLSR languages with ONNX mirrors [zh/ja/ko/th/tr/fi …] remain buildable — block is language-specific),
   **gte-multilingual-reranker-base** (custom `new`/`NewForSequenceClassification` model_type absent from
-  transformers.js 3.7.5 AND 4.2.0 → `Unsupported model type: new`; don't relabel a built reranker/embedder).
+  transformers.js 3.7.5 AND 4.2.0 → `Unsupported model type: new`; don't relabel a built reranker/embedder),
+  **punctuation-restoration / punctuate-all** (the only browser ONNX is onnx-community/punctuate-all-ONNX, an
+  auto-conversion of kredor/punctuate-all, and it is BROKEN: raw-logit inspection in headless Chrome — fp16
+  AND q8 — shows near-constant output, every content token argmaxes to class 1 `.` by a ~9-logit margin with
+  zero sentence-boundary/question sensitivity, so it "restores" a full stop after every word; not a
+  quantization artifact [fp16 preserves the head yet is identically degenerate]; q4/q4f16 are an oversized
+  823 MB MatMulNBits export that stalls at session creation. No other punctuation model ships a working
+  browser ONNX. Unblock = a faithful ONNX re-export; don't relabel NER/POS as punctuation).
   Never mislabel a substitute as the blocked family.
 - **Version-pin escape hatch (isolated).** If a model's class exists only in a transformers.js newer
   than the shared 3.7.5 pin (e.g. SAM2's `Sam2Model` needs 4.2.0), pin the newer version LOCALLY in
