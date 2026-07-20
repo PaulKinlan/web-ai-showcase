@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>German sentiment (german-sentiment-bert) — read the mood of German text in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Type German and this german-sentiment-bert model — a BERT pre-trained and fine-tuned only on German — scores it positiv / negativ / neutral, locally in your browser. Watch the real class probabilities and which words moved the verdict. A German specialist, distinct from English-only, Spanish and multilingual sentiment models. No server."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🇩🇪</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">text-classification · text · WASM · ~437 MB</p>
+      <h1>German sentiment — a German-native reader of the mood</h1>
+      <p class="lede">
+        Most sentiment models are English-first. <strong>german-sentiment-bert</strong> is the opposite: a
+        <strong>bert-base-german-cased</strong> fine-tuned on about <strong>1.8 million German samples</strong> —
+        reviews, tweets and service messages — to score text as <strong>positiv</strong>,
+        <strong>negativ</strong> or <strong>neutral</strong>. Its whole vocabulary and corpus are German, so it
+        reads compound words, umlauts (ä/ö/ü), the ß and German register as first-class signal. Type something
+        in German below and watch the real class probabilities; then look inside to see which words moved the
+        verdict. Nothing leaves your device.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model (weights)</th><td><a href="https://huggingface.co/oliverguhr/german-sentiment-bert" target="_blank" rel="noopener">oliverguhr/german-sentiment-bert</a> — ONNX classification head + weights</td></tr>
+          <tr><th>Tokenizer</th><td><a href="https://huggingface.co/google-bert/bert-base-german-cased" target="_blank" rel="noopener">google-bert/bert-base-german-cased</a> — the base model's tokenizer (byte-identical vocab; ships tokenizer.json)</td></tr>
+          <tr><th>Task / pipeline</th><td><code>text-classification</code> — three classes: positiv · negativ · neutral</td></tr>
+          <tr><th>How it works</th><td>German BERT encodes the text, then a small head predicts the 3-class softmax (config id2label: <code>0 positive · 1 negative · 2 neutral</code>)</td></tr>
+          <tr><th>Architecture</th><td>BERT base (~110M params), German cased vocab, fine-tuned on ~1.8M German samples (reviews, tweets, service texts)</td></tr>
+          <tr><th>Language</th><td><strong>German only</strong> — a language specialist, not a multilingual model</td></tr>
+          <tr><th>Quantization</th><td>fp32 (full-precision) ONNX (<code>onnx/model.onnx</code>) — the only export the repo ships</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (WASM) — runs anywhere; no WebGPU needed</td></tr>
+          <tr><th>Download</th><td>~437 MB, cached after first load (fp32 — larger than a quantized model)</td></tr>
+          <tr><th>License</th><td>MIT (oliverguhr/german-sentiment-bert) — cite the German Sentiment paper</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+      <p class="muted" style="font-size:.82rem;margin-top:.6rem">
+        Why two repos: the weights repo ships an ONNX export but no <code>tokenizer.json</code> (only
+        <code>vocab.txt</code>), which transformers.js can't build a tokenizer from. This model is a fine-tune of
+        <code>bert-base-german-cased</code>, and the two vocabularies are byte-identical, so we load the same
+        WordPiece tokenizer from the base repo and the real weights from the fine-tune — a legitimate
+        <code>AutoTokenizer</code> + <code>AutoModel</code> load.
+      </p>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Type or paste some German, or pick a sample. The verdict updates as you type; the
+        class bars show the full probability split.</p>
+
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <label style="display:flex;flex-direction:column;gap:.3rem;font-size:.82rem;margin-top:.6rem">
+        Text zum Analysieren (German text)
+        <textarea id="text" class="senti-input" rows="3" disabled>Ich liebe diesen Ort, das Essen war unglaublich gut!</textarea>
+      </label>
+      <div class="sample-row" id="samples" role="group" aria-label="Sample German posts"></div>
+
+      <div id="resultWrap" hidden>
+        <div id="verdict" class="senti-verdict" aria-live="polite"></div>
+        <div class="prob-list" id="probs" aria-live="polite"></div>
+        <div class="readout" id="readout" hidden>
+          <span>backend <b id="rBackend">–</b></span>
+          <span>latency <b id="rMs">–</b></span>
+          <span>model <b id="rModel">german-sentiment-bert</b></span>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside — which words moved the verdict</h3>
+      <p class="muted">
+        The model never matches "sentiment words" from a list — it reads the whole sentence through one German
+        encoder. To make that legible we run <strong>occlusion attribution</strong>: re-score the text with each
+        word removed and measure how far the winning class's confidence drops (in log-odds). A word tinted in
+        the verdict colour was <em>pushing</em> that verdict; a grey word was pulling against it. Because the
+        tokenizer decides what a "word" contributes, a compound noun, a negation (<em>nicht</em>,
+        <em>kein</em>) or an intensifier all carry real weight.
+      </p>
+      <div><button id="explain" type="button" class="secondary" disabled>Explain the last verdict</button></div>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem;margin-top:.5rem">Analyse some text, then explain it to inspect word-level attribution.</div>
+      <div id="insideWrap" hidden>
+        <div class="attr-strip" id="attrStrip"></div>
+        <p class="muted" id="attrNote" style="font-size:.76rem;margin-top:.5rem"></p>
+      </div>
+
+      <hr style="border:0;border-top:1px solid var(--border);margin:1.2rem 0" />
+      <h4 style="margin:.2rem 0">German-native vs multilingual</h4>
+      <p class="muted">
+        A <a href="/web-ai-showcase/models/multilingual-sentiment/">multilingual model</a> (XLM-R) spreads one
+        embedding space across ~100 languages — brilliant when your text could be in any of them.
+        german-sentiment-bert goes the other way: <strong>all</strong> of its ~110M parameters and its entire
+        vocabulary are German, pre-trained and fine-tuned on German text. On idiomatic German — negation
+        stacking, long compound nouns, service-desk politeness — a specialist often reads the register a
+        generalist flattens. The <a href="multi-model/">multi-model demo</a> runs both side by side so you can
+        see where they agree and where they part.
+      </p>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        German is the most-spoken native language in the EU, and a lot of opinion data — reviews, DMs, support
+        tickets, social posts — arrives in it. A model that was actually trained on German reads its register,
+        not a translated approximation, and it runs in a tab, so that text never has to leave the device.
+      </p>
+      <ul>
+        <li><strong>German review monitoring</strong> — triage a feed of German reviews, negatives first, on-device.</li>
+        <li><strong>Private social listening</strong> — score German-market sentiment without shipping posts to an API.</li>
+        <li><strong>Community moderation signal</strong> — flag a sharp negative turn in a German-language thread.</li>
+        <li><strong>Compound- and negation-aware analytics</strong> — trained on German, so long compounds and stacked negations count as the signal they are.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Type German, get positiv / negativ / neutral with the full probability split.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Paste a batch of German reviews and get a sorted, colour-coded monitoring board.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Break it: negation stacking, sarcasm, dialect and long compound nouns.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">German-native BERT vs a multilingual XLM-R model on the same text.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>The weights repo has no <code>tokenizer.json</code>, so we load the identical tokenizer from the base
+        model and the head + weights from the fine-tune, then run them together:</p>
+      <pre><code>import {
+  AutoTokenizer,
+  AutoModelForSequenceClassification,
+} from "@huggingface/transformers";
+
+// Same WordPiece vocab as the fine-tune (byte-identical vocab.txt).
+const tokenizer = await AutoTokenizer.from_pretrained(
+  "google-bert/bert-base-german-cased",
+);
+const model = await AutoModelForSequenceClassification.from_pretrained(
+  "oliverguhr/german-sentiment-bert",
+  { dtype: "fp32" },
+); // downloads + caches ~437 MB once
+
+const inputs = await tokenizer("Ich liebe diesen Ort 😍");
+const { logits } = await model(inputs);
+// softmax(logits) → { positive: 0.99, negative: 0.00, neutral: 0.01 }
+// (config id2label: 0 positive · 1 negative · 2 neutral)</code></pre>
+      <p class="muted">
+        This page maps the labels to positiv / negativ / neutral, lightly cleans the text the way the model was
+        trained (lowercase, strip digits/punctuation), and runs everything in a Web Worker so the UI never
+        janks. "See inside" reuses the same loaded model to re-score occluded variants of the text and read off
+        each word's pull.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/oliverguhr/german-sentiment-bert" target="_blank" rel="noopener">Model card — oliverguhr/german-sentiment-bert (weights + ONNX)</a></li>
+        <li><a href="https://huggingface.co/google-bert/bert-base-german-cased" target="_blank" rel="noopener">Base model / tokenizer — google-bert/bert-base-german-cased</a></li>
+        <li><a href="http://www.lrec-conf.org/proceedings/lrec2020/pdf/2020.lrec-1.202.pdf" target="_blank" rel="noopener">Paper — Guhr et al., Training a Broad-Coverage German Sentiment Classification Model (LREC 2020)</a></li>
+        <li><a href="https://github.com/oliverguhr/german-sentiment" target="_blank" rel="noopener">Reference implementation — german-sentiment (preprocessing)</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { SentimentEngine, renderVerdict, renderProbs, renderAttribution, debounce, SENTI_CSS } from "./sentiment.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = SENTI_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new SentimentEngine();
+      let loaded = false;
+      let lastText = "";
+
+      const SAMPLES = [
+        "Ich liebe diesen Ort, das Essen war unglaublich gut!",
+        "Was für ein miserabler Service, komplette Geldverschwendung.",
+        "Die Lieferung kam pünktlich an, alles in Ordnung.",
+        "Das Handy ist echt klasse, der Akku hält ewig durch 🔋",
+        "Toll, schon wieder wurde der Flug gestrichen. Wirklich super. 🙄",
+        "Nicht schlecht, aber für den Preis hätte ich mehr erwartet.",
+        "Endlich sind die Ferien da, ich freue mich riesig! 🎉",
+        "Der Support antwortet seit Tagen nicht auf meine Nachrichten 😡",
+      ];
+      const samplesEl = $("samples");
+      for (const s of SAMPLES) {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "chip";
+        b.textContent = s.length > 42 ? s.slice(0, 40) + "…" : s;
+        b.addEventListener("click", () => { $("text").value = s; run(); });
+        samplesEl.append(b);
+      }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: {
+          modelId: "oliverguhr/german-sentiment-bert",
+          runtime: "transformers.js",
+          dtype: "fp32",
+          sizeMB: 437,
+          requiresWebGPU: false,
+        },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => {
+          $("text").disabled = false;
+          $("explain").disabled = false;
+          loaded = true;
+          run();
+        },
+      });
+
+      const debouncedRun = debounce(run, 350);
+      $("text").addEventListener("input", () => { if (loaded) debouncedRun(); });
+      $("explain").addEventListener("click", explain);
+
+      async function run() {
+        if (!loaded) return;
+        const text = $("text").value.trim();
+        if (!text) { $("resultWrap").hidden = true; return; }
+        lastText = text;
+        $("runStatus").hidden = false;
+        $("runStatus").classList.remove("err", "ok");
+        $("runStatus").textContent = "Scoring…";
+        try {
+          const r = await engine.classify(text);
+          $("resultWrap").hidden = false;
+          renderVerdict($("verdict"), r.dist, r.label);
+          renderProbs($("probs"), r.dist, r.label);
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = r.ms + " ms";
+          $("runStatus").textContent = "Done.";
+          $("runStatus").classList.add("ok");
+        } catch (err) {
+          $("runStatus").textContent = "Scoring failed: " + err.message;
+          $("runStatus").classList.add("err");
+        }
+      }
+
+      async function explain() {
+        if (!loaded) return;
+        const text = $("text").value.trim() || lastText;
+        if (!text) return;
+        $("explain").disabled = true;
+        $("runStatus").hidden = false;
+        $("runStatus").classList.remove("err", "ok");
+        $("runStatus").textContent = "Measuring each word's pull (one batched pass)…";
+        try {
+          const r = await engine.attribute(text);
+          renderAttribution($("attrStrip"), r.words, r.attributions, r.target);
+          $("insideEmpty").hidden = true;
+          $("insideWrap").hidden = false;
+          $("attrNote").textContent =
+            `Winning class: ${r.target}. ${r.capped ? "Only the first 40 words were scored. " : ""}` +
+            `Hover a word for its exact log-odds pull. ${r.ms} ms.`;
+          $("runStatus").textContent = "Done.";
+          $("runStatus").classList.add("ok");
+        } catch (err) {
+          $("runStatus").textContent = "Attribution failed: " + err.message;
+          $("runStatus").classList.add("err");
+        } finally {
+          $("explain").disabled = false;
+        }
+      }
+    </script>
+  </body>
+</html>

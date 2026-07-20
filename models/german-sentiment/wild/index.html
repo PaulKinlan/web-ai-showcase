@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Wild — negation, sarcasm, dialect & compounds · German sentiment · Web AI Showcase</title>
+    <meta name="description" content="Push german-sentiment-bert past textbook German: stacked negations, sarcasm, regional dialect and long compound nouns — see where a German-native model shines and where it slips." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🇩🇪</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/models/german-sentiment/">← German sentiment</a></p>
+
+    <header>
+      <p class="eyebrow">Wild · the hard cases</p>
+      <h1>Negation, sarcasm, dialect &amp; compounds</h1>
+      <p class="lede">
+        Textbook German is easy. Real German is stacked negation (<em>nicht schlecht</em>, <em>gar nicht so
+        übel</em>), irony, regional dialect and monstrous compound nouns. Pick a challenge below to see how a
+        German-native model handles it, with the word-level attribution so you can watch what it latched
+        onto. Sarcasm is the honest weak spot: the surface words say one thing, the meaning is the opposite.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Pick a challenge, or type your own</h3>
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <div id="groups"></div>
+
+      <label style="display:flex;flex-direction:column;gap:.3rem;font-size:.82rem;margin-top:.8rem">
+        Your own tricky German
+        <textarea id="text" class="senti-input" rows="2" disabled>Das Handy ist gar nicht mal so schlecht</textarea>
+      </label>
+      <div style="margin:.5rem 0"><button id="run" type="button" disabled>Score &amp; explain</button></div>
+
+      <div id="resultWrap" hidden>
+        <div id="verdict" class="senti-verdict" aria-live="polite"></div>
+        <div class="prob-list" id="probs" aria-live="polite"></div>
+        <div class="attr-strip" id="attrStrip" style="margin-top:.7rem"></div>
+        <p class="muted" id="attrNote" style="font-size:.76rem;margin-top:.4rem"></p>
+      </div>
+    </section>
+
+    <section aria-labelledby="learn-h">
+      <h2 id="learn-h">What to look for</h2>
+      <ul>
+        <li><strong>Negation stacking:</strong> a German-trained model usually reads "nicht schlecht" / "gar nicht so übel" as mildly positive — a naive keyword model flips on the word "schlecht/übel".</li>
+        <li><strong>Sarcasm:</strong> hardest of all. "Toll, schon wieder kaputt" is positive on the surface, negative in meaning — expect the model to be fooled sometimes. That's honest, not a bug you can hide.</li>
+        <li><strong>Compounds:</strong> long compound nouns (Kundenservicekatastrophe) are single tokens' worth of meaning — watch how the encoder weights them.</li>
+      </ul>
+      <p><a href="../multi-model/">Next: German-native vs multilingual, head to head →</a></p>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { SentimentEngine, renderVerdict, renderProbs, renderAttribution, SENTI_CSS } from "../sentiment.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = SENTI_CSS + `
+        .grp { margin-top: .7rem; }
+        .grp h4 { margin: 0 0 .3rem; font-family: var(--font-body); font-size: .74rem; text-transform: uppercase;
+          letter-spacing: .05em; color: var(--muted); }
+      `;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new SentimentEngine();
+      let loaded = false;
+
+      const GROUPS = [
+        { title: "Negation stacking", items: [
+          "Das Handy ist gar nicht mal so schlecht",
+          "Nicht schlecht, aber auch nicht überragend",
+          "Ich kann mich wirklich nicht beschweren",
+          "Kein schlechtes Ergebnis für den Preis",
+        ]},
+        { title: "Sarcasm & irony (hard)", items: [
+          "Toll, schon wieder nach einer Woche kaputt. Einfach super.",
+          "Ja klar, super Service... ich warte seit einer Stunde 🙄",
+          "Ich LIEBE es, wenn der Flug ohne Vorwarnung gestrichen wird.",
+        ]},
+        { title: "Dialect & colloquial", items: [
+          "Des Essen war echt lecker, mei war des guad",
+          "Passt scho, kann man nix sagen",
+          "Der Kaffee is der Hammer, echt geil hier",
+        ]},
+        { title: "Long compounds", items: [
+          "Eine absolute Kundenservicekatastrophe von Anfang bis Ende",
+          "Die Benutzerfreundlichkeit ist wirklich hervorragend gelungen",
+          "Das war die reinste Zeitverschwendung 😠",
+        ]},
+      ];
+      const groupsEl = $("groups");
+      for (const g of GROUPS) {
+        const wrap = document.createElement("div");
+        wrap.className = "grp";
+        const h = document.createElement("h4");
+        h.textContent = g.title;
+        wrap.append(h);
+        const row = document.createElement("div");
+        row.className = "sample-row";
+        for (const s of g.items) {
+          const b = document.createElement("button");
+          b.type = "button";
+          b.className = "chip";
+          b.textContent = s.length > 44 ? s.slice(0, 42) + "…" : s;
+          b.disabled = true;
+          b.addEventListener("click", () => { $("text").value = s; run(); });
+          row.append(b);
+        }
+        wrap.append(row);
+        groupsEl.append(wrap);
+      }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "oliverguhr/german-sentiment-bert", runtime: "transformers.js", dtype: "fp32", sizeMB: 437, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => {
+          $("text").disabled = false;
+          $("run").disabled = false;
+          for (const b of groupsEl.querySelectorAll("button")) b.disabled = false;
+          loaded = true;
+          run();
+        },
+      });
+
+      $("run").addEventListener("click", run);
+
+      async function run() {
+        if (!loaded) return;
+        const text = $("text").value.trim();
+        if (!text) return;
+        $("run").disabled = true;
+        $("runStatus").hidden = false;
+        $("runStatus").classList.remove("err", "ok");
+        $("runStatus").textContent = "Scoring & explaining…";
+        try {
+          const r = await engine.attribute(text);
+          $("resultWrap").hidden = false;
+          renderVerdict($("verdict"), r.dist, r.label);
+          renderProbs($("probs"), r.dist, r.label);
+          renderAttribution($("attrStrip"), r.words, r.attributions, r.target);
+          $("attrNote").textContent =
+            `Winning class: ${r.target}. Words tinted in the verdict colour pushed it there; grey pulled against it. ${r.ms} ms.`;
+          $("runStatus").textContent = "Done.";
+          $("runStatus").classList.add("ok");
+        } catch (err) {
+          $("runStatus").textContent = "Failed: " + err.message;
+          $("runStatus").classList.add("err");
+        } finally {
+          $("run").disabled = false;
+        }
+      }
+    </script>
+  </body>
+</html>
