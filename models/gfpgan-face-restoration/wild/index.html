@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Wild — find where restoration invents identity · GFPGAN</title>
+    <meta name="description" content="Push GFPGAN: degrade a face harder and harder and watch where honest restoration turns into an invented identity — the limit of a generative face prior." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🧑‍🎨</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">GFPGAN face restoration</a></p>
+    <header>
+      <p class="eyebrow">Wild · image-to-image (face restoration) · WASM</p>
+      <h1>Find where restoration invents identity</h1>
+      <p class="lede">GFPGAN reconstructs from a <em>generative</em> face prior — so the more degraded the
+        input, the more of the face is <em>invented</em> rather than recovered. Degrade harder and watch
+        the reconstruction drift into a plausible but different person. A vivid lesson in what a face-GAN
+        can and can't be trusted to do.</p>
+    </header>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+      <div class="reveal" id="reveal">
+        <canvas class="reveal-before" id="before" width="512" height="512" role="img" aria-label="Degraded input face"></canvas>
+        <canvas class="reveal-after" id="after" width="512" height="512" role="img" aria-label="Restored face"></canvas>
+        <span class="reveal-handle" id="handle"></span>
+        <input class="reveal-range" id="revealRange" type="range" min="0" max="100" value="55" aria-label="Reveal restored face" />
+      </div>
+      <div class="reveal-labels"><span>◀ degraded</span><span>reconstructed ▶</span></div>
+      <div id="gallery" style="margin-top:.7rem"></div>
+      <div class="param-grid">
+        <div class="param">
+          <label for="degrade">Degradation <b id="degradeVal">55</b> — higher = more invention</label>
+          <input type="range" id="degrade" min="10" max="80" step="5" value="55" />
+        </div>
+      </div>
+      <div class="controls-row"><button id="run" type="button" disabled>Restore face</button></div>
+      <div class="readout" id="resultWrap" hidden><span>backend <b id="rBackend">–</b></span><span>latency <b id="rMs">–</b></span><span>sharpness <b id="rSharp">–</b></span></div>
+    </section>
+
+    <section aria-labelledby="note-h">
+      <h2 id="note-h">What you're seeing</h2>
+      <p>At mild degradation GFPGAN recovers the real features. Crank it up and the input carries almost no
+        identity — so the model confidently fills in a <em>plausible</em> face from its prior, and the
+        result can look sharp yet be subtly (or not so subtly) a different person. That's the honest limit
+        of generative face restoration: never treat a heavily-restored face as proof of who was there.</p>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>.
+      <a href="../">← Back to GFPGAN face restoration</a>
+    </footer>
+
+    <script type="module">
+      import { FaceRestoreEngine, RESTORE_CSS, cropFace, degradeFace, drawBitmapFit, RevealCompare, urlToBitmap } from "../restore.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      import { createExampleGallery } from "/web-ai-showcase/lib/example-gallery.js";
+      const style = document.createElement("style"); style.textContent = RESTORE_CSS; document.head.append(style);
+      const FACE_BOX = { "portrait-person": { x: 0.69, y: 0.048, w: 0.21, h: 0.305 } };
+      const $ = (id) => document.getElementById(id);
+      const engine = new FaceRestoreEngine();
+      const reveal = new RevealCompare($("reveal"));
+      const state = { face: null, input: null };
+      async function preview() { if (!state.face) return; const amt = +$("degrade").value; state.input = await degradeFace(await createImageBitmap(state.face), { small: 128 - amt, jpeg: amt / 2, blur: amt / 30 }); drawBitmapFit($("before"), state.input, 512); drawBitmapFit($("after"), state.input, 512); $("resultWrap").hidden = true; }
+      async function setFace(b) { state.face = b; await preview(); }
+      createExampleGallery({ mount: $("gallery"), manifestUrl: "/web-ai-showcase/media/manifest.json", filter: (a) => /old-portrait|portrait-person/.test(a.id), onSelect: async (a) => { const bmp = await urlToBitmap(a.url); await setFace(await cropFace(bmp, FACE_BOX[a.id])); } }).then((g) => { const p = g?.assets?.find((a) => a.id === "old-portrait-logger") || g?.assets?.[0]; if (p) g.selectId(p.id); });
+      $("degrade").addEventListener("input", () => { $("degradeVal").textContent = $("degrade").value; preview(); });
+      const autoRun = new URLSearchParams(location.search).has("auto");
+      createModelLoader({ mount: $("model-loader"), model: { modelId: "Neus/GFPGANv1.4", runtime: "onnxruntime-web", dtype: "fp32", sizeMB: 340, requiresWebGPU: false }, load: (p) => engine.load(p), onReady: () => { $("run").disabled = false; if (autoRun) $("run").click(); } });
+      $("run").addEventListener("click", async () => {
+        if (!state.input) return;
+        $("run").disabled = true; $("status").classList.remove("err", "ok"); $("status").textContent = "Restoring…";
+        try {
+          const res = await engine.restore(await createImageBitmap(state.input), { maxSide: 512 });
+          reveal.set(await createImageBitmap(state.input), res.restoredBmp);
+          $("resultWrap").hidden = false; $("rBackend").textContent = res.device.toUpperCase(); $("rMs").textContent = res.ms + " ms";
+          $("rSharp").textContent = res.inSharp.toFixed(4) + " → " + res.outSharp.toFixed(4);
+          $("status").textContent = "Done — drag to compare."; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>

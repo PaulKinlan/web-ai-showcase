@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Basics — restore an old portrait · GFPGAN</title>
+    <meta name="description" content="The fundamental capability: take a genuinely old, degraded portrait and watch GFPGAN reconstruct a clean face — on-device, with a before/after wipe." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🧑‍🎨</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">GFPGAN face restoration</a></p>
+    <header>
+      <p class="eyebrow">Basics · image-to-image (face restoration) · WASM</p>
+      <h1>Restore an old portrait</h1>
+      <p class="lede">The plain capability: take a genuinely old, degraded portrait and let GFPGAN rebuild
+        the face. Drag the divider to wipe between the aged original and the reconstructed face.</p>
+    </header>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+      <div class="reveal" id="reveal">
+        <canvas class="reveal-before" id="before" width="512" height="512" role="img" aria-label="Degraded input face"></canvas>
+        <canvas class="reveal-after" id="after" width="512" height="512" role="img" aria-label="Restored face"></canvas>
+        <span class="reveal-handle" id="handle"></span>
+        <input class="reveal-range" id="revealRange" type="range" min="0" max="100" value="55" aria-label="Reveal restored face" />
+      </div>
+      <div class="reveal-labels"><span>◀ aged original</span><span>restored ▶</span></div>
+      <div id="gallery" style="margin-top:.7rem"></div>
+      <div class="controls-row"><button id="run" type="button" disabled>Restore face</button></div>
+      <div class="readout" id="resultWrap" hidden><span>backend <b id="rBackend">–</b></span><span>latency <b id="rMs">–</b></span><span>sharpness <b id="rSharp">–</b></span></div>
+    </section>
+
+    <section aria-labelledby="note-h">
+      <h2 id="note-h">What you're seeing</h2>
+      <p>GFPGAN doesn't just sharpen — it uses a StyleGAN2 face prior to reconstruct plausible eyes, skin,
+        and hair the degradation lost. Watch the sharpness number climb and facial features become defined.
+        Because it draws on a learned prior, the restored face is a plausible reconstruction, not a
+        guaranteed likeness — a rescue, not forensic proof.</p>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>.
+      <a href="../">← Back to GFPGAN face restoration</a>
+    </footer>
+
+    <script type="module">
+      import { FaceRestoreEngine, RESTORE_CSS, cropFace, drawBitmapFit, RevealCompare, urlToBitmap } from "../restore.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      import { createExampleGallery } from "/web-ai-showcase/lib/example-gallery.js";
+      const style = document.createElement("style"); style.textContent = RESTORE_CSS; document.head.append(style);
+      const FACE_BOX = { "portrait-person": { x: 0.69, y: 0.048, w: 0.21, h: 0.305 } };
+      const $ = (id) => document.getElementById(id);
+      const engine = new FaceRestoreEngine();
+      const reveal = new RevealCompare($("reveal"));
+      const state = { face: null };
+      async function setFace(b) { state.face = b; drawBitmapFit($("before"), b, 512); drawBitmapFit($("after"), b, 512); $("resultWrap").hidden = true; }
+      createExampleGallery({ mount: $("gallery"), manifestUrl: "/web-ai-showcase/media/manifest.json", filter: (a) => /old-portrait|portrait-person/.test(a.id), onSelect: async (a) => { const bmp = await urlToBitmap(a.url); await setFace(await cropFace(bmp, FACE_BOX[a.id])); } }).then((g) => { const p = g?.assets?.find((a) => a.id === "old-portrait-elder") || g?.assets?.[0]; if (p) g.selectId(p.id); });
+      const autoRun = new URLSearchParams(location.search).has("auto");
+      createModelLoader({ mount: $("model-loader"), model: { modelId: "Neus/GFPGANv1.4", runtime: "onnxruntime-web", dtype: "fp32", sizeMB: 340, requiresWebGPU: false }, load: (p) => engine.load(p), onReady: () => { $("run").disabled = false; if (autoRun) $("run").click(); } });
+      $("run").addEventListener("click", async () => {
+        if (!state.face) return;
+        $("run").disabled = true; $("status").classList.remove("err", "ok"); $("status").textContent = "Restoring…";
+        try {
+          const res = await engine.restore(await createImageBitmap(state.face), { maxSide: 512 });
+          reveal.set(await createImageBitmap(state.face), res.restoredBmp);
+          $("resultWrap").hidden = false; $("rBackend").textContent = res.device.toUpperCase(); $("rMs").textContent = res.ms + " ms";
+          $("rSharp").textContent = res.inSharp.toFixed(4) + " → " + res.outSharp.toFixed(4);
+          $("status").textContent = "Done — drag to compare."; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>

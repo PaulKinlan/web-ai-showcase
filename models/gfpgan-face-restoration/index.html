@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>GFPGAN — restore old & degraded faces on-device · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run GFPGAN locally via ONNX Runtime Web: hand it an old, low-resolution or degraded portrait and it reconstructs a clean, sharp face — eyes, skin, hair — entirely on your device. No image ever leaves the tab."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🧑‍🎨</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">image-to-image (face restoration) · vision · WASM · ~340 MB</p>
+      <h1>GFPGAN — restore an old or degraded face</h1>
+      <p class="lede">
+        Give this model an <strong>old, low-resolution or degraded portrait</strong> and it reconstructs a
+        <strong>clean, sharp face</strong>: defined eyes, smooth skin, recovered hair and expression.
+        GFPGAN (CVPR 2021) is a blind face-restoration network built on a StyleGAN2 face prior — it learned
+        what real faces look like and rebuilds the detail degradation destroyed. It works on a single,
+        roughly front-facing, aligned face. Runs entirely on your device via ONNX Runtime Web; the photo
+        never leaves the tab.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/Neus/GFPGANv1.4" target="_blank" rel="noopener">Neus/GFPGANv1.4</a> — an ONNX export of GFPGAN v1.4 (StyleGAN2-prior face restorer)</td></tr>
+          <tr><th>Task</th><td><code>image-to-image</code> (blind face restoration) — run via raw ONNX Runtime Web (see note below)</td></tr>
+          <tr><th>Runtime</th><td>onnxruntime-web 1.21 (transformers.js has no GFPGAN class / no face-restoration task)</td></tr>
+          <tr><th>Input</th><td><code>[1, 3, 512, 512]</code> float32 — an aligned face resized to 512×512, normalised to <code>[-1, 1]</code> (not [0,1])</td></tr>
+          <tr><th>Output</th><td><code>[1, 3, 512, 512]</code> float32 in <code>[-1, 1]</code> — the restored face; mapped back to RGB</td></tr>
+          <tr><th>Quantization</th><td>fp32 ONNX — runs on the plain WASM execution provider, no WebGPU needed</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (single-threaded on GitHub Pages) — a 512×512 pass is ~10–20 s</td></tr>
+          <tr><th>Download</th><td>~340 MB, cached after first load (auto-inits on return). A large download — expect a wait on first use.</td></tr>
+          <tr><th>License</th><td>Apache-2.0 (GFPGAN weights, TencentARC upstream). The ONNX re-export repo declares no explicit licence; the underlying weights are Apache-2.0.</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers, OffscreenCanvas, ImageBitmap — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Pick a genuinely old, degraded portrait and restore it as-is — or add extra
+        degradation to a cleaner face to watch GFPGAN undo a known amount. Drag the divider to compare the
+        degraded input vs the restored face.</p>
+
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="two-col">
+        <div>
+          <div class="reveal" id="reveal">
+            <canvas class="reveal-before" id="before" width="512" height="512" role="img" aria-label="Degraded input face"></canvas>
+            <canvas class="reveal-after" id="after" width="512" height="512" role="img" aria-label="GFPGAN restored face"></canvas>
+            <span class="reveal-handle" id="handle"></span>
+            <input class="reveal-range" id="revealRange" type="range" min="0" max="100" value="55"
+              aria-label="Reveal restored face — drag to wipe between the degraded and restored face" />
+          </div>
+          <div class="reveal-labels"><span>◀ degraded input</span><span>restored ▶</span></div>
+          <div id="gallery" style="margin-top:.7rem"></div>
+          <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop your own face photo (a single, roughly front-facing face works best)">
+            <span id="dropText">Drop / choose your own face photo (a single, front-facing, roughly aligned face)</span>
+            <input type="file" id="file" accept="image/*" hidden />
+          </div>
+        </div>
+
+        <div>
+          <div class="param-grid">
+            <div class="param">
+              <label for="degrade">Extra degradation <b id="degradeVal">0</b> (0 = restore as-is)</label>
+              <input type="range" id="degrade" min="0" max="70" step="5" value="0" />
+            </div>
+          </div>
+          <div class="controls-row">
+            <button id="run" type="button" disabled>Restore face</button>
+          </div>
+          <div id="resultWrap" hidden>
+            <div class="readout" id="readout">
+              <span>backend <b id="rBackend">–</b></span>
+              <span>inference <b id="rInf">–</b></span>
+              <span>+ composite <b id="rMs">–</b></span>
+              <span>sharpness <b id="rSharp">–</b></span>
+            </div>
+            <p class="slow-note">The wipe above is the real evidence — slide it to see the face come back.
+              “Sharpness” is the Laplacian variance (the standard detail measure) of the input → the
+              restored face; it rises as GFPGAN rebuilds eyes, skin, and hair. GFPGAN reconstructs a
+              <em>plausible</em> face from a learned prior — it does not recover the person's true identity
+              from information that's gone.</p>
+          </div>
+        </div>
+      </div>
+      <p class="privacy-note">Everything runs on your device — the photo and every restored pixel never
+        leave the tab. Gallery images are rights-cleared samples (see each caption for the source).</p>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside</h3>
+      <p class="muted">
+        Where did the model actually <em>do</em> something? This is the <strong>restoration delta</strong>:
+        the per-pixel difference between the degraded input and the restored face, amplified. It lights up
+        on the eyes, mouth, skin, and hairline — the facial structure a StyleGAN2 prior knows how to
+        rebuild — and stays dark on flat background: nothing to restore there.
+      </p>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Restore a face to see where the model rebuilt it.</div>
+      <div id="insideWrap" hidden>
+        <div class="two-col">
+          <div>
+            <h4 style="font-family:var(--font-body);font-size:.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:.6rem 0 .3rem">Restoration delta (what the model rebuilt)</h4>
+            <canvas class="delta-canvas" id="delta" width="300" height="300" role="img" aria-label="Per-pixel difference between degraded and restored face, amplified"></canvas>
+          </div>
+          <div>
+            <h4 style="font-family:var(--font-body);font-size:.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:.6rem 0 .3rem">How to read it</h4>
+            <p class="muted" style="font-size:.85rem">Bright indigo = big change (eyes, teeth, skin texture the
+              model reconstructed); dark = untouched. The delta concentrates on facial features because the
+              GAN prior only knows faces — feed it something that isn't a single aligned face and it will
+              try (wrongly) to make one, which is why the input matters.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        Old and low-quality portraits are everywhere — family archives, scanned documents, low-res avatars,
+        video-call stills. On-device face restoration means you can rescue them privately, with no upload
+        and no per-image cloud cost:
+      </p>
+      <ul>
+        <li><strong>Photo & memory apps</strong> — a client-side "restore this old photo" button that runs on the user's device, no server.</li>
+        <li><strong>Archives & genealogy</strong> — sharpen faces in scanned family photos so features are legible again, entirely offline.</li>
+        <li><strong>Avatars & profiles</strong> — clean up a small or compressed profile picture without shipping it to a backend.</li>
+        <li><strong>Pipelines</strong> — restore a face before colourising it or enlarging the whole photo (see the multi-model demo).</li>
+      </ul>
+      <p class="muted">GFPGAN synthesises a <em>plausible</em> face from a learned prior; it can invent
+        detail that wasn't there and can subtly change identity, so it's an enhancement, not forensic
+        evidence. It expects a single, roughly aligned, front-facing face — group shots or profiles need
+        a face detector/aligner first.</p>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Restore a genuinely old portrait as-is — wipe between the degraded original and the reconstructed face.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Rescue a small, compressed avatar or scan so the face is clean again, then download the result.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Push it: crank the degradation up and find where honest restoration turns into invented identity.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">Restore → upscale: reconstruct the face with GFPGAN, then enlarge the whole photo 4× with Real-ESRGAN.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>transformers.js has no GFPGAN class and no face-restoration task, so we run the ONNX graph directly
+        with ONNX Runtime Web. In goes an aligned face, out comes the restored one:</p>
+      <pre><code>import * as ort from "onnxruntime-web";
+
+const session = await ort.InferenceSession.create(gfpganBytes, { executionProviders: ["wasm"] });
+
+// aligned face → [1,3,512,512] float32 normalised to [-1,1]:  (x/255 - 0.5) / 0.5
+const input = new ort.Tensor("float32", toNCHW(face, 512, 512), [1, 3, 512, 512]);
+const { [session.outputNames[0]]: out } = await session.run({ [session.inputNames[0]]: input });
+
+// out is [1,3,512,512] in [-1,1] → map back to RGB:  (v + 1) / 2
+const restored = tensorToImage(out.data, 512, 512);</code></pre>
+      <p class="muted">
+        Inference and the whole output composite run in a Web Worker so the UI never blocks, and the 340 MB
+        model is fetched through Cache Storage, so a returning visit auto-initialises with no re-download.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/Neus/GFPGANv1.4" target="_blank" rel="noopener">Model — Neus/GFPGANv1.4 (ONNX export)</a></li>
+        <li><a href="https://arxiv.org/abs/2101.04061" target="_blank" rel="noopener">Paper — Towards Real-World Blind Face Restoration with Generative Facial Prior (GFPGAN, CVPR 2021)</a></li>
+        <li><a href="https://github.com/TencentARC/GFPGAN" target="_blank" rel="noopener">GFPGAN — reference implementation (TencentARC, Apache-2.0)</a></li>
+        <li><a href="https://onnxruntime.ai/docs/tutorials/web/" target="_blank" rel="noopener">ONNX Runtime Web documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://onnxruntime.ai/docs/tutorials/web/" target="_blank" rel="noopener">ONNX Runtime Web</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { FaceRestoreEngine, RESTORE_CSS, cropFace, degradeFace, drawBitmapFit, RevealCompare, toBitmap, urlToBitmap } from "./restore.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      import { createExampleGallery } from "/web-ai-showcase/lib/example-gallery.js";
+
+      const style = document.createElement("style");
+      style.textContent = RESTORE_CSS;
+      document.head.append(style);
+
+      // Face-crop boxes for gallery images that aren't already a tight face crop.
+      const FACE_BOX = { "portrait-person": { x: 0.69, y: 0.048, w: 0.21, h: 0.305 } };
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new FaceRestoreEngine();
+      const reveal = new RevealCompare($("reveal"));
+      const state = { face: null };
+
+      async function preview() {
+        if (!state.face) return;
+        const amt = +$("degrade").value;
+        const input = amt > 0
+          ? await degradeFace(await createImageBitmap(state.face), { small: 128 - amt, jpeg: amt / 2, blur: amt / 40 })
+          : await createImageBitmap(state.face);
+        state.input = input;
+        drawBitmapFit($("before"), input, 512);
+        drawBitmapFit($("after"), input, 512);
+        $("resultWrap").hidden = true;
+        $("insideWrap").hidden = true;
+        $("insideEmpty").hidden = false;
+      }
+      async function setFace(bitmap) { state.face = bitmap; await preview(); }
+
+      createExampleGallery({
+        mount: $("gallery"),
+        manifestUrl: "/web-ai-showcase/media/manifest.json",
+        filter: (a) => /old-portrait|portrait-person/.test(a.id),
+        onSelect: async (asset) => {
+          const bmp = await urlToBitmap(asset.url);
+          await setFace(await cropFace(bmp, FACE_BOX[asset.id]));
+        },
+      }).then((g) => { const p = g?.assets?.find((a) => a.id === "old-portrait-logger") || g?.assets?.[0]; if (p) g.selectId(p.id); });
+
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      file.addEventListener("change", async () => {
+        if (!file.files[0]) return;
+        await setFace(await toBitmap(file.files[0]));
+        $("dropText").textContent = file.files[0].name;
+      });
+      drop.addEventListener("drop", async (e) => {
+        const f = e.dataTransfer?.files?.[0];
+        if (!f?.type.startsWith("image/")) return;
+        await setFace(await toBitmap(f));
+        $("dropText").textContent = f.name;
+      });
+
+      $("degrade").addEventListener("input", () => { $("degradeVal").textContent = $("degrade").value; preview(); });
+
+      const autoRun = new URLSearchParams(location.search).has("auto");
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Neus/GFPGANv1.4", runtime: "onnxruntime-web", dtype: "fp32", sizeMB: 340, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: () => { $("run").disabled = false; if (autoRun) $("run").click(); },
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!state.input) { $("status").textContent = "Pick a face first."; return; }
+        $("run").disabled = true; $("status").classList.remove("err", "ok");
+        $("status").textContent = "Restoring… (a 512×512 pass on WASM takes ~10–20 s)";
+        try {
+          const res = await engine.restore(await createImageBitmap(state.input), { maxSide: 512 });
+          reveal.set(await createImageBitmap(state.input), res.restoredBmp);
+          $("resultWrap").hidden = false;
+          $("rBackend").textContent = res.device.toUpperCase();
+          $("rInf").textContent = res.infMs + " ms";
+          $("rMs").textContent = (res.ms - res.infMs) + " ms";
+          $("rSharp").textContent = res.inSharp.toFixed(4) + " → " + res.outSharp.toFixed(4);
+          $("insideEmpty").hidden = true; $("insideWrap").hidden = false;
+          drawBitmapFit($("delta"), res.deltaBmp, 300);
+          $("status").textContent = "Done — drag the divider to compare."; $("status").classList.add("ok");
+        } catch (err) {
+          $("status").textContent = "Restoration failed: " + err.message; $("status").classList.add("err");
+        } finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>
