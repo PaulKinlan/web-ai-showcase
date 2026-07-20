@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Multi-model — dewarp → find more text · UVDoc</title>
+    <meta name="description" content="Chain UVDoc into the on-device DBNet text detector: flatten a warped page, then detect text on both the warped and the flattened version to see how many more lines OCR can find — two models, all local." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>📄</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">UVDoc dewarping</a></p>
+    <header>
+      <p class="eyebrow">Multi-model · dewarping → text detection · WASM</p>
+      <h1>Dewarp, then detect the text</h1>
+      <p class="lede">A curled page skews its own text lines. Here UVDoc flattens the page first, then the
+        on-device <a href="../../scene-text-detection/">DBNet text detector</a> runs on both versions — so you
+        can watch the detected boxes go from following the curl to sitting straight and axis-aligned on the
+        flattened page. Two models, chained, entirely local.</p>
+    </header>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Two models load below (UVDoc ~30 MB, detector ~3 MB). Pick a page, curl it, then run the
+        pipeline — we detect on the warped image and on the flattened one so you can see the gain.</p>
+      <div style="display:grid;gap:.5rem">
+        <div><small class="muted">1 · UVDoc (document dewarping)</small><div id="loader-dewarp"></div></div>
+        <div><small class="muted">2 · DBNet (text detection)</small><div id="loader-detect"></div></div>
+      </div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+      <div id="gallery" style="margin-top:.7rem"></div>
+      <div class="param-grid">
+        <div class="param">
+          <label for="warpAmount">Curl <b id="warpVal">0.6</b></label>
+          <input type="range" id="warpAmount" min="0.3" max="0.9" step="0.05" value="0.6" />
+        </div>
+      </div>
+      <div class="controls-row"><button id="run" type="button" disabled>Run pipeline</button></div>
+      <div class="two-col">
+        <div>
+          <h4 style="font-family:var(--font-body);font-size:.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:.6rem 0 .3rem">Warped → detected <span id="beforeCount"></span></h4>
+          <div class="canvas-frame"><canvas class="fit-canvas" id="canvasBefore" width="420" height="320" role="img" aria-label="Warped page with text boxes"></canvas></div>
+        </div>
+        <div>
+          <h4 style="font-family:var(--font-body);font-size:.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:.6rem 0 .3rem">Flattened → detected <span id="afterCount"></span></h4>
+          <div class="canvas-frame"><canvas class="fit-canvas" id="canvasAfter" width="420" height="320" role="img" aria-label="Flattened page with text boxes"></canvas></div>
+        </div>
+      </div>
+      <div class="readout" id="resultWrap" hidden><span>dewarp <b id="rDewarp">–</b></span><span>detect <b id="rDetect">–</b></span><span>text regions <b id="rRegions">–</b></span></div>
+      <p class="privacy-note">Both models run on-device; the document, the flattened result and the boxes never leave the tab.</p>
+    </section>
+
+    <section aria-labelledby="note-h">
+      <h2 id="note-h">Why chain them</h2>
+      <p>Dewarping is a force-multiplier for document AI: a text detector, OCR model or layout parser all read
+        a flat page far better than a curled photo. This is the on-device version of the "scan then OCR"
+        pipeline every document app runs — no server, no upload, each stage a real model in your browser.</p>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>.
+      <a href="../">← Back to UVDoc dewarping</a>
+    </footer>
+
+    <script type="module">
+      import { DewarpEngine, DEWARP_CSS, warpPage, drawBitmapFit, urlToBitmap } from "../dewarp.js";
+      import { drawImageFit, drawRegions, TextDetEngine } from "/web-ai-showcase/models/scene-text-detection/textdet.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      import { createExampleGallery } from "/web-ai-showcase/lib/example-gallery.js";
+      const style = document.createElement("style"); style.textContent = DEWARP_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const dewarp = new DewarpEngine();
+      const detect = new TextDetEngine();
+      const ready = { dewarp: false, detect: false };
+      const state = { bmp: null, warped: null };
+      function maybeEnable() { $("run").disabled = !(ready.dewarp && ready.detect && state.warped); }
+      async function preview() {
+        if (!state.bmp) return;
+        state.warped = await warpPage(await createImageBitmap(state.bmp), { amount: +$("warpAmount").value });
+        drawBitmapFit($("canvasBefore"), state.warped, 420); drawBitmapFit($("canvasAfter"), state.warped, 420);
+        $("resultWrap").hidden = true; $("beforeCount").textContent = ""; $("afterCount").textContent = "";
+        maybeEnable();
+      }
+      async function setImage(b) { state.bmp = b; await preview(); }
+      createExampleGallery({ mount: $("gallery"), manifestUrl: "/web-ai-showcase/media/manifest.json", filter: (a) => /screenshot|chart|post|home|wikipedia/.test(a.id), onSelect: async (a) => { await setImage(await urlToBitmap(a.url)); } }).then((g) => { if (g?.assets?.length) g.selectId(g.assets[0].id); });
+      $("warpAmount").addEventListener("input", () => { $("warpVal").textContent = (+$("warpAmount").value).toFixed(2); preview(); });
+      createModelLoader({ mount: $("loader-dewarp"), model: { modelId: "PaddlePaddle/UVDoc_onnx", runtime: "onnxruntime-web", dtype: "fp32", sizeMB: 30, requiresWebGPU: false }, load: (p) => dewarp.load(p), onReady: () => { ready.dewarp = true; maybeEnable(); } });
+      createModelLoader({ mount: $("loader-detect"), model: { modelId: "breezedeus/cnstd-ppocr-en_PP-OCRv3_det", runtime: "onnxruntime-web", dtype: "fp32", sizeMB: 3, requiresWebGPU: false }, load: (p) => detect.load(p), onReady: () => { ready.detect = true; maybeEnable(); } });
+      $("run").addEventListener("click", async () => {
+        if (!state.warped) return;
+        $("run").disabled = true; $("status").classList.remove("err", "ok"); $("status").textContent = "Detecting text on the warped page, then flattening and detecting again…";
+        try {
+          const detB = await detect.detect(await createImageBitmap(state.warped));
+          const fitB = drawImageFit($("canvasBefore"), await createImageBitmap(state.warped), 420);
+          drawRegions($("canvasBefore"), detB.regions, fitB.scale);
+          $("beforeCount").textContent = `(${detB.regions.length})`;
+          const res = await dewarp.dewarp(await createImageBitmap(state.warped), { maxSide: 512 });
+          const detA = await detect.detect(await createImageBitmap(res.flatBmp));
+          const fitA = drawImageFit($("canvasAfter"), await createImageBitmap(res.flatBmp), 420);
+          drawRegions($("canvasAfter"), detA.regions, fitA.scale);
+          $("afterCount").textContent = `(${detA.regions.length})`;
+          $("resultWrap").hidden = false; $("rDewarp").textContent = res.ms + " ms"; $("rDetect").textContent = (detB.ms + detA.ms) + " ms";
+          $("rRegions").textContent = `${detB.regions.length} (warped) · ${detA.regions.length} (flattened)`;
+          $("status").textContent = "Pipeline done — compare the panels: the boxes on the flattened page sit straight and axis-aligned, while the warped ones follow the curl.";
+          $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Pipeline failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>

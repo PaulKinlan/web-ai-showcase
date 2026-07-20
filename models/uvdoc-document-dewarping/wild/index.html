@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Wild — find the extreme-fold breaking point · UVDoc</title>
+    <meta name="description" content="Push the model: crank the page curl from a gentle bow to an extreme fold and watch where geometric rectification starts to break down." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>📄</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">UVDoc dewarping</a></p>
+    <header>
+      <p class="eyebrow">Wild · image-to-image (dewarping) · WASM</p>
+      <h1>Find the extreme-fold breaking point</h1>
+      <p class="lede">Crank the curl from a gentle bow toward an extreme fold and watch UVDoc fight to flatten
+        it. Somewhere the deformation is too severe to invert cleanly — that's the edge of what a single-view
+        geometric rectifier can recover.</p>
+    </header>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+      <div class="reveal" id="reveal">
+        <canvas class="reveal-before" id="before" width="640" height="480" role="img" aria-label="Warped input"></canvas>
+        <canvas class="reveal-after" id="after" width="640" height="480" role="img" aria-label="Flattened output"></canvas>
+        <span class="reveal-handle" id="handle"></span>
+        <input class="reveal-range" id="revealRange" type="range" min="0" max="100" value="55" aria-label="Reveal flattened result" />
+      </div>
+      <div class="reveal-labels"><span>◀ warped</span><span>flattened ▶</span></div>
+      <div id="gallery" style="margin-top:.7rem"></div>
+      <div class="param-grid">
+        <div class="param">
+          <label for="warpAmount">Fold severity <b id="warpVal">0.75</b></label>
+          <input type="range" id="warpAmount" min="0.2" max="0.98" step="0.02" value="0.75" />
+        </div>
+      </div>
+      <div class="controls-row"><button id="run" type="button" disabled>Flatten at this severity</button></div>
+      <div class="readout" id="resultWrap" hidden><span>severity <b id="rSev">–</b></span><span>correction <b id="rCorr">–</b></span></div>
+      <p class="slow-note" id="verdict"></p>
+    </section>
+
+    <section aria-labelledby="note-h">
+      <h2 id="note-h">Why it breaks</h2>
+      <p>UVDoc estimates a single continuous deformation from one photo. Gentle curls and perspective are well
+        within what it learned; but a sharp fold creates a discontinuity — and where the page folds back on
+        itself, information is simply occluded and can't be recovered from one view. The correction magnitude
+        climbs with severity, then the result starts to warp unnaturally as the model extrapolates past what
+        it can invert.</p>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>.
+      <a href="../">← Back to UVDoc dewarping</a>
+    </footer>
+
+    <script type="module">
+      import { DewarpEngine, DEWARP_CSS, warpPage, drawBitmapFit, RevealCompare, urlToBitmap } from "../dewarp.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      import { createExampleGallery } from "/web-ai-showcase/lib/example-gallery.js";
+      const style = document.createElement("style"); style.textContent = DEWARP_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new DewarpEngine();
+      const reveal = new RevealCompare($("reveal"));
+      const state = { bmp: null, warped: null };
+      async function preview() { if (!state.bmp) return; state.warped = await warpPage(await createImageBitmap(state.bmp), { amount: +$("warpAmount").value }); drawBitmapFit($("before"), state.warped); drawBitmapFit($("after"), state.warped); $("resultWrap").hidden = true; $("verdict").textContent = ""; }
+      async function setImage(b) { state.bmp = b; await preview(); }
+      createExampleGallery({ mount: $("gallery"), manifestUrl: "/web-ai-showcase/media/manifest.json", filter: (a) => /screenshot|chart|post|home|wikipedia/.test(a.id), onSelect: async (a) => { await setImage(await urlToBitmap(a.url)); } }).then((g) => { if (g?.assets?.length) g.selectId(g.assets[0].id); });
+      $("warpAmount").addEventListener("input", () => { $("warpVal").textContent = (+$("warpAmount").value).toFixed(2); preview(); });
+      const autoRun = new URLSearchParams(location.search).has("auto");
+      createModelLoader({ mount: $("model-loader"), model: { modelId: "PaddlePaddle/UVDoc_onnx", runtime: "onnxruntime-web", dtype: "fp32", sizeMB: 30, requiresWebGPU: false }, load: (p) => engine.load(p), onReady: () => { $("run").disabled = false; if (autoRun) $("run").click(); } });
+      $("run").addEventListener("click", async () => {
+        if (!state.warped) return;
+        $("run").disabled = true; $("status").classList.remove("err", "ok"); $("status").textContent = "Flattening at severity " + (+$("warpAmount").value).toFixed(2) + "…";
+        try {
+          const res = await engine.dewarp(await createImageBitmap(state.warped));
+          reveal.set(await createImageBitmap(state.warped), res.flatBmp);
+          $("resultWrap").hidden = false; $("rSev").textContent = (+$("warpAmount").value).toFixed(2); $("rCorr").textContent = res.correction.toFixed(4);
+          $("verdict").textContent = (+$("warpAmount").value) > 0.9
+            ? "Extreme fold: the page folds past what a single view can invert — the model extrapolates and artefacts appear."
+            : (+$("warpAmount").value) > 0.6 ? "Heavy curl — mostly flattened, with some residual distortion." : "Well within range — cleanly rectified.";
+          $("status").textContent = "Done — drag to compare."; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>
