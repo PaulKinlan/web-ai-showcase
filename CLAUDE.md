@@ -231,7 +231,17 @@ jonatasgrosman fine-tunes are PyTorch/Flax-only; Polish shipped instead as the s
 voxpopuli-ft-pl` under slug `polish-voxpopuli-asr`, honestly labeled "Not XLSR-53" — Greek has no
 wav2vec2/w2v-bert/VoxPopuli CTC ONNX at all). NOTE: XLSR languages WITH ONNX mirrors [zh/ja/ko/th + it/pt/es/
 fr/ru built] remain buildable; the base-VoxPopuli ONNX seam covers some langs XLSR-53 doesn't (fi/pl) —
-these blocks are language-specific, not the whole ASR seam), **gte-multilingual-reranker-base** (Alibaba GTE
+these blocks are language-specific, not the whole ASR seam), **estonian-voxpopuli-asr / lithuanian-voxpopuli-asr**
+(the base-VoxPopuli ASR seam ENDS at et/lt: the OpenVoiceOS onnx-asr collection exported exactly 14 languages
+[cs/de/en/es/fi/fr/hr/hu/it/nl/pl/ro/sk/sl] and never Estonian or Lithuanian, AND the upstream fine-tunes
+`facebook/wav2vec2-base-10k-voxpopuli-ft-et` / `-ft-lt` are METADATA-ONLY repos with ZERO published weights
+[pytorch_model.bin AND model.safetensors both 404], so no ONNX export can ever exist. Verified 2026-07-20: name
+search `voxpopuli-ft-et/lt-onnx`=0, base_model filter=0, istupakov=0; the separate XLSR checkpoints
+[anton-l/wav2vec2-large-xlsr-53-estonian, m3hrdadfi/wav2vec2-large-xlsr-lithuanian] are ALSO PyTorch-only/no ONNX;
+the only et/lt ONNX ASR are large multilingual models [Parakeet/Canary/Whisper/Nemotron/MMS/xlsr-56] — relabeling
+one as base-VoxPopuli et/lt is forbidden. Recorded status:blocked, not faked. Built base-VoxPopuli langs:
+fi/pl/cs/hr/ro/hu/sk/nl/sl/de + es/it/fr/en via other seams),
+**gte-multilingual-reranker-base** (Alibaba GTE
 multilingual reranker uses a custom `new`/`NewForSequenceClassification` model_type absent from transformers.js
 3.7.5 AND 4.2.0 → `Unsupported model type: new`; the same `new` type affects gte-multilingual base variants —
 don't relabel a built reranker/embedder), **punctuation-restoration / punctuate-all** (the only browser ONNX

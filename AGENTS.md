@@ -118,6 +118,13 @@ short version for tools that look for `AGENTS.md`.
   ALSO no XLSR-53 ONNX (blocked): **Greek**, **Polish** (Polish shipped instead as the smaller base-VoxPopuli
   `polish-voxpopuli-asr`, honestly labeled "Not XLSR-53"). XLSR langs with ONNX [zh/ja/ko/th + it/pt/es/fr/ru
   built] remain buildable — these blocks are language-specific, not the whole ASR seam),
+  **estonian-voxpopuli-asr** / **lithuanian-voxpopuli-asr** (the base-VoxPopuli seam ENDS at et/lt: OpenVoiceOS
+  onnx-asr exported exactly 14 languages [cs/de/en/es/fi/fr/hr/hu/it/nl/pl/ro/sk/sl], never et/lt, AND the
+  upstream `facebook/wav2vec2-base-10k-voxpopuli-ft-et` / `-ft-lt` are METADATA-ONLY [ZERO weights:
+  pytorch_model.bin + model.safetensors both 404], so no ONNX can exist. Verified 2026-07-20: name-search=0,
+  base_model filter=0, istupakov=0; the separate XLSR et/lt checkpoints are ALSO no-ONNX; the only et/lt ONNX
+  ASR are big multilingual models [Parakeet/Canary/Whisper/Nemotron/MMS/xlsr-56] — relabeling forbidden.
+  status:blocked, not faked),
   **gte-multilingual-reranker-base** (custom `new`/`NewForSequenceClassification` model_type absent from
   transformers.js 3.7.5 AND 4.2.0 → `Unsupported model type: new`; don't relabel a built reranker/embedder),
   **punctuation-restoration / punctuate-all** (the only browser ONNX is onnx-community/punctuate-all-ONNX, an

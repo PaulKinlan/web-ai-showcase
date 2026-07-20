@@ -125,6 +125,11 @@ of every model you can genuinely run in a browser — not a token set. Read `CLA
   (no Dutch/Arabic XLSR-53 ASR ships a browser ONNX; full Hub enumeration of every wav2vec2-large-xlsr ONNX
   found no NL/AR export; ALSO blocked: **Greek**, **Polish** XLSR-53 (Polish shipped as base-VoxPopuli instead,
   "Not XLSR-53") — other XLSR langs [zh/ja/ko/th + it/pt/es/fr/ru built] remain buildable, language-specific),
+  **estonian-voxpopuli-asr** / **lithuanian-voxpopuli-asr** (base-VoxPopuli ASR seam ENDS at et/lt: OpenVoiceOS
+  onnx-asr exported exactly 14 langs [cs/de/en/es/fi/fr/hr/hu/it/nl/pl/ro/sk/sl], never et/lt, AND upstream
+  `facebook/wav2vec2-base-10k-voxpopuli-ft-et`/`-ft-lt` are metadata-only [ZERO weights, .bin+.safetensors 404]
+  → no ONNX can exist; XLSR et/lt also no-ONNX; only et/lt ONNX ASR are big multilingual models, relabeling
+  forbidden — verified 2026-07-20, status:blocked),
   **gte-multilingual-reranker-base** (custom `new` model_type → `Unsupported model type: new` in 3.7.5 and
   4.2.0), **punctuation-restoration / punctuate-all** (onnx-community/punctuate-all-ONNX, the only browser
   ONNX [auto-converted from kredor/punctuate-all], is BROKEN — raw-logit inspection [fp16 AND q8] shows
