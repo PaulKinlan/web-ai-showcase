@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SmolLM2-135M Wild — the temperature playground · Web AI Showcase</title>
+    <meta name="description" content="Run the same prompt greedy vs hot, side by side, and watch how temperature changes a tiny model's output — sampling made visible, on-device via Transformers.js." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🐣</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">SmolLM2-135M</a></p>
+
+    <header>
+      <p class="eyebrow">use case · wild</p>
+      <h1>Wild: the temperature playground</h1>
+      <p class="lede">
+        Same model, same prompt, two temperatures. The left panel runs <strong>greedy</strong> (always the
+        most likely token — deterministic); the right runs <strong>hot</strong> (high temperature — the
+        sampler reaches into the tail). Watch a tiny model go from careful to chaotic. Everything runs
+        on-device via Transformers.js.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="chips" id="examples" aria-label="Example prompts">
+        <button class="chip" type="button">Write a two-line poem about the sea.</button>
+        <button class="chip" type="button">Invent a name for a cosy coffee shop.</button>
+        <button class="chip" type="button">Describe a dragon in one sentence.</button>
+        <button class="chip" type="button">Give a slogan for a bicycle brand.</button>
+      </div>
+
+      <div class="composer">
+        <label for="q" class="visually-hidden">Prompt</label>
+        <textarea id="q" rows="2" placeholder="Type a creative prompt…" disabled></textarea>
+        <label style="display:flex;flex-direction:column;font-size:.78rem;color:var(--muted)">Hot temperature <b id="hotVal" style="color:var(--color);font-family:var(--font-mono)">1.30</b>
+          <input type="range" id="hot" min="0.9" max="1.5" step="0.05" value="1.3" disabled />
+        </label>
+        <button id="run" type="button" disabled>Run both</button>
+        <button id="stop" type="button" class="secondary" hidden>Stop</button>
+      </div>
+
+      <div class="split">
+        <div class="card">
+          <h4>❄️ Greedy (temperature 0)</h4>
+          <div class="pane" id="cold" aria-live="polite"><span class="muted" style="font-size:.8rem">The deterministic output streams here.</span></div>
+        </div>
+        <div class="card">
+          <h4>🔥 Hot (temperature <span id="hotLabel">1.30</span>)</h4>
+          <div class="pane" id="warm" aria-live="polite"><span class="muted" style="font-size:.8rem">The sampled output streams here.</span></div>
+        </div>
+      </div>
+
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>greedy tok/s <b id="rColdTps">–</b></span>
+        <span>hot tok/s <b id="rWarmTps">–</b></span>
+      </div>
+    </section>
+
+    <section aria-labelledby="how-h">
+      <h2 id="how-h">What temperature actually does</h2>
+      <p class="muted">
+        At every step the model outputs a probability over its whole vocabulary. <strong>Greedy</strong>
+        takes the single most likely token every time — reproducible, but samey. Raising the
+        <strong>temperature</strong> flattens that distribution so less-likely tokens get picked more
+        often — more variety, but also more mistakes and drift. On a 135M model the effect is dramatic:
+        greedy stays on-topic, hot wanders fast. Both runs here are real, on your device.
+      </p>
+    </section>
+
+    <p class="crumbs"><a href="../practical/">← Practical</a> · <a href="../">SmolLM2-135M</a></p>
+
+    <style>
+      .visually-hidden { position:absolute; width:1px; height:1px; margin:-1px; padding:0; overflow:hidden; clip:rect(0 0 0 0); border:0; }
+      .split { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,20rem),1fr)); gap:1rem; margin-top:.6rem; }
+      .card { border:1px solid var(--border); border-radius:var(--radius); background:var(--bg-raised); padding:.7rem; min-inline-size:0; }
+      .card h4 { margin:0 0 .4rem; font-size:.9rem; }
+      .pane { min-block-size:5rem; line-height:1.6; white-space:pre-wrap; overflow-wrap:anywhere; font-size:.9rem; }
+      .composer { display:flex; gap:.5rem; align-items:flex-end; flex-wrap:wrap; margin-top:.5rem; }
+      .composer textarea { flex:1 1 14rem; min-inline-size:0; resize:vertical; }
+      .composer button { min-block-size:44px; }
+      .composer input[type=range] { inline-size:9rem; max-inline-size:100%; accent-color:var(--accent); }
+      .caret { display:inline-block; inline-size:.5rem; block-size:1rem; background:var(--accent); vertical-align:text-bottom; animation:fblink 1s steps(2) infinite; }
+      @keyframes fblink { 50% { opacity:0; } }
+      @media (prefers-reduced-motion: reduce) { .caret { animation:none; } }
+    </style>
+
+    <script type="module">
+      import { SmolLMEngine, escapeHTML, SMOLLM_CSS } from "../engine.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = SMOLLM_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new SmolLMEngine();
+      let loaded = false, backend = "WASM", generating = false;
+
+      for (const c of $("examples").children) c.addEventListener("click", () => { $("q").value = c.textContent; $("q").focus(); });
+      $("hot").addEventListener("input", () => { const v = (+$("hot").value).toFixed(2); $("hotVal").textContent = v; $("hotLabel").textContent = v; });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "HuggingFaceTB/SmolLM2-135M-Instruct", runtime: "transformers.js", dtype: "q8", sizeMB: 140, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: (device) => { loaded = true; backend = String(device || "wasm").toUpperCase(); $("q").disabled = false; $("hot").disabled = false; $("run").disabled = false; $("q").focus(); },
+      });
+
+      const sys = { role: "system", content: "You are a creative assistant. Answer the prompt briefly." };
+
+      async function generateInto(el, prompt, opts) {
+        let acc = "";
+        el.innerHTML = '<span class="caret"></span>';
+        const res = await engine.chat([sys, { role: "user", content: prompt }], {
+          ...opts,
+          onToken: (tok) => { acc += tok; el.innerHTML = escapeHTML(acc) + '<span class="caret"></span>'; },
+        });
+        const finalText = (res.text && res.text.trim()) ? res.text : acc;
+        el.textContent = finalText || "(no output)";
+        return res;
+      }
+
+      async function run() {
+        const text = $("q").value.trim(); if (!loaded || !text || generating) return;
+        generating = true; $("run").disabled = true; $("stop").hidden = false; $("readout").hidden = true;
+        $("status").classList.remove("err");
+        try {
+          $("status").textContent = "Running greedy on the " + backend + "…";
+          const cold = await generateInto($("cold"), text, { maxTokens: 120, doSample: false });
+          $("status").textContent = "Running hot on the " + backend + "…";
+          const warm = await generateInto($("warm"), text, { maxTokens: 120, doSample: true, temperature: +$("hot").value, topP: 0.98, topK: 100 });
+          backend = String(warm.device || backend).toUpperCase();
+          $("readout").hidden = false; $("rBackend").textContent = backend;
+          $("rColdTps").textContent = cold.ms ? (cold.tokens / (cold.ms / 1000)).toFixed(1) : "–";
+          $("rWarmTps").textContent = warm.ms ? (warm.tokens / (warm.ms / 1000)).toFixed(1) : "–";
+          $("status").textContent = "Done — compare the two."; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { generating = false; $("run").disabled = false; $("stop").hidden = true; }
+      }
+      $("run").addEventListener("click", run);
+      $("stop").addEventListener("click", () => { engine.stop(); $("status").textContent = "Stopping…"; });
+
+      if ("serviceWorker" in navigator) navigator.serviceWorker.register("/web-ai-showcase/sw.js").catch(() => {});
+    </script>
+  </body>
+</html>

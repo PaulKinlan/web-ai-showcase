@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SmolLM2-135M Practical — a one-shot rewriter · Web AI Showcase</title>
+    <meta name="description" content="Paste text, pick a tone, and get a cleaned-up rewrite — a practical on-device text task where a tiny model shines. Runs in the browser via Transformers.js." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🐣</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">SmolLM2-135M</a></p>
+
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Practical: a one-shot rewriter</h1>
+      <p class="lede">
+        Rewriting a short message to a chosen tone is exactly the kind of small, bounded task a 135M model
+        handles well. Paste some text, pick a tone, and get a cleaned-up version — generated entirely on
+        your device, no server, no key.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <label for="src"><strong>Your text</strong></label>
+      <textarea id="src" rows="4" style="inline-size:100%;resize:vertical" disabled>hey just wanted to check if you got my last email about the invoice, need it sorted asap thanks</textarea>
+
+      <div class="controls" style="margin:.6rem 0">
+        <label>Tone
+          <select id="tone" disabled>
+            <option value="polite and professional">Polite &amp; professional</option>
+            <option value="warm and friendly">Warm &amp; friendly</option>
+            <option value="concise and direct">Concise &amp; direct</option>
+            <option value="formal">Formal</option>
+          </select>
+        </label>
+        <button id="run" type="button" disabled>Rewrite</button>
+        <button id="stop" type="button" class="secondary" hidden>Stop</button>
+      </div>
+
+      <h4 style="font-family:var(--font-body);font-size:.85rem;margin:.6rem 0 .2rem">Rewritten</h4>
+      <div class="answer" id="out" aria-live="polite"><span class="muted" style="font-size:.8rem">The rewrite streams here.</span></div>
+
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>tokens <b id="rTok">–</b></span>
+        <span>tok/s <b id="rTps">–</b></span>
+      </div>
+    </section>
+
+    <section aria-labelledby="how-h">
+      <h2 id="how-h">Why this is a good fit for a tiny model</h2>
+      <p class="muted">
+        Rewriting is a <strong>transformation</strong>, not a knowledge task: the answer is already in the
+        input, and the model just re-expresses it. That plays to a small model's strengths and away from
+        its weakness (it doesn't need to <em>know</em> much). Because it runs on-device, the text you're
+        rewriting — which may be private — never leaves the tab.
+      </p>
+    </section>
+
+    <p class="crumbs"><a href="../basics/">← Basics</a> · Next: <a href="../wild/">Wild →</a></p>
+
+    <style>
+      .visually-hidden { position:absolute; width:1px; height:1px; margin:-1px; padding:0; overflow:hidden; clip:rect(0 0 0 0); border:0; }
+      .answer { margin-top:.2rem; padding:.7rem .9rem; border:1px solid var(--border); border-radius:var(--radius);
+        background:var(--bg-raised); min-block-size:3rem; line-height:1.6; white-space:pre-wrap; overflow-wrap:anywhere; }
+      .controls { display:flex; flex-wrap:wrap; gap:1rem; align-items:center; }
+      .controls select { min-block-size:44px; }
+      .caret { display:inline-block; inline-size:.5rem; block-size:1rem; background:var(--accent); vertical-align:text-bottom; animation:fblink 1s steps(2) infinite; }
+      @keyframes fblink { 50% { opacity:0; } }
+      @media (prefers-reduced-motion: reduce) { .caret { animation:none; } }
+    </style>
+
+    <script type="module">
+      import { SmolLMEngine, escapeHTML, SMOLLM_CSS } from "../engine.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = SMOLLM_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new SmolLMEngine();
+      let loaded = false, backend = "WASM", generating = false;
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "HuggingFaceTB/SmolLM2-135M-Instruct", runtime: "transformers.js", dtype: "q8", sizeMB: 140, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: (device) => { loaded = true; backend = String(device || "wasm").toUpperCase(); $("src").disabled = false; $("tone").disabled = false; $("run").disabled = false; },
+      });
+
+      async function run() {
+        const src = $("src").value.trim(); if (!loaded || !src || generating) return;
+        const tone = $("tone").value;
+        generating = true; $("run").disabled = true; $("stop").hidden = false; $("readout").hidden = true;
+        $("status").classList.remove("err"); $("status").textContent = "Rewriting on the " + backend + "…";
+        $("out").innerHTML = '<span class="caret"></span>';
+        let acc = "";
+        try {
+          const messages = [
+            { role: "system", content: "You are a writing assistant. Rewrite the user's text in the requested tone. Output ONLY the rewritten text, no preamble or quotes." },
+            { role: "user", content: `Rewrite this in a ${tone} tone:\n\n${src}` },
+          ];
+          const res = await engine.chat(messages, {
+            maxTokens: 160, doSample: true, temperature: 0.6, topP: 0.9,
+            onToken: (tok) => { acc += tok; $("out").innerHTML = escapeHTML(acc) + '<span class="caret"></span>'; },
+          });
+          const finalText = (res.text && res.text.trim()) ? res.text : acc;
+          $("out").textContent = finalText || "(no output)";
+          backend = String(res.device || backend).toUpperCase();
+          $("readout").hidden = false; $("rBackend").textContent = backend; $("rTok").textContent = res.tokens;
+          $("rTps").textContent = res.ms ? (res.tokens / (res.ms / 1000)).toFixed(1) : "–";
+          $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (err) { $("out").textContent = acc || "(failed)"; $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { generating = false; $("run").disabled = false; $("stop").hidden = true; }
+      }
+      $("run").addEventListener("click", run);
+      $("stop").addEventListener("click", () => { engine.stop(); $("status").textContent = "Stopping…"; });
+
+      if ("serviceWorker" in navigator) navigator.serviceWorker.register("/web-ai-showcase/sw.js").catch(() => {});
+    </script>
+  </body>
+</html>
