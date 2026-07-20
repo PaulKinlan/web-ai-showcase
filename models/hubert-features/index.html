@@ -1,0 +1,364 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>HuBERT — self-supervised speech features by cluster prediction · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run Meta's HuBERT locally in your browser: a self-supervised speech model that turns audio into per-frame 768-dim embeddings — no transcript. Its masked-CLUSTER-prediction objective (predict offline k-means units for masked frames) makes it distinct from WavLM. Compare, cluster and search sound by these features. WebAssembly, nothing uploaded."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🧩</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">audio-feature-extraction · audio · WASM (WebGPU when available) · ~95 MB</p>
+      <h1>HuBERT — speech as clusters, not words</h1>
+      <p class="lede">
+        Like every self-supervised speech model here, HuBERT hands you <strong>numbers</strong>, not text:
+        for every ~20 ms frame of audio it emits a 768-dimensional <strong>embedding</strong> describing
+        what the sound <em>is</em>. What sets HuBERT apart is <em>how</em> it learned. It was trained by
+        <strong>masked cluster prediction</strong> — an offline k-means groups audio frames into discrete
+        acoustic units, and the model must predict the <strong>unit id</strong> of masked frames, BERT-style.
+        That objective pushes its features to organise speech into <strong>phone-like clusters</strong>.
+        Compare two clips, search a recording for a sound, or cluster audio by ear — entirely on this device.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="seg-table" style="inline-size:100%;border-collapse:collapse">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/Xenova/hubert-base-ls960" target="_blank" rel="noopener">Xenova/hubert-base-ls960</a> <span class="muted">(facebook/hubert-base-ls960)</span></td></tr>
+          <tr><th>Task / pipeline</th><td><code>audio-feature-extraction</code> — loaded as <code>AutoModel</code> so we can read the raw <code>last_hidden_state</code> frames</td></tr>
+          <tr><th>Architecture</th><td><strong>Self-supervised speech transformer</strong>: a CNN feature encoder over raw 16 kHz audio (7 conv layers, 320× downsampling → one frame per ~20 ms) → a 12-layer transformer. ~94.4M params. <strong>No text head</strong> — the output is per-frame embeddings.</td></tr>
+          <tr><th>Pretraining objective</th><td><strong>Masked cluster prediction (HuBERT).</strong> An offline k-means over acoustic features (MFCCs first, then the model's own hidden states in later iterations) assigns each frame a discrete <em>cluster id</em>; the model predicts those ids for MASKED frames. This "predict the self-discovered unit" task is the whole difference vs WavLM.</td></tr>
+          <tr><th>Output</th><td><code>last_hidden_state</code> — shape <code>[1, T, 768]</code>: one 768-dim vector per ~20 ms frame</td></tr>
+          <tr><th>Quantization</th><td>q8 (8-bit) ONNX — <code>onnx/model_quantized.onnx</code></td></tr>
+          <tr><th>Backend</th><td>WebAssembly (WebGPU when a real adapter is present), honest fallback</td></tr>
+          <tr><th>Download</th><td>~95 MB (single encoder), cached after first load</td></tr>
+          <tr><th>License</th><td>Apache-2.0 — Meta AI (Fairseq / HuBERT)</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly / WebGPU, Web Workers, Web Audio (decode + resample to 16 kHz)</td></tr>
+        </tbody>
+      </table>
+      <p class="muted" style="font-size:.82rem;margin-top:.6rem">
+        Same task and 768-dim output as the <a href="/web-ai-showcase/models/wavlm-features/">WavLM demo</a>,
+        but a <strong>different pretraining objective</strong>: HuBERT predicts offline k-means <em>cluster
+        ids</em> for masked frames; WavLM predicts masked speech with an added <em>denoising / overlapped-speech</em>
+        objective. Compare their frame-embedding heatmaps and similarity scores on the two pages.
+      </p>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it — how alike are two sounds?</h3>
+      <p class="muted">
+        Pick a clip for <strong>A</strong> and one for <strong>B</strong> (or upload your own), then
+        Compare. Each clip is embedded on-device into a single 768-dim vector; their
+        <strong>cosine similarity</strong> says how close they are in HuBERT's feature space. Same speaker
+        or same words score high; different voices/content score lower.
+      </p>
+
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+
+      <div class="pairgrid">
+        <div class="picker">
+          <h4 id="pickA-h">Clip A</h4>
+          <div class="sample-row" id="samplesA" role="group" aria-labelledby="pickA-h"></div>
+          <div class="audio-row">
+            <button id="uploadA" type="button" class="secondary" disabled>Upload A</button>
+            <input type="file" id="fileA" accept="audio/*" hidden />
+          </div>
+          <audio id="playerA" controls preload="metadata" aria-label="Clip A audio"></audio>
+          <div class="wave-wrap"><canvas id="waveA" class="wave" aria-label="Clip A waveform"></canvas></div>
+        </div>
+        <div class="picker">
+          <h4 id="pickB-h">Clip B</h4>
+          <div class="sample-row" id="samplesB" role="group" aria-labelledby="pickB-h"></div>
+          <div class="audio-row">
+            <button id="uploadB" type="button" class="secondary" disabled>Upload B</button>
+            <input type="file" id="fileB" accept="audio/*" hidden />
+          </div>
+          <audio id="playerB" controls preload="metadata" aria-label="Clip B audio"></audio>
+          <div class="wave-wrap"><canvas id="waveB" class="wave" aria-label="Clip B waveform"></canvas></div>
+        </div>
+      </div>
+
+      <button id="run" type="button" disabled>Compare A &amp; B</button>
+
+      <div id="simResult" hidden>
+        <div class="simline">
+          <span class="lab">cosine similarity</span>
+          <span class="track"><span class="fill" id="simFill" style="inline-size:0%"></span></span>
+          <span class="num" id="simNum">–</span>
+        </div>
+        <p id="verdict" class="muted" aria-live="polite"></p>
+        <div class="readout" id="readout" hidden>
+          <span>backend <b id="rBackend">–</b></span>
+          <span>A frames <b id="rFramesA">–</b></span>
+          <span>B frames <b id="rFramesB">–</b></span>
+          <span>embed time <b id="rMs">–</b></span>
+          <span>dim <b id="rDim">768</b></span>
+        </div>
+        <p class="muted" style="font-size:.8rem;margin:.6rem 0 .2rem">Clip A pooled embedding (768-dim, down-sampled to 64 bars):</p>
+        <div class="vecbar" id="vecA" aria-hidden="true"></div>
+        <p class="muted" style="font-size:.8rem;margin:.6rem 0 .2rem">Clip B pooled embedding:</p>
+        <div class="vecbar" id="vecB" aria-hidden="true"></div>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside — the frame embeddings</h3>
+      <p class="muted">
+        This is what HuBERT actually produces. Below is clip A's <strong>last_hidden_state</strong> painted
+        as a heatmap: <strong>time runs left→right</strong> (one column per ~20 ms frame), <strong>the 768
+        embedding dimensions run top→bottom</strong>, and colour is each value (dark = low, bright = high).
+        There's no vocabulary here — just structure. Because HuBERT was trained to predict discrete cluster
+        units, the same phone tends to paint the same vertical texture wherever it recurs; silence looks
+        flat. The single vector we compare is this whole map averaged over time.
+      </p>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Compare two clips above to paint clip A's frame-embedding heatmap.</div>
+      <div id="insideWrap" hidden>
+        <canvas id="heat" class="heat" role="img" aria-label="Per-frame embedding heatmap of clip A"></canvas>
+        <div class="heat-axes"><span>time →</span><span id="heatMeta">–</span></div>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        A transcript throws almost everything away — who spoke, how, in what language, over what noise.
+        HuBERT's <strong>self-supervised embeddings keep it</strong>. Because they were learned by predicting
+        self-discovered acoustic clusters for masked frames, a single 768-dim vector captures speaker,
+        phonetic content and acoustic conditions at once — and you can do maths on it without any labelled
+        training data of your own. HuBERT is the backbone the entire SUPERB benchmark (ASR, speaker id,
+        emotion, intent) fine-tunes from.
+      </p>
+      <ul>
+        <li><strong>Speaker / voice matching</strong> — is this the same person? Compare pooled embeddings, no enrolment model needed.</li>
+        <li><strong>Search audio by example</strong> — find every place a sound or phrase occurs in a long recording, by sliding a window and comparing.</li>
+        <li><strong>De-dup and cluster</strong> a media library — group takes, callers, or sound effects by how they actually sound.</li>
+        <li><strong>A backbone for fine-tuning</strong> — the same frames feed ASR, diarization, emotion and keyword-spotting heads (this is the model those tasks start from).</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Audio similarity: embed a bank of clips and read the full pairwise cosine matrix.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Find a sound: brush a query on a recording and search for where it recurs.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Cluster by ear: project every clip's embedding to 2D and watch voices group.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">HuBERT retrieves the nearest clip by sound → wav2vec2 reads out what it says.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>
+        There's no pipeline for "give me the frames" — so we load the model directly and read
+        <code>last_hidden_state</code>, then mean-pool + L2-normalise into one comparable vector:
+      </p>
+      <pre><code>import { AutoProcessor, AutoModel } from "@huggingface/transformers";
+
+const processor = await AutoProcessor.from_pretrained("Xenova/hubert-base-ls960");
+const model = await AutoModel.from_pretrained(
+  "Xenova/hubert-base-ls960",
+  { device: "wasm", dtype: "q8" },
+);
+
+// audio = 16 kHz mono Float32Array
+const inputs = await processor(audio);
+const { last_hidden_state } = await model(inputs); // [1, frames, 768]
+
+// one comparable vector per clip: average over time, then normalise
+const emb = meanPool(last_hidden_state);           // 768-dim
+const score = cosine(embA, embB);                  // -1 … 1</code></pre>
+      <p class="muted">
+        Inference and the heatmap composite both run in a Web Worker, and the RGBA heatmap is
+        <em>transferred</em> back (not copied) so the UI never janks — nothing is faked or pre-computed.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/Xenova/hubert-base-ls960" target="_blank" rel="noopener">Model card — Xenova/hubert-base-ls960</a></li>
+        <li><a href="https://huggingface.co/facebook/hubert-base-ls960" target="_blank" rel="noopener">Original — facebook/hubert-base-ls960</a></li>
+        <li><a href="https://arxiv.org/abs/2106.07447" target="_blank" rel="noopener">Paper — "HuBERT: Self-Supervised Speech Representation Learning by Masked Prediction of Hidden Units" (2021)</a></li>
+        <li><a href="https://github.com/facebookresearch/fairseq/tree/main/examples/hubert" target="_blank" rel="noopener">Fairseq — HuBERT</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+      <p class="muted" style="font-size:.8rem">Sample clips: JFK inaugural (public domain) + TED excerpt, and Spanish/German/Russian Spoken-Wikipedia excerpts (CC BY-SA) — see the model page credits.</p>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import {
+        HubertEngine, urlToMono16k, blobToMono16k, cosine,
+        drawWaveform, drawHeatmap, fmtTime, HUBERT_CSS,
+      } from "./hubert.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = HUBERT_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new HubertEngine();
+
+      const SAMPLES = [
+        { src: "jfk.wav", label: "JFK (English)" },
+        { src: "ted.wav", label: "TED (English)" },
+        { src: "sample-spa.wav", label: "Spanish" },
+        { src: "sample-deu.wav", label: "German" },
+        { src: "sample-rus.wav", label: "Russian" },
+      ];
+      const clips = { A: null, B: null };
+
+      function buildSamples(side) {
+        const row = $("samples" + side);
+        SAMPLES.forEach((s, i) => {
+          const b = document.createElement("button");
+          b.type = "button";
+          b.className = "chip";
+          b.textContent = s.label;
+          b.setAttribute("aria-pressed", "false");
+          b.addEventListener("click", () => useAudio(side, s.src, s.label));
+          row.append(b);
+          // default selections: A→JFK, B→Spanish
+          if ((side === "A" && i === 0) || (side === "B" && i === 2)) {
+            requestAnimationFrame(() => b.click());
+          }
+        });
+      }
+
+      async function useAudio(side, url, label, { revoke = false } = {}) {
+        const player = $("player" + side);
+        player.src = url;
+        for (const c of $("samples" + side).children) {
+          c.setAttribute("aria-pressed", String(c.textContent === label));
+        }
+        try {
+          const d = await urlToMono16k(url);
+          clips[side] = { pcm: d.pcm, dur: d.duration, label };
+          drawWaveform($("wave" + side), d.pcm);
+          $("run").disabled = !(engine.ready && clips.A && clips.B);
+        } catch (err) {
+          showErr("Couldn't decode clip " + side + ": " + err.message);
+          clips[side] = null;
+        }
+        if (revoke) player.addEventListener("emptied", () => URL.revokeObjectURL(url), { once: true });
+      }
+
+      function showErr(msg) {
+        $("status").hidden = false;
+        $("status").textContent = msg;
+        $("status").classList.add("err");
+      }
+
+      buildSamples("A");
+      buildSamples("B");
+
+      for (const side of ["A", "B"]) {
+        $("upload" + side).addEventListener("click", () => $("file" + side).click());
+        $("file" + side).addEventListener("change", async () => {
+          const f = $("file" + side).files[0];
+          if (f) await useAudio(side, URL.createObjectURL(f), f.name, { revoke: true });
+        });
+      }
+
+      function paintVec(el, vec) {
+        const N = 64, step = Math.floor(vec.length / N);
+        let max = 1e-6;
+        const vals = [];
+        for (let i = 0; i < N; i++) {
+          let s = 0;
+          for (let k = 0; k < step; k++) s += Math.abs(vec[i * step + k] || 0);
+          vals.push(s / step);
+          if (vals[i] > max) max = vals[i];
+        }
+        el.innerHTML = "";
+        for (const v of vals) {
+          const i = document.createElement("i");
+          const a = Math.min(1, v / max);
+          i.style.background = `color-mix(in srgb, var(--accent) ${(a * 100).toFixed(0)}%, var(--bg-secondary))`;
+          el.append(i);
+        }
+      }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: {
+          modelId: "Xenova/hubert-base-ls960",
+          runtime: "transformers.js",
+          dtype: "q8",
+          sizeMB: 95,
+          requiresWebGPU: false,
+        },
+        load: async (onProgress) => ({ device: await engine.load((p) => onProgress(p)) }),
+        onReady: () => {
+          $("uploadA").disabled = false;
+          $("uploadB").disabled = false;
+          $("run").disabled = !(clips.A && clips.B);
+        },
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!clips.A || !clips.B) { showErr("Pick a clip for both A and B first."); return; }
+        $("run").disabled = true;
+        $("status").hidden = false;
+        $("status").classList.remove("err", "ok");
+        $("status").textContent = "Embedding both clips…";
+        try {
+          const [a, b] = await Promise.all([
+            engine.embed(clips.A.pcm, clips.A.dur),
+            engine.embed(clips.B.pcm, clips.B.dur),
+          ]);
+          const sim = cosine(a.pooled, b.pooled);
+          $("simResult").hidden = false;
+          $("simFill").style.inlineSize = `${Math.max(0, Math.min(100, sim * 100)).toFixed(0)}%`;
+          $("simNum").textContent = sim.toFixed(3);
+          $("verdict").textContent = verdictFor(sim, clips.A.label, clips.B.label);
+          $("readout").hidden = false;
+          $("rBackend").textContent = a.device.toUpperCase();
+          $("rFramesA").textContent = a.frames;
+          $("rFramesB").textContent = b.frames;
+          $("rMs").textContent = ((a.ms + b.ms) / 1000).toFixed(2) + " s";
+          $("rDim").textContent = a.dim;
+          paintVec($("vecA"), a.pooled);
+          paintVec($("vecB"), b.pooled);
+          $("insideEmpty").hidden = true;
+          $("insideWrap").hidden = false;
+          drawHeatmap($("heat"), a.heat);
+          $("heatMeta").textContent = `${a.frames} frames × ${a.dim} dims · clip A`;
+          window.__lastHeat = a.heat;
+          $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (err) {
+          showErr("Compare failed: " + err.message);
+        } finally {
+          $("run").disabled = false;
+        }
+      });
+
+      function verdictFor(sim, la, lb) {
+        const rel = sim > 0.9 ? "nearly identical" : sim > 0.75 ? "very similar" : sim > 0.55 ? "somewhat similar" : "quite different";
+        return `${la} and ${lb} are ${rel} in HuBERT's feature space (cosine ${sim.toFixed(2)}). ` +
+          "Higher means closer voice + content + acoustics — not the same words, necessarily.";
+      }
+
+      addEventListener("resize", () => {
+        if (clips.A) drawWaveform($("waveA"), clips.A.pcm);
+        if (clips.B) drawWaveform($("waveB"), clips.B.pcm);
+        if (window.__lastHeat) drawHeatmap($("heat"), window.__lastHeat);
+      });
+    </script>
+  </body>
+</html>
