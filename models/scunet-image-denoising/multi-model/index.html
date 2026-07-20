@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Multi-model — denoise → upscale · SCUNet</title>
+    <meta name="description" content="Chain SCUNet into Real-ESRGAN: clean the noise from a photo first, then upscale it 4× so the super-resolver sharpens real signal instead of amplifying grain — two models, all local." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>✨</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">SCUNet denoising</a></p>
+    <header>
+      <p class="eyebrow">Multi-model · denoising → super-resolution · WASM</p>
+      <h1>Denoise, then upscale</h1>
+      <p class="lede">Upscaling a noisy photo just makes bigger noise. Here SCUNet cleans the image first, then
+        <a href="../../real-esrgan-super-resolution/">Real-ESRGAN</a> upscales the clean result 4× — so the
+        super-resolver sharpens real signal, not grain. Two restoration models, chained, entirely local.</p>
+    </header>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Two models load below (SCUNet ~75 MB, Real-ESRGAN ~67 MB — a larger one-time download).
+        Pick a small sample, add noise, then run the pipeline: denoise, then 4× upscale.</p>
+      <div style="display:grid;gap:.5rem">
+        <div><small class="muted">1 · SCUNet (denoising)</small><div id="loader-denoise"></div></div>
+        <div><small class="muted">2 · Real-ESRGAN (4× super-resolution)</small><div id="loader-sr"></div></div>
+      </div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+      <div id="gallery" style="margin-top:.7rem"></div>
+      <div class="param-grid">
+        <div class="param">
+          <label for="sigma">Noise σ <b id="sigmaVal">25</b></label>
+          <input type="range" id="sigma" min="10" max="45" step="1" value="25" />
+        </div>
+      </div>
+      <div class="controls-row"><button id="run" type="button" disabled>Run pipeline</button></div>
+      <div class="two-col">
+        <div>
+          <h4 style="font-family:var(--font-body);font-size:.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:.6rem 0 .3rem">Noisy → upscaled directly</h4>
+          <div class="canvas-frame"><canvas class="fit-canvas" id="canvasNaive" width="360" height="360" role="img" aria-label="Noisy image upscaled without denoising first"></canvas></div>
+        </div>
+        <div>
+          <h4 style="font-family:var(--font-body);font-size:.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:.6rem 0 .3rem">Denoised → then upscaled</h4>
+          <div class="canvas-frame"><canvas class="fit-canvas" id="canvasClean" width="360" height="360" role="img" aria-label="Image denoised then upscaled"></canvas></div>
+        </div>
+      </div>
+      <div class="readout" id="resultWrap" hidden><span>denoise <b id="rDenoise">–</b></span><span>upscale ×2 <b id="rSR">–</b></span><span>noise removed (HF) <b id="rHF">–</b></span></div>
+      <p class="privacy-note">Both models run on-device; the image and every restored pixel never leave the tab.</p>
+    </section>
+
+    <section aria-labelledby="note-h">
+      <h2 id="note-h">Why chain them</h2>
+      <p>Order matters in restoration. Super-resolution amplifies whatever it's given — including noise — so
+        denoising first lets the upscaler spend its capacity on real detail. This is the classic "clean then
+        enlarge" pipeline, running entirely in your browser with no server and no upload.</p>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>.
+      <a href="../">← Back to SCUNet denoising</a>
+    </footer>
+
+    <script type="module">
+      import { DenoiseEngine, DENOISE_CSS, addNoise, drawBitmapFit, urlToBitmap } from "../denoise.js";
+      import { EsrganEngine } from "/web-ai-showcase/models/real-esrgan-super-resolution/esrgan.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      import { createExampleGallery } from "/web-ai-showcase/lib/example-gallery.js";
+      const style = document.createElement("style"); style.textContent = DENOISE_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const denoiser = new DenoiseEngine();
+      const sr = new EsrganEngine();
+      const ready = { denoise: false, sr: false };
+      const state = { bmp: null, noisy: null };
+      function maybeEnable() { $("run").disabled = !(ready.denoise && ready.sr && state.noisy); }
+      async function preview() {
+        if (!state.bmp) return;
+        state.noisy = await addNoise(await createImageBitmap(state.bmp), { sigma: +$("sigma").value });
+        drawBitmapFit($("canvasNaive"), state.noisy, 360); drawBitmapFit($("canvasClean"), state.noisy, 360);
+        $("resultWrap").hidden = true; maybeEnable();
+      }
+      async function setImage(b) { state.bmp = b; await preview(); }
+      createExampleGallery({ mount: $("gallery"), manifestUrl: "/web-ai-showcase/media/manifest.json", filter: (a) => /fruit|dog|bicycle|mountain|street/.test(a.id), onSelect: async (a) => { await setImage(await urlToBitmap(a.url)); } }).then((g) => { if (g?.assets?.length) g.selectId(g.assets[0].id); });
+      $("sigma").addEventListener("input", () => { $("sigmaVal").textContent = $("sigma").value; preview(); });
+      createModelLoader({ mount: $("loader-denoise"), model: { modelId: "Heliosoph/scunet-onnx", runtime: "onnxruntime-web", dtype: "fp32", sizeMB: 75, requiresWebGPU: false }, load: (p) => denoiser.load(p), onReady: () => { ready.denoise = true; maybeEnable(); } });
+      createModelLoader({ mount: $("loader-sr"), model: { modelId: "SceneWorks/real-esrgan-onnx", runtime: "onnxruntime-web", dtype: "fp32", sizeMB: 67, requiresWebGPU: false }, load: (p) => sr.load(p), onReady: () => { ready.sr = true; maybeEnable(); } });
+      $("run").addEventListener("click", async () => {
+        if (!state.noisy) return;
+        $("run").disabled = true; $("status").classList.remove("err", "ok"); $("status").textContent = "Upscaling the noisy image, then denoising and upscaling the clean one…";
+        try {
+          const small = await createImageBitmap(state.noisy, { resizeWidth: 160, resizeHeight: Math.round(160 * state.noisy.height / state.noisy.width) });
+          const naive = await sr.upscale(await createImageBitmap(small));
+          drawBitmapFit($("canvasNaive"), naive.esrBmp, 360);
+          const den = await denoiser.denoise(await createImageBitmap(small), { maxSide: 256 });
+          const clean = await sr.upscale(await createImageBitmap(den.denoisedBmp));
+          drawBitmapFit($("canvasClean"), clean.esrBmp, 360);
+          $("resultWrap").hidden = false; $("rDenoise").textContent = den.ms + " ms"; $("rSR").textContent = (naive.ms + clean.ms) + " ms";
+          $("rHF").textContent = den.inHF.toFixed(4) + " → " + den.outHF.toFixed(4);
+          $("status").textContent = "Done — the denoise-first path (right) sharpens real detail; the naive path (left) enlarged the grain."; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Pipeline failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>

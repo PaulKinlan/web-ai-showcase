@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Basics — add noise, then remove it · SCUNet</title>
+    <meta name="description" content="The fundamental capability: add known Gaussian noise to a photo, then watch SCUNet remove it — on-device, with a before/after wipe." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>✨</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">SCUNet denoising</a></p>
+    <header>
+      <p class="eyebrow">Basics · image-to-image (denoising) · WASM</p>
+      <h1>Add noise, then remove it</h1>
+      <p class="lede">The plain capability: take a clean photo, sprinkle known Gaussian noise on it, and let
+        SCUNet clean it back up. Drag the divider to wipe between noisy and cleaned.</p>
+    </header>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+      <div class="reveal" id="reveal">
+        <canvas class="reveal-before" id="before" width="640" height="480" role="img" aria-label="Noisy input"></canvas>
+        <canvas class="reveal-after" id="after" width="640" height="480" role="img" aria-label="Denoised output"></canvas>
+        <span class="reveal-handle" id="handle"></span>
+        <input class="reveal-range" id="revealRange" type="range" min="0" max="100" value="55" aria-label="Reveal denoised result" />
+      </div>
+      <div class="reveal-labels"><span>◀ noisy</span><span>cleaned ▶</span></div>
+      <div id="gallery" style="margin-top:.7rem"></div>
+      <div class="param-grid">
+        <div class="param">
+          <label for="sigma">Noise σ <b id="sigmaVal">25</b></label>
+          <input type="range" id="sigma" min="10" max="50" step="1" value="25" />
+        </div>
+      </div>
+      <div class="controls-row"><button id="run" type="button" disabled>Denoise</button></div>
+      <div class="readout" id="resultWrap" hidden><span>backend <b id="rBackend">–</b></span><span>latency <b id="rMs">–</b></span><span>HF energy <b id="rHF">–</b></span></div>
+    </section>
+
+    <section aria-labelledby="note-h">
+      <h2 id="note-h">What you're seeing</h2>
+      <p>SCUNet doesn't just blur the noise away — its swin-conv blocks learned to separate random noise from
+        real structure, so the grain vanishes while edges and texture stay put. Watch the high-frequency
+        energy fall back toward a clean image, and notice detail survive that a smoothing filter would erase.</p>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>.
+      <a href="../">← Back to SCUNet denoising</a>
+    </footer>
+
+    <script type="module">
+      import { DenoiseEngine, DENOISE_CSS, addNoise, drawBitmapFit, RevealCompare, urlToBitmap } from "../denoise.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      import { createExampleGallery } from "/web-ai-showcase/lib/example-gallery.js";
+      const style = document.createElement("style"); style.textContent = DENOISE_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new DenoiseEngine();
+      const reveal = new RevealCompare($("reveal"));
+      const state = { bmp: null, noisy: null };
+      async function preview() { if (!state.bmp) return; state.noisy = await addNoise(await createImageBitmap(state.bmp), { sigma: +$("sigma").value }); drawBitmapFit($("before"), state.noisy); drawBitmapFit($("after"), state.noisy); $("resultWrap").hidden = true; }
+      async function setImage(b) { state.bmp = b; await preview(); }
+      createExampleGallery({ mount: $("gallery"), manifestUrl: "/web-ai-showcase/media/manifest.json", filter: (a) => !/portrait|silhouette/.test(a.id), onSelect: async (a) => { await setImage(await urlToBitmap(a.url)); } }).then((g) => { if (g?.assets?.length) g.selectId(g.assets[0].id); });
+      $("sigma").addEventListener("input", () => { $("sigmaVal").textContent = $("sigma").value; preview(); });
+      const autoRun = new URLSearchParams(location.search).has("auto");
+      createModelLoader({ mount: $("model-loader"), model: { modelId: "Heliosoph/scunet-onnx", runtime: "onnxruntime-web", dtype: "fp32", sizeMB: 75, requiresWebGPU: false }, load: (p) => engine.load(p), onReady: () => { $("run").disabled = false; if (autoRun) $("run").click(); } });
+      $("run").addEventListener("click", async () => {
+        if (!state.noisy) return;
+        $("run").disabled = true; $("status").classList.remove("err", "ok"); $("status").textContent = "Denoising…";
+        try {
+          const res = await engine.denoise(await createImageBitmap(state.noisy));
+          reveal.set(await createImageBitmap(state.noisy), res.denoisedBmp);
+          $("resultWrap").hidden = false; $("rBackend").textContent = res.device.toUpperCase(); $("rMs").textContent = res.ms + " ms";
+          $("rHF").textContent = res.inHF.toFixed(4) + " → " + res.outHF.toFixed(4);
+          $("status").textContent = "Done — drag to compare."; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>
