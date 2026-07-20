@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SmolDocling Multi-model — read a page, then summarise it · Web AI Showcase</title>
+    <meta name="description" content="A two-model pipeline in the browser: SmolDocling converts a page image into a structured document, then an on-device LLM (Qwen2.5-0.5B) summarises it into a plain-language brief. Both run locally on WebGPU." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>📄</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">SmolDocling</a></p>
+
+    <header>
+      <p class="eyebrow">use case · multi-model</p>
+      <h1>Multi-model: read the page, then summarise it</h1>
+      <p class="lede">
+        One model rarely does the whole job. Here <strong>SmolDocling</strong> converts a page image into
+        a structured document (as Markdown), then a small on-device LLM —
+        <a href="../../qwen-tiny-llm/">Qwen2.5-0.5B</a> — reads that structure and writes a plain-language
+        <strong>brief</strong>. A picture of a document becomes a summary you can act on, two models
+        chained in your browser, nothing uploaded.
+      </p>
+    </header>
+
+    <section class="panel">
+      <h3>Step 1 — SmolDocling (page image → structured document)</h3>
+      <div id="doc-loader"></div>
+      <h3 style="margin-top:1rem">Step 2 — Qwen2.5-0.5B (document → brief)</h3>
+      <div id="llm-loader"></div>
+      <div id="gpuFallback" class="fallback" hidden></div>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+
+      <div class="doc-grid" style="margin-top:.8rem">
+        <div class="doc-in-col">
+          <img id="preview" class="doc-preview" alt="The document image the pipeline will read" />
+          <div class="sample-strip" id="samples">
+            <img class="sample-thumb active" src="../sample-report.png" data-src="../sample-report.png" alt="A business report page with headings and a bullet list" tabindex="0" role="button" />
+            <img class="sample-thumb" src="../sample-table.png" data-src="../sample-table.png" alt="A document containing a four-column data table" tabindex="0" role="button" />
+            <img class="sample-thumb" src="../sample-formula.png" data-src="../sample-formula.png" alt="A page with headings and mathematical formulas" tabindex="0" role="button" />
+          </div>
+          <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop a document image">
+            <span>Drop / choose a page image</span>
+            <input type="file" id="file" accept="image/*" hidden />
+          </div>
+          <button id="run" type="button" disabled style="margin-top:.6rem">Read &amp; summarise</button>
+        </div>
+        <div class="doc-out-col">
+          <h4 style="font-family:var(--font-body);font-size:.85rem;margin:.2rem 0 .2rem">Structured document (SmolDocling → Markdown)</h4>
+          <textarea id="md" class="doctags-raw" style="inline-size:100%;min-block-size:8rem;resize:vertical" aria-label="Structured document as Markdown" readonly>The extracted document will appear here.</textarea>
+          <h4 style="font-family:var(--font-body);font-size:.85rem;margin:.6rem 0 .2rem">Brief (Qwen2.5-0.5B)</h4>
+          <div class="doctags-raw" id="brief" aria-live="polite" style="white-space:pre-wrap"><span class="muted" style="font-size:.85rem">The plain-language brief will stream here.</span></div>
+          <div class="readout" id="readout" hidden>
+            <span>doc backend <b id="rDoc">–</b></span><span>doc time <b id="rDocMs">–</b></span>
+            <span>LLM backend <b id="rLlm">–</b></span><span>LLM time <b id="rLlmMs">–</b></span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section aria-labelledby="how-h">
+      <h2 id="how-h">What's happening</h2>
+      <p>
+        Both models run in their own Web Workers (SmolDocling on a v4-pinned worker, the LLM on the shared
+        v3 build), so neither the document VLM nor the autoregressive summariser blocks the page. The only
+        thing crossing between them is a short Markdown string — the structured document. This is the shape
+        of real document understanding on the edge: a layout model plus a language model, composed
+        client-side, working offline once both are cached.
+      </p>
+    </section>
+
+    <p class="crumbs"><a href="../wild/">← Wild</a> · <a href="../">Back to SmolDocling</a></p>
+
+    <script type="module">
+      import { SmolDoclingEngine, fileToDataURL, urlToDataURL, parseDocTags, docTagsToMarkdown, probeWebGPUMain, webgpuFallbackHTML, DOCLING_CSS } from "../smoldocling.js";
+      import { Summarizer } from "./summarize.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = DOCLING_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const doc = new SmolDoclingEngine();
+      const llm = new Summarizer();
+      let currentImage = null, docReady = false, llmReady = false;
+
+      function sync() { $("run").disabled = !(docReady && llmReady && currentImage); }
+      async function useImage(src, thumb) {
+        currentImage = src.startsWith("data:") ? src : await urlToDataURL(src);
+        $("preview").src = currentImage;
+        for (const t of $("samples").children) t.classList.toggle("active", t === thumb);
+        sync();
+      }
+      for (const thumb of $("samples").children) {
+        const pick = () => useImage(thumb.dataset.src, thumb);
+        thumb.addEventListener("click", pick);
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(); } });
+      }
+      const file = $("file"), drop = $("drop");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      file.addEventListener("change", async () => file.files[0] && useImage(await fileToDataURL(file.files[0]), null));
+      drop.addEventListener("drop", async (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) useImage(await fileToDataURL(f), null); });
+      useImage("../sample-report.png", $("samples").children[0]);
+
+      createModelLoader({
+        mount: $("doc-loader"),
+        model: { modelId: "docling-project/SmolDocling-256M-preview", runtime: "transformers.js", dtype: "q4", sizeMB: 265, requiresWebGPU: true },
+        load: (onProgress) => doc.load(onProgress),
+        onReady: () => { docReady = true; sync(); },
+        onError: async () => { const probe = await probeWebGPUMain(); if (!probe.ok) { $("gpuFallback").hidden = false; $("gpuFallback").innerHTML = webgpuFallbackHTML(probe); } },
+      });
+      createModelLoader({
+        mount: $("llm-loader"),
+        model: { modelId: "onnx-community/Qwen2.5-0.5B-Instruct", runtime: "transformers.js", dtype: "q4", sizeMB: 490, requiresWebGPU: true },
+        load: (onProgress) => llm.load(onProgress),
+        onReady: () => { llmReady = true; sync(); },
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!currentImage) return;
+        $("run").disabled = true; $("status").hidden = false; $("status").classList.remove("err", "ok");
+        $("brief").textContent = "…"; $("md").value = "Reading the page…";
+        let raw = "";
+        try {
+          $("status").textContent = "Step 1 — SmolDocling reading the page…";
+          const d = await doc.convert(currentImage, "Convert this page to docling.", { maxTokens: 512, onToken: (tok) => { raw += tok; } });
+          const md = docTagsToMarkdown(parseDocTags(raw));
+          $("md").value = md || "(no structured content detected)";
+          $("rDoc").textContent = "WEBGPU"; $("rDocMs").textContent = d.ms + " ms";
+          if (!md) { $("brief").textContent = "(nothing to summarise)"; $("status").textContent = "Done."; $("run").disabled = false; return; }
+          $("status").textContent = "Step 2 — summarising with Qwen2.5-0.5B…";
+          $("brief").textContent = "";
+          const s = await llm.summarize(md, { maxTokens: 180, onToken: (tok) => { $("brief").textContent += tok; } });
+          $("readout").hidden = false; $("rLlm").textContent = "WEBGPU"; $("rLlmMs").textContent = s.ms + " ms";
+          $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+      if ("serviceWorker" in navigator) navigator.serviceWorker.register("/web-ai-showcase/sw.js").catch(() => {});
+    </script>
+  </body>
+</html>

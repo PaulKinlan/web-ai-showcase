@@ -1,0 +1,331 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SmolDocling — turn a document image into structured DocTags, in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run SmolDocling-256M locally on WebGPU: hand it a page image and it emits DocTags — a compact structured markup capturing layout, text, tables and formulas with per-element bounding boxes. The model behind IBM's Docling, entirely on your device."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>📄</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">image-text-to-text · document understanding · WebGPU · ~265 MB</p>
+      <h1>SmolDocling — a document image becomes structured DocTags</h1>
+      <p class="lede">
+        Most doc models give you flat text. <strong>SmolDocling</strong> gives you <em>structure</em>:
+        hand it a page image and it emits <strong>DocTags</strong> — a compact markup that tags every
+        element with its <em>type and bounding box</em> — headings, paragraphs, <strong>tables</strong>
+        (as OTSL cells) and <strong>formulas</strong> (as LaTeX). It's the 256M-parameter model behind
+        IBM's <a href="https://github.com/docling-project/docling" target="_blank" rel="noopener">Docling</a>
+        toolkit, running end-to-end on your GPU with nothing uploaded.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="glance">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/docling-project/SmolDocling-256M-preview" target="_blank" rel="noopener">docling-project/SmolDocling-256M-preview</a></td></tr>
+          <tr><th>Task</th><td><code>image-text-to-text</code> (document image → structured DocTags)</td></tr>
+          <tr><th>Architecture</th><td><code>Idefics3ForConditionalGeneration</code> (<code>idefics3</code>) — a SmolVLM-family VLM: SigLIP vision encoder + SmolLM2 decoder, fine-tuned on synthetic document / table / formula / chart data</td></tr>
+          <tr><th>Output</th><td><strong>DocTags</strong>: <code>&lt;text&gt;</code>, <code>&lt;section_header_level_1&gt;</code>, <code>&lt;otsl&gt;</code> tables (<code>&lt;ched&gt;</code>/<code>&lt;fcel&gt;</code> cells), <code>&lt;formula&gt;</code> (LaTeX), <code>&lt;picture&gt;</code>, <code>&lt;caption&gt;</code> — each with <code>&lt;loc_x&gt;</code> bounding-box coords</td></tr>
+          <tr><th>Params / dtype</th><td>256M · <code>q4</code> (4-bit) <span class="muted">— the q4f16 / fp16 / int8 exports are degenerate for this model, so q4 is the honest runnable one</span></td></tr>
+          <tr><th>Transformers.js</th><td><strong>v4.2.0</strong>, pinned locally in this model's worker <span class="muted">(SmolDocling's ONNX doesn't load under the shared 3.7.5 pin — same version-pin pattern as the SAM2 demo)</span></td></tr>
+          <tr><th>Backend</th><td>WebGPU (required — needs a GPU adapter)</td></tr>
+          <tr><th>Download</th><td>~265 MB, cached after first load</td></tr>
+          <tr><th>License</th><td>CDLA-Permissive-2.0</td></tr>
+          <tr><th>Web APIs</th><td>WebGPU, Web Workers, FileReader, Canvas</td></tr>
+        </tbody>
+      </table>
+      <p class="muted" style="font-size:.85rem;margin-top:.5rem">
+        Not the same as the other document demos: <a href="../nougat-ocr/">Nougat</a> outputs Markdown,
+        <a href="../donut-docvqa/">Donut</a> answers a question about a form, and TrOCR does line OCR.
+        SmolDocling outputs a full <em>structured</em> document (layout + tables + formulas) in one pass.
+      </p>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <div id="model-loader"></div>
+      <div id="gpuFallback" class="fallback" hidden></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="doc-grid" style="margin-top:.6rem">
+        <div class="doc-in-col">
+          <h4 style="font-family:var(--font-body);font-size:.8rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:.2rem 0 .3rem">Document to convert</h4>
+          <img id="preview" class="doc-preview" alt="The document image the model will read" />
+          <p class="muted" style="font-size:.8rem;margin:.4rem 0 .2rem">Pick a sample, or drop your own page image:</p>
+          <div class="sample-strip" id="samples">
+            <img class="sample-thumb active" src="sample-report.png" data-src="sample-report.png" alt="A business report page with headings and a bullet list" tabindex="0" role="button" />
+            <img class="sample-thumb" src="sample-table.png" data-src="sample-table.png" alt="A document containing a four-column data table" tabindex="0" role="button" />
+            <img class="sample-thumb" src="sample-formula.png" data-src="sample-formula.png" alt="A page with headings and mathematical formulas" tabindex="0" role="button" />
+          </div>
+          <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop a document image">
+            <span id="dropText">Drop / choose a page image</span>
+            <input type="file" id="file" accept="image/*" hidden />
+          </div>
+        </div>
+
+        <div class="doc-out-col">
+          <label class="field-label">
+            Instruction to the model
+            <input type="text" id="prompt" value="Convert this page to docling." />
+          </label>
+          <div class="chips" id="quick">
+            <button class="chip" type="button" data-p="Convert this page to docling.">Convert page</button>
+            <button class="chip" type="button" data-p="Convert this table to OTSL.">Table → OTSL</button>
+            <button class="chip" type="button" data-p="Convert formula to LaTeX.">Formula → LaTeX</button>
+          </div>
+          <div class="controls-row">
+            <button id="run" type="button" disabled>Convert to DocTags</button>
+            <label style="font-size:.8rem;color:var(--muted)">
+              max tokens <input type="number" id="maxTok" value="512" min="64" max="1024" style="inline-size:5rem" />
+            </label>
+          </div>
+
+          <h4 style="font-family:var(--font-body);font-size:.85rem;margin:.6rem 0 .2rem">Structured document</h4>
+          <div class="struct-list" id="structure" aria-live="polite"><span class="muted" style="font-size:.85rem">The parsed structure (headings, paragraphs, tables, formulas) will appear here.</span></div>
+          <div class="readout" id="readout" hidden>
+            <span>backend <b id="rBackend">–</b></span>
+            <span>page tiles <b id="rTiles">–</b></span>
+            <span>prompt tokens <b id="rPromptTok">–</b></span>
+            <span>output tokens <b id="rTok">–</b></span>
+            <span>time <b id="rMs">–</b></span>
+            <span>tok/s <b id="rTps">–</b></span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside — the raw DocTags stream</h3>
+      <p class="muted">
+        Under the structured view above is a plain autoregressive VLM. The document image is split into
+        <strong>tiles</strong>, each turned into image tokens, and the decoder generates one long string of
+        <strong>DocTags</strong> — interleaving element tags (<code>&lt;text&gt;</code>,
+        <code>&lt;otsl&gt;</code>, <code>&lt;formula&gt;</code>) with <code>&lt;loc_n&gt;</code> coordinate
+        tokens. Below is the <em>exact</em> tag stream the model emits, token by token, plus the real input
+        tensor shape — so you can watch it lay out the page.
+      </p>
+      <table class="glance" style="margin:.4rem 0">
+        <tbody>
+          <tr><th>pixel_values shape</th><td id="iPixel">–</td></tr>
+          <tr><th>prompt tokens (text + image tiles)</th><td id="iPromptTok">–</td></tr>
+        </tbody>
+      </table>
+      <h4 style="font-family:var(--font-body);font-size:.85rem;margin:.6rem 0 .2rem">DocTags output</h4>
+      <div class="doctags-raw" id="raw"><span class="muted" style="font-size:.8rem">Run a conversion to see the raw DocTags stream.</span></div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        A flat OCR dump loses the thing that makes a document useful: its <em>structure</em>. DocTags keep
+        the table a table, the formula a formula, and the heading a heading — with coordinates — so a
+        document becomes queryable, convertible, and re-flowable. And it happens on-device, privately, for
+        free:
+      </p>
+      <ul>
+        <li><strong>Private document conversion</strong> — turn scanned pages into structured Markdown / HTML / JSON without shipping confidential documents to a cloud OCR API.</li>
+        <li><strong>Table extraction</strong> — pull a table straight out of a page image as OTSL cells you can load into a spreadsheet or dataframe.</li>
+        <li><strong>Formula capture</strong> — recover LaTeX from a printed equation for search, accessibility, or re-typesetting.</li>
+        <li><strong>RAG over PDFs</strong> — feed a document's real structure (not a flat text blob) into an on-device retrieval pipeline so answers cite the right section.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">One page in, DocTags out — the plain document→structure loop, with the parsed elements shown.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Export the structure: turn the DocTags into clean Markdown you can copy — a private document converter.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Tables &amp; formulas: extract a data table as rows and a printed equation as LaTeX.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">SmolDocling reads the page → an on-device LLM summarises the structured document into a plain-language brief.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>
+        SmolDocling uses the standard vision-to-text classes. Build a chat message with the page image and
+        the "Convert this page to docling." instruction, template it, run the processor, then generate —
+        streaming the DocTags as they come. Note the <strong>v4 pin</strong>: its ONNX doesn't load under
+        Transformers.js 3.x.
+      </p>
+      <pre><code>import { AutoProcessor, AutoModelForVision2Seq, load_image, TextStreamer }
+  from "@huggingface/transformers@4.2.0";   // v4 — 3.x can't load SmolDocling's ONNX
+
+const processor = await AutoProcessor.from_pretrained("docling-project/SmolDocling-256M-preview");
+const model = await AutoModelForVision2Seq.from_pretrained(
+  "docling-project/SmolDocling-256M-preview",
+  { dtype: "q4", device: "webgpu" },   // q4 is the runnable export; q4f16/fp16/int8 are degenerate
+);
+
+const image = await load_image(pageURL);
+const messages = [{ role: "user", content: [
+  { type: "image" }, { type: "text", text: "Convert this page to docling." },
+]}];
+const text = processor.apply_chat_template(messages, { add_generation_prompt: true });
+const inputs = await processor(text, [image]);
+// inputs.pixel_values.dims === [1, numTiles, 3, H, W]  ← the split page
+
+const streamer = new TextStreamer(processor.tokenizer,
+  { skip_prompt: true, skip_special_tokens: false, callback_function: (t) => append(t) });
+await model.generate({ ...inputs, max_new_tokens: 512, streamer });
+// → "&lt;doctag&gt;&lt;section_header_level_1&gt;&lt;loc_43&gt;…Regional Sales Summary&lt;/section_header_level_1&gt;&lt;otsl&gt;…"</code></pre>
+      <p class="muted">This page runs exactly that, in a Web Worker, and gates on a real WebGPU adapter first — if none exists it shows a labelled needs-WebGPU state instead of a fake answer.</p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/docling-project/SmolDocling-256M-preview" target="_blank" rel="noopener">Model card — SmolDocling-256M-preview</a></li>
+        <li><a href="https://arxiv.org/abs/2503.11576" target="_blank" rel="noopener">Paper — "SmolDocling: An ultra-compact vision-language model for end-to-end multi-modal document conversion" (2025)</a></li>
+        <li><a href="https://github.com/docling-project/docling" target="_blank" rel="noopener">Docling — the document-conversion toolkit SmolDocling powers</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a> on WebGPU.
+      Sample documents are self-authored (own work). <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <style>
+      .glance { inline-size:100%; border-collapse:collapse; font-size:.85rem; }
+      .glance th, .glance td { text-align:left; padding:.3rem .5rem; border-bottom:1px solid var(--border); vertical-align:top; }
+      .glance th { color:var(--muted); font-weight:600; inline-size:12rem; }
+      .glance td { word-break:break-word; }
+    </style>
+
+    <script type="module">
+      import {
+        SmolDoclingEngine, fileToDataURL, urlToDataURL, escapeHTML,
+        parseDocTags, highlightDocTags, probeWebGPUMain, webgpuFallbackHTML, DOCLING_CSS,
+      } from "./smoldocling.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = DOCLING_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new SmolDoclingEngine();
+
+      let currentImage = null; // data URL
+
+      async function useImage(src, { thumb } = {}) {
+        currentImage = src.startsWith("data:") ? src : await urlToDataURL(src);
+        $("preview").src = currentImage;
+        for (const t of $("samples").children) t.classList.toggle("active", t === thumb);
+      }
+
+      for (const thumb of $("samples").children) {
+        const pick = () => useImage(thumb.dataset.src, { thumb });
+        thumb.addEventListener("click", pick);
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(); } });
+      }
+
+      const file = $("file"), drop = $("drop");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function addImageFile(f) { await useImage(await fileToDataURL(f), {}); }
+      file.addEventListener("change", () => file.files[0] && addImageFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) addImageFile(f); });
+
+      for (const c of $("quick").children) c.addEventListener("click", () => { $("prompt").value = c.dataset.p; });
+
+      // Seed with the report sample.
+      useImage("sample-report.png", { thumb: $("samples").children[0] });
+
+      let engineReady = false;
+      createModelLoader({
+        mount: $("model-loader"),
+        model: {
+          modelId: "docling-project/SmolDocling-256M-preview",
+          runtime: "transformers.js",
+          dtype: "q4",
+          sizeMB: 265,
+          requiresWebGPU: true,
+        },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: () => { engineReady = true; $("run").disabled = !currentImage; },
+        onError: async () => {
+          // Honest needs-WebGPU explanation (never fake output).
+          const probe = await probeWebGPUMain();
+          if (!probe.ok) { $("gpuFallback").hidden = false; $("gpuFallback").innerHTML = webgpuFallbackHTML(probe); }
+        },
+      });
+
+      function renderStructure(elements) {
+        if (!elements.length) { $("structure").innerHTML = '<span class="muted">(no structure detected)</span>'; return; }
+        $("structure").replaceChildren(...elements.map((el) => {
+          const wrap = document.createElement("div"); wrap.className = "struct-el";
+          const head = document.createElement("div");
+          const type = document.createElement("span"); type.className = "etype"; type.textContent = el.type;
+          head.append(type);
+          if (el.box) { const b = document.createElement("span"); b.className = "ebox"; b.textContent = `[${el.box.join(", ")}]`; head.append(b); }
+          wrap.append(head);
+          if (el.type === "table" && el.rows) {
+            const table = document.createElement("table"); table.className = "struct-table";
+            for (const row of el.rows) {
+              const tr = document.createElement("tr");
+              for (const cell of row) { const td = document.createElement("td"); td.textContent = cell; tr.append(td); }
+              table.append(tr);
+            }
+            wrap.append(table);
+          } else {
+            const t = document.createElement("div"); t.className = "etext"; t.textContent = el.text || "";
+            wrap.append(t);
+          }
+          return wrap;
+        }));
+      }
+
+      $("run").addEventListener("click", async () => {
+        if (!currentImage) { $("status").textContent = "Pick a document image first."; return; }
+        const prompt = $("prompt").value.trim() || "Convert this page to docling.";
+        const maxTokens = Math.max(64, Math.min(1024, +$("maxTok").value || 512));
+        $("run").disabled = true; $("status").classList.remove("err"); $("status").textContent = "Converting…";
+        $("raw").innerHTML = '<span class="caret">&nbsp;</span>';
+        $("structure").innerHTML = '<span class="muted" style="font-size:.85rem">Reading the page…</span>';
+        let doc = "";
+        try {
+          const res = await engine.convert(currentImage, prompt, {
+            maxTokens,
+            onPrompt: () => {},
+            onShape: (s) => {
+              $("iPixel").textContent = s.pixelValues ? `[${s.pixelValues.join(" × ")}]` : "–";
+              $("iPromptTok").textContent = s.promptTokens ?? "–";
+              $("rTiles").textContent = s.pixelValues ? s.pixelValues[1] : "–";
+              $("rPromptTok").textContent = s.promptTokens ?? "–";
+            },
+            onToken: (tok) => {
+              doc += tok;
+              $("raw").innerHTML = highlightDocTags(doc) + '<span class="caret">&nbsp;</span>';
+            },
+          });
+          $("raw").innerHTML = highlightDocTags(doc);
+          renderStructure(parseDocTags(doc));
+          $("readout").hidden = false;
+          $("rBackend").textContent = "WEBGPU";
+          $("rTok").textContent = res.tokens;
+          $("rMs").textContent = res.ms + " ms";
+          $("rTps").textContent = (res.tokens / (res.ms / 1000)).toFixed(1);
+          $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (err) {
+          $("structure").innerHTML = '<span class="muted">Conversion failed.</span>';
+          $("status").textContent = "Conversion failed: " + err.message; $("status").classList.add("err");
+        } finally {
+          $("run").disabled = false;
+        }
+      });
+
+      if ("serviceWorker" in navigator) navigator.serviceWorker.register("/web-ai-showcase/sw.js").catch(() => {});
+    </script>
+  </body>
+</html>
