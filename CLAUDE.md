@@ -141,8 +141,15 @@ unimplemented, no ONNX export anywhere), **kosmos-2** (no `kosmos` class in any 
 version; no browser ONNX — repos gated / safetensors-only), **mask2former** (no `Mask2Former...`
 class in transformers.js 3.7.5/4.2 — only the image processor; no browser ONNX), **internvl** (no
 `internvl` class → `Unsupported model type: internvl`; only third-party ONNX, upstream
-safetensors-only), **madlad-400** (smallest checkpoint is 3B; the one ONNX export is ~4.94GB INT8 w/
-non-standard layout [404s on encoder/decoder_merged] — exceeds wasm32 4GB; don't relabel NLLB),
+safetensors-only), **nllb-clip** (no `NLLBCLIPModel` class — custom open_clip; Immich ONNX is a
+bespoke split layout not an HF pipeline; don't relabel SigLIP2/Jina-CLIP), **spanbert** (released
+weights are a bare encoder w/ NO MLM head → `logits===undefined`; every ONNX is
+feature-extraction/QA; same as scibert/electra), **mxbai-rerank-v2** (v2 is Qwen2ForCausalLM
+decoder-reranker; the WASM-q8 export is head-less [no lm_head → can't compute 1/0 logit]; don't
+relabel v1), **boolean-qa/boolq** (runnable BoolQ fine-tunes ship no ONNX; the only .onnx exports
+are head-less encoders [no classification head → logits undefined]; don't relabel
+extractive-QA/NLI), **madlad-400** (smallest checkpoint is 3B; the one ONNX export is ~4.94GB INT8
+w/ non-standard layout [404s on encoder/decoder_merged] — exceeds wasm32 4GB; don't relabel NLLB),
 **image-orientation** (every candidate is missing config/preprocessor [404] OR
 GATED/access-restricted — unusable from a static site; never fake with EXIF/heuristic), **canine**
 (no `canine` class in transformers.js 3.7.5/4.2 → `Unsupported model type: canine`;
