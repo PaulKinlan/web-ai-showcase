@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>GTCRN wild — noise stress test · Web AI Showcase</title>
+    <meta name="description" content="Sweep the input SNR from very noisy to nearly clean and watch how much GTCRN recovers at each level — a robustness curve for a 0.5 MB denoiser, on-device." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='13'>🎧</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">GTCRN</a></p>
+    <header>
+      <p class="eyebrow">Wild · audio-to-audio · WASM</p>
+      <h1>Noise stress test</h1>
+      <p class="lede">How robust is a 0.5 MB denoiser? We take one clean clip, bury it in noise at several levels — from brutal (−5 dB) to gentle (+15 dB) — enhance each, and plot how much SNR GTCRN recovers. The gap between the dashed input line and the bars is the work the model did.</p>
+    </header>
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+      <div class="sample-row" id="samples" aria-label="Clean speech clips"></div>
+      <div class="field-row"><label>Noise <select id="noiseType"><option value="white">White noise</option><option value="hum">Mains hum</option><option value="rain">Rain</option></select></label></div>
+      <div class="field-row"><button id="run" type="button" disabled>Run the sweep</button></div>
+      <canvas id="chart" class="wave" style="block-size:200px;background:var(--bg-raised);border:1px solid var(--border);border-radius:8px" aria-label="SNR recovery chart across input noise levels"></canvas>
+      <table class="inside-table" id="tbl" hidden><thead><tr><th>input SNR</th><th>output SNR</th><th>gain</th><th>noise floor drop</th><th>listen</th></tr></thead><tbody id="rows"></tbody></table>
+      <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>levels <b id="rLevels">–</b></span></div>
+    </section>
+    <section aria-labelledby="next-h"><h2 id="next-h">Next</h2>
+      <div class="model-grid">
+        <a class="model-card" href="../multi-model/"><h3>Multi-model →</h3><p class="muted">Denoise → Whisper transcript.</p></a>
+        <a class="model-card" href="../practical/"><h3>Practical →</h3><p class="muted">Clean your own recording.</p></a>
+        <a class="model-card" href="../basics/"><h3>Basics →</h3><p class="muted">Add noise and measure the gain.</p></a>
+      </div>
+    </section>
+    <footer class="byline">Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via <a href="https://onnxruntime.ai/docs/tutorials/web/" target="_blank" rel="noopener">ONNX Runtime Web</a>. <a href="../">← Back to GTCRN</a></footer>
+    <script type="module">
+      import { GtcrnEngine, SR, urlToMono16k, whiteNoise, mixAtSNR, snrVsClean, noiseFloor, wavUrl, GTCRN_CSS } from "../gtcrn.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style=document.createElement("style");style.textContent=GTCRN_CSS;document.head.append(style);
+      const $=id=>document.getElementById(id); const engine=new GtcrnEngine();
+      const SAMPLES=[{name:"JFK speech",src:"../jfk.wav"},{name:"TED talk",src:"../ted.wav"}];
+      const LEVELS=[-5,0,5,10,15];
+      let clean=null;
+      const setStatus=(m,c)=>{$("status").textContent=m;$("status").classList.remove("err","ok");if(c)$("status").classList.add(c);};
+      $("samples").replaceChildren(...SAMPLES.map((s,i)=>{const b=document.createElement("button");b.type="button";b.className="chip"+(i===0?" active":"");b.textContent=s.name;b.addEventListener("click",()=>pick(s,b));return b;}));
+      async function pick(s,el){for(const t of $("samples").children)t.classList.toggle("active",t===el);clean=(await urlToMono16k(s.src)).slice(0,SR*5);$("run").disabled=!engine.ready;$("tbl").hidden=true;$("readout").hidden=true;}
+      function humNoise(len){const o=new Float32Array(len);for(let i=0;i<len;i++){const t=i/SR;o[i]=Math.sin(2*Math.PI*50*t)+0.5*Math.sin(2*Math.PI*100*t);}return o;}
+      let rainCache=null;
+      async function noiseSignal(type,len){if(type==="white")return whiteNoise(len,4321);if(type==="hum")return humNoise(len);if(!rainCache)rainCache=await urlToMono16k("../sample-rain.wav");const o=new Float32Array(len);for(let i=0;i<len;i++)o[i]=rainCache[i%rainCache.length];return o;}
+      createModelLoader({mount:$("model-loader"),model:{modelId:"bitsydarel/gtcrn-onnx",runtime:"onnxruntime-web",dtype:"fp32",sizeMB:1,requiresWebGPU:false},load:async op=>{await engine.load(op);return engine;},onReady:()=>{$("run").disabled=!clean;setStatus("Model ready.","ok");}});
+      pick(SAMPLES[0],$("samples").firstElementChild);
+      function drawChart(results){
+        const cv=$("chart"),W=cv.clientWidth||600,H=200,dpr=Math.min(2,devicePixelRatio||1);cv.width=W*dpr;cv.height=H*dpr;const ctx=cv.getContext("2d");ctx.scale(dpr,dpr);ctx.clearRect(0,0,W,H);
+        const cs=getComputedStyle(document.documentElement),acc=cs.getPropertyValue("--accent").trim()||"#4b3aff",mut=cs.getPropertyValue("--muted").trim()||"#888";
+        const pad=30,bw=(W-2*pad)/results.length,maxY=25,minY=-8;
+        const y=v=>H-pad-((v-minY)/(maxY-minY))*(H-2*pad);
+        ctx.strokeStyle=mut;ctx.font="10px system-ui";ctx.fillStyle=mut;
+        for(const g of [-5,0,5,10,15,20]){ctx.globalAlpha=.3;ctx.beginPath();ctx.moveTo(pad,y(g));ctx.lineTo(W-pad,y(g));ctx.stroke();ctx.globalAlpha=1;ctx.fillText(g+"dB",2,y(g)+3);}
+        results.forEach((r,i)=>{const x=pad+i*bw+bw*0.2,w=bw*0.6;
+          ctx.fillStyle=acc;ctx.fillRect(x,y(r.out),w,y(minY)-y(r.out));
+          ctx.strokeStyle=mut;ctx.setLineDash([4,3]);ctx.beginPath();ctx.moveTo(x-3,y(r.in));ctx.lineTo(x+w+3,y(r.in));ctx.stroke();ctx.setLineDash([]);
+          ctx.fillStyle=mut;ctx.fillText(r.in+"dB",x,H-pad+14);});
+      }
+      $("run").addEventListener("click",async()=>{
+        if(!engine.ready||!clean)return;$("run").disabled=true;
+        const results=[];$("rows").innerHTML="";
+        try{
+          for(const lvl of LEVELS){
+            setStatus(`Enhancing at ${lvl} dB…`);
+            const noisy=mixAtSNR(clean,await noiseSignal($("noiseType").value,clean.length),lvl);
+            const r=await engine.enhance(noisy);const enh=r.enhanced;
+            const sin=snrVsClean(noisy,clean),sout=snrVsClean(enh,clean),nfd=20*Math.log10((noiseFloor(noisy)||1e-9)/(noiseFloor(enh)||1e-9));
+            results.push({in:lvl,out:sout,gain:sout-sin,dev:r.device});
+            const tr=document.createElement("tr");tr.innerHTML=`<td>${lvl} dB</td><td>${sout.toFixed(1)} dB</td><td>+${(sout-sin).toFixed(1)} dB</td><td>−${nfd.toFixed(1)} dB</td><td><audio controls style="height:28px" src="${wavUrl(enh)}"></audio></td>`;$("rows").append(tr);
+            $("tbl").hidden=false;drawChart(results);
+          }
+          $("rBackend").textContent=results[0].dev.toUpperCase();$("rLevels").textContent=results.length;$("readout").hidden=false;
+          setStatus("Done — bars are output SNR, dashed lines are input SNR.","ok");
+        }catch(e){setStatus("Failed: "+e.message,"err");}finally{$("run").disabled=false;}
+      });
+    </script>
+  </body>
+</html>

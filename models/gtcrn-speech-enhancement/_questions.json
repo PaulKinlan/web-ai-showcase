@@ -1,0 +1,128 @@
+{
+  "schemaVersion": 1,
+  "id": "gtcrn-speech-enhancement",
+  "revision": 1,
+  "reviewedAt": "2026-07-20T00:00:00Z",
+  "reviewer": "agent build+matrix pass (runnability verified standalone AND in-page in headless Chrome — real measurable denoising, not passthrough; denoise->Whisper multi-model verified; desktop+mobile layout checked; page-load conformance clean), revision 1",
+  "frontend": true,
+  "rubric": [
+    {
+      "dimension": "real-inference",
+      "score": 5,
+      "severity": "info",
+      "evidence": "RUNNABILITY VERIFIED in headless Chrome (raw ONNX Runtime Web 1.21.0, WASM EP, fresh profile). gtcrn_simple.onnx is the STREAMING GTCRN: input 'mix' [1,257,1,2] (one STFT frame, real/imag) + conv/tra/inter recurrent caches -> 'enh' [1,257,1,2] + updated caches. The worker does a 512-pt STFT (hop 256, sqrt-Hann), the per-frame GTCRN loop carrying the caches, and an iSTFT (NOLA overlap-add). Standalone on clean JFK speech + white noise at 3 dB input SNR, GTCRN produced a REAL enhanced waveform 8.47 dB CLOSER to clean (MSE 4.29e-3 -> 6.10e-4) — genuine denoising, NOT passthrough. In-page (CDP driver, fresh profile -> Download ~0.5 MB -> auto-init -> Enhance): +6.5 dB output SNR (3.0 -> 9.5 dB vs clean), noise floor -47.2 dB, RTF 26x, 0 console errors.",
+      "notes": "All inference AND the STFT/iSTFT DSP run off the main thread in a dedicated module Worker; the enhanced PCM buffer is transferred (not cloned) back. transformers.js has no speech-enhancement class + no audio-to-audio pipeline, so the ONNX graph runs directly via an isolated per-worker onnxruntime-web pin (precedent: yolov8-pose / aliked-lightglue)."
+    },
+    {
+      "dimension": "io-shape",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Expected output = a denoised 16 kHz mono waveform of the same length as the input. The page reconstructs it from the enhanced complex STFT frames (conjugate-symmetric iFFT + windowed overlap-add), plays it via <audio>, draws its waveform, and (when a clean reference exists) reports the SNR gain. Semantic sanity confirmed: measurable +6.5 dB SNR and a -47 dB noise-floor drop while speech energy is preserved.",
+      "notes": "A DISTINCT audio capability (audio-to-audio / speech enhancement), not the built ASR / TTS / audio-classification / diarization / VAD demos."
+    },
+    {
+      "dimension": "runtime-config",
+      "score": 5,
+      "severity": "info",
+      "evidence": "At-a-glance declares the exact model (bitsydarel/gtcrn-onnx, gtcrn_simple.onnx, linked), the task (audio-to-audio), the architecture (GTCRN grouped temporal-conv recurrent net, ~48k params), the STFT/streaming/iSTFT pipeline, the exact I/O shapes, quantisation (fp32), runtime (onnxruntime-web — raw ORT because no transformers.js class exists), backend (WASM), size (~0.5 MB), and license (Apache-2.0).",
+      "notes": "Inference is off the main thread; the 'How the API works' snippet shows the real per-frame streaming loop with the recurrent caches."
+    },
+    {
+      "dimension": "cache-init",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Every page loads through the shared createModelLoader auto-init architecture (model {modelId:'bitsydarel/gtcrn-onnx', runtime:'onnxruntime-web', dtype:'fp32', sizeMB:1}); the worker fetches the ONNX THROUGH Cache Storage under the '/bitsydarel/gtcrn-onnx/' path so lib/model-cache.js scans it -> auto-init on a returning visit, honest Download on first visit, per-model clear-cache.",
+      "notes": "Verified: fresh profile -> Download (~0.5 MB) -> auto-init ready in the CDP driver."
+    },
+    {
+      "dimension": "states",
+      "score": 4,
+      "severity": "info",
+      "evidence": "Loading/ready/enhancing status is announced in role=status aria-live regions; the shared loader exposes Retry on failure; an Enhancing.../Done status line reports progress (with per-frame progress events from the worker). Errors surface on the page (status .err: 'Enhancement failed: ...').",
+      "notes": "No WebGPU required — runs on the WASM path everywhere; conformance runs-without-webgpu-fallback holds. The practical page's microphone capture is user-initiated with explicit Stop + track cleanup and a file-upload fallback."
+    },
+    {
+      "dimension": "controls",
+      "score": 4,
+      "severity": "info",
+      "evidence": "Every control is real and keyboard-operable: clean-clip chips, noise-type select, input-SNR slider, Enhance button, upload dropzone (role=button, Enter/Space), and the two <audio controls> players. Ladder adds mic record/stop + WAV download (practical), an SNR-sweep run (wild), and a denoise+transcribe run (multi-model).",
+      "notes": "Ladder: basics (add noise + measure the gain), practical (voice-note cleaner: record/upload + download the clean WAV), wild (noise stress test: sweep SNR + chart), multi-model (GTCRN -> Whisper: transcribe noisy vs enhanced, WER)."
+    },
+    {
+      "dimension": "no-fake-output",
+      "score": 5,
+      "severity": "info",
+      "evidence": "No canned output — the worker runs the real ONNX graph; the enhanced waveform, the SNR/noise-floor metrics, the waveforms, and the playable WAVs are all derived from the real on-device run. Verified NOT passthrough: the enhanced signal is measurably 8.47 dB closer to the clean reference. Multi-model verified: GTCRN-enhanced audio yields a different (improved on key phrases) Whisper transcript than the noisy audio.",
+      "notes": "Synthetic-noise mixing is explicit and user-controlled (disclosed), so the measured gain has known ground truth; uploads with no clean reference honestly show noise-floor reduction instead of SNR."
+    },
+    {
+      "dimension": "accessibility",
+      "score": 5,
+      "severity": "info",
+      "evidence": "All buttons expose accessible names (buttons-have-names pass); waveform canvases carry aria-labels; the two audio players are native <audio controls>; status uses role=status aria-live (live-status-region pass); sliders/selects are native labelled controls. Light+dark use the WCAG-AA design system.",
+      "notes": "The numeric metric grid + noise-floor/SNR table convey the same information as text, so the waveform canvases are not the only channel."
+    },
+    {
+      "dimension": "responsive",
+      "score": 4,
+      "severity": "info",
+      "evidence": "Layout uses fluid flex/grid; the before/after A/B grid collapses to one column <=620px; waveform canvases + audio players are inline-size:100%; sliders/readouts wrap. responsive-check measured 0px horizontal overflow at desktop (1280x800) and narrow mobile (360x740, DPR3), light+dark.",
+      "notes": "Mobile download cost (~0.5 MB; +~40 MB Whisper on the multi-model page) surfaced on the page. Tap targets meet ~44px on primary controls."
+    },
+    {
+      "dimension": "performance",
+      "score": 5,
+      "severity": "info",
+      "evidence": "All inference AND the STFT/iSTFT DSP run off the main thread in a Web Worker; the enhanced PCM buffer is transferred (not cloned) back; the worker emits bounded per-frame progress. GTCRN runs faster than real time (measured RTF 26x on WASM), so even multi-second clips process in a few hundred ms without blocking the UI.",
+      "notes": "INP kept low — enhancement never blocks the interface; waveform draws are bounded per-pixel min/max reductions, not per-sample."
+    }
+  ],
+  "guidanceConsulted": [
+    {
+      "query": "process audio off the main thread in a web worker and transfer the buffer; keep INP low",
+      "id": "performance",
+      "recommendation": "Move heavy work off the main thread and keep interactions responsive (INP); avoid long blocking tasks on the main thread.",
+      "appliedOrException": "applied — all ONNX inference AND the STFT/iSTFT DSP run in a dedicated module Web Worker; the enhanced PCM buffer is transferred back (zero-copy); waveform draws are bounded min/max reductions.",
+      "evidence": "worker.js + mm-worker.js off-thread + transfer([enh.buffer]); RTF 26x; UI responsive during enhancement; conformance inference-off-main-thread pass"
+    },
+    {
+      "query": "efficient background processing of a streaming per-frame audio loop",
+      "id": "efficient-background-processing",
+      "recommendation": "Do sustained/looping work efficiently in the background without starving the main thread.",
+      "appliedOrException": "applied — the per-frame GTCRN streaming loop (STFT -> model -> iSTFT overlap-add) runs entirely in the worker; progress is posted at bounded intervals, not per frame.",
+      "evidence": "per-frame loop in worker.js; bounded progress posts (every 32 frames); main thread only handles playback + light drawing"
+    },
+    {
+      "query": "responsive before/after audio comparison without horizontal overflow",
+      "id": "css-layout",
+      "recommendation": "Use fluid flex/grid with flex-wrap + intrinsic sizing and logical properties; avoid fixed widths that force horizontal overflow.",
+      "appliedOrException": "applied — the A/B grid collapses to one column on mobile; waveform canvases + audio players are inline-size:100%; controls/readouts wrap.",
+      "evidence": "0px mobile+desktop overflow measured by responsive-check, light+dark"
+    },
+    {
+      "query": "accessible live region status and canvas/audio labelling",
+      "id": "accessibility",
+      "recommendation": "Announce loading/ready/error via role=status aria-live; give every control an accessible name; label canvas content; use native audio controls.",
+      "appliedOrException": "applied — shared loader + page status use role=status aria-live; waveform canvases have aria-labels; playback uses native <audio controls>; the metric table duplicates the visual data as text.",
+      "evidence": "buttons-have-names + live-status-region conformance pass; native audio controls; text metric table"
+    }
+  ],
+  "openQuestions": [
+    "gtcrn_simple.onnx runs frame-by-frame in JS; a WebAudio AudioWorklet path could enable true live (streaming-input) denoising of a call in real time — a candidate follow-up.",
+    "Very low input SNR (< -5 dB) or non-stationary noise stresses a 48k-param model; a stronger (still small) denoiser like DeepFilterNet could be offered as a distinct heavier option.",
+    "Should the upload path auto-detect and warn on non-speech audio, since GTCRN targets speech specifically?"
+  ],
+  "followUpGoals": [
+    {
+      "goal": "Add a live AudioWorklet streaming-denoise wild demo (denoise the microphone in real time into a monitor), reusing the same GTCRN worker.",
+      "kind": "new-demo",
+      "priority": "low"
+    },
+    {
+      "goal": "Offer a distinct heavier denoiser (e.g. DeepFilterNet ONNX) as a separate slug for hard noise, with an honest quality/size trade-off note.",
+      "kind": "new-demo",
+      "priority": "low"
+    }
+  ],
+  "summary": "Revision-1 build+matrix pass for gtcrn-speech-enhancement (bitsydarel/gtcrn-onnx, audio-to-audio / speech enhancement, fp32, ~0.5 MB — a tiny real-time neural speech DENOISER; a DISTINCT audio capability, not the built ASR/TTS/classifier/diarization/VAD demos). RUNNABILITY VERIFIED in headless Chrome via raw ONNX Runtime Web (transformers.js has no speech-enhancement class): the worker does STFT -> streaming GTCRN (per-frame with recurrent caches) -> iSTFT; standalone on JFK+white-noise at 3 dB it produced audio 8.47 dB CLOSER to clean (real denoising, not passthrough); in-page the index measured +6.5 dB output SNR, -47.2 dB noise floor, RTF 26x with playable before/after WAVs and 0 console errors; multi-model GTCRN->Whisper transcribed noisy vs enhanced audio (transcripts differ from real denoising). Off-main-thread worker (STFT/iSTFT DSP + inference + transferred PCM). Ladder: basics (add noise + measure), practical (record/upload voice-note cleaner + WAV download, user-initiated mic), wild (SNR sweep + chart), multi-model (denoise -> Whisper, WER). responsive-check 0px overflow desktop+mobile, light+dark. Apache-2.0."
+}
