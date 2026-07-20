@@ -215,6 +215,17 @@ short version for tools that look for `AGENTS.md`.
   unexplained `built`-count drop — passing additive ids, honest new `blocked`, in-place fixes, and
   anything in `migrations.json`. Refresh the manifest with `node scripts/route-manifest.mjs`
   (`--json` / `--write-baseline`). Fold the gate into every build wave.
+- **Every image needs honest, visible provenance — fail-closed.** `node scripts/check-image-provenance.mjs`
+  (in `deno task gate` + CI) re-hashes every tracked raster and requires each to map, BY CONTENT HASH, to
+  an entry in `image-provenance/ledger.json`; any image depicting an **identifiable person** must be
+  rights-cleared with a source URL, creator, and license. A new/changed image with no ledger entry FAILS.
+  Rules: sample **faces/people are clearly-licensed** (Wikimedia Commons PD/CC0/CC-BY/CC-BY-SA) or
+  documented `media/manifest.json` assets — **never of unverified origin, never relabel a real photo as
+  "synthetic"**; illustrations/mock-documents/synthetic textures are first-party. When you add a sample
+  image: put licensed sources in `media/assets/` + `media/manifest.json` (use `scripts/fetch-commons.mjs`
+  to pull license-verified originals), then regenerate the ledger and run the gate. CC-BY/CC-BY-SA images
+  shown on a page get a visible credit via the shared annotator `public/image-credit.js` (include it once
+  per page); the full record renders at `/image-credits/`. Strip EXIF on bundled images.
 - **Off-main-thread reference architecture (measure, don't infer).** All inference AND any pre/post
   that could exceed an 8ms frame slice runs off-main-thread; verify by measuring long tasks/INP +
   code paths. Use `lib/worker-protocol.js` (typed/versioned protocol, request ids, transfer not

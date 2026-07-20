@@ -90,3 +90,16 @@ The curation helpers live in `scripts/` and are one-off (not gates):
 
 To add an asset by hand: drop the optimized `avif`/`webp`/`jpg` into `assets/`, then add a complete
 record (all provenance fields) to `manifest.json`. Incomplete provenance = don't add it.
+
+## Site-wide image ledger (every file, not just this library)
+
+`manifest.json` is the **source-asset** library. A separate, fail-closed ledger,
+[`../image-provenance/ledger.json`](../image-provenance/ledger.json), inventories **every raster image
+file served by the site** by content hash — the documented sources here, the cropped/re-encoded copies
+demos use, first-party generated samples (illustrations, mock documents, synthetic textures), and QA
+screenshots — and maps each to its provenance. The gate `node scripts/check-image-provenance.mjs`
+(in `deno task gate` + CI) re-hashes every image and **fails** on any file that isn't ledgered or any
+identifiable person that isn't rights-cleared, so a new image cannot ship without recorded provenance.
+Faces and people are always clearly-licensed (Commons PD/CC0/CC-BY/CC-BY-SA) or documented assets here —
+never of unverified origin. The full record renders at `/image-credits/`; CC-BY/CC-BY-SA images shown on
+a page get a visible credit via `public/image-credit.js`.
