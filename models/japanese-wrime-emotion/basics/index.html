@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Japanese WRIME emotion — Basics · Web AI Showcase</title>
+    <meta name="description" content="The fundamental move: type one Japanese sentence and a Japanese-native model scores it across eight emotions, with probabilities, raw logits, and the SentencePiece pieces it read. In your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎭</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Japanese WRIME emotion</a></p>
+
+    <header>
+      <p class="eyebrow">use case · basics</p>
+      <h1>Basics: score one Japanese sentence across eight emotions</h1>
+      <p class="lede">
+        Emotion classification in its simplest form. Pick a Japanese sentence — or write your own — and the
+        model ranks all eight emotions with a probability and the raw logit behind each, plus the
+        SentencePiece pieces it split your text into.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <div class="emo-sample-row" id="samples" role="group" aria-label="Sample Japanese sentences by emotion"></div>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">
+        日本語のテキスト (Japanese text)
+        <textarea id="text" class="emo-input" rows="2" disabled>明日の旅行が待ちきれない、本当に楽しみだ。</textarea>
+      </label>
+
+      <div id="resultWrap" hidden>
+        <div id="verdict" class="emo-verdict" aria-live="polite"></div>
+        <div class="emo-prob-list" id="probs" aria-live="polite"></div>
+        <div class="emo-readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>latency <b id="rMs">–</b></span><span>entropy <b id="rEnt">–</b></span></div>
+        <h4 style="font-family:var(--font-body);font-size:.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:.9rem 0 .1rem">SentencePiece pieces — dashed = a token boundary (▁) the tokenizer chose in a spaceless sentence</h4>
+        <div id="tokStrip" class="emo-tok-strip" aria-label="SentencePiece token strip"></div>
+      </div>
+
+      <p class="muted" style="font-size:.85rem;margin-top:.6rem">
+        Every score is a real, on-device forward pass. The eight emotions are Plutchik's set, the labels the
+        WRIME corpus uses.
+      </p>
+    </section>
+
+    <p class="crumbs"><a href="../">← Back to Japanese WRIME emotion</a> · Next: <a href="../practical/">Practical →</a></p>
+
+    <script type="module">
+      import { EmotionEngine, EMOTION_META, EMOTION_CSS, renderVerdict, renderProbs, renderTokenStrip, entropyOf, debounce } from "../emotion.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = EMOTION_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new EmotionEngine();
+      let loaded = false;
+
+      const SAMPLES = [
+        { emo: "joy", text: "今日はとても嬉しい気分です。" },
+        { emo: "sadness", text: "大切なペットが亡くなって、とても悲しい。" },
+        { emo: "anticipation", text: "明日の旅行が待ちきれない、本当に楽しみだ。" },
+        { emo: "surprise", text: "え、まさかそんなことが起きるなんて驚いた！" },
+        { emo: "anger", text: "約束を破られて本当に腹が立つ。許せない。" },
+        { emo: "fear", text: "夜道を一人で歩くのがとても怖い。" },
+        { emo: "disgust", text: "この部屋は汚くて気持ち悪い。" },
+        { emo: "trust", text: "彼はいつも約束を守る、信頼できる人だ。" },
+      ];
+      const samplesEl = $("samples");
+      for (const s of SAMPLES) {
+        const meta = EMOTION_META[s.emo];
+        const b = document.createElement("button");
+        b.type = "button"; b.className = "emo-chip";
+        b.innerHTML = `<span aria-hidden="true">${meta.emoji}</span><span class="emo-chip-hint">${meta.jp}</span>`;
+        b.setAttribute("aria-label", `${meta.en} sample: ${s.text}`);
+        b.addEventListener("click", () => { $("text").value = s.text; run(); });
+        samplesEl.append(b);
+      }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "arajun/ruri-v3-30m-wrime-onnx", runtime: "transformers.js", dtype: "fp32", sizeMB: 156, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("text").disabled = false; loaded = true; run(); },
+      });
+
+      const debouncedRun = debounce(run, 350);
+      $("text").addEventListener("input", () => { if (loaded) debouncedRun(); });
+
+      async function run() {
+        if (!loaded) return;
+        const text = $("text").value.trim();
+        if (!text) { $("resultWrap").hidden = true; return; }
+        $("runStatus").hidden = false; $("runStatus").classList.remove("err", "ok"); $("runStatus").textContent = "Scoring…";
+        try {
+          const r = await engine.classify(text);
+          $("resultWrap").hidden = false;
+          renderVerdict($("verdict"), r.dist, r.label);
+          renderProbs($("probs"), r.dist, r.label);
+          renderTokenStrip($("tokStrip"), r.tokens);
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = r.ms + " ms";
+          $("rEnt").textContent = entropyOf(r.dist).toFixed(2) + " bits";
+          $("runStatus").textContent = "Done."; $("runStatus").classList.add("ok");
+        } catch (err) { $("runStatus").textContent = "Scoring failed: " + err.message; $("runStatus").classList.add("err"); }
+      }
+    </script>
+  </body>
+</html>

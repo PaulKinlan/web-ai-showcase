@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Japanese WRIME emotion — Wild: an emotion tug-of-war · Web AI Showcase</title>
+    <meta name="description" content="Edit a Japanese sentence and watch the winning emotion flip in real time as you change one word. A live, in-browser probe of how a Japanese emotion model reacts to negation, intensifiers and mixed feelings." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎭</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Japanese WRIME emotion</a></p>
+
+    <header>
+      <p class="eyebrow">use case · wild</p>
+      <h1>Wild: an emotion tug-of-war</h1>
+      <p class="lede">
+        Eight emotions, one sentence, and a live scoreboard. Edit the Japanese below — flip a word, add a
+        negation, pile on an intensifier — and watch the winning emotion change as you type. It's the fastest
+        way to feel where a Japanese emotion model is confident, where it hedges, and where a single particle
+        tips the balance. Every keystroke is a real forward pass on your device.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <div class="emo-sample-row" id="presets" role="group" aria-label="Editing prompts to try"></div>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">
+        Edit this Japanese sentence
+        <textarea id="text" class="emo-input" rows="2" disabled>これは最高の一日だった。</textarea>
+      </label>
+
+      <div id="stage" hidden>
+        <div class="emo-tug-winner" id="winner" aria-live="polite"></div>
+        <div class="emo-prob-list" id="probs" aria-live="polite"></div>
+        <div class="emo-readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>latency <b id="rMs">–</b></span><span>top-1 mass <b id="rMass">–</b></span><span>entropy <b id="rEnt">–</b></span></div>
+      </div>
+
+      <div class="emo-card" style="margin-top:1rem">
+        <h4>Things to try</h4>
+        <ul style="margin:.3rem 0 0;padding-inline-start:1.1rem;font-size:.86rem;line-height:1.6">
+          <li>Add 〜ない to negate: <code>楽しい</code> → <code>楽しくない</code>. Does joy collapse?</li>
+          <li>Stack intensifiers: <code>怖い</code> → <code>すごく怖い</code> → <code>本当にとても怖い</code>. Watch the top-1 mass climb.</li>
+          <li>Mix two feelings in one sentence and see which emotion the model lets win.</li>
+          <li>Swap a single emoji at the end (😊 / 😢 / 🤬) and watch the whole board move.</li>
+        </ul>
+      </div>
+    </section>
+
+    <p class="crumbs"><a href="../practical/">← Practical</a> · <a href="../">Japanese WRIME emotion</a> · Next: <a href="../multi-model/">Multi-model →</a></p>
+
+    <script type="module">
+      import { EmotionEngine, EMOTION_META, EMOTION_CSS, renderProbs, entropyOf, debounce } from "../emotion.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = EMOTION_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new EmotionEngine();
+      let loaded = false;
+
+      const PRESETS = [
+        "これは最高の一日だった。",
+        "これは最悪の一日だった。",
+        "楽しい",
+        "楽しくない",
+        "すごく怖いけど、少し楽しみでもある。",
+        "まさか君が来るなんて信じられない！",
+      ];
+      const presetsEl = $("presets");
+      for (const p of PRESETS) {
+        const b = document.createElement("button");
+        b.type = "button"; b.className = "emo-chip";
+        b.textContent = p.length > 14 ? p.slice(0, 13) + "…" : p;
+        b.setAttribute("aria-label", "Load: " + p);
+        b.addEventListener("click", () => { $("text").value = p; run(); });
+        presetsEl.append(b);
+      }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "arajun/ruri-v3-30m-wrime-onnx", runtime: "transformers.js", dtype: "fp32", sizeMB: 156, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("text").disabled = false; loaded = true; run(); },
+      });
+
+      const debouncedRun = debounce(run, 250);
+      $("text").addEventListener("input", () => { if (loaded) debouncedRun(); });
+
+      async function run() {
+        if (!loaded) return;
+        const text = $("text").value.trim();
+        if (!text) { $("stage").hidden = true; return; }
+        $("runStatus").hidden = true;
+        try {
+          const r = await engine.classify(text);
+          const meta = EMOTION_META[r.label];
+          $("stage").hidden = false;
+          const w = $("winner");
+          w.style.background = `color-mix(in srgb, ${meta.color} 22%, transparent)`;
+          w.style.borderColor = meta.color;
+          w.innerHTML = `<span class="emo-tug-emoji" aria-hidden="true">${meta.emoji}</span>` +
+            `<span class="emo-tug-label">${meta.jp} <span class="emo-en">${meta.en}</span></span>` +
+            `<span class="emo-tug-conf">${(r.dist[r.label].prob * 100).toFixed(0)}%</span>`;
+          renderProbs($("probs"), r.dist, r.label);
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = r.ms + " ms";
+          $("rMass").textContent = (r.dist[r.label].prob * 100).toFixed(0) + "%";
+          $("rEnt").textContent = entropyOf(r.dist).toFixed(2) + " bits";
+        } catch (err) {
+          $("runStatus").hidden = false; $("runStatus").classList.add("err");
+          $("runStatus").textContent = "Scoring failed: " + err.message;
+        }
+      }
+    </script>
+    <style>
+      .emo-tug-winner { display: flex; align-items: center; gap: .7rem; border: 2px solid var(--accent);
+        border-radius: 12px; padding: .6rem 1rem; margin: .3rem 0 .6rem; }
+      .emo-tug-emoji { font-size: 2.2rem; line-height: 1; }
+      .emo-tug-label { font-family: var(--font-display); font-size: 1.5rem; }
+      .emo-tug-conf { margin-inline-start: auto; font-family: var(--font-mono); font-size: 1.1rem; color: var(--muted); }
+    </style>
+  </body>
+</html>

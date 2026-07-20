@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Japanese WRIME emotion — Practical: an emotion board for a batch of Japanese text · Web AI Showcase</title>
+    <meta name="description" content="Paste a batch of Japanese reviews, messages or survey answers — one per line — and get an emotion-sorted, colour-coded board, scored locally in your browser. Route angry from anxious from delighted, not just 'negative'." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎭</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Japanese WRIME emotion</a></p>
+
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Practical: an emotion board for a batch of Japanese text</h1>
+      <p class="lede">
+        A real triage tool. Paste a batch of Japanese lines — reviews, support messages, survey answers — and
+        the model scores each one's dominant emotion, then groups and colour-codes them so you can route an
+        <em>angry</em> message differently from an <em>anxious</em> or a <em>disappointed</em> one. Everything
+        runs on your device.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">
+        Japanese lines (one per line)
+        <textarea id="text" class="emo-input" rows="7" disabled>店員さんがとても親切で、また来たいと思いました。
+商品が壊れて届いた。本当にがっかりだ。
+配送がこんなに早いなんて驚きました！
+契約内容がわかりにくく、不安で仕方がない。
+何度問い合わせても返事がなく、腹が立つ。
+このお店は信頼できる、いつも安心して買えます。</textarea>
+      </label>
+      <div style="display:flex;flex-wrap:wrap;gap:.5rem;align-items:center;margin:.5rem 0">
+        <button id="scoreBtn" type="button" disabled>Score the batch</button>
+        <label style="font-size:.78rem;font-family:var(--font-mono);color:var(--muted);display:flex;align-items:center;gap:.4rem">
+          <input id="groupBy" type="checkbox" checked /> group by emotion
+        </label>
+        <span class="emo-hint" id="count"></span>
+      </div>
+
+      <div id="board"></div>
+    </section>
+
+    <p class="crumbs"><a href="../basics/">← Basics</a> · <a href="../">Japanese WRIME emotion</a> · Next: <a href="../wild/">Wild →</a></p>
+
+    <script type="module">
+      import { EmotionEngine, EMOTION_META, CLASS_ORDER, EMOTION_CSS, escapeHTML } from "../emotion.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = EMOTION_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new EmotionEngine();
+      let loaded = false;
+      let lastResults = null;
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "arajun/ruri-v3-30m-wrime-onnx", runtime: "transformers.js", dtype: "fp32", sizeMB: 156, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("text").disabled = false; $("scoreBtn").disabled = false; loaded = true; score(); },
+      });
+
+      $("scoreBtn").addEventListener("click", score);
+      $("groupBy").addEventListener("change", () => { if (lastResults) render(lastResults); });
+
+      async function score() {
+        if (!loaded) return;
+        const lines = $("text").value.split("\n").map((l) => l.trim()).filter(Boolean);
+        if (!lines.length) { $("board").replaceChildren(); $("count").textContent = ""; return; }
+        $("scoreBtn").disabled = true;
+        $("runStatus").hidden = false; $("runStatus").classList.remove("err", "ok");
+        $("runStatus").textContent = `Scoring ${lines.length} line(s)…`;
+        try {
+          const r = await engine.classifyMany(lines);
+          lastResults = r.results;
+          render(r.results);
+          $("count").textContent = `${r.results.length} line(s) · ${r.ms} ms · ${r.device.toUpperCase()}`;
+          $("runStatus").textContent = "Done."; $("runStatus").classList.add("ok");
+        } catch (err) { $("runStatus").textContent = "Scoring failed: " + err.message; $("runStatus").classList.add("err"); }
+        finally { $("scoreBtn").disabled = false; }
+      }
+
+      function card(res) {
+        const meta = EMOTION_META[res.label];
+        const conf = res.dist[res.label].prob;
+        const el = document.createElement("div");
+        el.className = "emo-line-card";
+        el.style.borderInlineStartColor = meta.color;
+        el.innerHTML =
+          `<span class="emo-line-badge" style="background:${meta.color}"><span aria-hidden="true">${meta.emoji}</span> ${meta.jp}</span>` +
+          `<span class="emo-line-text">${escapeHTML(res.text)}</span>` +
+          `<span class="emo-line-conf">${(conf * 100).toFixed(0)}%</span>`;
+        return el;
+      }
+
+      function render(results) {
+        const board = $("board");
+        board.replaceChildren();
+        if ($("groupBy").checked) {
+          for (const emo of CLASS_ORDER) {
+            const group = results.filter((r) => r.label === emo);
+            if (!group.length) continue;
+            const meta = EMOTION_META[emo];
+            const h = document.createElement("h3");
+            h.className = "emo-group-h";
+            h.innerHTML = `<span class="emo-swatch" style="background:${meta.color}" aria-hidden="true"></span> <span aria-hidden="true">${meta.emoji}</span> ${meta.jp} <span class="emo-en">${meta.en}</span> <span class="emo-hint">${group.length}</span>`;
+            board.append(h);
+            for (const r of group.sort((a, b) => b.dist[b.label].prob - a.dist[a.label].prob)) board.append(card(r));
+          }
+        } else {
+          for (const r of results) board.append(card(r));
+        }
+      }
+    </script>
+    <style>
+      .emo-line-card { display: grid; grid-template-columns: auto 1fr auto; gap: .6rem; align-items: center;
+        border: 1px solid var(--border); border-inline-start: 4px solid var(--accent); border-radius: 8px;
+        padding: .45rem .6rem; margin: .35rem 0; background: var(--bg-raised); }
+      .emo-line-badge { font-family: var(--font-mono); font-size: .74rem; color: #fff; padding: .12rem .45rem;
+        border-radius: 999px; white-space: nowrap; }
+      .emo-line-text { font-size: .92rem; min-inline-size: 0; overflow-wrap: anywhere; }
+      .emo-line-conf { font-family: var(--font-mono); font-size: .78rem; color: var(--muted); }
+      .emo-group-h { font-family: var(--font-display); font-size: 1.05rem; margin: 1rem 0 .3rem;
+        display: flex; align-items: center; gap: .4rem; }
+      @media (max-width: 520px) { .emo-line-card { grid-template-columns: auto 1fr; } .emo-line-conf { grid-column: 2; text-align: end; } }
+    </style>
+  </body>
+</html>

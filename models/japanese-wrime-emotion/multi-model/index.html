@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Japanese WRIME emotion — Multi-model: emotion vs polarity · Web AI Showcase</title>
+    <meta name="description" content="Run two models on the same Japanese text: a Japanese-native eight-emotion classifier and the multilingual three-way sentiment model. See how fine-grained emotion and coarse polarity relate — and where they disagree. Both run locally in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎭</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Japanese WRIME emotion</a></p>
+
+    <header>
+      <p class="eyebrow">use case · multi-model</p>
+      <h1>Multi-model: fine-grained emotion vs coarse polarity</h1>
+      <p class="lede">
+        Two models, one Japanese sentence. On the left, this page's <strong>Japanese-native</strong> model
+        scores Plutchik's eight emotions. On the right, the showcase's
+        <a href="/web-ai-showcase/models/multilingual-sentiment/">multilingual XLM-R</a> scores the same text
+        as <strong>negative / neutral / positive</strong>. Watching them side by side shows what an
+        eight-emotion, language-specialist model buys you over three-way polarity — and surfaces the
+        interesting cases where they disagree (a <em>surprised</em> or <em>fearful</em> message the polarity
+        model calls "neutral"). Both run entirely on your device.
+      </p>
+    </header>
+
+    <section class="panel">
+      <p class="muted">Load both models (the emotion model ~156 MB; the multilingual sentiment model ~279 MB,
+        on demand), then score any Japanese text through both at once.</p>
+
+      <h3 style="font-size:.9rem;margin:.4rem 0 .2rem">🎭 Japanese emotion (8-way)</h3>
+      <div id="emo-loader"></div>
+      <h3 style="font-size:.9rem;margin:.8rem 0 .2rem">🌍 Multilingual sentiment (3-way)</h3>
+      <div id="senti-loader"></div>
+
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <div class="emo-sample-row" id="samples" role="group" aria-label="Sample Japanese sentences"></div>
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.4rem">
+        日本語のテキスト (Japanese text)
+        <textarea id="text" class="emo-input" rows="2" disabled>まさか君が来るなんて、信じられないけど嬉しい。</textarea>
+      </label>
+
+      <div class="emo-grid two" id="grid" hidden style="margin-top:.8rem">
+        <div class="emo-card">
+          <h4>🎭 Emotion — 8-way (Japanese-native)</h4>
+          <div id="emoVerdict" class="emo-verdict" aria-live="polite"></div>
+          <div class="emo-prob-list" id="emoProbs" aria-live="polite"></div>
+        </div>
+        <div class="emo-card">
+          <h4>🌍 Polarity — 3-way (multilingual)</h4>
+          <div id="sentiVerdict" class="senti-verdict" aria-live="polite"></div>
+          <div class="prob-list" id="sentiProbs" aria-live="polite"></div>
+        </div>
+      </div>
+      <p class="muted" id="agree" style="font-size:.85rem;margin-top:.6rem"></p>
+    </section>
+
+    <p class="crumbs"><a href="../wild/">← Wild</a> · <a href="../">Japanese WRIME emotion</a></p>
+
+    <script type="module">
+      import { EmotionEngine, EMOTION_META, EMOTION_CSS, renderVerdict as renderEmoVerdict, renderProbs as renderEmoProbs, debounce } from "../emotion.js";
+      import { SentimentEngine, renderVerdict as renderSentiVerdict, renderProbs as renderSentiProbs, SENTI_CSS } from "/web-ai-showcase/models/multilingual-sentiment/sentiment.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style"); style.textContent = EMOTION_CSS + SENTI_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const emo = new EmotionEngine();
+      const senti = new SentimentEngine();
+      let emoReady = false, sentiReady = false;
+
+      const SAMPLES = [
+        "まさか君が来るなんて、信じられないけど嬉しい。",
+        "商品が壊れて届いた。本当にがっかりだ。",
+        "この結果には正直かなり驚いている。",
+        "夜道を一人で歩くのが怖い。",
+        "彼はいつも約束を守る、信頼できる人だ。",
+      ];
+      const samplesEl = $("samples");
+      for (const s of SAMPLES) {
+        const b = document.createElement("button");
+        b.type = "button"; b.className = "emo-chip";
+        b.textContent = s.length > 16 ? s.slice(0, 15) + "…" : s;
+        b.setAttribute("aria-label", "Load: " + s);
+        b.addEventListener("click", () => { $("text").value = s; run(); });
+        samplesEl.append(b);
+      }
+
+      createModelLoader({
+        mount: $("emo-loader"),
+        model: { modelId: "arajun/ruri-v3-30m-wrime-onnx", runtime: "transformers.js", dtype: "fp32", sizeMB: 156, requiresWebGPU: false },
+        load: async (onProgress) => { await emo.load(onProgress); return emo; },
+        onReady: () => { emoReady = true; maybeReady(); },
+      });
+      createModelLoader({
+        mount: $("senti-loader"),
+        model: { modelId: "onnx-community/twitter-xlm-roberta-base-sentiment-ONNX", runtime: "transformers.js", dtype: "q8", sizeMB: 279, requiresWebGPU: false },
+        load: async (onProgress) => { await senti.load(onProgress); return senti; },
+        onReady: () => { sentiReady = true; maybeReady(); },
+      });
+
+      function maybeReady() { if (emoReady && sentiReady) { $("text").disabled = false; run(); } }
+
+      const debouncedRun = debounce(run, 400);
+      $("text").addEventListener("input", () => { if (emoReady && sentiReady) debouncedRun(); });
+
+      async function run() {
+        if (!emoReady || !sentiReady) return;
+        const text = $("text").value.trim();
+        if (!text) { $("grid").hidden = true; $("agree").textContent = ""; return; }
+        $("runStatus").hidden = false; $("runStatus").classList.remove("err", "ok");
+        $("runStatus").textContent = "Scoring through both models…";
+        try {
+          const [e, s] = await Promise.all([emo.classify(text), senti.classify(text)]);
+          $("grid").hidden = false;
+          renderEmoVerdict($("emoVerdict"), e.dist, e.label);
+          renderEmoProbs($("emoProbs"), e.dist, e.label);
+          renderSentiVerdict($("sentiVerdict"), s.dist, s.label);
+          renderSentiProbs($("sentiProbs"), s.dist, s.label);
+          const meta = EMOTION_META[e.label];
+          const POS = new Set(["joy", "anticipation", "trust"]);
+          const NEG = new Set(["sadness", "anger", "fear", "disgust"]);
+          const expected = POS.has(e.label) ? "positive" : NEG.has(e.label) ? "negative" : "neutral";
+          const agree = expected === s.label;
+          $("agree").innerHTML = `Emotion says <b>${meta.jp} ${meta.en}</b>, polarity says <b>${s.label}</b> — ` +
+            (agree
+              ? `they line up (${meta.en} maps to ${expected}).`
+              : `they <b>diverge</b>. ${meta.en} isn't cleanly ${s.label}; this is exactly where an 8-emotion model tells you something polarity can't (e.g. surprise reads as "neutral" to a positive/negative model).`);
+          $("runStatus").textContent = "Done."; $("runStatus").classList.add("ok");
+        } catch (err) { $("runStatus").textContent = "Scoring failed: " + err.message; $("runStatus").classList.add("err"); }
+      }
+    </script>
+  </body>
+</html>
