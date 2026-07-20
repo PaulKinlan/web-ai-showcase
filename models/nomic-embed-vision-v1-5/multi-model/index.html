@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Nomic Multi-model — search → caption · Web AI Showcase</title>
+    <meta name="description" content="Two on-device models composed: Nomic retrieves the best-matching image for a phrase, then ViT-GPT2 writes a caption for it — both run locally, nothing uploaded." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🔗</text></svg>" />
+    <style>
+      .caption-box { font-family: var(--font-display, Georgia, serif); font-size: 1.2rem; line-height: 1.4; padding: .7rem .9rem; border-radius: var(--radius); background: var(--bg-raised); border: 1px solid var(--border); min-block-size: 2.4em; margin: .5rem 0; }
+    </style>
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Nomic multimodal</a></p>
+
+    <header>
+      <p class="eyebrow">use case · multi-model</p>
+      <h1>Multi-model: search → caption</h1>
+      <p class="lede">
+        Compose two on-device models. <strong>Nomic</strong> retrieves the gallery image that best matches
+        your phrase (cross-modal search); then <strong>ViT-GPT2</strong> writes a fresh caption describing
+        that image. Retrieval finds it, captioning explains it — a mini image-search-with-descriptions
+        pipeline. Two downloads, then everything runs locally.
+      </p>
+    </header>
+
+    <section class="panel">
+      <p class="muted" style="font-size:.82rem;margin:0 0 .3rem"><strong>Model 1 — Nomic Embed Vision + Text</strong> (~236 MB)</p>
+      <div id="loader-nomic"></div>
+      <p class="muted" style="font-size:.82rem;margin:.6rem 0 .3rem"><strong>Model 2 — ViT-GPT2 captioning</strong> (~250 MB)</p>
+      <div id="loader-cap"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="query-row">
+        <label for="query">Search phrase <input type="text" id="query" value="a dog outdoors" autocomplete="off" /></label>
+        <button id="run" type="button" disabled>Search + caption</button>
+      </div>
+      <div class="chip-wrap" id="examples">
+        <button class="chip" type="button">a dog outdoors</button>
+        <button class="chip" type="button">a mountain landscape</button>
+        <button class="chip" type="button">a busy market</button>
+        <button class="chip" type="button">a bicycle</button>
+      </div>
+
+      <div class="canvas-grid" style="display:flex;flex-wrap:wrap;gap:1rem;align-items:flex-start;margin-top:.6rem">
+        <div style="flex:1 1 220px">
+          <p class="muted" style="font-size:.8rem;margin:0 0 .2rem;text-transform:uppercase;letter-spacing:.05em">Best match (retrieved)</p>
+          <img id="retrieved" alt="The gallery image retrieved for your phrase" style="inline-size:100%;max-block-size:280px;object-fit:contain;border-radius:8px;border:1px solid var(--border);background:var(--bg-raised)" />
+        </div>
+        <div style="flex:1 1 260px">
+          <p class="muted" style="font-size:.8rem;margin:0 0 .2rem;text-transform:uppercase;letter-spacing:.05em">ViT-GPT2 caption</p>
+          <div class="caption-box" id="caption" aria-live="polite"></div>
+          <div class="readout" id="readout" hidden><span>match <b id="rMatch">–</b></span><span>retrieve <b id="rSearch">–</b></span><span>caption <b id="rCap">–</b></span></div>
+        </div>
+      </div>
+      <p class="muted" style="font-size:.85rem">Nomic indexes the gallery once; each phrase re-ranks it (fast) and captions only the winning image. Nothing is uploaded.</p>
+      <p class="credit">Gallery images via Wikimedia Commons (see the <a href="../#ref-h">model page</a> for attribution).</p>
+    </section>
+
+    <p class="crumbs"><a href="../wild/">← Wild</a> · <a href="../">Nomic multimodal</a></p>
+
+    <script type="module">
+      import { NomicEngine, cosine, urlToDataURL, escapeHTML, NOMIC_CSS } from "../nomic.js";
+      import { CaptionEngine } from "../../vit-gpt2-captioning/cap.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = NOMIC_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const nomic = new NomicEngine();
+      const cap = new CaptionEngine();
+      const GALLERY = [
+        { key: "person", src: "../g-person.jpg", cap: "person", alt: "A person portrait" },
+        { key: "dog", src: "../g-dog.jpg", cap: "dog", alt: "A dog on grass" },
+        { key: "fruit", src: "../g-fruit.jpg", cap: "fruit", alt: "Citrus fruit" },
+        { key: "mountains", src: "../g-mountains.jpg", cap: "mountains", alt: "A mountain valley" },
+        { key: "nightcity", src: "../g-nightcity.jpg", cap: "night city", alt: "A city at night" },
+        { key: "bicycle", src: "../g-bicycle.jpg", cap: "bicycle", alt: "A bicycle" },
+        { key: "market", src: "../g-market.jpg", cap: "market", alt: "A market crowd" },
+        { key: "glass", src: "../g-glass.jpg", cap: "glass", alt: "Abstract glass" },
+      ];
+      const embByKey = new Map(); const urlByKey = new Map();
+      let nomicReady = false, capReady = false, indexed = false;
+      function maybeEnable() { $("run").disabled = !(indexed && capReady); }
+
+      for (const chip of $("examples").children) chip.addEventListener("click", () => { $("query").value = chip.textContent; if (!$("run").disabled) go(); });
+      $("query").addEventListener("keydown", (e) => { if (e.key === "Enter" && !$("run").disabled) go(); });
+
+      createModelLoader({ mount: $("loader-nomic"), model: { modelId: "nomic-ai/nomic-embed-vision-v1.5", runtime: "transformers.js", dtype: "q8", sizeMB: 236, requiresWebGPU: false }, load: async (p) => { await nomic.load(p); return nomic; }, onReady: async () => {
+        nomicReady = true; $("status").textContent = "Indexing gallery…";
+        try { for (const g of GALLERY) { const u = await urlToDataURL(g.src); urlByKey.set(g.key, u); const r = await nomic.embedImage(u, g.key); embByKey.set(g.key, r.embedding); }
+          indexed = true; maybeEnable(); $("status").textContent = capReady ? "Ready — search + caption." : "Gallery indexed; loading captioner…"; }
+        catch (e) { $("status").textContent = "Indexing failed: " + e.message; $("status").classList.add("err"); }
+      } });
+      createModelLoader({ mount: $("loader-cap"), model: { modelId: "Xenova/vit-gpt2-image-captioning", runtime: "transformers.js", dtype: "q8", sizeMB: 250, requiresWebGPU: false }, load: async (p) => { await cap.load(p); return cap; }, onReady: () => { capReady = true; maybeEnable(); if (indexed) { $("status").textContent = "Ready — search + caption."; $("status").classList.add("ok"); } } });
+
+      $("run").addEventListener("click", go);
+      async function go() {
+        const q = $("query").value.trim(); if (!q || $("run").disabled) return;
+        $("run").disabled = true; $("status").classList.remove("err", "ok"); $("status").textContent = "Retrieving best match…"; $("caption").textContent = "";
+        try {
+          const r = await nomic.embedText(q, true);
+          const scored = GALLERY.map((g) => ({ g, s: cosine(r.embedding, embByKey.get(g.key)) })).sort((a, b) => b.s - a.s);
+          const best = scored[0];
+          $("retrieved").src = best.g.src;
+          $("rMatch").textContent = `${best.g.cap} (${best.s.toFixed(3)})`; $("rSearch").textContent = r.ms + " ms";
+          $("status").textContent = "Captioning the match…";
+          const c = await cap.caption(urlByKey.get(best.g.key), 30);
+          $("caption").textContent = c.caption; $("rCap").textContent = c.ms + " ms"; $("readout").hidden = false;
+          $("status").textContent = "Done — retrieved + captioned."; $("status").classList.add("ok");
+        } catch (e) { $("status").textContent = "Composition failed: " + e.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      }
+
+      if (new URLSearchParams(location.search).has("auto")) {
+        (async () => {
+          const t0 = Date.now();
+          const kick = (m) => { const b = $(m).querySelector(".loader-actions button"); if (b && /download/i.test(b.textContent)) b.click(); };
+          while ($("run").disabled && Date.now() - t0 < 280000) { kick("loader-nomic"); kick("loader-cap"); await new Promise((r) => setTimeout(r, 500)); }
+          if (!$("run").disabled) go();
+        })();
+      }
+    </script>
+  </body>
+</html>

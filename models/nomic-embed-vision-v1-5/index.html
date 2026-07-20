@@ -1,0 +1,359 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Nomic multimodal embeddings — search images by meaning in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run Nomic Embed Vision + Text locally in your browser: type a phrase and rank a gallery of images by meaning, or find visually-similar images — CLIP-style cross-modal search from real 768-d embeddings, no server, nothing uploaded."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🔎</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">image-feature-extraction · vision + language · WASM · ~236 MB</p>
+      <h1>Nomic multimodal embeddings — search images by <em>meaning</em></h1>
+      <p class="lede">
+        Two aligned models project pictures <em>and</em> words into the same 768-number space, so a phrase
+        and an image become comparable. Type <code>a dog</code> and the dog photo rises to the top; click an
+        image and find the ones most like it. CLIP-style cross-modal search — from the Nomic family — with
+        real embeddings you can see, all on your device.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table glance-table">
+        <tbody>
+          <tr><th>Models</th><td><a href="https://huggingface.co/nomic-ai/nomic-embed-vision-v1.5" target="_blank" rel="noopener">nomic-ai/nomic-embed-vision-v1.5</a> (image) + <a href="https://huggingface.co/nomic-ai/nomic-embed-text-v1.5" target="_blank" rel="noopener">nomic-ai/nomic-embed-text-v1.5</a> (text)</td></tr>
+          <tr><th>Task / pipeline</th><td><code>image-feature-extraction</code> + text <code>feature-extraction</code>, one shared space</td></tr>
+          <tr><th>Architecture</th><td>ViT image tower + nomic-BERT text tower, aligned (Nomic Embed multimodal)</td></tr>
+          <tr><th>Output</th><td>768-d embedding per image / per text, L2-normalised (cosine = dot product)</td></tr>
+          <tr><th>Quantization</th><td>q8 (8-bit) ONNX, both towers</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (runs anywhere; no WebGPU needed)</td></tr>
+          <tr><th>Download</th><td>~236 MB total (~96 MB vision + ~140 MB text), cached after first load</td></tr>
+          <tr><th>License</th><td>Apache-2.0 (Nomic AI)</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers, Canvas, FileReader — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">When the models load, the gallery is embedded once. Then search it two ways: type a phrase (text → image), or pick a photo to find look-alikes (image → image). Everything is on-device.</p>
+
+      <div id="model-loader"></div>
+      <p class="status" id="idxStatus" role="status" aria-live="polite"></p>
+
+      <div class="seg" role="group" aria-label="Search mode" style="margin:.4rem 0">
+        <button id="modeText" type="button" aria-pressed="true">Text → image</button>
+        <button id="modeImage" type="button" aria-pressed="false">Image → image</button>
+      </div>
+
+      <div id="textPanel">
+        <div class="query-row">
+          <label for="query">Search phrase
+            <input type="text" id="query" value="a dog on the grass" autocomplete="off" />
+          </label>
+          <button id="run" type="button" disabled>Search</button>
+        </div>
+        <div class="chip-wrap" id="examples" aria-label="Example queries">
+          <button class="chip" type="button">a dog on the grass</button>
+          <button class="chip" type="button">a mountain landscape</button>
+          <button class="chip" type="button">citrus fruit</button>
+          <button class="chip" type="button">a bicycle</button>
+          <button class="chip" type="button">a city at night</button>
+          <button class="chip" type="button">a busy market</button>
+        </div>
+      </div>
+
+      <div id="imagePanel" hidden>
+        <p class="muted" style="font-size:.85rem">Click a gallery photo below to use it as the query — the others re-rank by visual similarity.</p>
+      </div>
+
+      <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop your own image to add to the gallery">
+        <span id="dropText">Drop your own image here to add it to the gallery, or click to choose</span>
+        <input type="file" id="file" accept="image/*" hidden />
+      </div>
+
+      <p class="muted" style="font-size:.8rem;margin:.6rem 0 .2rem;text-transform:uppercase;letter-spacing:.05em">Gallery</p>
+      <div class="gallery" id="gallery" aria-label="Image gallery — ranked by similarity to the query"></div>
+      <p class="credit">Gallery images via Wikimedia Commons — see <a href="#ref-h">references</a> for full attribution.</p>
+
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>query embed <b id="rMs">–</b></span>
+        <span>space <b>768-d, unit-normalised</b></span>
+        <span>top match <b id="rTop">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside</h3>
+      <p class="muted">
+        Every image and every phrase becomes one 768-number vector, unit-normalised so its length is 1.
+        Similarity is the <strong>cosine</strong> — here a plain dot product — between the query vector and
+        each image vector. Below is the query's vector as a colour fingerprint (warm = positive, blue =
+        negative), then the exact cosine to each gallery image. Same gallery, different phrase → different
+        ranking. That is the whole trick, and it is cross-modal: text and image share one space.
+      </p>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Run a search to see the query vector and the cosine table.</div>
+      <div id="insideWrap" hidden>
+        <p class="muted" style="font-size:.8rem;margin:.2rem 0 0">Query embedding (768-d fingerprint)</p>
+        <div class="emb-strip" id="embStrip" aria-hidden="true"></div>
+        <table class="inside-table">
+          <thead><tr><th>Image</th><th>cosine</th><th>rank</th></tr></thead>
+          <tbody id="insideRows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        A shared image–text space turns "search" into "compare vectors." No fixed tags, no per-image API
+        call — you embed once, then rank by meaning, in the browser, for free.
+      </p>
+      <ul>
+        <li><strong>Natural-language photo search</strong> — find images by a phrase you type, over a private library, with nothing uploaded.</li>
+        <li><strong>Visual similarity / dedup</strong> — "more like this" recommendations and near-duplicate detection from image embeddings alone.</li>
+        <li><strong>Zero-shot tagging &amp; moderation</strong> — score images against label phrases you invent at runtime (like CLIP), no training.</li>
+        <li><strong>On-device RAG for images</strong> — build a local vector index of a photo set and retrieve by text, offline and private.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Type a phrase and watch the gallery re-rank by meaning — feel cross-modal search first-hand.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Zero-shot image tagging: score any image against label phrases you type, no training.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Embedding explorer: see the whole gallery arranged by similarity to whatever you pick.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">Search → caption: retrieve the best image for a phrase, then ViT-GPT2 describes it.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>Both towers load with the low-level Transformers.js classes and share a 768-d space:</p>
+      <pre><code>import { AutoModel, AutoProcessor, AutoTokenizer, RawImage } from "@huggingface/transformers";
+
+const proc  = await AutoProcessor.from_pretrained("nomic-ai/nomic-embed-vision-v1.5");
+const vis   = await AutoModel.from_pretrained("nomic-ai/nomic-embed-vision-v1.5", { dtype: "q8" });
+const tok   = await AutoTokenizer.from_pretrained("nomic-ai/nomic-embed-text-v1.5");
+const txt   = await AutoModel.from_pretrained("nomic-ai/nomic-embed-text-v1.5", { dtype: "q8" });
+
+// image → 768-d (CLS token of last_hidden_state)
+const img = await (await vis(await proc(await RawImage.read(url)))).last_hidden_state;
+// text  → 768-d (mean-pooled), prefixed "search_query: " for queries
+const q   = await txt(tok("search_query: a dog", { padding: true }));
+// cosine of the L2-normalised vectors = similarity</code></pre>
+      <p class="muted">
+        This page runs both towers in a Web Worker and L2-normalises every vector there, so ranking the
+        gallery on the main thread is a handful of dot products. Nothing is uploaded.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/nomic-ai/nomic-embed-vision-v1.5" target="_blank" rel="noopener">Model card — nomic-embed-vision-v1.5</a></li>
+        <li><a href="https://huggingface.co/nomic-ai/nomic-embed-text-v1.5" target="_blank" rel="noopener">Model card — nomic-embed-text-v1.5</a></li>
+        <li><a href="https://www.nomic.ai/blog/posts/nomic-embed-vision" target="_blank" rel="noopener">Nomic — Nomic Embed Vision (aligned multimodal embeddings)</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+      <p class="credit">Gallery images (all via Wikimedia Commons): person — Jones, W. A. (Public domain); dog — Tudor Washington Collins (CC BY 4.0); citrus — Scott Bauer, USDA (Public domain); mountains — KennyOMG (CC BY-SA 3.0); night city — King of Hearts (CC BY-SA 3.0); bicycle — Ingolfson (Public domain); market — Francisco Anzola (CC BY 3.0); glass — steven powell (CC BY 2.0).</p>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { NomicEngine, cosine, fileToDataURL, urlToDataURL, escapeHTML, NOMIC_CSS, embStripHTML } from "./nomic.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = NOMIC_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new NomicEngine();
+
+      // Bundled, rights-safe gallery (src + a short caption + attribution).
+      const GALLERY = [
+        { key: "person", src: "g-person.jpg", cap: "person", alt: "Studio portrait of a young woman in a striped cardigan and skirt" },
+        { key: "dog", src: "g-dog.jpg", cap: "dog", alt: "A dog standing on grass" },
+        { key: "fruit", src: "g-fruit.jpg", cap: "fruit", alt: "A still-life of citrus fruits" },
+        { key: "mountains", src: "g-mountains.jpg", cap: "mountains", alt: "A green mountain valley" },
+        { key: "nightcity", src: "g-nightcity.jpg", cap: "night city", alt: "A city skyline at night" },
+        { key: "bicycle", src: "g-bicycle.jpg", cap: "bicycle", alt: "A mountain bike leaning against a wall" },
+        { key: "market", src: "g-market.jpg", cap: "market", alt: "A busy riverside market crowd" },
+        { key: "glass", src: "g-glass.jpg", cap: "glass", alt: "An abstract transparent glass circle" },
+      ];
+      const embByKey = new Map();     // key → Float32Array (image embedding)
+      let items = [];                 // {key, src, cap, alt, tileEl, score}
+      let mode = "text";              // "text" | "image"
+      let queryImageKey = null;       // in image mode
+      let indexed = false;
+
+      // ---- build gallery tiles ----
+      function buildGallery() {
+        $("gallery").replaceChildren(...GALLERY.map((g) => {
+          const btn = document.createElement("button");
+          btn.type = "button"; btn.className = "tile"; btn.dataset.key = g.key;
+          btn.setAttribute("aria-label", `${g.alt} — ${g.cap}`);
+          btn.innerHTML = `<img src="${g.src}" alt="${escapeHTML(g.alt)}" /><span class="cap">${escapeHTML(g.cap)}</span>`;
+          btn.addEventListener("click", () => onTileClick(g.key));
+          return { ...g, tileEl: btn };
+        }).map((it) => { items.push(it); return it.tileEl; }));
+      }
+      items = []; buildGallery();
+
+      function onTileClick(key) {
+        if (mode === "image") { queryImageKey = key; runImageSearch(); }
+      }
+
+      // ---- mode toggle ----
+      function setMode(m) {
+        mode = m;
+        $("modeText").setAttribute("aria-pressed", String(m === "text"));
+        $("modeImage").setAttribute("aria-pressed", String(m === "image"));
+        $("textPanel").hidden = m !== "text";
+        $("imagePanel").hidden = m !== "image";
+        clearRanks();
+      }
+      $("modeText").addEventListener("click", () => setMode("text"));
+      $("modeImage").addEventListener("click", () => setMode("image"));
+
+      // ---- examples ----
+      for (const chip of $("examples").children) {
+        chip.addEventListener("click", () => { $("query").value = chip.textContent; if (indexed) runTextSearch(); });
+      }
+
+      // ---- upload: embed the image and add it to the gallery ----
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      file.addEventListener("change", () => file.files[0] && addUploaded(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) addUploaded(f); });
+      async function addUploaded(f) {
+        if (!indexed) { $("idxStatus").textContent = "Wait for the gallery to finish indexing first."; return; }
+        const url = await fileToDataURL(f);
+        const key = "up-" + Date.now();
+        const g = { key, src: url, cap: "yours", alt: "Your uploaded image" };
+        const btn = document.createElement("button");
+        btn.type = "button"; btn.className = "tile"; btn.dataset.key = key;
+        btn.setAttribute("aria-label", "Your uploaded image");
+        btn.innerHTML = `<img src="${url}" alt="Your uploaded image" /><span class="cap">yours</span>`;
+        btn.addEventListener("click", () => onTileClick(key));
+        $("gallery").append(btn);
+        items.push({ ...g, tileEl: btn });
+        $("idxStatus").textContent = "Embedding your image…";
+        try {
+          const r = await engine.embedImage(url, key);
+          embByKey.set(key, r.embedding);
+          $("idxStatus").textContent = "Added your image to the gallery.";
+          if (mode === "text" && indexed) runTextSearch();
+        } catch (err) { $("idxStatus").textContent = "Couldn't embed your image: " + err.message; $("idxStatus").classList.add("err"); }
+      }
+
+      // ---- model load + gallery indexing ----
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "nomic-ai/nomic-embed-vision-v1.5", runtime: "transformers.js", dtype: "q8", sizeMB: 236, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: async () => { await indexGallery(); },
+      });
+
+      async function indexGallery() {
+        $("idxStatus").textContent = "Indexing gallery (embedding 8 images)…";
+        try {
+          for (const it of items) {
+            const url = await urlToDataURL(it.src);
+            const r = await engine.embedImage(url, it.key);
+            embByKey.set(it.key, r.embedding);
+          }
+          indexed = true;
+          $("run").disabled = false;
+          $("idxStatus").textContent = "Gallery indexed — search away."; $("idxStatus").classList.add("ok");
+          runTextSearch();
+        } catch (err) { $("idxStatus").textContent = "Indexing failed: " + err.message; $("idxStatus").classList.add("err"); }
+      }
+
+      // ---- search ----
+      $("run").addEventListener("click", () => mode === "text" ? runTextSearch() : (queryImageKey ? runImageSearch() : null));
+      $("query").addEventListener("keydown", (e) => { if (e.key === "Enter") runTextSearch(); });
+
+      async function runTextSearch() {
+        const q = $("query").value.trim();
+        if (!q) { $("idxStatus").textContent = "Type a phrase to search."; return; }
+        if (!indexed) return;
+        $("run").disabled = true;
+        try {
+          const r = await engine.embedText(q, true);
+          rankAgainst(r.embedding, r.ms, r.device, null);
+        } catch (err) { $("idxStatus").textContent = "Search failed: " + err.message; $("idxStatus").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      }
+      function runImageSearch() {
+        if (!queryImageKey || !embByKey.has(queryImageKey)) return;
+        rankAgainst(embByKey.get(queryImageKey), 0, engine.device, queryImageKey);
+      }
+
+      function clearRanks() {
+        for (const it of items) { it.tileEl.classList.remove("top", "query"); const b = it.tileEl.querySelector(".rank, .score"); it.tileEl.querySelectorAll(".rank,.score").forEach((n) => n.remove()); }
+        $("readout").hidden = true; $("insideWrap").hidden = true; $("insideEmpty").hidden = false;
+      }
+
+      function rankAgainst(queryEmb, ms, device, selfKey) {
+        const scored = items
+          .filter((it) => embByKey.has(it.key) && it.key !== selfKey)
+          .map((it) => ({ it, score: cosine(queryEmb, embByKey.get(it.key)) }))
+          .sort((a, b) => b.score - a.score);
+        // reset tiles
+        for (const it of items) { it.tileEl.classList.remove("top", "query"); it.tileEl.querySelectorAll(".rank,.score").forEach((n) => n.remove()); }
+        if (selfKey) { const q = items.find((it) => it.key === selfKey); q?.tileEl.classList.add("query"); }
+        scored.forEach(({ it, score }, i) => {
+          if (i === 0) it.tileEl.classList.add("top");
+          const rank = document.createElement("span"); rank.className = "rank"; rank.textContent = i + 1;
+          const sc = document.createElement("span"); sc.className = "score"; sc.textContent = score.toFixed(3);
+          it.tileEl.append(rank, sc);
+        });
+        // readout + see inside
+        $("rBackend").textContent = (device || "wasm").toUpperCase();
+        $("rMs").textContent = selfKey ? "(cached image)" : ms + " ms";
+        $("rTop").textContent = scored[0] ? `${scored[0].it.cap} (${scored[0].score.toFixed(3)})` : "–";
+        $("readout").hidden = false;
+        $("embStrip").innerHTML = embStripHTML(queryEmb);
+        $("insideEmpty").hidden = true; $("insideWrap").hidden = false;
+        $("insideRows").replaceChildren(...scored.map(({ it, score }, i) => {
+          const tr = document.createElement("tr");
+          tr.innerHTML = `<td>${escapeHTML(it.cap)}</td><td>${score.toFixed(4)}</td><td>${i + 1}</td>`;
+          return tr;
+        }));
+      }
+
+      // Headless / deep-link auto-run: ?auto kicks the loader (Download first visit; cached auto-inits),
+      // waits for indexing, and runs the default text search — for verification.
+      if (new URLSearchParams(location.search).has("auto")) {
+        (async () => {
+          const t0 = Date.now();
+          while ($("run").disabled && Date.now() - t0 < 260000) {
+            const b = $("model-loader").querySelector(".loader-actions button");
+            if (b && /download/i.test(b.textContent)) b.click();
+            await new Promise((r) => setTimeout(r, 500));
+          }
+          if (!$("run").disabled) runTextSearch();
+        })();
+      }
+    </script>
+  </body>
+</html>

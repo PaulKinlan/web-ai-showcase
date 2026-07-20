@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Nomic Wild — the semantic axis · Web AI Showcase</title>
+    <meta name="description" content="Place a whole gallery on an axis between two phrases you invent — e.g. indoors ↔ outdoors — using aligned Nomic embeddings, on-device." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🧭</text></svg>" />
+    <style>
+      .axis-row { display: grid; grid-template-columns: 84px 1fr; gap: .7rem; align-items: center; margin: .5rem 0; }
+      .axis-row img { inline-size: 84px; block-size: 60px; object-fit: cover; border-radius: 8px; border: 1px solid var(--border); }
+      .axis-track { position: relative; block-size: 30px; border-radius: 999px; background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 22%, transparent), transparent 50%, color-mix(in srgb, #c85a2b 22%, transparent)); border: 1px solid var(--border); }
+      .axis-track .mid { position: absolute; inset-block: 0; inset-inline-start: 50%; inline-size: 1px; background: var(--border-strong); }
+      .axis-dot { position: absolute; inset-block-start: 50%; transform: translate(-50%, -50%); inline-size: 18px; block-size: 18px; border-radius: 50%; background: var(--accent); border: 2px solid var(--bg); }
+      .axis-dot.b { background: #c85a2b; }
+      .axis-cap { position: absolute; inset-block-start: 50%; transform: translateY(-50%); font-size: .72rem; font-family: var(--font-mono); color: var(--muted); padding-inline: .3rem; }
+      .poles { display: flex; justify-content: space-between; font-size: .78rem; color: var(--muted); font-family: var(--font-mono); margin-top: .2rem; }
+    </style>
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Nomic multimodal</a></p>
+
+    <header>
+      <p class="eyebrow">use case · wild</p>
+      <h1>The semantic axis</h1>
+      <p class="lede">
+        Because words and images share one space, you can build an <em>axis</em> from two phrases and slide
+        every image along it. Type a left pole and a right pole — <code>indoors</code> ↔ <code>outdoors</code>,
+        <code>calm</code> ↔ <code>busy</code>, <code>nature</code> ↔ <code>city</code> — and each photo is
+        placed by how much closer it is to one pole than the other. A classifier you draw with two phrases.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="idxStatus" role="status" aria-live="polite"></p>
+
+      <div class="query-row">
+        <label for="poleA">Left pole <input type="text" id="poleA" value="nature" autocomplete="off" /></label>
+        <label for="poleB">Right pole <input type="text" id="poleB" value="a city" autocomplete="off" /></label>
+        <button id="run" type="button" disabled>Place on axis</button>
+      </div>
+      <div class="chip-wrap" aria-label="Example axes">
+        <button class="chip" type="button" data-a="indoors" data-b="outdoors">indoors ↔ outdoors</button>
+        <button class="chip" type="button" data-a="calm" data-b="busy">calm ↔ busy</button>
+        <button class="chip" type="button" data-a="nature" data-b="a city">nature ↔ city</button>
+        <button class="chip" type="button" data-a="a living thing" data-b="an object">living ↔ object</button>
+      </div>
+
+      <div class="poles"><span id="labelA">nature</span><span id="labelB">a city</span></div>
+      <div id="axis"></div>
+
+      <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>images placed <b id="rN">–</b></span></div>
+    </section>
+
+    <p class="crumbs"><a href="../practical/">← Practical</a> · <a href="../multi-model/">Multi-model →</a></p>
+
+    <script type="module">
+      import { NomicEngine, cosine, urlToDataURL, escapeHTML, NOMIC_CSS } from "../nomic.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = NOMIC_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new NomicEngine();
+      const GALLERY = [
+        { key: "person", src: "../g-person.jpg", cap: "person", alt: "A person portrait" },
+        { key: "dog", src: "../g-dog.jpg", cap: "dog", alt: "A dog on grass" },
+        { key: "fruit", src: "../g-fruit.jpg", cap: "fruit", alt: "Citrus fruit" },
+        { key: "mountains", src: "../g-mountains.jpg", cap: "mountains", alt: "A mountain valley" },
+        { key: "nightcity", src: "../g-nightcity.jpg", cap: "night city", alt: "A city at night" },
+        { key: "bicycle", src: "../g-bicycle.jpg", cap: "bicycle", alt: "A bicycle" },
+        { key: "market", src: "../g-market.jpg", cap: "market", alt: "A market crowd" },
+        { key: "glass", src: "../g-glass.jpg", cap: "glass", alt: "Abstract glass" },
+      ];
+      const embByKey = new Map(); let indexed = false;
+      for (const chip of document.querySelector(".chip-wrap").children) chip.addEventListener("click", () => { $("poleA").value = chip.dataset.a; $("poleB").value = chip.dataset.b; if (indexed) place(); });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "nomic-ai/nomic-embed-vision-v1.5", runtime: "transformers.js", dtype: "q8", sizeMB: 236, requiresWebGPU: false },
+        load: async (p) => { await engine.load(p); return engine; },
+        onReady: async () => {
+          $("idxStatus").textContent = "Indexing gallery…";
+          try { for (const g of GALLERY) { const r = await engine.embedImage(await urlToDataURL(g.src), g.key); embByKey.set(g.key, r.embedding); }
+            indexed = true; $("run").disabled = false; $("idxStatus").textContent = "Gallery indexed — build an axis."; $("idxStatus").classList.add("ok"); place();
+          } catch (e) { $("idxStatus").textContent = "Indexing failed: " + e.message; $("idxStatus").classList.add("err"); }
+        },
+      });
+
+      $("run").addEventListener("click", place);
+      for (const el of [$("poleA"), $("poleB")]) el.addEventListener("keydown", (e) => { if (e.key === "Enter") place(); });
+
+      async function place() {
+        const a = $("poleA").value.trim(), b = $("poleB").value.trim();
+        if (!a || !b || !indexed) return;
+        $("run").disabled = true;
+        try {
+          const [ea, eb] = [await engine.embedText(a, true), await engine.embedText(b, true)];
+          $("labelA").textContent = a; $("labelB").textContent = b;
+          const scored = GALLERY.map((g) => { const e = embByKey.get(g.key); return { g, d: cosine(e, eb.embedding) - cosine(e, ea.embedding) }; });
+          const max = Math.max(...scored.map((s) => Math.abs(s.d)), 0.001);
+          scored.sort((x, y) => x.d - y.d);
+          $("axis").replaceChildren(...scored.map(({ g, d }) => {
+            const pos = 50 + (d / max) * 45; // 5%..95%
+            const row = document.createElement("div"); row.className = "axis-row";
+            row.innerHTML = `<img src="${g.src}" alt="${escapeHTML(g.alt)}" />` +
+              `<div><div class="axis-track"><span class="mid"></span><span class="axis-dot ${d >= 0 ? "b" : ""}" style="inset-inline-start:${pos.toFixed(1)}%"></span><span class="axis-cap" style="inset-inline-start:${pos > 50 ? "4px" : "auto"};inset-inline-end:${pos > 50 ? "auto" : "4px"}">${escapeHTML(g.cap)}</span></div></div>`;
+            return row;
+          }));
+          $("rBackend").textContent = ea.device.toUpperCase(); $("rN").textContent = GALLERY.length; $("readout").hidden = false;
+        } catch (e) { $("idxStatus").textContent = "Failed: " + e.message; $("idxStatus").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      }
+
+      if (new URLSearchParams(location.search).has("auto")) {
+        (async () => { const t0 = Date.now(); while ($("run").disabled && Date.now() - t0 < 260000) { const b = $("model-loader").querySelector(".loader-actions button"); if (b && /download/i.test(b.textContent)) b.click(); await new Promise((r) => setTimeout(r, 500)); } if (!$("run").disabled) place(); })();
+      }
+    </script>
+  </body>
+</html>

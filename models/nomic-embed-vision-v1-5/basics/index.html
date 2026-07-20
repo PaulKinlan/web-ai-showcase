@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Nomic Basics — search images by a phrase · Web AI Showcase</title>
+    <meta name="description" content="The fundamentals of cross-modal search: type a phrase and rank a gallery of images by meaning, using aligned Nomic image + text embeddings, on-device." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🔎</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Nomic multimodal</a></p>
+
+    <header>
+      <p class="eyebrow">use case · basics</p>
+      <h1>Basics: search images by a phrase</h1>
+      <p class="lede">
+        The fundamental capability, plainly. Type a phrase and the gallery re-ranks by <em>meaning</em> —
+        the closest image to your words rises to the top. Both the phrase and every image become a 768-d
+        vector in one shared space; similarity is the cosine between them. All on your device.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="idxStatus" role="status" aria-live="polite"></p>
+
+      <div class="query-row">
+        <label for="query">Search phrase <input type="text" id="query" value="a mountain landscape" autocomplete="off" /></label>
+        <button id="run" type="button" disabled>Search</button>
+      </div>
+      <div class="chip-wrap" id="examples" aria-label="Example queries">
+        <button class="chip" type="button">a dog on the grass</button>
+        <button class="chip" type="button">a mountain landscape</button>
+        <button class="chip" type="button">citrus fruit</button>
+        <button class="chip" type="button">a bicycle</button>
+        <button class="chip" type="button">a city at night</button>
+      </div>
+
+      <p class="muted" style="font-size:.8rem;margin:.6rem 0 .2rem;text-transform:uppercase;letter-spacing:.05em">Gallery — ranked by similarity</p>
+      <div class="gallery" id="gallery"></div>
+      <p class="credit">Gallery images via Wikimedia Commons (see the <a href="../#ref-h">model page</a> for attribution).</p>
+
+      <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>query embed <b id="rMs">–</b></span><span>top match <b id="rTop">–</b></span></div>
+    </section>
+
+    <p class="crumbs"><a href="../">← Nomic multimodal</a> · <a href="../practical/">Practical →</a></p>
+
+    <script type="module">
+      import { NomicEngine, cosine, urlToDataURL, escapeHTML, NOMIC_CSS } from "../nomic.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = NOMIC_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new NomicEngine();
+      const GALLERY = [
+        { key: "person", src: "../g-person.jpg", cap: "person", alt: "Studio portrait of a young woman" },
+        { key: "dog", src: "../g-dog.jpg", cap: "dog", alt: "A dog standing on grass" },
+        { key: "fruit", src: "../g-fruit.jpg", cap: "fruit", alt: "A still-life of citrus fruits" },
+        { key: "mountains", src: "../g-mountains.jpg", cap: "mountains", alt: "A green mountain valley" },
+        { key: "nightcity", src: "../g-nightcity.jpg", cap: "night city", alt: "A city skyline at night" },
+        { key: "bicycle", src: "../g-bicycle.jpg", cap: "bicycle", alt: "A mountain bike against a wall" },
+        { key: "market", src: "../g-market.jpg", cap: "market", alt: "A busy riverside market crowd" },
+        { key: "glass", src: "../g-glass.jpg", cap: "glass", alt: "An abstract transparent glass circle" },
+      ];
+      const embByKey = new Map(); const items = []; let indexed = false;
+      $("gallery").replaceChildren(...GALLERY.map((g) => {
+        const b = document.createElement("button"); b.type = "button"; b.className = "tile"; b.dataset.key = g.key;
+        b.setAttribute("aria-label", `${g.alt} — ${g.cap}`);
+        b.innerHTML = `<img src="${g.src}" alt="${escapeHTML(g.alt)}" /><span class="cap">${escapeHTML(g.cap)}</span>`;
+        items.push({ ...g, tileEl: b }); return b;
+      }));
+      for (const chip of $("examples").children) chip.addEventListener("click", () => { $("query").value = chip.textContent; if (indexed) search(); });
+      $("query").addEventListener("keydown", (e) => { if (e.key === "Enter") search(); });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "nomic-ai/nomic-embed-vision-v1.5", runtime: "transformers.js", dtype: "q8", sizeMB: 236, requiresWebGPU: false },
+        load: async (p) => { await engine.load(p); return engine; },
+        onReady: async () => {
+          $("idxStatus").textContent = "Indexing gallery…";
+          try { for (const it of items) { const r = await engine.embedImage(await urlToDataURL(it.src), it.key); embByKey.set(it.key, r.embedding); }
+            indexed = true; $("run").disabled = false; $("idxStatus").textContent = "Gallery indexed — search away."; $("idxStatus").classList.add("ok"); search();
+          } catch (e) { $("idxStatus").textContent = "Indexing failed: " + e.message; $("idxStatus").classList.add("err"); }
+        },
+      });
+
+      $("run").addEventListener("click", search);
+      async function search() {
+        const q = $("query").value.trim(); if (!q || !indexed) return;
+        $("run").disabled = true;
+        try {
+          const r = await engine.embedText(q, true);
+          const scored = items.map((it) => ({ it, s: cosine(r.embedding, embByKey.get(it.key)) })).sort((a, b) => b.s - a.s);
+          for (const it of items) { it.tileEl.classList.remove("top"); it.tileEl.querySelectorAll(".rank,.score").forEach((n) => n.remove()); }
+          scored.forEach(({ it, s }, i) => { if (i === 0) it.tileEl.classList.add("top"); const rk = document.createElement("span"); rk.className = "rank"; rk.textContent = i + 1; const sc = document.createElement("span"); sc.className = "score"; sc.textContent = s.toFixed(3); it.tileEl.append(rk, sc); });
+          $("rBackend").textContent = r.device.toUpperCase(); $("rMs").textContent = r.ms + " ms"; $("rTop").textContent = `${scored[0].it.cap} (${scored[0].s.toFixed(3)})`; $("readout").hidden = false;
+        } catch (e) { $("idxStatus").textContent = "Search failed: " + e.message; $("idxStatus").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      }
+
+      if (new URLSearchParams(location.search).has("auto")) {
+        (async () => { const t0 = Date.now(); while ($("run").disabled && Date.now() - t0 < 260000) { const b = $("model-loader").querySelector(".loader-actions button"); if (b && /download/i.test(b.textContent)) b.click(); await new Promise((r) => setTimeout(r, 500)); } if (!$("run").disabled) search(); })();
+      }
+    </script>
+  </body>
+</html>
