@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>YOLOv8-pose — single-stage multi-person pose in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run YOLOv8-pose locally in your browser: one forward pass finds EVERY person and their 17 COCO keypoints at once — a single-stage detector+pose head, distinct from top-down ViTPose and MediaPipe. See the objectness grid it decodes from." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🤸</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">keypoint-detection · vision · WASM · ~13 MB</p>
+      <h1>YOLOv8-pose — find everyone's skeleton in one pass</h1>
+      <p class="lede">
+        YOLOv8-pose is a <strong>single-stage</strong> pose estimator: one forward pass over the whole
+        image returns a box, a confidence, and 17 COCO keypoints for <em>every</em> person at once — so
+        it poses a whole crowd without a separate detector. That's a different design from the
+        <a href="/web-ai-showcase/models/vitpose-pose/">top-down ViTPose demo</a> (which needs a person
+        box per crop) and from <a href="/web-ai-showcase/models/pose-landmarker/">MediaPipe BlazePose</a>.
+        At ~13 MB it runs on the universal WebAssembly/CPU path — no WebGPU, no cloud, all on your device.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/Xenova/yolov8n-pose" target="_blank" rel="noopener">Xenova/yolov8n-pose</a> — ONNX export of Ultralytics YOLOv8n-pose</td></tr>
+          <tr><th>Task</th><td><code>keypoint-detection</code> — single-stage detector + pose head</td></tr>
+          <tr><th>Architecture</th><td>YOLOv8n backbone/neck + a pose head → one <code>[1, 56, 8400]</code> tensor (4 box + 1 conf + 17×3 keypoints per anchor)</td></tr>
+          <tr><th>Output</th><td>Per person: a box, a confidence, and 17 COCO keypoints (x, y in image pixels + a visibility each)</td></tr>
+          <tr><th>Approach</th><td>Bottom-up single-stage — finds and poses <strong>every</strong> person in one pass (multi-person, no separate detector)</td></tr>
+          <tr><th>Quantization</th><td>fp32 (<code>onnx/model.onnx</code>) — decoded with Non-Max-Suppression</td></tr>
+          <tr><th>Runtime</th><td>onnxruntime-web (raw ONNX Runtime Web) — no transformers.js YOLO class exists</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (runs anywhere; no WebGPU needed)</td></tr>
+          <tr><th>Download</th><td>~13 MB, cached after first load</td></tr>
+          <tr><th>License</th><td>AGPL-3.0 (Ultralytics YOLOv8 — same family/license as the built YOLOv10 &amp; YOLO11 demos)</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers, OffscreenCanvas, Canvas, FileReader — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Pick a sample or drop a photo, hit Detect poses, and every person's 17-point skeleton is drawn straight onto the canvas. The sliders set the confidence threshold and toggle boxes.</p>
+
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image with people in it">
+        <span id="dropText">Drop a photo with people, or click to choose</span>
+        <input type="file" id="file" accept="image/*" hidden />
+      </div>
+      <div class="sample-strip" id="samples" aria-label="Sample photos">
+        <img class="sample-thumb active" src="sample-players.jpg" data-src="sample-players.jpg" alt="Several football players on a pitch" tabindex="0" role="button" />
+        <img class="sample-thumb" src="sample-yoga.jpg" data-src="sample-yoga.jpg" alt="A person in a yoga warrior pose on a beach" tabindex="0" role="button" />
+        <img class="sample-thumb" src="sample-athlete.jpg" data-src="sample-athlete.jpg" alt="An athlete crouching to tie a shoe" tabindex="0" role="button" />
+      </div>
+
+      <div class="field-row">
+        <button id="run" type="button" disabled>Detect poses</button>
+        <label style="flex-direction:row;align-items:center;gap:.4rem"><input type="checkbox" id="showBoxes" checked /> Draw boxes</label>
+      </div>
+
+      <div class="slider-row">
+        <label for="conf">Min confidence</label>
+        <input type="range" id="conf" min="0.05" max="0.9" step="0.05" value="0.25" />
+        <output id="confOut" for="conf">0.25</output>
+      </div>
+
+      <div class="canvas-wrap">
+        <canvas id="stage" class="stage-canvas" tabindex="0" aria-label="Result: the photo with a 17-point body skeleton drawn on every detected person"></canvas>
+      </div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>total <b id="rMs">–</b></span>
+        <span>inference <b id="rInf">–</b></span>
+        <span>people <b id="rPeople">–</b></span>
+        <span>candidates <b id="rCand">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside — the objectness grid</h3>
+      <p class="muted">
+        Before Non-Max-Suppression, YOLOv8 scores <strong>8400 anchor points</strong> across three grids.
+        This heatmap is the person-confidence over the largest 80×80 grid — literally where the network
+        "sees" a body. Bright cells become the boxes that survive NMS; per-person keypoint confidences
+        are on the right.
+      </p>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Detect poses to see the objectness grid.</div>
+      <div id="insideWrap" hidden>
+        <div class="hm-wrap">
+          <div>
+            <canvas id="hm" class="hm-canvas" aria-label="Objectness heatmap over the 80x80 anchor grid"></canvas>
+            <p class="muted" id="hmNote" style="font-size:.78rem;margin-top:.3rem"></p>
+          </div>
+          <table class="inside-table" style="flex:1 1 260px">
+            <thead><tr><th>person</th><th>score</th><th>visible joints</th></tr></thead>
+            <tbody id="insideRows"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        A single-stage pose model turns "where is everyone and how are they standing?" into one cheap,
+        private, offline function call. Because detection and pose are fused, a crowded scene costs one
+        pass, not one-per-person — ideal for real-time and mobile.
+      </p>
+      <ul>
+        <li><strong>Crowd &amp; sports analytics</strong> — pose every player on a pitch in one shot and read formations, spacing, or actions.</li>
+        <li><strong>Fitness &amp; physio</strong> — check squat depth, plank alignment, or arm angle from joint coordinates, with nothing uploaded.</li>
+        <li><strong>Interactive installations</strong> — drive avatars, games, or art from live full-body motion, entirely in the browser.</li>
+        <li><strong>Safety &amp; ergonomics</strong> — flag falls, slouching, or unsafe lifting posture from shoulder/hip/knee geometry, on-device.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Pose everyone in a photo and read each person's box, confidence, and 17 COCO keypoints.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Form &amp; posture coach — compute joint angles (elbow, knee, back) and get plain-language feedback.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">A stick-figure puppet studio: drive clean skeleton avatars from any photo — or go live with your webcam.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">Pose → CLIP: pose everyone, crop each person, and let CLIP zero-shot label what they're doing.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>There's no transformers.js YOLO class, so this page runs the ONNX graph directly with onnxruntime-web and does the two pieces a pipeline would own — letterbox in, decode + NMS out:</p>
+      <pre><code>import * as ort from "onnxruntime-web";
+
+const session = await ort.InferenceSession.create(modelBytes);       // ~13 MB, cached once
+// letterbox the image to 640×640 (aspect-preserving pad, /255, CHW, RGB) → Float32Array
+const input = new ort.Tensor("float32", chw, [1, 3, 640, 640]);
+const { output0 } = await session.run({ images: input });            // [1, 56, 8400]
+
+// per anchor: [0..3]=box cx,cy,w,h · [4]=conf · [5..55]=17×(x,y,visibility), all in 640 space
+// filter by conf, run Non-Max-Suppression, then unpad/unscale back to source pixels.</code></pre>
+      <p class="muted">This page runs exactly that in a Web Worker (with the letterbox on an OffscreenCanvas), and returns the raw objectness grid so "See inside" can show the pre-NMS detections. Multiple people come out of the single pass automatically.</p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/Xenova/yolov8n-pose" target="_blank" rel="noopener">Model card — Xenova/yolov8n-pose</a></li>
+        <li><a href="https://docs.ultralytics.com/tasks/pose/" target="_blank" rel="noopener">Ultralytics YOLOv8 pose docs</a></li>
+        <li><a href="https://github.com/ultralytics/ultralytics" target="_blank" rel="noopener">Ultralytics YOLOv8 (AGPL-3.0)</a></li>
+        <li><a href="https://onnxruntime.ai/docs/tutorials/web/" target="_blank" rel="noopener">ONNX Runtime Web documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://onnxruntime.ai/docs/tutorials/web/" target="_blank" rel="noopener">ONNX Runtime Web</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { PoseEngine, COCO_KEYPOINTS, drawPoses, drawConfGrid, decodeImage, fileToDataURL, urlToBitmap, toBitmap, escapeHTML, personColor, POSE_CSS } from "./yolopose.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style"); style.textContent = POSE_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new PoseEngine();
+      let currentImg = null, currentURL = null, lastResult = null;
+
+      function setStatus(msg, cls) { $("status").textContent = msg; $("status").classList.remove("err","ok"); if (cls) $("status").classList.add(cls); }
+      function minConf() { return +$("conf").value; }
+
+      async function useURL(url, previewSrc) {
+        currentURL = url;
+        currentImg = await decodeImage(previewSrc ?? url);
+        lastResult = null;
+        const c = $("stage"); c.width = currentImg.naturalWidth; c.height = currentImg.naturalHeight;
+        c.getContext("2d").drawImage(currentImg, 0, 0);
+        $("readout").hidden = true; $("insideWrap").hidden = true; $("insideEmpty").hidden = false;
+        $("run").disabled = !engine.ready;
+      }
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        await useURL(el.dataset.src, el.dataset.src);
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } });
+      }
+
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover","dragenter"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave","drop"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) {
+        for (const t of $("samples").children) t.classList.remove("active");
+        $("dropText").textContent = f.name;
+        await useURL(await fileToDataURL(f));
+      }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", e => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
+
+      $("conf").addEventListener("input", () => { $("confOut").textContent = minConf().toFixed(2); if (lastResult) renderResult(lastResult); });
+      $("showBoxes").addEventListener("change", () => lastResult && renderResult(lastResult));
+
+      const autoRun = new URLSearchParams(location.search).has("auto");
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/yolov8n-pose", runtime: "onnxruntime-web", dtype: "fp32", sizeMB: 13, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("run").disabled = !currentImg; setStatus("Model ready.", "ok"); if (autoRun && currentImg) $("run").click(); },
+      });
+      pickSample($("samples").firstElementChild);
+
+      function renderResult(r) {
+        lastResult = r;
+        drawPoses($("stage"), currentImg, r.persons, { minScore: minConf(), boxes: $("showBoxes").checked });
+        $("rBackend").textContent = r.device.toUpperCase();
+        $("rMs").textContent = r.ms + " ms";
+        $("rInf").textContent = r.infMs + " ms";
+        $("rPeople").textContent = r.persons.length;
+        $("rCand").textContent = r.candidates;
+        $("readout").hidden = false;
+        if (r.persons.length > 0) {
+          $("insideEmpty").hidden = true; $("insideWrap").hidden = false;
+          const info = drawConfGrid($("hm"), r.gridConf, r.gridSize);
+          $("hmNote").textContent = `Peak person-confidence ${info.max.toFixed(3)} on the 80×80 grid. Warmer = more person-like. NMS keeps the strongest, non-overlapping boxes.`;
+          $("insideRows").replaceChildren(...r.persons.map((p, i) => {
+            const vis = p.scores.filter(s => s >= minConf()).length;
+            const tr = document.createElement("tr");
+            tr.innerHTML = `<td><span style="display:inline-block;inline-size:.7rem;block-size:.7rem;border-radius:2px;background:${personColor(i)};margin-inline-end:.4rem"></span>#${i+1}</td>
+              <td><span class="conf-bar" style="inline-size:${(p.score*60).toFixed(0)}px"></span>${p.score.toFixed(3)}</td>
+              <td>${vis} / 17</td>`;
+            return tr;
+          }));
+        } else {
+          $("insideEmpty").hidden = false; $("insideWrap").hidden = true;
+          $("insideEmpty").textContent = "No person found in this image.";
+        }
+      }
+
+      $("run").addEventListener("click", async () => {
+        if (!engine.ready || !currentURL) return;
+        $("run").disabled = true; setStatus("Estimating poses…");
+        try {
+          const bmp = await urlToBitmap(currentURL);
+          const r = await engine.estimate(bmp, { conf: 0.05, iou: 0.45 });
+          renderResult(r);
+          setStatus(`Found ${r.persons.length} person(s).`, "ok");
+        } catch (e) { setStatus("Pose estimation failed: " + e.message, "err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>
