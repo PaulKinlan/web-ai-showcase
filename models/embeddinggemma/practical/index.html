@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>EmbeddingGemma Practical — on-device semantic search with a Matryoshka size dial · Web AI Showcase</title>
+    <meta name="description" content="Build a local semantic search index over your own passages with EmbeddingGemma, then dial the vector size from 768 down to 128 with the Matryoshka slider and watch retrieval hold up — 4× smaller vectors, still on-device." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>💎</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">EmbeddingGemma</a></p>
+
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Practical: on-device search, and how small the vectors can get</h1>
+      <p class="lede">
+        Semantic search over your own passages, entirely in the browser: EmbeddingGemma embeds each passage
+        once (as a <em>document</em>), your query once (as a <em>query</em>), and ranks by cosine. The twist is
+        the <strong>Matryoshka slider</strong> — drop the stored vector from 768 down to 128 dimensions and see
+        the ranking barely change. That is the on-device win: a <strong>4–6× smaller index</strong> with almost
+        the same results.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.4rem">
+        Corpus (one passage per line)
+        <textarea id="corpus" rows="9" disabled>The service worker caches the app shell so the site loads instantly on repeat visits and works offline.
+IndexedDB stores structured data in the browser, including large binary blobs, with transactions.
+To rotate an API key, generate a new one in the console, deploy it, then revoke the old key.
+Our refund policy allows returns within 30 days of purchase for a full refund.
+WebGPU exposes the GPU to the web for high-performance compute and machine-learning inference.
+Set the cache-control header to immutable so the browser never revalidates fingerprinted assets.
+The onboarding flow emails a verification link that expires after one hour for security.
+Photosynthesis converts sunlight, water and carbon dioxide into glucose and oxygen in plants.</textarea>
+      </label>
+
+      <div style="display:flex;flex-wrap:wrap;gap:.5rem;align-items:end;margin:.6rem 0">
+        <label style="display:flex;flex-direction:column;gap:.2rem;font-size:.82rem;flex:1;min-inline-size:14rem">
+          Query
+          <input id="query" type="text" value="how do I make the site load fast when offline?" disabled />
+        </label>
+        <button id="index" type="button" disabled>Index &amp; search</button>
+      </div>
+
+      <div class="control" style="max-inline-size:26rem;margin:.2rem 0 .8rem">
+        <label for="dims" style="font-size:.82rem">Stored vector size (Matryoshka): <b id="dimsVal">768</b>-d</label>
+        <div class="row">
+          <input id="dims" type="range" min="0" max="3" step="1" value="0" disabled aria-describedby="dimsHint" />
+        </div>
+        <span id="dimsHint" class="hint" style="font-size:.76rem;color:var(--muted)">768 → 512 → 256 → 128. Re-ranks instantly from the cached full vectors; no re-embedding.</span>
+      </div>
+
+      <div class="sent-list" id="ranked" aria-live="polite"></div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>embed latency <b id="rMs">–</b></span>
+        <span>passages <b id="rN">–</b></span>
+        <span>stored dims <b id="rDim">–</b></span>
+        <span>index size <b id="rSize">–</b></span>
+      </div>
+    </section>
+
+    <p class="muted" style="font-size:.85rem">
+      Everything here is local: the corpus never leaves the tab, the vectors live in memory, and the slider
+      re-ranks from the cached 768-d vectors by truncating + re-normalizing — so you're comparing the exact
+      same embeddings at different budgets. In a real app you would store the truncated vectors in IndexedDB.
+    </p>
+
+    <p class="crumbs"><a href="../basics/">← Basics</a> · <a href="../">EmbeddingGemma</a> · Next: <a href="../wild/">Wild →</a></p>
+
+    <script type="module">
+      import { EmbeddingGemmaEngine, cosine, matryoshka, parseLines, renderRanked, EGEMMA_CSS } from "../egemma.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = EGEMMA_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new EmbeddingGemmaEngine();
+      const DIMS = [768, 512, 256, 128];
+      let store = null; // { texts, docVecs (768-d), qVec (768-d), device, ms }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/embeddinggemma-300m-ONNX", runtime: "transformers.js", dtype: "q8", sizeMB: 300, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("corpus").disabled = false; $("query").disabled = false; $("index").disabled = false; },
+      });
+
+      $("index").addEventListener("click", indexSearch);
+      $("query").addEventListener("keydown", (e) => { if (e.key === "Enter") indexSearch(); });
+      $("dims").addEventListener("input", () => { $("dimsVal").textContent = DIMS[+$("dims").value]; rerank(); });
+
+      async function indexSearch() {
+        const texts = parseLines($("corpus").value);
+        const q = $("query").value.trim();
+        if (texts.length < 2 || !q) { $("status").hidden = false; $("status").textContent = "Need a query and at least two passages."; $("status").classList.add("err"); return; }
+        $("status").hidden = false; $("status").classList.remove("err"); $("status").textContent = "Embedding corpus…";
+        $("index").disabled = true;
+        try {
+          const [dr, qr] = await Promise.all([engine.embed(texts, "document"), engine.embed([q], "query")]);
+          store = { texts: dr.texts, docVecs: dr.embeddings, qVec: qr.embeddings[0], device: dr.device, ms: dr.ms + qr.ms };
+          $("dims").disabled = false;
+          rerank();
+          $("status").hidden = true;
+        } catch (err) { $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("index").disabled = false; }
+      }
+
+      function rerank() {
+        if (!store) return;
+        const d = DIMS[+$("dims").value];
+        const qv = matryoshka(store.qVec, d);
+        const hits = store.texts
+          .map((text, i) => ({ text, score: cosine(qv, matryoshka(store.docVecs[i], d)) }))
+          .sort((a, b) => b.score - a.score);
+        renderRanked($("ranked"), hits);
+        $("readout").hidden = false;
+        $("rBackend").textContent = store.device.toUpperCase();
+        $("rMs").textContent = store.ms + " ms";
+        $("rN").textContent = store.texts.length;
+        $("rDim").textContent = d + "-d";
+        // 4 bytes per float32 dimension per vector — a concrete "index size" for the corpus.
+        const bytes = store.texts.length * d * 4;
+        $("rSize").textContent = (bytes < 1024 ? bytes + " B" : (bytes / 1024).toFixed(1) + " KB");
+      }
+    </script>
+  </body>
+</html>

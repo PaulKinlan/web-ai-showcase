@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>EmbeddingGemma Wild — cross-lingual search: one query, many languages · Web AI Showcase</title>
+    <meta name="description" content="EmbeddingGemma is trained over 100+ languages, so it maps meaning into one shared space regardless of language. Search a mixed-language corpus with an English query and watch it rank by meaning, not words — all in the browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>💎</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">EmbeddingGemma</a></p>
+
+    <header>
+      <p class="eyebrow">use case · wild</p>
+      <h1>Wild: one query, a corpus in many languages</h1>
+      <p class="lede">
+        Because EmbeddingGemma is trained over <strong>100+ languages</strong>, it maps meaning into a single
+        shared vector space no matter the language. So an English query can rank a French, Spanish, German,
+        Japanese or Arabic passage by what it <em>means</em> — no translation step, no per-language index.
+        Type a query in any language and search the mixed corpus below.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.4rem">
+        Multilingual corpus (one passage per line — language tag is just a label)
+        <textarea id="corpus" rows="10" disabled>[EN] A total solar eclipse happens when the Moon passes directly between the Earth and the Sun.
+[FR] Une éclipse solaire totale se produit lorsque la Lune passe entre la Terre et le Soleil.
+[ES] El café con leche se prepara con partes iguales de café espresso y leche caliente.
+[DE] Der Hochgeschwindigkeitszug verbindet die beiden Städte in unter zwei Stunden.
+[JA] 味噌汁は出汁に味噌を溶かして作る日本の伝統的なスープです。
+[IT] La fotosintesi converte la luce solare, l'acqua e l'anidride carbonica in glucosio.
+[PT] O jogador marcou nos últimos minutos e garantiu a vitória da equipa na final.
+[AR] القهوة بالحليب تُحضَّر بمزج القهوة مع الحليب الساخن بكميات متساوية.</textarea>
+      </label>
+
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.5rem 0" id="chips" role="group" aria-label="Example queries"></div>
+
+      <div style="display:flex;flex-wrap:wrap;gap:.5rem;align-items:end;margin:.4rem 0">
+        <label style="display:flex;flex-direction:column;gap:.2rem;font-size:.82rem;flex:1;min-inline-size:14rem">
+          Query (any language)
+          <input id="query" type="text" value="how a solar eclipse works" disabled />
+        </label>
+        <button id="run" type="button" disabled>Search across languages</button>
+      </div>
+
+      <div class="sent-list" id="ranked" aria-live="polite"></div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+        <span>passages <b id="rN">–</b></span>
+        <span>top match <b id="rTop">–</b></span>
+      </div>
+    </section>
+
+    <p class="muted" style="font-size:.85rem">
+      Notice the two coffee-with-milk passages (Spanish and Arabic) cluster together and rise for a
+      coffee query, while the eclipse passages (English and French) win for the eclipse query — matched by
+      meaning across scripts, not by shared words. That is a multilingual embedding space doing its job.
+    </p>
+
+    <p class="crumbs"><a href="../practical/">← Practical</a> · <a href="../">EmbeddingGemma</a> · Next: <a href="../multi-model/">Multi-model →</a></p>
+
+    <script type="module">
+      import { EmbeddingGemmaEngine, cosine, parseLines, renderRanked, EGEMMA_CSS } from "../egemma.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = EGEMMA_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new EmbeddingGemmaEngine();
+
+      const QUERIES = [
+        "how a solar eclipse works",
+        "café au lait",
+        "train rápido entre ciudades",
+        "日本の伝統的なスープ",
+      ];
+      for (const q of QUERIES) {
+        const b = document.createElement("button"); b.className = "secondary"; b.type = "button"; b.textContent = q;
+        b.style.cssText = "font-size:.8rem;min-block-size:2.2rem";
+        b.addEventListener("click", () => { $("query").value = q; run(); });
+        $("chips").append(b);
+      }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/embeddinggemma-300m-ONNX", runtime: "transformers.js", dtype: "q8", sizeMB: 300, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("corpus").disabled = false; $("query").disabled = false; $("run").disabled = false; },
+      });
+
+      $("run").addEventListener("click", run);
+      $("query").addEventListener("keydown", (e) => { if (e.key === "Enter") run(); });
+      async function run() {
+        const texts = parseLines($("corpus").value);
+        const q = $("query").value.trim();
+        if (texts.length < 2 || !q) { $("status").hidden = false; $("status").textContent = "Need a query and at least two passages."; $("status").classList.add("err"); return; }
+        $("status").hidden = false; $("status").classList.remove("err"); $("status").textContent = "Embedding across languages…";
+        $("run").disabled = true;
+        try {
+          const [dr, qr] = await Promise.all([engine.embed(texts, "document"), engine.embed([q], "query")]);
+          const qv = qr.embeddings[0];
+          const hits = dr.texts
+            .map((text, i) => ({ text, score: cosine(qv, dr.embeddings[i]) }))
+            .sort((a, b) => b.score - a.score);
+          renderRanked($("ranked"), hits);
+          $("readout").hidden = false;
+          $("rBackend").textContent = dr.device.toUpperCase();
+          $("rMs").textContent = (dr.ms + qr.ms) + " ms";
+          $("rN").textContent = dr.texts.length;
+          $("rTop").textContent = (hits[0].text.match(/^\[(\w+)\]/)?.[1]) || "–";
+          $("status").hidden = true;
+        } catch (err) { $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      }
+    </script>
+  </body>
+</html>

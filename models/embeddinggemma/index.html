@@ -1,0 +1,378 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>EmbeddingGemma — Google's on-device text embedder in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="EmbeddingGemma-300m: the first embedding model on the Gemma 3 backbone, multilingual over 100+ languages, instruction-prompted, and Matryoshka-truncatable to 128 dimensions. Embed passages, build a cosine matrix, search by meaning, and shrink the vector — real embeddings, no server."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>💎</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">feature-extraction · text (100+ languages) · WASM · ~300 MB</p>
+      <h1>EmbeddingGemma — Google's on-device embedder</h1>
+      <p class="lede">
+        The built embedders here sit on the classic BERT encoder (MiniLM, GTE, BGE, E5) or ModernBERT.
+        <strong>EmbeddingGemma-300m</strong> is different: it is the first embedding model on Google's
+        <strong>Gemma 3</strong> backbone (2025), trained for retrieval across <strong>100+ languages</strong>,
+        it is <strong>instruction-prompted</strong> (queries and documents get different task prefixes), and
+        it is a <strong>Matryoshka</strong> model — its 768-d vector can be truncated to 512 / 256 / 128 and
+        still work, so you can store 4× smaller vectors on-device. Paste passages to build a live similarity
+        matrix, search across languages, and watch the vector shrink. Nothing leaves your device.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/google/embeddinggemma-300m" target="_blank" rel="noopener">google/embeddinggemma-300m</a> · run via the <a href="https://huggingface.co/onnx-community/embeddinggemma-300m-ONNX" target="_blank" rel="noopener">onnx-community/embeddinggemma-300m-ONNX</a> Transformers.js build</td></tr>
+          <tr><th>Task / pipeline</th><td><code>feature-extraction</code></td></tr>
+          <tr><th>Backbone</th><td><strong>Gemma 3</strong> (~308M params) → 768-dimensional sentence embedding. A Gemma decoder repurposed as an encoder, not a BERT.</td></tr>
+          <tr><th>Languages</th><td><strong>100+</strong> — trained multilingual; an English query can retrieve a passage in another language.</td></tr>
+          <tr><th>Prompts</th><td><strong>Instruction-prompted.</strong> Queries → <code>task: search result | query: …</code>; documents → <code>title: none | text: …</code>. The worker applies these.</td></tr>
+          <tr><th>Pooling</th><td><strong>Mean</strong> over token embeddings, then <strong>L2-normalize</strong> → cosine = dot product.</td></tr>
+          <tr><th>Matryoshka dims</th><td><strong>768 → 512 → 256 → 128</strong> — truncate + re-normalize for smaller, cheaper vectors.</td></tr>
+          <tr><th>Context length</th><td>2048 tokens</td></tr>
+          <tr><th>Quantization</th><td>q8 (8-bit) ONNX</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (runs anywhere; no WebGPU needed)</td></tr>
+          <tr><th>Download</th><td>~300 MB, cached after first load</td></tr>
+          <tr><th>License</th><td><a href="https://ai.google.dev/gemma/terms" target="_blank" rel="noopener">Gemma Terms of Use</a> (custom; review before production use)</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Put one passage per line. They're embedded in <span class="mode-tag">document</span> mode
+        (EmbeddingGemma's document prefix); the query below is embedded in <span class="mode-tag">query</span>
+        mode. The matrix shows cosine similarity between every pair; the scatter is a 2D PCA of the 768-d
+        vectors. Then type a query to rank the passages by meaning.</p>
+
+      <div id="model-loader"></div>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
+        Passages (one per line)
+        <textarea id="sentences" rows="8">Transformers replaced recurrence with self-attention, weighing every token against every other in parallel.
+Attention lets a model focus on the most relevant parts of the input when producing each output token.
+Our refund policy allows returns within 30 days of purchase for a full refund.
+Customers may send items back for a month after buying them and get their money back.
+Photosynthesis converts sunlight, water and carbon dioxide into glucose and oxygen in plant chloroplasts.
+La Torre Eiffel, terminada en 1889, es un monumento de hierro forjado en el Campo de Marte de París.</textarea>
+      </label>
+      <div style="margin:.5rem 0;display:flex;gap:.4rem;flex-wrap:wrap">
+        <button id="run" type="button" disabled>Embed &amp; compare</button>
+        <button id="reset" type="button" class="secondary">Reset examples</button>
+      </div>
+      <p class="status" id="rowStatus" role="status" aria-live="polite" hidden></p>
+
+      <div class="grid-2">
+        <div>
+          <h3 style="margin-top:.4rem">Cosine similarity matrix</h3>
+          <div class="matrix-scroll" id="matrix" aria-live="polite"></div>
+        </div>
+        <div>
+          <h3 style="margin-top:.4rem">2D map (PCA)</h3>
+          <div id="projection" aria-live="polite"></div>
+          <p class="muted" id="explained" style="font-size:.78rem;font-family:var(--font-mono)"></p>
+        </div>
+      </div>
+
+      <div style="margin-top:1rem">
+        <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;max-inline-size:34rem">
+          Semantic search — rank the passages above by meaning (query mode)
+          <span style="display:flex;gap:.4rem;flex-wrap:wrap">
+            <input id="query" type="text" value="how do neural networks pay attention?" style="flex:1;min-inline-size:12rem" disabled />
+            <button id="search" type="button" disabled>Search</button>
+          </span>
+        </label>
+        <div class="sent-list" id="ranked" aria-live="polite"></div>
+      </div>
+
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+        <span>passages <b id="rN">–</b></span>
+        <span>dims <b id="rDim">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside — the mean vector, and Matryoshka shrinking</h3>
+      <p class="muted">
+        Gemma 3 emits one 768-number vector per token; EmbeddingGemma <strong>mean-pools</strong> them into a
+        whole-passage embedding and we <strong>L2-normalize</strong> it — so cosine similarity is a plain dot
+        product. Pick a passage to see its real vector, its pre-normalization magnitude, and its token count.
+      </p>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Embed some passages above to inspect a vector.</div>
+      <div id="insideWrap" hidden>
+        <label style="font-size:.82rem;display:flex;gap:.4rem;align-items:center;flex-wrap:wrap">
+          Inspect passage
+          <select id="pick"></select>
+        </label>
+        <div class="readout">
+          <span>dimensions <b>768</b></span>
+          <span>tokens <b id="iTok">–</b> / 2048</span>
+          <span>pre-norm ‖v‖ <b id="iNorm">–</b></span>
+          <span>post-norm ‖v‖ <b>1.000</b></span>
+        </div>
+        <p class="muted" style="font-size:.78rem;margin:.3rem 0">First 128 of 768 dimensions (blue = positive, orange = negative, brighter = larger magnitude):</p>
+        <div class="vec-strip" id="vecStrip"></div>
+        <p class="muted" style="font-size:.78rem;font-family:var(--font-mono);margin-top:.5rem;word-break:break-all" id="vecHead"></p>
+      </div>
+
+      <hr style="border:0;border-top:1px solid var(--border);margin:1.2rem 0" />
+      <h4 style="margin:.2rem 0">Matryoshka — how much accuracy survives truncation?</h4>
+      <p class="muted">
+        EmbeddingGemma is trained so the <em>first</em> 512 / 256 / 128 numbers of its 768-d vector are each a
+        usable embedding on their own. Pick two passages; we truncate both to each size, re-normalize, and
+        show the cosine. Notice how little it moves — that's why you can store 128-d vectors on-device (4× less
+        space) and still retrieve well. Embed some passages above first.
+      </p>
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;align-items:end;margin:.4rem 0">
+        <label style="font-size:.8rem;display:flex;flex-direction:column;gap:.2rem">A <select id="matA"></select></label>
+        <label style="font-size:.8rem;display:flex;flex-direction:column;gap:.2rem">B <select id="matB"></select></label>
+        <button id="matRun" type="button" class="secondary" disabled>Compare across dimensions</button>
+      </div>
+      <div id="matBars" class="mat-bars" aria-live="polite"></div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        Embeddings power search, recommendations, deduplication, clustering and retrieval-augmented generation.
+        EmbeddingGemma's pitch is <strong>a small, multilingual, storage-flexible embedder built for the
+        device</strong>: it runs on a phone-class footprint, retrieves across languages without a translation
+        step, and lets you dial vector size down to 128-d when storage or compute is tight — all in a tab, all
+        private.
+      </p>
+      <ul>
+        <li><strong>On-device semantic search</strong> — index your notes, docs or emails locally; no vectors ever leave the machine.</li>
+        <li><strong>Cross-lingual retrieval</strong> — one index, many languages; an English query finds the Spanish passage.</li>
+        <li><strong>Tiny vector stores</strong> — Matryoshka-truncate to 128-d for 4× smaller indexes on constrained devices.</li>
+        <li><strong>Retrieve → rerank / RAG</strong> — a fast first pass, then a cross-encoder or a local LLM (see the multi-model demo).</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Do two passages mean the same thing? One cosine number — plus why queries and documents get different prefixes.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">On-device semantic search with a live Matryoshka size dial: watch retrieval hold up as the vector shrinks.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Cross-lingual search: one query, a corpus in many languages, ranked by meaning not words.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">EmbeddingGemma retrieves a shortlist, then a cross-encoder reranks the top hits.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>Feature-extraction with mean pooling — the one thing to get right is EmbeddingGemma's task prefixes:</p>
+      <pre><code>import { pipeline } from "@huggingface/transformers";
+
+const extract = await pipeline(
+  "feature-extraction",
+  "onnx-community/embeddinggemma-300m-ONNX",
+); // downloads + caches ~300 MB once
+
+// EmbeddingGemma is instruction-prompted: wrap queries and documents differently.
+const query = "task: search result | query: how do neural networks pay attention?";
+const doc   = "title: none | text: Attention lets a model focus on the most relevant parts of the input…";
+
+const out = await extract([query, doc], { pooling: "mean", normalize: true });
+const [q, d] = out.tolist();
+
+// unit-length vectors → cosine similarity is just the dot product:
+const sim = q.reduce((s, x, i) =&gt; s + x * d[i], 0); // high — same meaning
+
+// Matryoshka: the first 128 numbers are a usable smaller embedding (re-normalize after slicing).
+const small = (v) =&gt; { const h = v.slice(0,128); const n = Math.hypot(...h); return h.map(x =&gt; x/n); };</code></pre>
+      <p class="muted">
+        This page asks the worker for the <em>un</em>-normalized mean vectors so "See inside" can show the real
+        pre-normalization magnitude, then normalizes them in JS. Inference runs in a Web Worker, so the matrix,
+        projection and Matryoshka comparison never jank the page.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/google/embeddinggemma-300m" target="_blank" rel="noopener">Model card — google/embeddinggemma-300m</a></li>
+        <li><a href="https://huggingface.co/onnx-community/embeddinggemma-300m-ONNX" target="_blank" rel="noopener">ONNX build — onnx-community/embeddinggemma-300m-ONNX</a></li>
+        <li><a href="https://developers.googleblog.com/en/introducing-embeddinggemma/" target="_blank" rel="noopener">Introducing EmbeddingGemma (Google, 2025)</a></li>
+        <li><a href="https://arxiv.org/abs/2205.13147" target="_blank" rel="noopener">Paper — Matryoshka Representation Learning (Kusupati et al., 2022)</a></li>
+        <li><a href="https://huggingface.co/spaces/mteb/leaderboard" target="_blank" rel="noopener">MTEB leaderboard — how embedders are benchmarked</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import {
+        EmbeddingGemmaEngine, cosine, matryoshka, simMatrix, pca2d, parseLines,
+        renderMatrix, renderProjection, renderRanked, EGEMMA_CSS,
+      } from "./egemma.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = EGEMMA_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new EmbeddingGemmaEngine();
+      const DEFAULT = $("sentences").value;
+      let last = null; // { texts, embeddings, norms, dim, tokenCounts }
+
+      $("reset").addEventListener("click", () => { $("sentences").value = DEFAULT; });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/embeddinggemma-300m-ONNX", runtime: "transformers.js", dtype: "q8", sizeMB: 300, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => {
+          $("run").disabled = false;
+          $("query").disabled = false;
+          $("search").disabled = false;
+        },
+      });
+
+      $("run").addEventListener("click", run);
+      async function run() {
+        const texts = parseLines($("sentences").value);
+        if (texts.length < 2) {
+          $("rowStatus").hidden = false;
+          $("rowStatus").textContent = "Give at least two distinct passages.";
+          $("rowStatus").classList.add("err");
+          return;
+        }
+        $("rowStatus").hidden = false;
+        $("rowStatus").classList.remove("err");
+        $("rowStatus").textContent = "Embedding…";
+        $("run").disabled = true;
+        try {
+          const r = await engine.embed(texts, "document");
+          last = r;
+          renderMatrix($("matrix"), simMatrix(r.embeddings), r.texts);
+          const { points, explained } = pca2d(r.embeddings);
+          renderProjection($("projection"), points, r.texts);
+          $("explained").textContent = `PC1+PC2 explain ${(explained * 100).toFixed(0)}% of the variance`;
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = r.ms + " ms";
+          $("rN").textContent = r.texts.length;
+          $("rDim").textContent = r.dim;
+          fillInside(r);
+          fillMat(r);
+          $("rowStatus").textContent = "Done.";
+          $("rowStatus").classList.add("ok");
+        } catch (err) {
+          $("rowStatus").textContent = "Embedding failed: " + err.message;
+          $("rowStatus").classList.add("err");
+        } finally {
+          $("run").disabled = false;
+        }
+      }
+
+      $("search").addEventListener("click", search);
+      $("query").addEventListener("keydown", (e) => { if (e.key === "Enter") search(); });
+      async function search() {
+        const q = $("query").value.trim();
+        const texts = parseLines($("sentences").value);
+        if (!q || texts.length < 1) return;
+        $("search").disabled = true;
+        try {
+          const [qr, dr] = await Promise.all([engine.embed([q], "query"), engine.embed(texts, "document")]);
+          const qv = qr.embeddings[0];
+          const hits = dr.texts
+            .map((text, i) => ({ text, score: cosine(qv, dr.embeddings[i]) }))
+            .sort((a, b) => b.score - a.score);
+          renderRanked($("ranked"), hits);
+        } catch (err) {
+          $("ranked").textContent = "Search failed: " + err.message;
+        } finally {
+          $("search").disabled = false;
+        }
+      }
+
+      function fillInside(r) {
+        $("insideEmpty").hidden = true;
+        $("insideWrap").hidden = false;
+        $("pick").replaceChildren(...r.texts.map((t, i) => {
+          const o = document.createElement("option");
+          o.value = String(i);
+          o.textContent = `D${i + 1} — ${t.length > 40 ? t.slice(0, 39) + "…" : t}`;
+          return o;
+        }));
+        showVector(0);
+      }
+      $("pick").addEventListener("change", (e) => showVector(+e.target.value));
+      function showVector(i) {
+        if (!last) return;
+        const v = last.embeddings[i];
+        $("iNorm").textContent = last.norms[i].toFixed(3);
+        $("iTok").textContent = last.tokenCounts?.[i] ?? "–";
+        const maxAbs = Math.max(...v.map(Math.abs)) || 1;
+        $("vecStrip").replaceChildren(...v.slice(0, 128).map((val) => {
+          const cell = document.createElement("span");
+          cell.className = "vec-cell";
+          const t = Math.abs(val) / maxAbs;
+          const hue = val >= 0 ? "var(--accent)" : "var(--warn)";
+          cell.style.background = `color-mix(in srgb, ${hue} ${(t * 100).toFixed(0)}%, var(--bg-raised))`;
+          cell.title = val.toFixed(4);
+          return cell;
+        }));
+        $("vecHead").textContent = "[" + v.slice(0, 8).map((x) => x.toFixed(4)).join(", ") + ", … ] (768-d unit vector)";
+      }
+
+      // ---- Matryoshka: cosine of two passages at 768 / 512 / 256 / 128 ----
+      function fillMat(r) {
+        const opts = () => r.texts.map((t, i) => {
+          const o = document.createElement("option");
+          o.value = String(i);
+          o.textContent = `D${i + 1} — ${t.length > 34 ? t.slice(0, 33) + "…" : t}`;
+          return o;
+        });
+        $("matA").replaceChildren(...opts());
+        $("matB").replaceChildren(...opts());
+        if (r.texts.length > 1) $("matB").value = "1";
+        $("matRun").disabled = false;
+      }
+      $("matRun").addEventListener("click", () => {
+        if (!last) return;
+        const a = last.embeddings[+$("matA").value];
+        const b = last.embeddings[+$("matB").value];
+        const dims = [768, 512, 256, 128];
+        const full = cosine(a, b);
+        $("matBars").replaceChildren(...dims.map((d) => {
+          const c = cosine(matryoshka(a, d), matryoshka(b, d));
+          const row = document.createElement("div");
+          row.className = "mat-row";
+          const lab = document.createElement("span"); lab.className = "lab"; lab.textContent = `${d}-d`;
+          const track = document.createElement("div"); track.className = "mat-track";
+          const fill = document.createElement("div"); fill.className = "mat-fill";
+          fill.style.inlineSize = `${Math.max(0, Math.min(1, c)) * 100}%`;
+          track.append(fill);
+          const val = document.createElement("span"); val.className = "val"; val.textContent = c.toFixed(3);
+          row.append(lab, track, val);
+          return row;
+        }));
+        const note = document.createElement("p");
+        note.className = "ctx-note";
+        note.style.marginTop = ".5rem";
+        note.textContent = `Full 768-d cosine ${full.toFixed(3)}. Storing 128-d instead of 768-d is 6× fewer numbers per vector.`;
+        $("matBars").append(note);
+      });
+    </script>
+  </body>
+</html>

@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>EmbeddingGemma Multi-model — retrieve, then rerank · Web AI Showcase</title>
+    <meta name="description" content="A two-stage local retrieval pipeline: EmbeddingGemma embeds the whole corpus and pulls a fast shortlist by cosine, then a BGE cross-encoder reranks just those top hits for precision. Both models run in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>💎</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">EmbeddingGemma</a></p>
+
+    <header>
+      <p class="eyebrow">use case · multi-model</p>
+      <h1>Multi-model: retrieve with EmbeddingGemma, then rerank</h1>
+      <p class="lede">
+        The standard production retrieval shape, running entirely on-device. Stage one:
+        <strong>EmbeddingGemma</strong> embeds every passage and the query and pulls a shortlist by cosine —
+        fast, because each passage was embedded once. Stage two: a <strong>BGE cross-encoder reranker</strong>
+        reads the query and each shortlisted passage <em>together</em> and re-scores for precision. Watch the
+        order change between the two stages.
+      </p>
+    </header>
+
+    <section class="panel">
+      <h3>1 · EmbeddingGemma (bi-encoder retrieval)</h3>
+      <div id="loaderEmbed"></div>
+      <h3 style="margin-top:1rem">2 · BGE reranker (cross-encoder)</h3>
+      <div id="loaderRerank"></div>
+      <p class="muted" style="font-size:.82rem;margin-top:.4rem">The reranker (~of order 300 MB) loads on demand when you first run the pipeline.</p>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
+        Corpus (one passage per line)
+        <textarea id="corpus" rows="9" disabled>To reset your password, click "Forgot password" on the sign-in page and follow the emailed link.
+The mobile app supports fingerprint and face unlock on supported devices in the security settings.
+Enterprise plans include SSO, audit logs, and a dedicated support channel with a response-time SLA.
+You can export all of your data as JSON or CSV from the account settings page at any time.
+Two-factor authentication adds a one-time code from an authenticator app on top of your password.
+Billing is monthly by default; annual billing gives two months free and a single yearly invoice.
+Our uptime over the last quarter was 99.98%, with all incidents posted on the public status page.
+The API rate limit is 600 requests per minute per key; contact us to raise it for your workload.</textarea>
+      </label>
+      <div style="display:flex;flex-wrap:wrap;gap:.5rem;align-items:end;margin:.5rem 0">
+        <label style="display:flex;flex-direction:column;gap:.2rem;font-size:.82rem;flex:1;min-inline-size:14rem">
+          Query
+          <input id="query" type="text" value="how do I turn on 2FA?" disabled />
+        </label>
+        <label style="display:flex;flex-direction:column;gap:.2rem;font-size:.82rem">
+          Shortlist (top-k)
+          <input id="topk" type="number" min="2" max="8" value="4" style="inline-size:5rem" disabled />
+        </label>
+        <button id="run" type="button" disabled>Retrieve → rerank</button>
+      </div>
+
+      <div class="grid-2">
+        <div>
+          <h3 style="margin-top:.4rem">Stage 1 — retrieved by cosine</h3>
+          <div class="sent-list" id="retrieved" aria-live="polite"></div>
+        </div>
+        <div>
+          <h3 style="margin-top:.4rem">Stage 2 — reranked (cross-encoder)</h3>
+          <div class="sent-list" id="reranked" aria-live="polite"></div>
+        </div>
+      </div>
+      <div class="readout" id="readout" hidden>
+        <span>embed backend <b id="rEmbBackend">–</b></span>
+        <span>rerank backend <b id="rRrBackend">–</b></span>
+        <span>retrieve <b id="rEmbMs">–</b></span>
+        <span>rerank <b id="rRrMs">–</b></span>
+        <span>moved <b id="rMoved">–</b></span>
+      </div>
+    </section>
+
+    <p class="muted" style="font-size:.85rem">
+      Why two stages? The bi-encoder is cheap and scales to millions of passages (each embedded once,
+      offline), but it scores query and passage independently. The cross-encoder is far more precise because
+      it reads them together — but it's too slow to run over a whole corpus, so you only run it on the
+      shortlist. EmbeddingGemma's small vectors make stage one especially cheap on-device.
+    </p>
+
+    <p class="crumbs"><a href="../wild/">← Wild</a> · <a href="../">Back to EmbeddingGemma</a></p>
+
+    <script type="module">
+      import { EmbeddingGemmaEngine, RerankClient, cosine, parseLines, renderRanked, EGEMMA_CSS } from "../egemma.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = EGEMMA_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new EmbeddingGemmaEngine();
+      const reranker = new RerankClient();
+      let rerankerReady = false;
+
+      createModelLoader({
+        mount: $("loaderEmbed"),
+        model: { modelId: "onnx-community/embeddinggemma-300m-ONNX", runtime: "transformers.js", dtype: "q8", sizeMB: 300, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("corpus").disabled = false; $("query").disabled = false; $("topk").disabled = false; $("run").disabled = false; },
+      });
+      createModelLoader({
+        mount: $("loaderRerank"),
+        model: { modelId: "Xenova/bge-reranker-base", runtime: "transformers.js", dtype: "q8", sizeMB: 300, requiresWebGPU: false },
+        load: async (onProgress) => { await reranker.load(onProgress); rerankerReady = true; return reranker; },
+      });
+
+      $("run").addEventListener("click", run);
+      async function run() {
+        const texts = parseLines($("corpus").value);
+        const q = $("query").value.trim();
+        const k = Math.max(2, Math.min(8, +$("topk").value || 4));
+        if (texts.length < 2 || !q) { $("status").hidden = false; $("status").textContent = "Need a query and at least two passages."; $("status").classList.add("err"); return; }
+        $("status").hidden = false; $("status").classList.remove("err"); $("status").textContent = "Stage 1: embedding + retrieving…";
+        $("run").disabled = true;
+        try {
+          const [dr, qr] = await Promise.all([engine.embed(texts, "document"), engine.embed([q], "query")]);
+          const qv = qr.embeddings[0];
+          const scored = dr.texts.map((text, i) => ({ text, score: cosine(qv, dr.embeddings[i]) })).sort((a, b) => b.score - a.score);
+          const shortlist = scored.slice(0, k);
+          renderRanked($("retrieved"), shortlist);
+
+          if (!rerankerReady) { $("status").textContent = "Loading the reranker (first time downloads the cross-encoder)…"; await reranker.load(); rerankerReady = true; }
+          $("status").textContent = "Stage 2: reranking the shortlist…";
+          const rr = await reranker.rerank(q, shortlist.map((h) => h.text));
+          const reranked = rr.ranked.map((r) => ({ text: r.passage, score: r.prob, sub: `relevance logit ${r.logit.toFixed(2)}` }));
+          renderRanked($("reranked"), reranked);
+
+          // How many positions changed between the two orderings?
+          const before = shortlist.map((h) => h.text);
+          const after = reranked.map((h) => h.text);
+          let moved = 0;
+          for (let i = 0; i < after.length; i++) if (before[i] !== after[i]) moved++;
+
+          $("readout").hidden = false;
+          $("rEmbBackend").textContent = dr.device.toUpperCase();
+          $("rRrBackend").textContent = (rr.device || "wasm").toUpperCase();
+          $("rEmbMs").textContent = (dr.ms + qr.ms) + " ms";
+          $("rRrMs").textContent = rr.ms + " ms";
+          $("rMoved").textContent = moved + " / " + after.length;
+          $("status").hidden = true;
+        } catch (err) { $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      }
+    </script>
+  </body>
+</html>
