@@ -105,7 +105,13 @@ short version for tools that look for `AGENTS.md`.
   `language=it` classification ONNX are NER/PII; don't relabel the built multilingual-sentiment),
   **jina-embeddings-v3** (canonical repo ships ONNX but no WASM path: fp32 external-data sidecar fails
   ORT-Web session creation, fp16 aborts at execution on the WASM EP [WebGPU-only fp16 compute], the
-  required LoRA `task_id` path never runs; no q8 export; don't relabel the built jina-v2-base-en).
+  required LoRA `task_id` path never runs; no q8 export; don't relabel the built jina-v2-base-en),
+  **dutch-sentiment** (every Dutch-native sentiment fine-tune [RobBERT/BERTje] is safetensors-only — 0
+  Dutch-native sentiment ONNX; don't relabel multilingual-sentiment), **indonesian-fill-mask** (every
+  canonical Indonesian MLM [indobert p1/p2, cahya, indolem] is safetensors/Flax-only — 0 fill-mask ONNX;
+  the only Indonesian ONNX carry the wrong head; don't relabel a multilingual MLM), **korean-bert-fill-mask**
+  (canonical Korean MLMs are safetensors-only; the only Korean BERT ONNX are head-less feature-extraction
+  [`logits===undefined`] with broken SentencePiece→WordPiece tokenizers; don't relabel a multilingual MLM).
   Never mislabel a substitute as the blocked family.
 - **Version-pin escape hatch (isolated).** If a model's class exists only in a transformers.js newer
   than the shared 3.7.5 pin (e.g. SAM2's `Sam2Model` needs 4.2.0), pin the newer version LOCALLY in

@@ -118,7 +118,10 @@ of every model you can genuinely run in a browser — not a token set. Read `CLA
   ONNX are NER/PII; don't relabel the built multilingual-sentiment), **jina-embeddings-v3** (canonical
   repo's ONNX has no WASM path: fp32 external-data sidecar fails ORT-Web session creation, fp16 aborts
   on the WASM EP [WebGPU-only fp16], required LoRA `task_id` path never runs; no q8; don't relabel the
-  built jina-v2-base-en). Never mislabel a substitute as the blocked family.
+  built jina-v2-base-en), **dutch-sentiment** / **indonesian-fill-mask** / **korean-bert-fill-mask**
+  (language-native classifiers/MLMs whose canonical weights are safetensors/Flax-only with 0 real-head
+  ONNX — the only exports are head-less feature-extraction [`logits===undefined`] or the wrong head;
+  don't relabel a multilingual model). Never mislabel a substitute as the blocked family.
 - **Version-pin escape hatch:** a model needing a transformers.js class newer than the shared 3.7.5
   (e.g. SAM2 needs 4.2.0) may pin the newer version LOCALLY in its own `worker.js` only — never bump
   shared `lib/webai.js`. model-cache is version-agnostic so auto-init still works. Precedent:

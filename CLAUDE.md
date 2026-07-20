@@ -210,8 +210,17 @@ no WASM path: fp32 `model.onnx`+`model.onnx_data` external-data sidecar fails at
 creation [`Module.MountedFiles is not available`], fp16 `model_fp16.onnx` creates but aborts at
 execution on the WASM EP [fp16 compute is a WebGPU-only kernel path], and the required LoRA `task_id`
 path never runs [`Missing the following inputs: task_id`] and still aborts when supplied; no q8/int8
-export exists; a third-party Q8 re-export is non-canonical; don't relabel the built jina-v2-base-en).
-Never mislabel a substitute as the blocked family.
+export exists; a third-party Q8 re-export is non-canonical; don't relabel the built jina-v2-base-en),
+**dutch-sentiment** (every Dutch-native sentiment/emotion fine-tune [RobBERT/RobBERTje/BERTje] is
+safetensors/PyTorch-only — 0 Dutch-native sentiment ONNX on HF; `language=nl` classification ONNX are
+multilingual/other-language/non-sentiment; don't relabel multilingual-sentiment), **indonesian-fill-mask**
+(every canonical Indonesian MLM [indobenchmark indobert p1/p2, cahya, indolem, flax RoBERTa] is
+safetensors/PyTorch/Flax-only — 0 fill-mask ONNX; the only Indonesian ONNX carry the wrong head
+[classification/NER/embedding]; don't relabel a multilingual MLM), **korean-bert-fill-mask** (canonical
+Korean MLMs [klue bert/roberta, kcbert, bert-kor-base, kobert, KR-BERT] are safetensors-only; the only
+Korean BERT ONNX [`Xenova/kobert`, `skt/kobert-base-v1`] are head-less feature-extraction exports
+[`out.logits===undefined`] with broken SentencePiece→WordPiece tokenizers [common words → `[UNK]`];
+don't relabel a multilingual MLM). Never mislabel a substitute as the blocked family.
 
 **Version-pin escape hatch (isolated).** A model whose class exists only in a transformers.js newer
 than the shared 3.7.5 pin (e.g. SAM2 — `Sam2Model` lands in 4.2.0, absent from 3.7.5) may pin the
