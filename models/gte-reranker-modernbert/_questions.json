@@ -1,0 +1,122 @@
+{
+  "schemaVersion": 1,
+  "id": "gte-reranker-modernbert",
+  "revision": 1,
+  "reviewedAt": "2026-07-20T00:00:00Z",
+  "reviewer": "agent build+matrix pass (headless Chrome real download+run on WASM via CDP, standalone Node/transformers.js cross-check, light+dark, mobile+desktop) — revision 1",
+  "frontend": true,
+  "rubric": [
+    {
+      "dimension": "real-inference",
+      "score": 5,
+      "severity": "info",
+      "evidence": "REAL in-browser run (headless Chrome, WASM, persistent profile → clicked 'Download model (~151 MB)' → auto-ran): the model reranked the default Apollo set and the passage that actually answers 'What year did Apollo 11 land on the Moon?' ranked #1 — top-4 = [#1 (was #1) logit 2.87 'Apollo 11 was the spaceflight that first landed humans on the Moon…20 July 1969'; #2 (was #4) logit 2.01 'The Apollo programme was a series of NASA missions…'; #3 (was #3) logit 1.72 'Apollo 13 launched in April 1970 but a mission to land on the Moon was aborted…'; #4 logit 1.61 'Armstrong's first words…']. 0 console errors. Standalone transformers.js 3.7.5 cross-check (Alibaba-NLP/gte-reranker-modernbert-base, q8): logits tensor [4,1] for query 'How many people live in Berlin?' → Berlin+population 2.546 > Berlin+museums 1.231 > Eiffel/Paris -0.539 > photosynthesis -1.007 (correct relevance ordering).",
+      "notes": "Agent-verified real WASM run in the browser; the answer-bearing passage ranked #1 in both the page and the Node cross-check."
+    },
+    {
+      "dimension": "io-shape",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Cross-encoder output shape is one relevance logit per (query,passage) pair (ModernBertForSequenceClassification, num_labels=1 → logits [N,1]); higher = more relevant. Semantics correct: keyword-stuffed decoys that repeat the query's words are pushed down while the genuinely-relevant passage rises. Verified in browser + Node (both [N,1]).",
+      "notes": ""
+    },
+    {
+      "dimension": "runtime-config",
+      "score": 5,
+      "severity": "info",
+      "evidence": "At-a-glance declares the exact model id (Alibaba-NLP/gte-reranker-modernbert-base, linked), task (text-classification used as a cross-encoder reranker), backend (WebAssembly), quantisation (q8 → onnx/model_quantized.onnx) and runtime (Transformers.js 3.7.5 shared pin — the modernbert class is built in, NO version-pin escape hatch needed). Inference runs in a module Web Worker (models/gte-reranker-modernbert/worker.js). Conformance derives declares-model-id/task/backend/quantisation + inference-off-main-thread.",
+      "notes": "Confirmed the modernbert ModernBertForSequenceClassification class loads on the shared 3.7.5 pin — no 4.2.0 override."
+    },
+    {
+      "dimension": "cache-init",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Loads through the shared createModelLoader auto-init architecture (no hand-rolled Load button). Headless run showed 'Download model (~151 MB)'; after the click it auto-loaded to state=ready and ran, exposing a 'Clear cached model' control. A returning visit auto-inits from the transformers.js cache with no Load click. Verified download→ready→run in headless.",
+      "notes": "Agent-verified download + ready + run in a fresh persistent profile."
+    },
+    {
+      "dimension": "states",
+      "score": 5,
+      "severity": "info",
+      "evidence": "A role=status aria-live #runStatus region reports 'Scoring query–passage pairs…' / 'Done.' / errors; the shared loader streams download progress and offers Retry on failure; the WASM path needs no GPU so it works offline once cached. Failures surface on the page (Reranking failed: …), not only the console.",
+      "notes": "Runs on WASM — no WebGPU required; degrades honestly."
+    },
+    {
+      "dimension": "controls",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Query input (Enter reranks), passages textarea, and the Rerank button are real, labelled, keyboard-operable; the use-case pages add scenario chips and a top-k number input (multi-model). All exercised. The results list, before/after view, and cross-encoder-vs-lexical contrast all render from the real run.",
+      "notes": ""
+    },
+    {
+      "dimension": "no-fake-output",
+      "score": 5,
+      "severity": "info",
+      "evidence": "The ranking, logits, sigmoid probabilities and before/after view are all produced by the on-device cross-encoder run (verified real output above). The lexical-overlap column is clearly labelled as a naive contrast baseline, never presented as the model's ranking. No canned result.",
+      "notes": ""
+    },
+    {
+      "dimension": "accessibility",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Buttons expose accessible names; the query input and passages textarea have associated labels; state announced via role=status aria-live. No images without alt (text/table only). Conformance images-have-alt + buttons-have-names derive as auto-checks.",
+      "notes": ""
+    },
+    {
+      "dimension": "responsive",
+      "score": 5,
+      "severity": "info",
+      "evidence": "responsive-check.mjs: desktop (1280×800) + mobile (360×740 DPR3) both automated-clean (0px horizontal overflow, light+dark). The at-a-glance table, ranked-result rows, and the before/after + contrast grids (repeat(auto-fit,minmax(240px,1fr))) collapse cleanly on mobile.",
+      "notes": "Agent-reviewed both device classes via responsive-check."
+    },
+    {
+      "dimension": "performance",
+      "score": 5,
+      "severity": "info",
+      "evidence": "All cross-encoder inference runs in a module Web Worker; the page only renders the returned ranking, so the interaction path stays off the main thread and INP stays low. Batched single forward pass over all pairs. modern-web-guidance identify-inp-causes + break-up-long-tasks consulted and applied.",
+      "notes": ""
+    }
+  ],
+  "guidanceConsulted": [
+    {
+      "id": "identify-inp-causes",
+      "recommendation": "Keep heavy JS off the interaction path so INP stays low.",
+      "appliedOrException": "applied — the cross-encoder batch forward pass runs in a Web Worker; the main thread only renders the ranked list + before/after view.",
+      "evidence": "models/gte-reranker-modernbert/worker.js runs the pipeline; rerank.js renders results; browser run had 0 console errors and stayed responsive"
+    },
+    {
+      "id": "break-up-long-tasks",
+      "recommendation": "Offload / break up long main-thread tasks.",
+      "appliedOrException": "applied — inference is entirely off the main thread in a module worker.",
+      "evidence": "new Worker(WORKER_URL, {type:'module'}) in rerank.js"
+    },
+    {
+      "query": "responsive control panel without horizontal overflow accessible results list",
+      "id": "css-layout",
+      "recommendation": "Fluid grid that wraps; avoid fixed widths; let long passages wrap.",
+      "appliedOrException": "applied — .ba-wrap/.ct-wrap use grid repeat(auto-fit,minmax(240px,1fr)); result rows wrap long passages; responsive-check desktop+mobile 0px overflow.",
+      "evidence": "responsive-check desktop+mobile automated-clean (0px overflow)"
+    },
+    {
+      "id": "accessibility",
+      "recommendation": "Label controls; announce state in a live region.",
+      "appliedOrException": "applied — role=status aria-live #runStatus, labelled query input + passages textarea, keyboard-operable buttons.",
+      "evidence": "index.html run panel markup"
+    },
+    {
+      "id": "cross-document-transitions",
+      "recommendation": "Cross-document view transitions for catalogue↔page nav.",
+      "appliedOrException": "applied — @view-transition navigation:auto in the shared public/styles.css.",
+      "evidence": "shared design system"
+    }
+  ],
+  "openQuestions": [],
+  "followUpGoals": [
+    {
+      "goal": "Add a long-document reranking demo that actually exercises the 8192-token context with multi-paragraph passages, showing where a 512-token reranker would truncate and lose the answer.",
+      "kind": "additive-demo",
+      "priority": "low"
+    }
+  ],
+  "summary": "Revision-1 build+matrix pass for gte-reranker-modernbert (Alibaba-NLP/gte-reranker-modernbert-base, a ModernBERT-backbone cross-encoder reranker, num_labels=1, 8192-token context, English). Real in-browser WASM rerank verified in headless Chrome: the answer-bearing passage ranked #1 on the default Apollo set with 0 console errors; a standalone transformers.js 3.7.5 cross-check confirmed the [N,1] logit shape and correct relevance ordering (Berlin+population 2.55 > museums 1.23 > Paris -0.54 > photosynthesis -1.01). Loads on the SHARED 3.7.5 pin (modernbert class built in — no escape hatch). Desktop+mobile automated-clean; shared auto-init loader, off-main-thread worker, full a11y semantics. Distinct from the built multilingual bge-reranker-v2-m3 (ModernBERT long-context vs XLM-RoBERTa multilingual)."
+}
