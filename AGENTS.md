@@ -131,7 +131,14 @@ short version for tools that look for `AGENTS.md`.
   buildable; don't relabel another language's MMS-TTS), **mms-tts-korean** (`Xenova/mms-tts-kor` is
   `is_uroman:true` with a 25-symbol Latin-only vocab [no Hangul] — Hangul input → empty `input_ids` →
   VITS aborts on the WASM EP; runs only on pre-romanized Latin [no uroman in transformers.js]; applies
-  to every `is_uroman:true` mms-tts checkpoint — check the config first).
+  to every `is_uroman:true` mms-tts checkpoint — check the config first), **mms-tts-kannada**
+  (`onnx-community/mms-tts-kan-ONNX` is `is_uroman:false` with a correct native-Kannada vocab and
+  non-empty `input_ids`, but the ONNX export is DEFECTIVE — aborts for every input: 3.7.5 WASM aborts
+  in the ORT EP for q8/fp32/q4, fp16 fails at session creation, and 4.2.0 reports `Attempting to
+  broadcast an axis by a dimension other than 1. 44 by 45` [a hardcoded even seq dim no add_blank
+  mms-tts input can match]; no other Kannada MMS-TTS ONNX exists. Sibling Hindi [`Xenova/mms-tts-hin`,
+  plain pipeline] + Tamil [`naklitechie/mms-tts-ta-ONNX`, AutoModel + a VitsTokenizer verified
+  byte-identical to the real one since that export omits tokenizer.json] are BUILT).
   Never mislabel a substitute as the blocked family.
 - **Version-pin escape hatch (isolated).** If a model's class exists only in a transformers.js newer
   than the shared 3.7.5 pin (e.g. SAM2's `Sam2Model` needs 4.2.0), pin the newer version LOCALLY in

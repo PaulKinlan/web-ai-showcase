@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MMS-TTS Tamil (VITS) — end-to-end Tamil speech in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run Meta's MMS-TTS Tamil checkpoint locally in your browser: a single-stage VITS model — no separate vocoder — that turns native Tamil-script text into a 16 kHz waveform, with a stochastic duration predictor that gives each generation its own rhythm."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🗣️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">text-to-speech · audio · WASM · ~109 MB</p>
+      <h1>MMS-TTS Tamil — end-to-end Tamil speech, one network</h1>
+      <p class="lede">
+        This is the <strong>Tamil</strong> checkpoint of Meta's MMS-TTS family — a distinct model from the
+        <a href="../mms-tts/">English MMS-TTS demo</a> and the <a href="../mms-tts-hindi/">Hindi one</a>: its own
+        native <strong>Tamil-script</strong> character vocabulary (58 symbols, <code>is_uroman:false</code> —
+        native Tamil, not romanised Latin, and a different script from Hindi's Devanagari) and its own
+        Tamil-trained VITS weights, so it speaks Tamil orthography — vowels அ/ஆ/இ, consonants க/ங/ச, the pulli
+        (்) and vowel signs — that the other checkpoints cannot. VITS is a
+        <strong>conditional VAE with normalizing flows</strong> and a <strong>stochastic duration
+        predictor</strong>: one end-to-end network from text straight to a waveform, no separate vocoder, and
+        the same Tamil sentence comes out with slightly different rhythm every time.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table" style="inline-size:100%;border-collapse:collapse">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/naklitechie/mms-tts-ta-ONNX" target="_blank" rel="noopener">naklitechie/mms-tts-ta-ONNX</a> — a faithful ONNX export of <a href="https://huggingface.co/facebook/mms-tts-tam" target="_blank" rel="noopener">facebook/mms-tts-tam</a> (its vocab is byte-identical to the canonical checkpoint)</td></tr>
+          <tr><th>Task / pipeline</th><td><code>text-to-speech</code> — <code>VitsModel</code>, Tamil text tokens → 16 kHz waveform</td></tr>
+          <tr><th>Architecture</th><td>VITS: conditional VAE + normalizing-flow decoder + monotonic alignment + <em>stochastic</em> duration predictor. End-to-end — no separate vocoder.</td></tr>
+          <tr><th>Language / script</th><td><strong>Tamil (tam)</strong> in native <strong>Tamil script</strong> (<code>is_uroman:false</code>) — one of 1000+ MMS languages, each its own checkpoint</td></tr>
+          <tr><th>Output</th><td>A mono <code>Float32Array</code> waveform at <code>sampling_rate</code> 16000</td></tr>
+          <tr><th>Quantization</th><td>fp32 (full precision) ONNX (<code>model.onnx</code>)</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (WASM) — runs anywhere; no WebGPU needed</td></tr>
+          <tr><th>Download</th><td>~109 MB (fp32), cached after first load</td></tr>
+          <tr><th>License</th><td>CC-BY-NC 4.0 (MMS weights) — non-commercial</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers, Web Audio (playback), Blob URLs, Canvas</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">
+        Type some Tamil and press <strong>பேசு</strong> (Speak). Synthesis runs in a Web Worker; the audio and
+        waveform below are the real output for this device. Press <strong>Speak again</strong> to hear how the
+        stochastic duration predictor re-times the very same words.
+      </p>
+
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+
+      <label class="field" style="margin-top:.6rem">பேசுவதற்கான உரை (Tamil text)
+        <textarea id="text" class="tts" lang="ta">இந்தக் குரல் முழுவதுமாக உங்கள் உலாவியில் உருவாக்கப்படுகிறது, எந்த சேவையகமும் இல்லாமல்.</textarea>
+      </label>
+      <div class="sample-row" id="samples"></div>
+
+      <div class="tts-grid">
+        <span></span>
+        <button id="run" type="button" disabled>பேசு</button>
+      </div>
+
+      <div class="audio-row">
+        <audio id="player" controls preload="none"></audio>
+        <a id="download" class="button secondary" download="mms-tts-tam.wav" hidden>Download .wav</a>
+      </div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>gen time <b id="rMs">–</b></span>
+        <span>audio <b id="rDur">–</b></span>
+        <span>real-time factor <b id="rRtf">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside — the waveform, tokens, and the stochastic duration predictor</h3>
+      <p class="muted">
+        There is no spectrogram-then-vocoder hop here: VITS predicts the <em>waveform itself</em>. Below is the
+        actual 16 kHz waveform (the bar fills as it plays). The <strong>tokens</strong> readout shows how many
+        VITS input ids your Tamil text became (native Tamil characters plus interleaved blank tokens). The
+        interesting part is <strong>timing</strong> — VITS decides how long each Tamil sound lasts with a
+        <em>stochastic</em> module, so re-running the same text changes the duration.
+      </p>
+      <div class="wave-wrap"><canvas id="wave" class="wave" aria-label="Generated Tamil speech waveform"></canvas></div>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Speak something to see its waveform and stats.</div>
+      <div class="readout" id="insideStats" hidden>
+        <span>input tokens <b id="iTok">–</b></span>
+        <span>samples <b id="iSamples">–</b></span>
+        <span>sample rate <b id="iRate">–</b></span>
+        <span>duration <b id="iDur">–</b></span>
+        <span>duration spread <b id="iSpread">–</b></span>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        A Tamil voice that runs entirely on-device: no per-character bill, no text leaving the tab. Tamil is a
+        classical language spoken by tens of millions across Tamil Nadu, Sri Lanka, Singapore and the diaspora;
+        VITS won't out-act a big expressive model, but it's the model you reach for when you need Tamil speech
+        <em>everywhere</em>, offline, privately.
+      </p>
+      <ul>
+        <li><strong>Offline Tamil read-aloud</strong> — narrate Tamil articles, forms or messages with no service to sign up for and nothing sent anywhere.</li>
+        <li><strong>Accessibility</strong> — a built-in Tamil screen-voice for content, working without a network.</li>
+        <li><strong>Embeddable Tamil voice</strong> — bundle a Tamil TTS inside an app or device UI.</li>
+        <li><strong>Natural variation</strong> — the stochastic duration predictor keeps repeated Tamil prompts from sounding mechanically identical.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Type a Tamil line, hear it, see its waveform — the core move.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">A Tamil narrator: read a notification, a weather report or an article snippet aloud.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Stochastic prosody lab — generate the same Tamil text many times and compare the timing.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">Type English, translate it to Tamil with M2M100, then have MMS speak the Tamil.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>
+        MMS-TTS is normally a one-liner with the <code>text-to-speech</code> pipeline. This ONNX export ships
+        <code>model.onnx</code> at the repo root and omits a <code>tokenizer.json</code>, so instead of the
+        high-level pipeline the worker loads the real <code>VitsModel</code> and reproduces the tokeniser
+        exactly — safe here because this checkpoint is <code>is_uroman:false</code>, so its VitsTokenizer is a
+        <em>deterministic character tokeniser</em> (no uroman romanisation):
+      </p>
+      <pre><code>import { AutoModel, Tensor } from "@huggingface/transformers";
+
+// vocab.json is byte-identical to canonical facebook/mms-tts-tam
+const model = await AutoModel.from_pretrained(
+  "naklitechie/mms-tts-ta-ONNX", { model_file_name: "model", subfolder: "", dtype: "fp32" });
+
+// Faithful VitsTokenizer: lowercase, map each in-vocab char, interleave blank (id 0).
+// VERIFIED byte-identical to transformers.js's real VitsTokenizer on a control language.
+const ids = tokenizeTamil("ஒரே நெட்வொர்க் எழுத்துகளை நேரடியாக ஒலி அலையாக மாற்றுகிறது.");
+const input_ids = new Tensor("int64", BigInt64Array.from(ids.map(BigInt)), [1, ids.length]);
+const { waveform } = await model({ input_ids, attention_mask });
+// waveform.data → Float32Array (mono), 16 kHz. Run again → slightly different (stochastic duration).</code></pre>
+      <p class="muted">
+        The manual tokeniser was checked byte-for-byte against transformers.js's real
+        <code>VitsTokenizer</code> on a control language (<code>Xenova/mms-tts-hin</code>) — identical token ids
+        — so the Tamil tokenisation is faithful, and the waveform is genuine <code>VitsModel</code> output. The
+        <a href="../mms-tts-hindi/">Hindi demo</a> uses the plain <code>pipeline()</code> because its export
+        ships the full tokenizer files.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/naklitechie/mms-tts-ta-ONNX" target="_blank" rel="noopener">Model — naklitechie/mms-tts-ta-ONNX (ONNX export)</a></li>
+        <li><a href="https://huggingface.co/facebook/mms-tts-tam" target="_blank" rel="noopener">Original — facebook/mms-tts-tam (Meta MMS, canonical vocab)</a></li>
+        <li><a href="https://arxiv.org/abs/2106.06103" target="_blank" rel="noopener">Paper — VITS (Kim et al., 2021, arXiv:2106.06103)</a></li>
+        <li><a href="https://arxiv.org/abs/2305.13516" target="_blank" rel="noopener">Paper — Scaling Speech Technology to 1,000+ Languages (MMS, 2023)</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      MMS weights are CC-BY-NC 4.0 (non-commercial).
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { MmsTaEngine, wavUrl, drawWaveform, MMS_TA_CSS, TAMIL_SAMPLES } from "./mmsttsta.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = MMS_TA_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new MmsTaEngine();
+      let pcm = null, curUrl = null, lastText = "", durations = [];
+
+      const samplesEl = $("samples");
+      for (const s of TAMIL_SAMPLES) {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "chip";
+        b.lang = "ta";
+        b.textContent = s.label;
+        b.addEventListener("click", () => { $("text").value = s.text; });
+        samplesEl.append(b);
+      }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "naklitechie/mms-tts-ta-ONNX", runtime: "transformers.js", dtype: "fp32", sizeMB: 109, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("run").disabled = false; },
+      });
+
+      $("run").addEventListener("click", speak);
+
+      async function speak() {
+        const text = $("text").value.trim();
+        if (!text) { $("status").hidden = false; $("status").textContent = "Type some Tamil to speak."; return; }
+        $("run").disabled = true;
+        $("status").hidden = false; $("status").classList.remove("err", "ok");
+        $("status").textContent = "Synthesising…";
+        try {
+          const r = await engine.speak(text);
+          pcm = r.audio;
+          if (curUrl) URL.revokeObjectURL(curUrl);
+          curUrl = wavUrl(pcm, r.rate);
+          $("player").src = curUrl;
+          $("download").href = curUrl; $("download").hidden = false;
+          drawWaveform($("wave"), pcm, 0);
+
+          const durSec = pcm.length / r.rate;
+          if (text !== lastText) { durations = []; lastText = text; }
+          durations.push(durSec);
+          const spread = durations.length > 1
+            ? (Math.max(...durations) - Math.min(...durations)) * 1000 : 0;
+
+          $("insideEmpty").hidden = true; $("insideStats").hidden = false;
+          $("iTok").textContent = r.inputIds ?? "–";
+          $("iSamples").textContent = pcm.length.toLocaleString();
+          $("iRate").textContent = r.rate + " Hz";
+          $("iDur").textContent = durSec.toFixed(2) + " s";
+          $("iSpread").textContent = durations.length > 1 ? "±" + spread.toFixed(0) + " ms (" + durations.length + " runs)" : "run again to compare";
+
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = (r.ms / 1000).toFixed(2) + " s";
+          $("rDur").textContent = durSec.toFixed(2) + " s";
+          $("rRtf").textContent = (r.ms / 1000 / durSec).toFixed(2) + "×";
+          $("status").textContent = durations.length > 1
+            ? `Done — run ${durations.length} of this text. Press play.`
+            : "Done — press play, then Speak again to hear the timing change.";
+          $("status").classList.add("ok");
+          $("run").textContent = "Speak again";
+          $("player").play().catch(() => {});
+        } catch (err) {
+          $("status").textContent = "Synthesis failed: " + err.message;
+          $("status").classList.add("err");
+        } finally {
+          $("run").disabled = false;
+        }
+      }
+
+      $("player").addEventListener("timeupdate", () => {
+        if (pcm && $("player").duration) drawWaveform($("wave"), pcm, $("player").currentTime / $("player").duration);
+      });
+      $("player").addEventListener("ended", () => pcm && drawWaveform($("wave"), pcm, 1));
+      addEventListener("resize", () => pcm && drawWaveform($("wave"), pcm, 0));
+    </script>
+  </body>
+</html>

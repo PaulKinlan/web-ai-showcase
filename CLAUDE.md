@@ -248,7 +248,16 @@ languages [e.g. vie (built), hin, …] remain buildable), **mms-tts-korean** (`X
 transformers.js ships no uroman romanizer, so a Latin-input box labeled "Korean" while Hangul crashes
 is not honest Hangul Korean TTS; q4 doesn't exist [`Unsupported model type: vits`], fp16 fails at
 session creation. Applies to every `is_uroman:true` mms-tts checkpoint — check the config before
-selecting). Never mislabel a substitute as the blocked family.
+selecting), **mms-tts-kannada** (`onnx-community/mms-tts-kan-ONNX` is `is_uroman:false` with a
+correct native-Kannada vocab [identical to `facebook/mms-tts-kan`] and NON-empty `input_ids`, but the
+ONNX EXPORT is defective and aborts for EVERY input: transformers.js 3.7.5 WASM aborts in the ORT EP
+for q8/fp32/q4 [error codes 86122760 / 237829256 / 231992672], fp16 fails at session creation
+[RandomNormalLike float16], and 4.2.0 gives the smoking gun — `Attempting to broadcast an axis by a
+dimension other than 1. 44 by 45` [a hardcoded even sequence dim that no add_blank mms-tts input
+(2N+1, odd) can ever match]. Defective export, not a device limit; no other Kannada MMS-TTS ONNX
+exists. NOTE: sibling Hindi (`Xenova/mms-tts-hin`) and Tamil (`naklitechie/mms-tts-ta-ONNX`, loaded
+via AutoModel + a VitsTokenizer verified byte-identical to the real one, since that export omits
+tokenizer.json) are BUILT). Never mislabel a substitute as the blocked family.
 
 **Version-pin escape hatch (isolated).** A model whose class exists only in a transformers.js newer
 than the shared 3.7.5 pin (e.g. SAM2 — `Sam2Model` lands in 4.2.0, absent from 3.7.5) may pin the
