@@ -1,0 +1,348 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>wav2vec2-XLSR-53 — Korean speech-to-text, one Hangul syllable per frame · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run wav2vec2-large-XLSR-53 fine-tuned for Korean, locally in your browser. A cross-lingual CTC model — pre-trained on 53 languages, specialised for Korean — whose output alphabet is 1205 whole Hangul syllable blocks: it labels every ~20ms frame with a complete syllable, then collapses the frames into text. Nothing uploaded."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='13'>🇰🇷</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">automatic-speech-recognition · audio · WASM (WebGPU when available) · ~1.2 GB</p>
+      <h1>wav2vec2-XLSR-53 — Korean speech, one Hangul syllable per frame</h1>
+      <p class="lede">
+        The <a href="/web-ai-showcase/models/french-xlsr-asr/">French</a>,
+        <a href="/web-ai-showcase/models/spanish-xlsr-asr/">Spanish</a> and
+        <a href="/web-ai-showcase/models/xlsr-multilingual-asr/">Russian</a> demos are all the same
+        cross-lingual cousin — <strong>XLSR-53</strong>, pre-trained on <strong>53 languages</strong>
+        (56,000 hours of multilingual audio) — fine-tuned per language. This one is fine-tuned on Korean, and
+        it does something the Latin-script versions can't: its CTC head is <strong>not an alphabet of
+        letters</strong>. It emits <strong>whole Hangul syllable blocks</strong> — <span lang="ko">가</span>,
+        <span lang="ko">각</span>, <span lang="ko">간</span> … <span lang="ko">힘</span> — from a
+        <strong>1205-symbol vocabulary</strong>. Every ~20 ms frame is labelled with one complete syllable,
+        and the transcript is just those frames collapsed. Pick a clip and watch the syllables assemble into
+        Korean.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="glance">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/FinDIT-Studio/wav2vec2-large-xlsr-53-korean-onnx" target="_blank" rel="noopener">FinDIT-Studio/wav2vec2-large-xlsr-53-korean-onnx</a> <span class="muted">(base: jonatasgrosman/wav2vec2-large-xlsr-53-korean)</span></td></tr>
+          <tr><th>Task / pipeline</th><td><code>automatic-speech-recognition</code> — loaded as <code>AutoModelForCTC</code> so we can see the frames</td></tr>
+          <tr><th>Architecture</th><td><strong>XLSR-53</strong>: wav2vec2-large cross-lingual encoder (24 transformer layers, ~315M params) pre-trained on 53 languages, fine-tuned for Korean. CTC head over a <strong>1205-symbol Hangul-syllable vocab</strong> (blank + "|" boundary + 1202 syllable blocks + <code>[UNK]</code>). No decoder.</td></tr>
+          <tr><th>Language</th><td><strong>Korean (ko)</strong> — a syllable-level recogniser over Hangul; other languages produce Korean-phonetic gibberish</td></tr>
+          <tr><th>Quantization</th><td>fp32 (full precision) ONNX — a single <code>model.onnx</code> at the repo <em>root</em> <span class="muted">(no q8/q4 export exists for this model, so we load fp32 with <code>subfolder:""</code>)</span></td></tr>
+          <tr><th>Config &amp; tokenizer</th><td>the repo ships a <code>tokenizer.json</code> but <strong>no <code>config.json</code></strong> and no <code>preprocessor_config.json</code>. So we borrow the wav2vec2-large XLSR-53 architecture config from a reachable sibling (the Korean base repo is access-gated), override <code>vocab_size</code>→1205, do the feature extraction ourselves, and CTC-decode from the model's own 1205-symbol vocab. <strong>No sibling weights are used</strong> — all weights are the Korean <code>model.onnx</code>.</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (WebGPU when a real adapter is present), honest fallback</td></tr>
+          <tr><th>Download</th><td>~1.2 GB (single fp32 encoder), cached after first load — a big one-time transfer</td></tr>
+          <tr><th>License</th><td>Apache-2.0 (base model) — the ONNX-export repo declares no license of its own</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly / WebGPU, Web Workers, Web Audio (decode + resample), MediaRecorder (mic)</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">
+        Choose Korean audio — record from your mic, upload a file, or pick a bundled CC0 sample. The page
+        decodes it to 16 kHz mono, draws the waveform, and runs the CTC model in a Web Worker. XLSR-53 does
+        best on <strong>clear Korean speech</strong>. Heads up: this model has no quantized export, so the
+        first load is a <strong>~1.2 GB</strong> fp32 download.
+      </p>
+
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+
+      <div class="audio-row">
+        <button id="rec" type="button" class="secondary" disabled>● Record</button>
+        <button id="upload" type="button" class="secondary" disabled>Upload audio</button>
+        <input type="file" id="file" accept="audio/*" hidden />
+        <span class="muted" style="font-size:.82rem">or a sample:</span>
+        <span class="sample-row" id="samples"></span>
+      </div>
+
+      <div id="micFallback" class="fallback" hidden>
+        <strong>No microphone available here.</strong>
+        <p class="muted" style="margin:.3rem 0">
+          This context didn't grant mic access (common in headless / embedded views). The model still
+          works — use a <em>sample</em> above or <em>Upload audio</em>. For live recording, open this in a
+          normal browser tab and allow the microphone when prompted, then speak Korean.
+        </p>
+      </div>
+
+      <div class="audio-row">
+        <audio id="player" controls preload="metadata"></audio>
+        <span class="muted" id="clipLabel" style="font-size:.82rem"></span>
+      </div>
+      <div class="wave-wrap"><canvas id="wave" class="wave" aria-label="Audio waveform"></canvas></div>
+
+      <button id="run" type="button" disabled>Transcribe</button>
+
+      <h3>Transcript (Korean)</h3>
+      <div class="transcript" id="transcript" aria-live="polite" lang="ko">Transcribe a clip to see the Korean text here.</div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>audio <b id="rDur">–</b></span>
+        <span>process <b id="rMs">–</b></span>
+        <span>speed <b id="rSpeed">–</b></span>
+        <span>frames <b id="rFrames">–</b></span>
+        <span>emitted syllables <b id="rChars">–</b></span>
+      </div>
+      <p class="muted" style="font-size:.8rem">
+        This checkpoint is a compact, cross-lingual recogniser rather than a large Korean-only model, so
+        expect the odd near-homophone slip (e.g. <span lang="ko">재</span>↔<span lang="ko">제</span>) — that
+        is honest real ASR output, produced entirely on your device.
+      </p>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside — the CTC collapse over Hangul syllables</h3>
+      <p class="muted">
+        Below is the model's <strong>raw per-frame argmax</strong>: one cell per ~20 ms frame, showing the
+        single <em>syllable</em> it thinks is most likely there. Most frames are <em>blank</em> (·) — the
+        model saying "nothing new here". Where a sound lands you get a run of the same syllable. The
+        transcript is produced by two mechanical rules, no decoder involved:
+        <strong>(1) merge consecutive duplicates, (2) drop the blanks</strong>. A run like
+        <code lang="ko">·· 가 가 ·· 수 수 ··</code> collapses to <code lang="ko">가수</code>.
+      </p>
+      <div class="ctc-legend">
+        <span><span class="ctc-swatch" style="background:var(--accent)"></span> emitted syllable</span>
+        <span><span class="ctc-swatch" style="background:color-mix(in srgb,var(--accent) 18%,transparent)"></span> ␣ word boundary</span>
+        <span><span class="ctc-swatch" style="background:var(--border)"></span> · blank frame</span>
+      </div>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Transcribe a clip to see its per-frame argmax and the collapse.</div>
+      <div id="insideWrap" hidden>
+        <p class="muted" style="font-size:.8rem;margin:.6rem 0 .2rem">Raw per-frame argmax (<span id="frameCount">–</span> frames · ~<span id="frameDur">–</span> ms each):</p>
+        <div class="ctc-strip" id="strip" role="img" aria-label="Per-frame Korean syllable predictions" lang="ko"></div>
+        <p class="muted" style="font-size:.8rem;margin:.8rem 0 .2rem">↓ merge duplicates, drop blanks ↓</p>
+        <div class="ctc-collapsed" id="collapsed" aria-live="polite" lang="ko"></div>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        Most of the world's ~7,000 languages have little labelled speech data. <strong>Cross-lingual
+        self-supervised pre-training</strong> is how the field reaches them: XLSR-53 learns speech
+        structure from 53 languages at once, so fine-tuning to a new language needs far fewer transcripts.
+        That is what puts a usable Korean recogniser inside a browser tab — <strong>private, offline once
+        cached, no server, no key</strong>. And because it's CTC (frames, not generated tokens) it can't
+        hallucinate an unspoken sentence, and every syllable is pinned to a moment in time.
+      </p>
+      <ul>
+        <li><strong>On-device Korean dictation and captions</strong> — for apps that must keep audio on the device (health, legal, journalism).</li>
+        <li><strong>A syllable-level output that maps to Hangul directly</strong> — the units the model emits are the units Korean is written in, so alignment and highlighting are natural.</li>
+        <li><strong>Korean forced alignment</strong> — real per-syllable timings for karaoke, subtitles, and pronunciation feedback, straight from the frames.</li>
+        <li><strong>One backbone, many languages</strong> — the same XLSR-53 recipe produces the French, Spanish, Russian and Korean recognisers in this showcase, plus dozens more fine-tunes.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">One Korean clip in, Korean text out — and the per-frame syllable strip that produced it.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Forced alignment: real per-syllable Korean timings, straight from the CTC frames.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Feed it English and watch cross-lingual transfer break down into Korean phonetics.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">Transcribe Korean with XLSR → OPUS-MT translates it to English, all on-device.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>
+        Normally the one-liner is the ASR pipeline — but this repo ships no <code>config.json</code> and
+        keeps its ONNX at the repo root, so we load the model directly (borrowing an XLSR-53 sibling's
+        architecture config) and do the CTC collapse ourselves (which is exactly what the pipeline does
+        internally):
+      </p>
+      <pre><code>import { AutoConfig, AutoModelForCTC } from "@huggingface/transformers";
+
+const model_id = "FinDIT-Studio/wav2vec2-large-xlsr-53-korean-onnx";
+// Repo has no config.json → borrow a reachable XLSR-53 sibling's config (architecture only, no weights)
+const config = await AutoConfig.from_pretrained("jonatasgrosman/wav2vec2-large-xlsr-53-spanish");
+config.vocab_size = 1205;         // …then match the Korean CTC head (1205 Hangul syllables)
+config.pad_token_id = 1204;       // [PAD] is the CTC blank
+
+const model = await AutoModelForCTC.from_pretrained(model_id, {
+  device: "wasm", dtype: "fp32",  // the only export is a single fp32 model.onnx…
+  subfolder: "", config,          // …at the repo ROOT, not the usual onnx/ subfolder
+});
+
+// audio = 16 kHz mono Float32Array, normalised to zero-mean/unit-variance
+const { logits } = await model({ input_values }); // shape [1, frames, 1205]
+
+// greedy CTC decode: argmax per frame, merge duplicates, drop the blank (id 1204)
+const ids  = argmaxPerFrame(logits);   // e.g. [1204,1204,26,26,1204,1140,...]
+const text = collapse(ids);            // "가수…" in Hangul — no decoder involved</code></pre>
+      <p class="muted">
+        Inference runs in a Web Worker so the UI never janks. The worker returns the raw per-frame argmax
+        (whole syllables) and real per-word timings (from the frame each syllable was emitted at) — nothing
+        is faked or pre-computed.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/FinDIT-Studio/wav2vec2-large-xlsr-53-korean-onnx" target="_blank" rel="noopener">Model card — FinDIT-Studio/wav2vec2-large-xlsr-53-korean-onnx (ONNX export)</a></li>
+        <li><a href="https://huggingface.co/jonatasgrosman/wav2vec2-large-xlsr-53-korean" target="_blank" rel="noopener">Base fine-tune — jonatasgrosman/wav2vec2-large-xlsr-53-korean</a></li>
+        <li><a href="https://arxiv.org/abs/2006.13979" target="_blank" rel="noopener">Paper — "Unsupervised Cross-lingual Representation Learning for Speech Recognition" (XLSR, 2020)</a></li>
+        <li><a href="https://www.cs.toronto.edu/~graves/icml_2006.pdf" target="_blank" rel="noopener">CTC — Graves et al., 2006</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      Samples: Wikimedia Commons, CC0 (Lee Jung-jae award remarks; “가수” by CHK2605 via Lingua Libre). <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <style>
+      .glance { inline-size:100%; border-collapse:collapse; font-size:.85rem; }
+      .glance th, .glance td { text-align:left; padding:.3rem .5rem; border-bottom:1px solid var(--border); vertical-align:top; }
+      .glance th { color:var(--muted); font-weight:600; inline-size:11rem; }
+      .glance td { overflow-wrap:anywhere; }
+    </style>
+
+    <script type="module">
+      import {
+        KoreanXlsrEngine, urlToMono16k, MicRecorder, blobToMono16k,
+        drawWaveform, fmtTime, renderStrip, KO_XLSR_CSS, KO_SAMPLES,
+      } from "./korean.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = KO_XLSR_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new KoreanXlsrEngine();
+      let pcm = null, audioDur = 0;
+
+      async function useAudio(url, label, { revoke = false } = {}) {
+        $("player").src = url;
+        $("clipLabel").textContent = label;
+        $("transcript").textContent = "Transcribe a clip to see the Korean text here.";
+        $("readout").hidden = true; $("insideWrap").hidden = true; $("insideEmpty").hidden = false;
+        try {
+          const decoded = await urlToMono16k(url);
+          pcm = decoded.pcm; audioDur = decoded.duration;
+          drawWaveform($("wave"), pcm, 0);
+          $("run").disabled = !engine.ready;
+        } catch (err) {
+          $("status").hidden = false;
+          $("status").textContent = "Couldn't decode that audio: " + err.message;
+          $("status").classList.add("err");
+          pcm = null;
+        }
+        if (revoke) $("player").addEventListener("emptied", () => URL.revokeObjectURL(url), { once: true });
+      }
+
+      const samplesEl = $("samples");
+      for (const s of KO_SAMPLES) {
+        const b = document.createElement("button");
+        b.type = "button"; b.className = "chip";
+        b.textContent = s.label; b.dataset.src = s.src;
+        b.addEventListener("click", () => useAudio(s.src, s.label));
+        samplesEl.append(b);
+      }
+      useAudio(KO_SAMPLES[0].src, KO_SAMPLES[0].label);
+
+      $("upload").addEventListener("click", () => $("file").click());
+      $("file").addEventListener("change", async () => {
+        const f = $("file").files[0];
+        if (f) await useAudio(URL.createObjectURL(f), f.name, { revoke: true });
+      });
+
+      const mic = new MicRecorder();
+      let recording = false;
+      if (!MicRecorder.supported()) $("micFallback").hidden = false;
+      $("rec").addEventListener("click", async () => {
+        if (!recording) {
+          try {
+            await mic.start();
+          } catch {
+            $("micFallback").hidden = false;
+            $("status").hidden = false;
+            $("status").textContent = "Microphone unavailable — use a sample or upload.";
+            $("status").classList.add("err");
+            return;
+          }
+          recording = true;
+          $("rec").innerHTML = '<span class="rec-dot"></span>Stop';
+          $("rec").classList.remove("secondary");
+          $("status").hidden = false; $("status").classList.remove("err");
+          $("status").textContent = "Recording… speak Korean, then click Stop.";
+        } else {
+          recording = false;
+          $("rec").textContent = "● Record";
+          $("rec").classList.add("secondary");
+          const { url } = await mic.stop();
+          await useAudio(url, "Your recording", { revoke: true });
+          $("status").textContent = "Recorded. Hit Transcribe.";
+        }
+      });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: {
+          modelId: "FinDIT-Studio/wav2vec2-large-xlsr-53-korean-onnx",
+          runtime: "transformers.js",
+          dtype: "fp32",
+          sizeMB: 1200,
+          requiresWebGPU: false,
+        },
+        load: async (onProgress) => {
+          const device = await engine.load((p) => onProgress(p));
+          return { device };
+        },
+        onReady: () => {
+          $("rec").disabled = false; $("upload").disabled = false;
+          $("run").disabled = !pcm;
+        },
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!pcm) { $("status").hidden = false; $("status").textContent = "Pick or record some audio first."; return; }
+        $("run").disabled = true; $("status").hidden = false; $("status").classList.remove("err", "ok");
+        $("status").textContent = "Running the CTC model…";
+        try {
+          const r = await engine.transcribe(pcm, audioDur);
+          $("transcript").textContent = r.text || "(no speech detected)";
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rDur").textContent = fmtTime(r.audioSec);
+          $("rMs").textContent = (r.ms / 1000).toFixed(2) + " s";
+          $("rSpeed").textContent = r.speedup ? r.speedup.toFixed(1) + "× real-time" : "–";
+          $("rFrames").textContent = r.frames;
+          $("rChars").textContent = r.emitted;
+          $("insideEmpty").hidden = true; $("insideWrap").hidden = false;
+          $("frameCount").textContent = r.frames;
+          $("frameDur").textContent = r.frameMs ? r.frameMs.toFixed(0) : "20";
+          renderStrip($("strip"), r.strip);
+          $("collapsed").textContent = r.text || "(no speech detected)";
+          $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (err) {
+          $("status").textContent = "Transcription failed: " + err.message;
+          $("status").classList.add("err");
+        } finally {
+          $("run").disabled = false;
+        }
+      });
+
+      addEventListener("resize", () => pcm && drawWaveform($("wave"), pcm, 0));
+
+      if ("serviceWorker" in navigator) navigator.serviceWorker.register("/web-ai-showcase/sw.js").catch(() => {});
+    </script>
+  </body>
+</html>
