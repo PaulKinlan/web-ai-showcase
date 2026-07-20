@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Instrument Basics — name the instrument by ear · Web AI Showcase</title>
+    <meta name="description" content="The fundamental move: give the model a clip and it names the instrument, with a full confidence distribution across nine instruments. In your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎻</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Musical Instrument Classification</a></p>
+
+    <header>
+      <p class="eyebrow">use case · basics</p>
+      <h1>Basics: name the instrument by ear</h1>
+      <p class="lede">
+        Instrument recognition at its simplest. Give the model a clip and it returns the instrument it
+        hears, with the confidence for every class. Pick a sample, drop your own, or record an
+        instrument.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an audio file">
+        <span id="dropText">Drop an audio file, or click to choose</span>
+        <input type="file" id="file" accept="audio/*" hidden />
+      </div>
+      <div class="sample-row" id="samples" aria-label="Sample clips" role="group">
+        <button class="chip" type="button" data-src="../violin.wav" aria-pressed="true">🎻 Violin</button>
+        <button class="chip" type="button" data-src="../trumpet.wav" aria-pressed="false">🎺 Trumpet</button>
+        <button class="chip" type="button" data-src="../flute.wav" aria-pressed="false">🎶 Flute</button>
+        <button class="chip" type="button" data-src="../guitar.wav" aria-pressed="false">🎸 Guitar</button>
+      </div>
+      <div class="field-row">
+        <button id="recBtn" type="button" class="secondary">● Record from mic</button>
+        <span id="recState" class="muted" aria-live="polite"></span>
+      </div>
+
+      <div class="wave-wrap"><canvas id="wave" class="wave" aria-label="Waveform of the selected audio"></canvas></div>
+      <div style="margin:.6rem 0"><button id="run" type="button" disabled>Identify instrument</button></div>
+
+      <div class="big-inst" id="big" hidden><span class="face" id="bigFace" aria-hidden="true">🎵</span><span><span class="name" id="bigName">–</span> <span class="conf" id="bigConf"></span></span></div>
+      <div class="inst-bars" id="bars" aria-label="Instrument confidence scores" aria-live="polite"></div>
+      <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>latency <b id="rMs">–</b></span><span>top <b id="rTop">–</b></span></div>
+    </section>
+
+    <p class="crumbs"><a href="../">← Back</a> · Next: <a href="../practical/">Practical →</a></p>
+
+    <script type="module">
+      import { InstrumentEngine, blobToMono16k, urlToMono16k, MicRecorder, drawWaveform, renderBars, icon, prettyLabel, INSTRUMENT_CSS } from "../instrument.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = INSTRUMENT_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new InstrumentEngine();
+      let pcm = null, ready = false;
+
+      async function useAudio(p) { pcm = p; $("bars").replaceChildren(); $("big").hidden = true; $("readout").hidden = true; drawWaveform($("wave"), pcm); $("run").disabled = !ready; }
+      async function pickSample(btn) {
+        for (const b of $("samples").children) b.setAttribute("aria-pressed", String(b === btn));
+        $("status").textContent = "Decoding…";
+        try { const { pcm: p } = await urlToMono16k(btn.dataset.src); await useAudio(p); $("status").textContent = "Ready — hit Identify instrument."; }
+        catch (e) { $("status").textContent = "Decode failed: " + e.message; $("status").classList.add("err"); }
+      }
+      for (const btn of $("samples").children) btn.addEventListener("click", () => pickSample(btn));
+
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) {
+        for (const b of $("samples").children) b.setAttribute("aria-pressed", "false");
+        $("dropText").textContent = f.name; $("status").textContent = "Decoding…";
+        try { const { pcm: p } = await blobToMono16k(f); await useAudio(p); $("status").textContent = "Ready."; }
+        catch (e) { $("status").textContent = "Decode failed: " + e.message; $("status").classList.add("err"); }
+      }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f) loadFile(f); });
+
+      const rec = new MicRecorder(); let recording = false;
+      if (!MicRecorder.supported()) { $("recBtn").disabled = true; $("recState").textContent = "No microphone API here."; }
+      $("recBtn").addEventListener("click", async () => {
+        if (!recording) { try { await rec.start(); recording = true; $("recBtn").textContent = "■ Stop"; $("recState").innerHTML = '<span class="rec-dot"></span>Recording…'; } catch (e) { $("recState").textContent = "Mic blocked: " + e.message; } }
+        else { const { blob } = await rec.stop(); recording = false; $("recBtn").textContent = "● Record from mic"; $("recState").textContent = "Recorded."; $("status").textContent = "Decoding…"; const { pcm: p } = await blobToMono16k(blob); await useAudio(p); $("status").textContent = "Ready."; }
+      });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/Musical-Instrument-Classification-ONNX", runtime: "transformers.js", dtype: "q8", sizeMB: 95, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: () => { ready = true; $("run").disabled = !pcm; },
+      });
+      pickSample($("samples").firstElementChild);
+
+      $("run").addEventListener("click", async () => {
+        if (!pcm) return;
+        $("run").disabled = true; $("status").textContent = "Listening…";
+        try {
+          const r = await engine.classify(pcm);
+          renderBars($("bars"), r.labels);
+          const top = r.labels[0];
+          $("bigFace").textContent = icon(top.label); $("bigName").textContent = prettyLabel(top.label); $("bigConf").textContent = `${(top.score * 100).toFixed(0)}% confident`; $("big").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase(); $("rMs").textContent = r.ms + " ms"; $("rTop").textContent = prettyLabel(top.label);
+          $("readout").hidden = false; $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (e) { $("status").textContent = "Failed: " + e.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>

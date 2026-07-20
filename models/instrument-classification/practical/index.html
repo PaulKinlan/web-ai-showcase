@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Instrument Practical — sort a sample library by instrument · Web AI Showcase</title>
+    <meta name="description" content="A sample-library sorter: classify several audio clips locally and group them into instrument buckets — no upload, no copyright worry." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎻</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Musical Instrument Classification</a></p>
+
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Practical: sort a sample library by instrument</h1>
+      <p class="lede">
+        A real developer job: you have a folder of loops and one-shots and you want them bucketed by
+        instrument. Add clips (the bundled samples are pre-loaded — drop your own too), classify them
+        all, and the app groups them into instrument buckets — entirely on-device, so copyrighted audio
+        never leaves the machine.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Add audio files to the queue">
+        <span id="dropText">Drop audio files here to add them, or click to choose (multiple allowed)</span>
+        <input type="file" id="file" accept="audio/*" multiple hidden />
+      </div>
+
+      <div class="field-row">
+        <button id="run" type="button" disabled>Classify all &amp; sort</button>
+        <button id="clear" type="button" class="secondary">Clear queue</button>
+        <span id="count" class="muted"></span>
+      </div>
+
+      <h3 style="font-size:.95rem;margin:.6rem 0 .2rem">Queue</h3>
+      <div class="board" id="queue" aria-live="polite"></div>
+
+      <h3 style="font-size:.95rem;margin:1rem 0 .2rem">Instrument buckets</h3>
+      <div id="bucketsEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Classify the queue to sort it into buckets.</div>
+      <div class="board" id="buckets" aria-live="polite"></div>
+    </section>
+
+    <p class="crumbs"><a href="../basics/">← Basics</a> · Next: <a href="../wild/">Wild →</a></p>
+
+    <script type="module">
+      import { InstrumentEngine, blobToMono16k, urlToMono16k, icon, prettyLabel, escapeHTML, INSTRUMENT_CSS } from "../instrument.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = INSTRUMENT_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new InstrumentEngine();
+      let ready = false;
+      const items = []; // { name, pcm, label, score }
+
+      const BUNDLED = [
+        { name: "violin.wav", src: "../violin.wav" },
+        { name: "trumpet.wav", src: "../trumpet.wav" },
+        { name: "flute.wav", src: "../flute.wav" },
+        { name: "guitar.wav", src: "../guitar.wav" },
+      ];
+
+      function renderQueue() {
+        $("count").textContent = items.length ? `${items.length} clip${items.length === 1 ? "" : "s"}` : "";
+        $("run").disabled = !ready || !items.length;
+        $("queue").replaceChildren(...items.map((it) => {
+          const card = document.createElement("div"); card.className = "card";
+          card.innerHTML = `<h4>${escapeHTML(it.name)}</h4>` +
+            (it.label
+              ? `<p class="muted" style="margin:0">${icon(it.label)} ${escapeHTML(prettyLabel(it.label))} · ${(it.score * 100).toFixed(0)}%</p>`
+              : `<p class="muted" style="margin:0">queued</p>`);
+          return card;
+        }));
+      }
+      function renderBuckets() {
+        const done = items.filter((i) => i.label);
+        if (!done.length) { $("buckets").replaceChildren(); $("bucketsEmpty").hidden = false; return; }
+        $("bucketsEmpty").hidden = true;
+        const groups = new Map();
+        for (const it of done) {
+          const k = prettyLabel(it.label);
+          if (!groups.has(k)) groups.set(k, []);
+          groups.get(k).push(it);
+        }
+        $("buckets").replaceChildren(...[...groups.entries()].map(([name, list]) => {
+          const card = document.createElement("div"); card.className = "card";
+          card.innerHTML = `<h4>${icon(list[0].label)} ${escapeHTML(name)} <span class="muted">(${list.length})</span></h4>` +
+            `<ul style="margin:.2rem 0 0;padding-inline-start:1.1rem;font-size:.82rem">` +
+            list.map((i) => `<li>${escapeHTML(i.name)} <span class="muted">${(i.score * 100).toFixed(0)}%</span></li>`).join("") + `</ul>`;
+          return card;
+        }));
+      }
+
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function addFiles(files) {
+        for (const f of files) {
+          $("status").textContent = "Decoding " + f.name + "…";
+          try { const { pcm } = await blobToMono16k(f); items.push({ name: f.name, pcm }); }
+          catch (e) { $("status").textContent = "Skipped " + f.name + ": " + e.message; }
+        }
+        $("status").textContent = ""; renderQueue();
+      }
+      file.addEventListener("change", () => file.files.length && addFiles([...file.files]));
+      drop.addEventListener("drop", (e) => { const fs = e.dataTransfer?.files; if (fs?.length) addFiles([...fs]); });
+
+      $("clear").addEventListener("click", () => { items.length = 0; renderQueue(); renderBuckets(); });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/Musical-Instrument-Classification-ONNX", runtime: "transformers.js", dtype: "q8", sizeMB: 95, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: () => { ready = true; $("run").disabled = !items.length; },
+      });
+
+      // Pre-load the bundled samples into the queue.
+      (async () => {
+        for (const b of BUNDLED) {
+          try { const { pcm } = await urlToMono16k(b.src); items.push({ name: b.name, pcm }); } catch { /* ignore */ }
+        }
+        renderQueue();
+      })();
+
+      $("run").addEventListener("click", async () => {
+        if (!items.length) return;
+        $("run").disabled = true;
+        for (let i = 0; i < items.length; i++) {
+          if (items[i].label) continue;
+          $("status").textContent = `Classifying ${i + 1}/${items.length}…`;
+          try {
+            const r = await engine.classify(items[i].pcm);
+            items[i].label = r.labels[0].label; items[i].score = r.labels[0].score;
+            renderQueue();
+          } catch (e) { $("status").textContent = "Failed on " + items[i].name + ": " + e.message; }
+        }
+        renderBuckets();
+        $("status").textContent = "Sorted."; $("status").classList.add("ok");
+        $("run").disabled = false;
+      });
+    </script>
+  </body>
+</html>
