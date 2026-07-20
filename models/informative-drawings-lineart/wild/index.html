@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Wild — which scenes ink up most? · Informative Drawings</title>
+    <meta name="description" content="A live ink-coverage gauge: trace scene after scene and compare how densely the model lines each one — portraits vs cityscapes vs textures — building a leaderboard as you go." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>✏️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Informative Drawings line-art</a></p>
+    <header>
+      <p class="eyebrow">Wild · image-to-image (line-art) · WASM</p>
+      <h1>Which scenes ink up most?</h1>
+      <p class="lede">Every scene draws differently. Trace one after another and this page keeps a running
+        leaderboard of "ink coverage" — the fraction of the frame the model turned into line — so you can see
+        what the model finds worth drawing: a clean portrait inks less, a dense cityscape or texture inks more.</p>
+    </header>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+      <div class="two-col">
+        <div>
+          <div class="canvas-frame"><canvas class="fit-canvas" id="drawing" width="480" height="360" role="img" aria-label="Line drawing of the current scene"></canvas></div>
+          <div id="gallery" style="margin-top:.7rem"></div>
+          <div class="controls-row"><button id="run" type="button" disabled>Trace this scene</button> <button id="clear" type="button" class="secondary">Clear leaderboard</button></div>
+        </div>
+        <div>
+          <h4 style="font-family:var(--font-body);font-size:.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:.2rem 0 .3rem">Ink coverage leaderboard</h4>
+          <table class="inside-table"><thead><tr><th>Scene</th><th>Ink</th><th>Bar</th></tr></thead><tbody id="board"><tr><td colspan="3" class="muted">Trace a scene to start the leaderboard.</td></tr></tbody></table>
+        </div>
+      </div>
+    </section>
+
+    <section aria-labelledby="note-h">
+      <h2 id="note-h">What it tells you</h2>
+      <p>Ink coverage is a rough measure of how much structure the model decided the scene needed. It's not
+        just "busyness" — the model draws lines that convey shape, so a textured wall (lots of contrast, little
+        structure) can ink less than a face (little contrast, lots of meaningful contour). Comparing scenes is
+        a quick window into what "informative" means to this model.</p>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>.
+      <a href="../">← Back to Informative Drawings line-art</a>
+    </footer>
+
+    <script type="module">
+      import { LineArtEngine, LINEART_CSS, drawBitmapFit, urlToBitmap } from "../lineart.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      import { createExampleGallery } from "/web-ai-showcase/lib/example-gallery.js";
+      const style = document.createElement("style"); style.textContent = LINEART_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new LineArtEngine();
+      const state = { bmp: null, label: "" };
+      const board = [];
+      function render() {
+        if (!board.length) { $("board").innerHTML = '<tr><td colspan="3" class="muted">Trace a scene to start the leaderboard.</td></tr>'; return; }
+        const max = Math.max(...board.map((b) => b.ink), 0.01);
+        $("board").innerHTML = board.slice().sort((a, b) => b.ink - a.ink).map((b) =>
+          `<tr><td>${b.label}</td><td>${(b.ink * 100).toFixed(1)}%</td><td><span style="display:inline-block;block-size:.7em;inline-size:${Math.round(b.ink / max * 100)}%;min-inline-size:2px;background:var(--accent);border-radius:2px"></span></td></tr>`
+        ).join("");
+      }
+      async function setImage(b, label) { state.bmp = b; state.label = label; drawBitmapFit($("drawing"), await createImageBitmap(b)); }
+      createExampleGallery({ mount: $("gallery"), manifestUrl: "/web-ai-showcase/media/manifest.json", onSelect: async (a) => { await setImage(await urlToBitmap(a.url), a.id); } }).then((g) => { if (g?.assets?.length) g.selectId(g.assets[0].id); });
+      $("clear").addEventListener("click", () => { board.length = 0; render(); });
+      const autoRun = new URLSearchParams(location.search).has("auto");
+      createModelLoader({ mount: $("model-loader"), model: { modelId: "rocca/informative-drawings-line-art-onnx", runtime: "onnxruntime-web", dtype: "fp32", sizeMB: 17, requiresWebGPU: false }, load: (p) => engine.load(p), onReady: () => { $("run").disabled = false; if (autoRun) $("run").click(); } });
+      $("run").addEventListener("click", async () => {
+        if (!state.bmp) return;
+        $("run").disabled = true; $("status").classList.remove("err", "ok"); $("status").textContent = "Tracing " + state.label + "…";
+        try {
+          const res = await engine.trace(await createImageBitmap(state.bmp));
+          drawBitmapFit($("drawing"), res.lineBmp, 480);
+          const existing = board.find((b) => b.label === state.label);
+          if (existing) existing.ink = res.inkFraction; else board.push({ label: state.label, ink: res.inkFraction });
+          render();
+          $("status").textContent = state.label + " inked " + (res.inkFraction * 100).toFixed(1) + "%."; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>
