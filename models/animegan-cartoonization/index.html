@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AnimeGANv2 — turn a photo into anime on-device · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run AnimeGANv2 locally via ONNX Runtime Web: hand it any photo and it repaints it in a learned anime style (Hayao, Shinkai, Paprika) — entirely on your device. No image ever leaves the tab."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎨</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">image-to-image (cartoonization / stylization) · vision · WASM · ~8 MB / style</p>
+      <h1>AnimeGANv2 — turn a photo into anime</h1>
+      <p class="lede">
+        Give this model any <strong>photo</strong> and it repaints it in a learned <strong>anime style</strong>
+        — smoothed shading, bold outlines, painterly skies. AnimeGANv2 is a GAN trained to convert real
+        photographs into the look of specific animators: <strong>Hayao</strong> (Ghibli-ish), <strong>Shinkai</strong>
+        (Makoto Shinkai's luminous scenery), and <strong>Paprika</strong> (Satoshi Kon). It's not a colour
+        filter — it re-draws the scene. Runs entirely on your device via ONNX Runtime Web; the photo never
+        leaves the tab.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/vumichien/AnimeGANv2_Hayao" target="_blank" rel="noopener">vumichien/AnimeGANv2_{Hayao,Shinkai,Paprika}</a> — AnimeGANv2, one ONNX per style</td></tr>
+          <tr><th>Task</th><td><code>image-to-image</code> (cartoonization / photo→anime style transfer) — run via raw ONNX Runtime Web (see note below)</td></tr>
+          <tr><th>Runtime</th><td>onnxruntime-web 1.21 (transformers.js has no AnimeGAN class / no stylization task)</td></tr>
+          <tr><th>Input</th><td><code>generator_input:0</code> <code>[1, H, W, 3]</code> float32 in −1…1 — <strong>NHWC</strong> (channels-last, TensorFlow export), H/W rounded to a multiple of 32</td></tr>
+          <tr><th>Output</th><td><code>…/out_layer/Tanh:0</code> <code>[1, H, W, 3]</code> float32 in −1…1 — the anime repaint, mapped back to RGB</td></tr>
+          <tr><th>Quantization</th><td>fp32 ONNX (single file per style) — runs on the plain WASM execution provider, no WebGPU needed</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (single-threaded on GitHub Pages) — ~1.3 s @256-px to ~5 s @512-px</td></tr>
+          <tr><th>Download</th><td>~8.4 MB per style, cached after first load (styles load lazily; auto-inits on return)</td></tr>
+          <tr><th>License</th><td>Apache-2.0</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers, OffscreenCanvas, ImageBitmap — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Pick a photo, choose an anime style, and repaint it. Drag the divider to compare the
+        photo with its anime version.</p>
+
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="two-col">
+        <div>
+          <div class="reveal" id="reveal">
+            <canvas class="reveal-before" id="before" width="640" height="480" role="img" aria-label="Source photo"></canvas>
+            <canvas class="reveal-after" id="after" width="640" height="480" role="img" aria-label="AnimeGANv2 anime repaint"></canvas>
+            <span class="reveal-handle" id="handle"></span>
+            <input class="reveal-range" id="revealRange" type="range" min="0" max="100" value="55"
+              aria-label="Reveal anime result — drag to wipe between photo and anime" />
+          </div>
+          <div class="reveal-labels"><span>◀ photo</span><span>anime ▶</span></div>
+          <div id="gallery" style="margin-top:.7rem"></div>
+          <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop your own photo">
+            <span id="dropText">Drop / choose your own photo (landscapes and portraits both work)</span>
+            <input type="file" id="file" accept="image/*" hidden />
+          </div>
+        </div>
+
+        <div>
+          <div class="param">
+            <label id="styleLabel">Anime style</label>
+            <div class="style-row" id="styleRow" role="group" aria-labelledby="styleLabel">
+              <button class="style-chip" type="button" data-style="hayao" aria-pressed="true">Hayao</button>
+              <button class="style-chip" type="button" data-style="shinkai" aria-pressed="false">Shinkai</button>
+              <button class="style-chip" type="button" data-style="paprika" aria-pressed="false">Paprika</button>
+            </div>
+          </div>
+          <div class="controls-row">
+            <button id="run" type="button" disabled>Anime-fy</button>
+            <a id="download" class="button" hidden download="anime.png" style="text-decoration:none">Download anime</a>
+          </div>
+          <div id="resultWrap" hidden>
+            <div class="readout" id="readout">
+              <span>backend <b id="rBackend">–</b></span>
+              <span>style <b id="rStyle">–</b></span>
+              <span>inference <b id="rInf">–</b></span>
+              <span>restyle amount <b id="rDelta">–</b></span>
+            </div>
+            <p class="slow-note">The wipe above is the real evidence — slide it to watch the scene turn to
+              anime. “Restyle amount” is the mean per-pixel change from the photo; a bold style (Paprika)
+              moves it more than a subtle one, and it's far above what a colour filter would do.</p>
+          </div>
+        </div>
+      </div>
+      <p class="privacy-note">Everything runs on your device — the photo and every stylized pixel never
+        leave the tab. Gallery images are rights-cleared samples (see each caption for the source).</p>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside</h3>
+      <p class="muted">
+        Style is a <em>learned repaint</em>, not a preset. The three styles were each trained on a different
+        animator's films, so the same photo comes out differently: Hayao softens into gentle Ghibli pastels,
+        Shinkai pushes saturated, luminous skies and rim-light, Paprika flattens into bold graphic colour.
+        Switch styles below and re-run the same image to see how differently each model paints it.
+      </p>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Anime-fy a photo, then switch styles and run again to compare.</div>
+      <div id="insideWrap" hidden>
+        <div class="two-col">
+          <div>
+            <h4 style="font-family:var(--font-body);font-size:.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:.6rem 0 .3rem">Current anime repaint (<span id="insStyle">Hayao</span>)</h4>
+            <div class="canvas-frame"><canvas class="fit-canvas" id="insOut" width="320" height="320" role="img" aria-label="The anime repaint in the current style"></canvas></div>
+          </div>
+          <div>
+            <h4 style="font-family:var(--font-body);font-size:.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:.6rem 0 .3rem">How to read it</h4>
+            <p class="muted" style="font-size:.85rem">Notice the model doesn't just recolour — it smooths flat
+              regions, thickens edges into "line art", and repaints skies and foliage with painterly texture.
+              That structural redraw is what makes it read as anime rather than a filtered photo.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        Stylizing a photo on-device turns any picture into shareable art, privately and free per image:
+      </p>
+      <ul>
+        <li><strong>Creative & social apps</strong> — a one-tap "anime-fy my photo" that runs client-side, no server, no per-image cost.</li>
+        <li><strong>Avatars & profile art</strong> — turn a selfie or pet photo into an anime avatar entirely in the browser.</li>
+        <li><strong>Storyboarding & concept art</strong> — quickly rough out a scene in a chosen animator's look from a reference photo.</li>
+        <li><strong>Backgrounds & assets</strong> — restyle landscape photos into anime backdrops for games or videos.</li>
+      </ul>
+      <p class="muted">AnimeGANv2 renders a <em>stylistic interpretation</em> — it's an artistic redraw, not a
+        faithful reproduction, and fine text or faces may be simplified.</p>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Pick a photo and a style, then anime-fy it — wipe between the photo and its anime version.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Make an anime avatar from your own photo and download it as a PNG.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Style-off: run all three styles on the same photo side by side and compare how each animator paints it.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">Matte → anime: cut out the subject with background removal, then anime-fy just the subject onto a clean backdrop.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>transformers.js has no AnimeGAN class and no stylization task, so we run the ONNX graph directly with
+        ONNX Runtime Web. Note the <strong>NHWC</strong> (channels-last) layout and the −1…1 tanh range:</p>
+      <pre><code>import * as ort from "onnxruntime-web";
+
+const session = await ort.InferenceSession.create(styleBytes, { executionProviders: ["wasm"] });
+
+// photo → [1,H,W,3] float32 in [-1,1] (NHWC, channels-last — it's a TensorFlow export)
+const input = new ort.Tensor("float32", toNHWC(photo, H, W), [1, H, W, 3]);
+const { ["…/out_layer/Tanh:0"]: out } = await session.run({ ["generator_input:0"]: input });
+
+// out is [1,H,W,3] in [-1,1] → map (v+1)/2 back to RGB
+const anime = tanhToImage(out.data, H, W);</code></pre>
+      <p class="muted">
+        Inference and the whole output composite run in a Web Worker so the UI never blocks; each ~8 MB style
+        is fetched through Cache Storage the first time you pick it, so a returning visit auto-initialises with
+        no re-download.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/vumichien/AnimeGANv2_Hayao" target="_blank" rel="noopener">Model — vumichien/AnimeGANv2_Hayao (Apache-2.0)</a> · <a href="https://huggingface.co/vumichien/AnimeGANv2_Shinkai" target="_blank" rel="noopener">Shinkai</a> · <a href="https://huggingface.co/vumichien/AnimeGANv2_Paprika" target="_blank" rel="noopener">Paprika</a></li>
+        <li><a href="https://github.com/TachibanaYoshino/AnimeGANv2" target="_blank" rel="noopener">AnimeGANv2 — reference implementation</a></li>
+        <li><a href="https://onnxruntime.ai/docs/tutorials/web/" target="_blank" rel="noopener">ONNX Runtime Web documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://onnxruntime.ai/docs/tutorials/web/" target="_blank" rel="noopener">ONNX Runtime Web</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { CartoonEngine, CARTOON_CSS, STYLE_LABELS, drawBitmapFit, RevealCompare, toBitmap, urlToBitmap } from "./cartoon.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      import { createExampleGallery } from "/web-ai-showcase/lib/example-gallery.js";
+
+      const style = document.createElement("style");
+      style.textContent = CARTOON_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new CartoonEngine();
+      const reveal = new RevealCompare($("reveal"));
+      const state = { bmp: null, style: "hayao" };
+
+      async function preview() {
+        if (!state.bmp) return;
+        drawBitmapFit($("before"), await createImageBitmap(state.bmp));
+        drawBitmapFit($("after"), await createImageBitmap(state.bmp));
+        $("resultWrap").hidden = true;
+        $("insideWrap").hidden = true;
+        $("insideEmpty").hidden = false;
+        $("download").hidden = true;
+      }
+      async function setImage(bitmap) { state.bmp = bitmap; await preview(); }
+
+      createExampleGallery({
+        mount: $("gallery"),
+        manifestUrl: "/web-ai-showcase/media/manifest.json",
+        filter: (a) => !/silhouette/.test(a.id),
+        onSelect: async (asset) => { await setImage(await urlToBitmap(asset.url)); },
+      }).then((g) => { if (g?.assets?.length) g.selectId(g.assets[0].id); });
+
+      for (const chip of $("styleRow").querySelectorAll(".style-chip")) {
+        chip.addEventListener("click", () => {
+          for (const c of $("styleRow").querySelectorAll(".style-chip")) c.setAttribute("aria-pressed", "false");
+          chip.setAttribute("aria-pressed", "true");
+          state.style = chip.dataset.style;
+        });
+      }
+
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      file.addEventListener("change", async () => {
+        if (!file.files[0]) return;
+        await setImage(await toBitmap(file.files[0]));
+        $("dropText").textContent = file.files[0].name;
+      });
+      drop.addEventListener("drop", async (e) => {
+        const f = e.dataTransfer?.files?.[0];
+        if (!f?.type.startsWith("image/")) return;
+        await setImage(await toBitmap(f));
+        $("dropText").textContent = f.name;
+      });
+
+      const autoRun = new URLSearchParams(location.search).has("auto");
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "vumichien/AnimeGANv2_Hayao", runtime: "onnxruntime-web", dtype: "fp32", sizeMB: 8, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress, "hayao"),
+        onReady: () => { $("run").disabled = false; if (autoRun) $("run").click(); },
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!state.bmp) { $("status").textContent = "Pick a photo first."; return; }
+        $("run").disabled = true; $("status").classList.remove("err", "ok");
+        $("status").textContent = `Anime-fying (${STYLE_LABELS[state.style]})… first use of a style downloads ~8 MB`;
+        try {
+          const res = await engine.stylize(await createImageBitmap(state.bmp), { style: state.style, maxSide: 512 });
+          reveal.set(await createImageBitmap(state.bmp), res.styledBmp);
+          $("resultWrap").hidden = false;
+          $("rBackend").textContent = res.device.toUpperCase();
+          $("rStyle").textContent = res.style;
+          $("rInf").textContent = res.infMs + " ms";
+          $("rDelta").textContent = res.styleDelta.toFixed(4);
+          $("insideEmpty").hidden = true; $("insideWrap").hidden = false;
+          $("insStyle").textContent = STYLE_LABELS[res.style].split(" ")[0];
+          drawBitmapFit($("insOut"), await createImageBitmap(res.styledBmp), 320);
+          const c = document.createElement("canvas"); c.width = res.styledBmp.width; c.height = res.styledBmp.height; c.getContext("2d").drawImage(res.styledBmp, 0, 0);
+          $("download").href = c.toDataURL("image/png"); $("download").hidden = false;
+          $("status").textContent = "Done — drag the divider to compare."; $("status").classList.add("ok");
+        } catch (err) {
+          $("status").textContent = "Stylization failed: " + err.message; $("status").classList.add("err");
+        } finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>

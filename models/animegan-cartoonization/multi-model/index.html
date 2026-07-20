@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Multi-model — anime sticker: stylize → cut out · AnimeGANv2</title>
+    <meta name="description" content="Chain AnimeGANv2 with MODNet matting: repaint a photo as anime, then cut the subject out onto a clean backdrop to make an anime sticker — two models, all local." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎨</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">AnimeGANv2 cartoonization</a></p>
+    <header>
+      <p class="eyebrow">Multi-model · cartoonization → matting · WASM</p>
+      <h1>Anime sticker: stylize, then cut out</h1>
+      <p class="lede">Repaint a photo as anime with AnimeGANv2, then use <a href="../../modnet-portrait-matting/">MODNet</a>
+        to cut the subject out onto a clean backdrop — an anime sticker with a transparent (or solid-colour)
+        background. Two models, chained, entirely local.</p>
+    </header>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Two models load below (AnimeGANv2 ~8 MB, MODNet ~26 MB). Pick a photo with a clear subject
+        (a person or pet works best), choose a style and a backdrop, then run.</p>
+      <div style="display:grid;gap:.5rem">
+        <div><small class="muted">1 · AnimeGANv2 (cartoonization)</small><div id="loader-anime"></div></div>
+        <div><small class="muted">2 · MODNet (subject matting)</small><div id="loader-matte"></div></div>
+      </div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+      <div id="gallery" style="margin-top:.7rem"></div>
+      <div class="param-grid">
+        <div class="param">
+          <label id="styleLabel">Anime style</label>
+          <div class="style-row" id="styleRow" role="group" aria-labelledby="styleLabel">
+            <button class="style-chip" type="button" data-style="hayao" aria-pressed="true">Hayao</button>
+            <button class="style-chip" type="button" data-style="shinkai" aria-pressed="false">Shinkai</button>
+            <button class="style-chip" type="button" data-style="paprika" aria-pressed="false">Paprika</button>
+          </div>
+        </div>
+        <div class="param">
+          <label for="backdrop">Backdrop</label>
+          <select id="backdrop">
+            <option value="checker" selected>Transparent (checker)</option>
+            <option value="#f5efe0">Cream</option>
+            <option value="#1b2a4a">Night blue</option>
+            <option value="#e34a6f">Pink</option>
+          </select>
+        </div>
+      </div>
+      <div class="controls-row"><button id="run" type="button" disabled>Make anime sticker</button></div>
+      <div class="two-col">
+        <div>
+          <h4 style="font-family:var(--font-body);font-size:.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:.6rem 0 .3rem">Anime repaint</h4>
+          <div class="canvas-frame"><canvas class="fit-canvas" id="canvasAnime" width="360" height="360" role="img" aria-label="The anime-styled photo"></canvas></div>
+        </div>
+        <div>
+          <h4 style="font-family:var(--font-body);font-size:.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:.6rem 0 .3rem">Anime sticker (subject cut out)</h4>
+          <div class="canvas-frame"><canvas class="fit-canvas" id="canvasSticker" width="360" height="360" role="img" aria-label="The anime subject cut out onto the chosen backdrop"></canvas></div>
+        </div>
+      </div>
+      <div class="readout" id="resultWrap" hidden><span>anime <b id="rAnime">–</b></span><span>matte <b id="rMatte">–</b></span><span>style <b id="rStyle">–</b></span></div>
+      <p class="privacy-note">Both models run on-device; the photo, the anime repaint and the cutout never leave the tab.</p>
+    </section>
+
+    <section aria-labelledby="note-h">
+      <h2 id="note-h">Why chain them</h2>
+      <p>Stylization and matting compose naturally: repaint first, then isolate the subject, and you get a
+        reusable anime sticker/avatar with a clean edge — drop it on any background. It's the on-device version
+        of a "make me an anime avatar" tool, with no upload and each stage a real model in your browser.</p>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>.
+      <a href="../">← Back to AnimeGANv2 cartoonization</a>
+    </footer>
+
+    <script type="module">
+      import { CartoonEngine, CARTOON_CSS, drawBitmapFit, urlToBitmap } from "../cartoon.js";
+      import { MattingEngine, composeCutout, loadImage } from "/web-ai-showcase/models/modnet-portrait-matting/matting.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      import { createExampleGallery } from "/web-ai-showcase/lib/example-gallery.js";
+      const style = document.createElement("style"); style.textContent = CARTOON_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const anime = new CartoonEngine();
+      const matte = new MattingEngine();
+      const ready = { anime: false, matte: false };
+      const state = { bmp: null, style: "hayao" };
+      function maybeEnable() { $("run").disabled = !(ready.anime && ready.matte && state.bmp); }
+      async function setImage(b) { state.bmp = b; drawBitmapFit($("canvasAnime"), await createImageBitmap(b), 360); const s = $("canvasSticker"); s.getContext("2d").clearRect(0, 0, s.width, s.height); $("resultWrap").hidden = true; maybeEnable(); }
+      createExampleGallery({ mount: $("gallery"), manifestUrl: "/web-ai-showcase/media/manifest.json", filter: (a) => /portrait|dog|person|bicycle/.test(a.id), onSelect: async (a) => { await setImage(await urlToBitmap(a.url)); } }).then((g) => { if (g?.assets?.length) g.selectId(g.assets[0].id); });
+      for (const chip of $("styleRow").querySelectorAll(".style-chip")) { chip.addEventListener("click", () => { for (const c of $("styleRow").querySelectorAll(".style-chip")) c.setAttribute("aria-pressed", "false"); chip.setAttribute("aria-pressed", "true"); state.style = chip.dataset.style; }); }
+      createModelLoader({ mount: $("loader-anime"), model: { modelId: "vumichien/AnimeGANv2_Hayao", runtime: "onnxruntime-web", dtype: "fp32", sizeMB: 8, requiresWebGPU: false }, load: (p) => anime.load(p, "hayao"), onReady: () => { ready.anime = true; maybeEnable(); } });
+      createModelLoader({ mount: $("loader-matte"), model: { modelId: "Xenova/modnet", runtime: "onnxruntime-web", dtype: "fp32", sizeMB: 26, requiresWebGPU: false }, load: (p) => matte.load(p), onReady: () => { ready.matte = true; maybeEnable(); } });
+      $("run").addEventListener("click", async () => {
+        if (!state.bmp) return;
+        $("run").disabled = true; $("status").classList.remove("err", "ok"); $("status").textContent = "Repainting as anime, then cutting out the subject…";
+        try {
+          const res = await anime.stylize(await createImageBitmap(state.bmp), { style: state.style, maxSide: 384 });
+          drawBitmapFit($("canvasAnime"), res.styledBmp, 360);
+          const c = document.createElement("canvas"); c.width = res.styledBmp.width; c.height = res.styledBmp.height; c.getContext("2d").drawImage(res.styledBmp, 0, 0);
+          const animeURL = c.toDataURL("image/png");
+          const r = await matte.matte(animeURL);
+          const animeImg = await loadImage(animeURL);
+          composeCutout($("canvasSticker"), animeImg, r.width, r.height, r.alpha, { backdrop: $("backdrop").value, cutout: r.cutout });
+          $("resultWrap").hidden = false; $("rAnime").textContent = res.ms + " ms"; $("rMatte").textContent = r.ms + " ms"; $("rStyle").textContent = res.style;
+          $("status").textContent = "Done — anime on the left, cut-out sticker on the right."; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Pipeline failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>
