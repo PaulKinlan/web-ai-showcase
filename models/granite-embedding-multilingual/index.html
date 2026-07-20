@@ -1,0 +1,382 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Granite Embedding multilingual — IBM's cross-lingual text embeddings in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run IBM's Granite Embedding r2 (multilingual) locally via Transformers.js — a 384-dimensional retrieval embedder on a ModernBERT backbone that places a phrase and its translation next to each other in one vector space. Build a cosine matrix, search across languages, and see the vector. Real embeddings, no server."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🌐</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">feature-extraction · text · WASM · ~98 MB</p>
+      <h1>Granite Embedding multilingual — a cross-lingual embedder from IBM</h1>
+      <p class="lede">
+        IBM's <strong>Granite Embedding r2</strong> is an Apache-2.0 retrieval embedder trained for
+        enterprise search — and it is genuinely <strong>multilingual</strong>: a question in English lands
+        right next to its French, Spanish, Chinese or Japanese equivalent in the same 384-dimensional
+        space, so you can search one language and match another. The r2 generation sits on a
+        <strong>ModernBERT</strong> backbone (rotary positions, local/global attention, a long context)
+        rather than the classic 512-token BERT encoder. Paste passages in any mix of languages to build a
+        live similarity matrix, search by meaning across languages, and inspect the vector. Nothing leaves
+        your device.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/onnx-community/granite-embedding-97m-multilingual-r2-ONNX" target="_blank" rel="noopener">onnx-community/granite-embedding-97m-multilingual-r2-ONNX</a> (ONNX build of <a href="https://huggingface.co/ibm-granite/granite-embedding-107m-multilingual-r2" target="_blank" rel="noopener">ibm-granite/granite-embedding-107m-multilingual-r2</a>)</td></tr>
+          <tr><th>Task / pipeline</th><td><code>feature-extraction</code></td></tr>
+          <tr><th>Backbone</th><td><a href="https://huggingface.co/answerdotai/ModernBERT-base" target="_blank" rel="noopener">ModernBERT</a> (~107M params) → 384-dimensional sentence embedding</td></tr>
+          <tr><th>Languages</th><td><strong>Multilingual</strong> — English, German, Spanish, French, Italian, Portuguese, Dutch, Japanese, Korean, Chinese, Arabic, Czech and more (built for cross-lingual retrieval)</td></tr>
+          <tr><th>Context length</th><td>Long-context ModernBERT backbone (rotary positions + local/global attention)</td></tr>
+          <tr><th>Pooling</th><td><strong>Mean</strong> over the token vectors, then <strong>L2-normalize</strong> — no instruction prefix</td></tr>
+          <tr><th>Quantization</th><td>q8 (8-bit) ONNX (<code>onnx/model_quantized.onnx</code>)</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (runs anywhere; no WebGPU needed)</td></tr>
+          <tr><th>Download</th><td>~98 MB, cached after first load</td></tr>
+          <tr><th>License</th><td><a href="https://www.apache.org/licenses/LICENSE-2.0" target="_blank" rel="noopener">Apache-2.0</a> (IBM Granite)</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Put one passage per line — mix languages freely. The matrix shows cosine similarity
+        between every pair (1.00 = identical direction); the scatter is a 2D PCA of the 384-d vectors. Then
+        type a query in any language to rank the passages by meaning.</p>
+
+      <div id="model-loader"></div>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
+        Passages (one per line — try mixing languages)
+        <textarea id="sentences" rows="8">How do I reset my password?
+Comment réinitialiser mon mot de passe ?
+¿Cómo restablezco mi contraseña?
+パスワードをリセットするにはどうすればいいですか？
+The refund policy allows returns within 30 days.
+Notre politique de remboursement autorise les retours sous 30 jours.
+The weather in Tokyo is sunny and warm today.</textarea>
+      </label>
+      <div style="margin:.5rem 0;display:flex;gap:.4rem;flex-wrap:wrap">
+        <button id="run" type="button" disabled>Embed &amp; compare</button>
+        <button id="reset" type="button" class="secondary">Reset examples</button>
+      </div>
+      <p class="status" id="rowStatus" role="status" aria-live="polite" hidden></p>
+
+      <div class="grid-2">
+        <div>
+          <h3 style="margin-top:.4rem">Cosine similarity matrix</h3>
+          <div class="matrix-scroll" id="matrix" aria-live="polite"></div>
+        </div>
+        <div>
+          <h3 style="margin-top:.4rem">2D map (PCA)</h3>
+          <div id="projection" aria-live="polite"></div>
+          <p class="muted" id="explained" style="font-size:.78rem;font-family:var(--font-mono)"></p>
+        </div>
+      </div>
+
+      <div style="margin-top:1rem">
+        <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;max-inline-size:34rem">
+          Semantic search — rank the passages above by meaning (query can be any language)
+          <span style="display:flex;gap:.4rem;flex-wrap:wrap">
+            <input id="query" type="text" value="wie setze ich mein Passwort zurück?" style="flex:1;min-inline-size:12rem" disabled />
+            <button id="search" type="button" disabled>Search</button>
+          </span>
+        </label>
+        <div class="sent-list" id="ranked" aria-live="polite"></div>
+      </div>
+
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+        <span>passages <b id="rN">–</b></span>
+        <span>dims <b id="rDim">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside — the vector, and cross-lingual alignment</h3>
+      <p class="muted">
+        ModernBERT emits one 384-number vector per token. Granite Embedding <strong>mean-pools</strong>
+        them into a whole-passage vector and this page <strong>L2-normalizes</strong> it — so cosine
+        similarity is a plain dot product. Pick a passage to see its real vector, its pre-normalization
+        magnitude, and how many tokens it spanned.
+      </p>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Embed some passages above to inspect a vector.</div>
+      <div id="insideWrap" hidden>
+        <label style="font-size:.82rem;display:flex;gap:.4rem;align-items:center;flex-wrap:wrap">
+          Inspect passage
+          <select id="pick"></select>
+        </label>
+        <div class="readout">
+          <span>dimensions <b>384</b></span>
+          <span>tokens <b id="iTok">–</b></span>
+          <span>pre-norm ‖v‖ <b id="iNorm">–</b></span>
+          <span>post-norm ‖v‖ <b>1.000</b></span>
+        </div>
+        <p class="muted" style="font-size:.78rem;margin:.3rem 0">First 128 of 384 dimensions (blue = positive, orange = negative, brighter = larger magnitude):</p>
+        <div class="vec-strip" id="vecStrip"></div>
+        <p class="muted" style="font-size:.78rem;font-family:var(--font-mono);margin-top:.5rem;word-break:break-all" id="vecHead"></p>
+      </div>
+
+      <hr style="border:0;border-top:1px solid var(--border);margin:1.2rem 0" />
+      <h4 style="margin:.2rem 0">Cross-lingual alignment — the same sentence in five languages</h4>
+      <p class="muted">
+        The whole point of a multilingual embedder: identical meaning in different languages should map to
+        <em>nearly the same vector</em>. Below, one sentence — "Where is the nearest train station?" — is
+        embedded in five languages, plus one unrelated sentence as a control. The matrix should light up
+        between the five translations and stay dark against the control. Real embeddings, computed on your
+        device.
+      </p>
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;align-items:center;margin:.4rem 0">
+        <button id="cmpRun" type="button" class="secondary" disabled>Show cross-lingual matrix</button>
+        <span class="status" id="cmpStatus" role="status" aria-live="polite"></span>
+      </div>
+      <div id="cmpWrap" hidden style="overflow-x:auto"></div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        Embeddings power search, recommendations, deduplication, clustering and retrieval-augmented
+        generation. Granite Embedding's pitch is <strong>cross-lingual retrieval under a permissive
+        licence</strong>: index a knowledge base once and let users query it in their own language;
+        deduplicate content that says the same thing in different languages; cluster a multilingual support
+        inbox by theme — all in a tab, all private, all Apache-2.0.
+      </p>
+      <ul>
+        <li><strong>Cross-lingual search</strong> — one index, many query languages; an English query finds the Spanish or Japanese answer.</li>
+        <li><strong>Multilingual RAG</strong> — retrieve the right passages regardless of the document's language, then answer with an LLM (see the multi-model demo).</li>
+        <li><strong>Dedup &amp; clustering</strong> — group "same thing, different language" across a mixed corpus.</li>
+        <li><strong>Retrieve → rerank</strong> — a fast multilingual first pass, then a cross-encoder for precision (see the multi-model demo).</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Do two sentences mean the same thing — even in different languages? One cosine number.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Cross-lingual semantic search and near-duplicate detection over your own passages.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Cluster a pile of mixed-language passages into themes with k-means over the 384-d vectors.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">Granite retrieves a shortlist across languages, then a cross-encoder reranks the top hits.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>Feature-extraction with mean pooling is the whole recipe — no instruction prefix, works across languages:</p>
+      <pre><code>import { pipeline } from "@huggingface/transformers";
+
+const extract = await pipeline(
+  "feature-extraction",
+  "onnx-community/granite-embedding-97m-multilingual-r2-ONNX",
+); // downloads + caches ~98 MB once
+
+// Granite Embedding mean-pools the token vectors — pass texts in any language:
+const out = await extract([
+  "How do I reset my password?",
+  "Comment réinitialiser mon mot de passe ?",
+], { pooling: "mean", normalize: true });
+const [en, fr] = out.tolist();
+
+// unit-length vectors → cosine similarity is just the dot product:
+const sim = en.reduce((s, x, i) =&gt; s + x * fr[i], 0); // high — same meaning, different language</code></pre>
+      <p class="muted">
+        This page asks the worker for the <em>un</em>-normalized vectors so "See inside" can show the real
+        pre-normalization magnitude, then normalizes them in JS. Inference runs in a Web Worker, so the
+        matrix, projection and search never jank the page.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/onnx-community/granite-embedding-97m-multilingual-r2-ONNX" target="_blank" rel="noopener">Model card — granite-embedding-97m-multilingual-r2 (ONNX)</a></li>
+        <li><a href="https://huggingface.co/ibm-granite/granite-embedding-107m-multilingual-r2" target="_blank" rel="noopener">Model card — ibm-granite/granite-embedding-107m-multilingual-r2</a></li>
+        <li><a href="https://www.ibm.com/granite" target="_blank" rel="noopener">IBM Granite — the model family</a></li>
+        <li><a href="https://arxiv.org/abs/2412.13663" target="_blank" rel="noopener">Paper — Smarter, Better, Faster, Longer: ModernBERT (Warner et al., 2024)</a></li>
+        <li><a href="https://huggingface.co/spaces/mteb/leaderboard" target="_blank" rel="noopener">MTEB leaderboard — how embedders are benchmarked</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import {
+        GraniteEngine, cosine, simMatrix, pca2d, parseLines,
+        renderMatrix, renderProjection, renderRanked, GRANITE_CSS,
+      } from "./granite.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = GRANITE_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new GraniteEngine();
+      const DEFAULT = $("sentences").value;
+      let last = null; // { texts, embeddings, norms, dim, tokenCounts }
+
+      $("reset").addEventListener("click", () => { $("sentences").value = DEFAULT; });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/granite-embedding-97m-multilingual-r2-ONNX", runtime: "transformers.js", dtype: "q8", sizeMB: 98, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => {
+          $("run").disabled = false;
+          $("query").disabled = false;
+          $("search").disabled = false;
+          $("cmpRun").disabled = false;
+        },
+      });
+
+      $("run").addEventListener("click", run);
+      async function run() {
+        const texts = parseLines($("sentences").value);
+        if (texts.length < 2) {
+          $("rowStatus").hidden = false;
+          $("rowStatus").textContent = "Give at least two distinct passages.";
+          $("rowStatus").classList.add("err");
+          return;
+        }
+        $("rowStatus").hidden = false;
+        $("rowStatus").classList.remove("err");
+        $("rowStatus").textContent = "Embedding…";
+        $("run").disabled = true;
+        try {
+          const r = await engine.embed(texts);
+          last = r;
+          renderMatrix($("matrix"), simMatrix(r.embeddings), r.texts);
+          const { points, explained } = pca2d(r.embeddings);
+          renderProjection($("projection"), points, r.texts);
+          $("explained").textContent = `PC1+PC2 explain ${(explained * 100).toFixed(0)}% of the variance`;
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = r.ms + " ms";
+          $("rN").textContent = r.texts.length;
+          $("rDim").textContent = r.dim;
+          fillInside(r);
+          $("rowStatus").textContent = "Done.";
+          $("rowStatus").classList.add("ok");
+        } catch (err) {
+          $("rowStatus").textContent = "Embedding failed: " + err.message;
+          $("rowStatus").classList.add("err");
+        } finally {
+          $("run").disabled = false;
+        }
+      }
+
+      $("search").addEventListener("click", search);
+      $("query").addEventListener("keydown", (e) => { if (e.key === "Enter") search(); });
+      async function search() {
+        const q = $("query").value.trim();
+        const texts = parseLines($("sentences").value);
+        if (!q || texts.length < 1) return;
+        $("search").disabled = true;
+        try {
+          const [qr, dr] = await Promise.all([engine.embed([q]), engine.embed(texts)]);
+          const qv = qr.embeddings[0];
+          const hits = dr.texts
+            .map((text, i) => ({ text, score: cosine(qv, dr.embeddings[i]) }))
+            .sort((a, b) => b.score - a.score);
+          renderRanked($("ranked"), hits);
+        } catch (err) {
+          $("ranked").textContent = "Search failed: " + err.message;
+        } finally {
+          $("search").disabled = false;
+        }
+      }
+
+      function fillInside(r) {
+        $("insideEmpty").hidden = true;
+        $("insideWrap").hidden = false;
+        $("pick").replaceChildren(...r.texts.map((t, i) => {
+          const o = document.createElement("option");
+          o.value = String(i);
+          o.textContent = `D${i + 1} — ${t.length > 40 ? t.slice(0, 39) + "…" : t}`;
+          return o;
+        }));
+        showVector(0);
+      }
+      $("pick").addEventListener("change", (e) => showVector(+e.target.value));
+      function showVector(i) {
+        if (!last) return;
+        const v = last.embeddings[i];
+        $("iNorm").textContent = last.norms[i].toFixed(3);
+        $("iTok").textContent = last.tokenCounts?.[i] ?? "–";
+        const maxAbs = Math.max(...v.map(Math.abs)) || 1;
+        $("vecStrip").replaceChildren(...v.slice(0, 128).map((val) => {
+          const cell = document.createElement("span");
+          cell.className = "vec-cell";
+          const t = Math.abs(val) / maxAbs;
+          const hue = val >= 0 ? "var(--accent)" : "var(--warn)";
+          cell.style.background = `color-mix(in srgb, ${hue} ${(t * 100).toFixed(0)}%, var(--bg-raised))`;
+          cell.title = val.toFixed(4);
+          return cell;
+        }));
+        $("vecHead").textContent = "[" + v.slice(0, 8).map((x) => x.toFixed(4)).join(", ") + ", … ] (384-d unit vector)";
+      }
+
+      // ---- Cross-lingual alignment: one sentence in five languages + one control ----
+      const CROSS = [
+        { lang: "EN", text: "Where is the nearest train station?" },
+        { lang: "FR", text: "Où se trouve la gare la plus proche ?" },
+        { lang: "ES", text: "¿Dónde está la estación de tren más cercana?" },
+        { lang: "DE", text: "Wo ist der nächste Bahnhof?" },
+        { lang: "JA", text: "一番近い駅はどこですか？" },
+        { lang: "EN·control", text: "I would like to order a large pepperoni pizza." },
+      ];
+      $("cmpRun").addEventListener("click", async () => {
+        $("cmpRun").disabled = true;
+        $("cmpStatus").classList.remove("err");
+        $("cmpStatus").textContent = "Embedding six sentences…";
+        try {
+          const r = await engine.embed(CROSS.map((c) => c.text));
+          const m = simMatrix(r.embeddings);
+          const n = CROSS.length;
+          let head = "<tr><th></th>";
+          for (const c of CROSS) head += `<th scope="col">${c.lang}</th>`;
+          head += "</tr>";
+          let body = "";
+          for (let i = 0; i < n; i++) {
+            body += `<tr><th scope="row" title="${CROSS[i].text.replace(/"/g, "&quot;")}">${CROSS[i].lang}</th>`;
+            for (let j = 0; j < n; j++) {
+              const s = m[i][j];
+              const bg = `color-mix(in srgb, var(--accent) ${(Math.max(0, s) * 100).toFixed(0)}%, transparent)`;
+              const col = s > 0.6 ? "var(--accent-ink)" : "var(--color)";
+              body += `<td style="background:${bg};color:${col}" title="${CROSS[i].lang} ↔ ${CROSS[j].lang}: ${s.toFixed(4)}">${s.toFixed(2)}</td>`;
+            }
+            body += "</tr>";
+          }
+          $("cmpWrap").innerHTML = `
+            <table class="sim-matrix" style="margin-top:.5rem"><thead>${head}</thead><tbody>${body}</tbody></table>
+            <p class="muted" style="font-size:.76rem;margin-top:.4rem">The five translations (EN·FR·ES·DE·JA) of "Where is the nearest train station?" score high against each other and low against the unrelated control — one multilingual model, one shared vector space, latency ${r.ms} ms on the ${r.device.toUpperCase()}.</p>`;
+          $("cmpWrap").hidden = false;
+          $("cmpStatus").textContent = "";
+        } catch (err) {
+          $("cmpStatus").textContent = "Cross-lingual demo failed: " + err.message;
+          $("cmpStatus").classList.add("err");
+        } finally {
+          $("cmpRun").disabled = false;
+        }
+      });
+
+      if ("serviceWorker" in navigator) navigator.serviceWorker.register("/web-ai-showcase/sw.js").catch(() => {});
+    </script>
+  </body>
+</html>
