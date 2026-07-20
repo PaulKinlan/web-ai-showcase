@@ -1,0 +1,336 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>wav2vec2 — Polish speech-to-text in the browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run a Polish wav2vec2 CTC recogniser (wav2vec2-base-10k-voxpopuli fine-tuned on Polish) locally in your browser. It labels every ~20 ms frame with a Latin-Polish character (ą ć ę ł ń ó ś ź ż and all), then collapses the frames into text. Nothing uploaded."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='13'>🇵🇱</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">automatic-speech-recognition · audio · WASM (WebGPU when available) · ~90 MB</p>
+      <h1>wav2vec2 — Polish speech, one letter per frame</h1>
+      <p class="lede">
+        The English <a href="/web-ai-showcase/models/wav2vec2-asr/">wav2vec2</a> demo speaks one language,
+        the <a href="/web-ai-showcase/models/xlsr-multilingual-asr/">Russian XLSR</a> demo another, and the
+        <a href="/web-ai-showcase/models/spanish-xlsr-asr/">Spanish</a> and
+        <a href="/web-ai-showcase/models/italian-xlsr-asr/">Italian</a> demos two more. This one recognises
+        <strong>Polish</strong>. It is <strong>wav2vec2-base</strong> pre-trained self-supervised on 10,000
+        hours of unlabelled European-Parliament audio (VoxPopuli) and then fine-tuned on Polish — a compact
+        ~95M-param CTC recogniser whose output alphabet carries the <strong>Polish diacritics
+        (ą ć ę ł ń ó ś ź ż)</strong>. Same CTC mechanics as the other ASR demos: label every ~20 ms frame,
+        then collapse the frames into text. Pick a clip and watch the frames collapse into Polish.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="glance">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/onnx-community/wav2vec2-base-10k-voxpopuli-ft-pl-ONNX" target="_blank" rel="noopener">onnx-community/wav2vec2-base-10k-voxpopuli-ft-pl-ONNX</a> <span class="muted">(ONNX mirror of facebook/wav2vec2-base-10k-voxpopuli-ft-pl)</span></td></tr>
+          <tr><th>Task / pipeline</th><td><code>automatic-speech-recognition</code> — loaded as <code>AutoModelForCTC</code> so we can see the frames</td></tr>
+          <tr><th>Architecture</th><td><strong>wav2vec2-base</strong>: a ~95M-param wav2vec2 encoder (12 transformer layers) pre-trained on 10k h of unlabelled VoxPopuli audio, fine-tuned for Polish. CTC head over a <strong>41-symbol Latin-Polish vocab</strong> (blank + "|" boundary + digit + 26 letters + ą ć ę ł ń ó ś ź ż). No decoder.</td></tr>
+          <tr><th>Language</th><td><strong>Polish (pl)</strong> — this is a language-specialised recogniser; other languages produce Polish-phonetic gibberish</td></tr>
+          <tr><th>Not XLSR-53</th><td>the canonical <a href="https://huggingface.co/jonatasgrosman/wav2vec2-large-xlsr-53-polish" target="_blank" rel="noopener">jonatasgrosman XLSR-53 Polish</a> checkpoint is <strong>PyTorch/Flax only — no ONNX export exists anywhere on the Hub</strong>, so it can't run in a browser today. This demo honestly uses the smaller wav2vec2-base VoxPopuli Polish model that <em>does</em> ship a real browser-loadable CTC ONNX, rather than relabel a different language's model.</td></tr>
+          <tr><th>Quantization</th><td><strong>q4</strong> (4-bit, <code>onnx/model_q4.onnx</code>, ~90 MB) — verified in real headless Chrome to give cleaner, more accurate Polish than the q8/int8 export and far smaller than the 378 MB fp32</td></tr>
+          <tr><th>Layout</th><td>standard transformers.js layout (config.json + preprocessor_config.json + onnx/ subfolder + tokenizer.json + vocab.json), so it loads directly as <code>AutoModelForCTC</code> — we still normalise the audio and CTC-decode ourselves to surface the per-frame strip</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (WebGPU when a real adapter is present), honest fallback</td></tr>
+          <tr><th>Download</th><td>~90 MB (q4 encoder), cached after first load</td></tr>
+          <tr><th>License</th><td>Apache-2.0 (base model, facebook/wav2vec2-base-10k-voxpopuli-ft-pl)</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly / WebGPU, Web Workers, Web Audio (decode + resample), MediaRecorder (mic)</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">
+        Choose Polish audio — record from your mic, upload a file, or pick the bundled sample. The page
+        decodes it to 16 kHz mono, draws the waveform, and runs the CTC model in a Web Worker. It does best
+        on <strong>clear Polish speech</strong>. First load is a <strong>~90 MB</strong> q4 download, then
+        it's cached.
+      </p>
+
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+
+      <div class="audio-row">
+        <button id="rec" type="button" class="secondary" disabled>● Record</button>
+        <button id="upload" type="button" class="secondary" disabled>Upload audio</button>
+        <input type="file" id="file" accept="audio/*" hidden />
+        <span class="muted" style="font-size:.82rem">or a sample:</span>
+        <span class="sample-row" id="samples">
+          <button class="chip" type="button" data-src="sample-pol.wav" data-label="Polish — Sienkiewicz, ‘Za chlebem’ (Public Domain, 13s)">Polish sample</button>
+        </span>
+      </div>
+
+      <div id="micFallback" class="fallback" hidden>
+        <strong>No microphone available here.</strong>
+        <p class="muted" style="margin:.3rem 0">
+          This context didn't grant mic access (common in headless / embedded views). The model still
+          works — use the <em>sample</em> above or <em>Upload audio</em>. For live recording, open this in a
+          normal browser tab and allow the microphone when prompted, then speak Polish.
+        </p>
+      </div>
+
+      <div class="audio-row">
+        <audio id="player" controls preload="metadata"></audio>
+        <span class="muted" id="clipLabel" style="font-size:.82rem">Polish — Sienkiewicz, ‘Za chlebem’ (Public Domain, 13s)</span>
+      </div>
+      <div class="wave-wrap"><canvas id="wave" class="wave" aria-label="Audio waveform"></canvas></div>
+
+      <button id="run" type="button" disabled>Transcribe</button>
+
+      <h3>Transcript (Polish)</h3>
+      <div class="transcript" id="transcript" aria-live="polite" lang="pl">Transcribe a clip to see the Polish text here.</div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>audio <b id="rDur">–</b></span>
+        <span>process <b id="rMs">–</b></span>
+        <span>speed <b id="rSpeed">–</b></span>
+        <span>frames <b id="rFrames">–</b></span>
+        <span>emitted chars <b id="rChars">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside — the CTC collapse over Polish letters</h3>
+      <p class="muted">
+        Below is the model's <strong>raw per-frame argmax</strong>: one cell per ~20 ms frame, showing the
+        single character it thinks is most likely there. Most frames are <em>blank</em> (·) — the model
+        saying "nothing new here". Where a sound lands you get a run of the same letter. The transcript is
+        produced by two mechanical rules, no decoder involved:
+        <strong>(1) merge consecutive duplicates, (2) drop the blanks</strong>. A run like
+        <code>·· dd ·· oo o ·· mm ·· ·</code> collapses to <code>dom</code>.
+      </p>
+      <div class="ctc-legend">
+        <span><span class="ctc-swatch" style="background:var(--accent)"></span> emitted character</span>
+        <span><span class="ctc-swatch" style="background:color-mix(in srgb,var(--accent) 18%,transparent)"></span> ␣ word boundary</span>
+        <span><span class="ctc-swatch" style="background:var(--border)"></span> · blank frame</span>
+      </div>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Transcribe a clip to see its per-frame argmax and the collapse.</div>
+      <div id="insideWrap" hidden>
+        <p class="muted" style="font-size:.8rem;margin:.6rem 0 .2rem">Raw per-frame argmax (<span id="frameCount">–</span> frames · ~<span id="frameDur">–</span> ms each):</p>
+        <div class="ctc-strip" id="strip" role="img" aria-label="Per-frame Polish character predictions" lang="pl"></div>
+        <p class="muted" style="font-size:.8rem;margin:.8rem 0 .2rem">↓ merge duplicates, drop blanks ↓</p>
+        <div class="ctc-collapsed" id="collapsed" aria-live="polite" lang="pl"></div>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        Self-supervised pre-training on huge piles of <em>unlabelled</em> speech — here 10,000 hours of
+        European-Parliament audio — is how you get a good recogniser for a language like Polish from a
+        modest amount of labelled data. The model learned what human speech <em>sounds like</em> before it
+        ever saw a Polish transcript. That is what puts a usable Polish recogniser inside a browser tab —
+        <strong>private, offline once cached, no server, no key</strong>. And because it's CTC (frames, not
+        generated tokens) it can't hallucinate an unspoken sentence, and every character is pinned to a
+        moment in time.
+      </p>
+      <ul>
+        <li><strong>On-device Polish dictation and captions</strong> — for apps that must keep audio on the device (health, legal, journalism) in the Polish market.</li>
+        <li><strong>Compact + mobile-friendly</strong> — a 4-bit ~90 MB CTC model runs on WASM with no GPU, so it's realistic on a phone.</li>
+        <li><strong>Polish forced alignment</strong> — real per-word timings for karaoke, subtitles, and pronunciation feedback, straight from the frames.</li>
+        <li><strong>Privacy-first field work</strong> — transcribe sensitive Polish audio with nothing leaving the device.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">One Polish clip in, Polish text out — and the per-frame strip that produced it.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Forced alignment: real per-word Polish timings, straight from the CTC frames.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Feed it English and watch a Polish-only model transliterate the sounds.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">Transcribe Polish → OPUS-MT translates it to English, all on-device.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>
+        This repo ships the standard transformers.js layout, so the model loads directly as
+        <code>AutoModelForCTC</code>. We still normalise the audio and do the CTC collapse ourselves so we
+        can show the per-frame strip (the ASR pipeline does exactly this internally):
+      </p>
+      <pre><code>import { AutoModelForCTC, Tensor } from "@huggingface/transformers";
+
+const model_id = "onnx-community/wav2vec2-base-10k-voxpopuli-ft-pl-ONNX";
+const model = await AutoModelForCTC.from_pretrained(model_id, {
+  device: "wasm", dtype: "q4",   // 4-bit export, ~90 MB — cleaner Polish than q8, tiny vs 378 MB fp32
+});
+
+// audio = 16 kHz mono Float32Array → normalise to zero mean / unit variance (wav2vec2 feature step)
+const x = normalize(audio);
+const { logits } = await model({ input_values: new Tensor("float32", x, [1, x.length]) });
+// logits shape [1, frames, 41]  ← 41 Latin-Polish symbols
+
+// greedy CTC decode: argmax per frame, merge duplicates, drop the blank (id 0)
+const ids  = argmaxPerFrame(logits);    // e.g. [0,0,18,18,0,8,20,...]
+const text = collapse(ids);             // "dom…" in Polish — no decoder involved</code></pre>
+      <p class="muted">
+        Inference runs in a Web Worker so the UI never janks. The worker returns the raw per-frame argmax
+        and real per-word timings (from the frame each character was emitted at) — nothing is faked or
+        pre-computed.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/onnx-community/wav2vec2-base-10k-voxpopuli-ft-pl-ONNX" target="_blank" rel="noopener">Model card — onnx-community/wav2vec2-base-10k-voxpopuli-ft-pl-ONNX (ONNX export)</a></li>
+        <li><a href="https://huggingface.co/facebook/wav2vec2-base-10k-voxpopuli-ft-pl" target="_blank" rel="noopener">Base fine-tune — facebook/wav2vec2-base-10k-voxpopuli-ft-pl</a></li>
+        <li><a href="https://arxiv.org/abs/2101.00390" target="_blank" rel="noopener">Paper — "VoxPopuli: A Large-Scale Multilingual Speech Corpus" (2021)</a></li>
+        <li><a href="https://arxiv.org/abs/2006.11477" target="_blank" rel="noopener">Paper — "wav2vec 2.0" (Baevski et al., 2020)</a></li>
+        <li><a href="https://www.cs.toronto.edu/~graves/icml_2006.pdf" target="_blank" rel="noopener">CTC — Graves et al., 2006</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      Sample: Henryk Sienkiewicz, "Za chlebem" — a LibriVox reading in the Public Domain. <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <style>
+      .glance { inline-size:100%; border-collapse:collapse; font-size:.85rem; }
+      .glance th, .glance td { text-align:left; padding:.3rem .5rem; border-bottom:1px solid var(--border); vertical-align:top; }
+      .glance th { color:var(--muted); font-weight:600; inline-size:11rem; }
+      .glance td { overflow-wrap:anywhere; }
+    </style>
+
+    <script type="module">
+      import {
+        PolishAsrEngine, urlToMono16k, MicRecorder, blobToMono16k,
+        drawWaveform, fmtTime, renderStrip, PL_ASR_CSS,
+      } from "./polish.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = PL_ASR_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new PolishAsrEngine();
+      let pcm = null, audioDur = 0;
+
+      async function useAudio(url, label, { revoke = false } = {}) {
+        $("player").src = url;
+        $("clipLabel").textContent = label;
+        $("transcript").textContent = "Transcribe a clip to see the Polish text here.";
+        $("readout").hidden = true; $("insideWrap").hidden = true; $("insideEmpty").hidden = false;
+        try {
+          const decoded = await urlToMono16k(url);
+          pcm = decoded.pcm; audioDur = decoded.duration;
+          drawWaveform($("wave"), pcm, 0);
+          $("run").disabled = !engine.ready;
+        } catch (err) {
+          $("status").hidden = false;
+          $("status").textContent = "Couldn't decode that audio: " + err.message;
+          $("status").classList.add("err");
+          pcm = null;
+        }
+        if (revoke) $("player").addEventListener("emptied", () => URL.revokeObjectURL(url), { once: true });
+      }
+
+      for (const chip of $("samples").children) {
+        chip.addEventListener("click", () => useAudio(chip.dataset.src, chip.dataset.label));
+      }
+      useAudio("sample-pol.wav", "Polish — Sienkiewicz, ‘Za chlebem’ (Public Domain, 13s)");
+
+      $("upload").addEventListener("click", () => $("file").click());
+      $("file").addEventListener("change", async () => {
+        const f = $("file").files[0];
+        if (f) await useAudio(URL.createObjectURL(f), f.name, { revoke: true });
+      });
+
+      const mic = new MicRecorder();
+      let recording = false;
+      if (!MicRecorder.supported()) $("micFallback").hidden = false;
+      $("rec").addEventListener("click", async () => {
+        if (!recording) {
+          try {
+            await mic.start();
+          } catch {
+            $("micFallback").hidden = false;
+            $("status").hidden = false;
+            $("status").textContent = "Microphone unavailable — use the sample or upload.";
+            $("status").classList.add("err");
+            return;
+          }
+          recording = true;
+          $("rec").innerHTML = '<span class="rec-dot"></span>Stop';
+          $("rec").classList.remove("secondary");
+          $("status").hidden = false; $("status").classList.remove("err");
+          $("status").textContent = "Recording… speak Polish, then click Stop.";
+        } else {
+          recording = false;
+          $("rec").textContent = "● Record";
+          $("rec").classList.add("secondary");
+          const { url } = await mic.stop();
+          await useAudio(url, "Your recording", { revoke: true });
+          $("status").textContent = "Recorded. Hit Transcribe.";
+        }
+      });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: {
+          modelId: "onnx-community/wav2vec2-base-10k-voxpopuli-ft-pl-ONNX",
+          runtime: "transformers.js",
+          dtype: "q4",
+          sizeMB: 90,
+          requiresWebGPU: false,
+        },
+        load: async (onProgress) => {
+          const device = await engine.load((p) => onProgress(p));
+          return { device };
+        },
+        onReady: () => {
+          $("rec").disabled = false; $("upload").disabled = false;
+          $("run").disabled = !pcm;
+        },
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!pcm) { $("status").hidden = false; $("status").textContent = "Pick or record some audio first."; return; }
+        $("run").disabled = true; $("status").hidden = false; $("status").classList.remove("err", "ok");
+        $("status").textContent = "Running the CTC model…";
+        try {
+          const r = await engine.transcribe(pcm, audioDur);
+          $("transcript").textContent = r.text || "(no speech detected)";
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rDur").textContent = fmtTime(r.audioSec);
+          $("rMs").textContent = (r.ms / 1000).toFixed(2) + " s";
+          $("rSpeed").textContent = r.speedup ? r.speedup.toFixed(1) + "× real-time" : "–";
+          $("rFrames").textContent = r.frames;
+          $("rChars").textContent = r.emitted;
+          $("insideEmpty").hidden = true; $("insideWrap").hidden = false;
+          $("frameCount").textContent = r.frames;
+          $("frameDur").textContent = r.frameMs ? r.frameMs.toFixed(0) : "20";
+          renderStrip($("strip"), r.strip);
+          $("collapsed").textContent = r.text || "(no speech detected)";
+          $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (err) {
+          $("status").textContent = "Transcription failed: " + err.message;
+          $("status").classList.add("err");
+        } finally {
+          $("run").disabled = false;
+        }
+      });
+
+      addEventListener("resize", () => pcm && drawWaveform($("wave"), pcm, 0));
+
+      if ("serviceWorker" in navigator) navigator.serviceWorker.register("/web-ai-showcase/sw.js").catch(() => {});
+    </script>
+  </body>
+</html>
