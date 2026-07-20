@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CRAFT text detection — character regions + links, on-device · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run the CRAFT text detector (inference4j/craft-mlt-25k) locally via ONNX Runtime Web: it produces two heatmaps — a character REGION map and an AFFINITY map that links characters into words — then decodes them into oriented word boxes, entirely on your device. This LOCATES text, it doesn't read it. No image ever leaves the tab."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🔠</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">object-detection (text) · vision · WASM · ~83 MB</p>
+      <h1>CRAFT — where is the text, character by character?</h1>
+      <p class="lede">
+        A text <strong>detector</strong> doesn't read words — it finds <em>where</em> they are. CRAFT
+        (Character-Region Awareness For Text detection) does it with two heatmaps: a
+        <strong>region map</strong> (per-pixel "is this a character?") and an <strong>affinity
+        map</strong> (per-pixel "do two characters belong to the same word?"). The affinity map bridges
+        the gaps between letters, so characters group into <strong>oriented word boxes</strong> — even
+        curved or slanted lines. It runs entirely on your device via ONNX Runtime Web; the image and the
+        boxes never leave the tab. This is a different approach from the
+        <a href="../scene-text-detection/">DBNet detector</a> (one binarization map) — CRAFT reasons
+        about characters and the links between them. Detection locates text;
+        <a href="../trocr-ocr/">reading</a> it is a separate step (see the multi-model demo).
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/inference4j/craft-mlt-25k" target="_blank" rel="noopener">inference4j/craft-mlt-25k</a> — CLOVA AI CRAFT (VGG16-BN backbone), the EasyOCR detector</td></tr>
+          <tr><th>Task</th><td><code>object-detection</code> (text-region detection) — run via raw ONNX Runtime Web (see note below)</td></tr>
+          <tr><th>Runtime</th><td>onnxruntime-web 1.21 (transformers.js has no CRAFT class)</td></tr>
+          <tr><th>Input</th><td><code>[1, 3, H, W]</code> NCHW — the image resized so H,W are multiples of 32, ImageNet-normalised</td></tr>
+          <tr><th>Output</th><td><code>[1, H/2, W/2, 2]</code> — channel 0 = region (character) heat, channel 1 = affinity (character-link) heat; decoded (threshold → OR → connected components → min-area box) into word polygons</td></tr>
+          <tr><th>Quantization</th><td>fp32 ONNX</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (runs anywhere; no WebGPU needed)</td></tr>
+          <tr><th>Download</th><td>~83 MB, cached after first load</td></tr>
+          <tr><th>License</th><td>MIT (ONNX export) · CRAFT / CLOVA AI</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers, OffscreenCanvas, Canvas — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Pick a sample (or drop your own image), then detect. The model returns oriented
+        boxes around every word — it does not read the words.</p>
+
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="two-col">
+        <div>
+          <div class="canvas-frame"><canvas class="det-canvas" id="canvas" width="640" height="480" role="img" aria-label="Image with detected text-region boxes"></canvas></div>
+          <div class="sample-strip" id="samples" aria-label="Sample images (generated for this demo — no real people or brands)">
+            <img class="sample-thumb active" src="sample-sign.jpg" data-src="sample-sign.jpg" alt="Café storefront sign with several lines of text" tabindex="0" role="button" />
+            <img class="sample-thumb" src="sample-receipt.jpg" data-src="sample-receipt.jpg" alt="Grocery receipt with itemised lines" tabindex="0" role="button" />
+            <img class="sample-thumb" src="sample-page.jpg" data-src="sample-page.jpg" alt="Book page paragraph" tabindex="0" role="button" />
+            <img class="sample-thumb" src="sample-poster.jpg" data-src="sample-poster.jpg" alt="Poster with rotated, angled text" tabindex="0" role="button" />
+            <img class="sample-thumb" src="sample-street.jpg" data-src="sample-street.jpg" alt="Street scene with mixed signage" tabindex="0" role="button" />
+          </div>
+          <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop your own image">
+            <span id="dropText">Drop / choose your own image</span>
+            <input type="file" id="file" accept="image/*" hidden />
+          </div>
+        </div>
+
+        <div>
+          <div class="param-grid">
+            <div class="param">
+              <label for="textThreshold">Character core ≥ <b id="textThresholdVal">0.70</b></label>
+              <input type="range" id="textThreshold" min="0.3" max="0.9" step="0.05" value="0.7" />
+            </div>
+            <div class="param">
+              <label for="linkThreshold">Character link ≥ <b id="linkThresholdVal">0.40</b></label>
+              <input type="range" id="linkThreshold" min="0.1" max="0.8" step="0.05" value="0.4" />
+            </div>
+            <div class="param">
+              <label for="limit">Detection resolution <b id="limitVal">800</b>px</label>
+              <input type="range" id="limit" min="320" max="1024" step="32" value="800" />
+            </div>
+          </div>
+          <div class="controls-row">
+            <button id="run" type="button" disabled>Detect text regions</button>
+          </div>
+          <div id="resultWrap" hidden>
+            <p class="big-verdict"><span class="count-num" id="countNum">–</span><span id="countText">words found</span></p>
+            <div class="readout" id="readout">
+              <span>backend <b id="rBackend">–</b></span>
+              <span>inference <b id="rInf">–</b></span>
+              <span>+ decode <b id="rMs">–</b></span>
+              <span>maps <b id="rDims">–</b></span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <p class="privacy-note">Everything runs on your device — the image, the heatmaps, and the boxes
+        never leave the tab. The samples are generated for this demo (no real people or brands).</p>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside</h3>
+      <p class="muted">
+        CRAFT's real output isn't boxes — it's <strong>two heatmaps</strong>. The <strong>region</strong>
+        map lights up on each character; the <strong>affinity</strong> map lights up <em>between</em>
+        characters that belong to the same word. Threshold both, OR them together, group the connected
+        blobs, and fit a minimum-area box to each — that's the whole CRAFT decode, made visible. The
+        affinity map is what lets one word become one box instead of a box per letter.
+      </p>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Detect an image to see its region + affinity maps.</div>
+      <div id="insideWrap" hidden>
+        <div class="heat-pair">
+          <figure>
+            <canvas class="heat-canvas" id="heat" width="320" height="240" role="img" aria-label="Per-pixel character-region heatmap"></canvas>
+            <figcaption>Region map — per-pixel "is this a character?"</figcaption>
+          </figure>
+          <figure>
+            <canvas class="heat-canvas" id="heatAff" width="320" height="240" role="img" aria-label="Per-pixel character-affinity heatmap"></canvas>
+            <figcaption>Affinity map — links between characters of one word</figcaption>
+          </figure>
+        </div>
+        <h4 style="font-family:var(--font-body);font-size:.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:.8rem 0 .3rem">Decoded word regions</h4>
+        <ol class="region-list" id="regionList" aria-label="Detected text regions with confidence and angle"></ol>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        Detection is the first stage of every OCR and document pipeline — and doing it on-device means a
+        sensitive document (a receipt, an ID, a form) never has to be uploaded to find its text. CRAFT's
+        character-affinity approach is especially good at <em>word-level</em> boxes and curved or angled
+        lines. Once you know <em>where</em> text is, you can act on regions without reading a word:
+      </p>
+      <ul>
+        <li><strong>Private redaction</strong> — black out every word on a screenshot or scan before you share it, all client-side.</li>
+        <li><strong>Crop-then-read</strong> — feed only the tight, upright word crops to an OCR model (TrOCR) so it recognises cleaner lines and skips the background.</li>
+        <li><strong>Layout &amp; counting</strong> — count words/lines, find the densest text block, or check "does this photo contain text?" without a server.</li>
+        <li><strong>Assistive capture</strong> — highlight text in a live camera frame so a low-vision user can tap the word they want read aloud.</li>
+      </ul>
+      <p class="muted">This detector locates words; it does not recognise characters, languages, or reading order — pair it with an OCR model for that.</p>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">One image in, oriented word boxes out — see CRAFT find every word and count them.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">On-device redaction — detect every word in a document and black it out before sharing.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Rotated, angled, dense text — watch the affinity map link letters into tilted word boxes.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">Detect → read: locate each word, crop it upright, then run TrOCR to actually read it.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>transformers.js has no CRAFT class, so we run the ONNX graph directly with ONNX Runtime Web. The
+        model gives two heatmaps; the CRAFT decode turns them into word boxes:</p>
+      <pre><code>import * as ort from "onnxruntime-web";
+
+const session = await ort.InferenceSession.create(craftBytes, { executionProviders: ["wasm"] });
+
+// image → [1,3,H,W] NCHW (H,W multiples of 32), ImageNet-normalised
+const input = new ort.Tensor("float32", normalize(image), [1, 3, H, W]);
+const { score_map } = await session.run({ input });   // [1, H/2, W/2, 2]
+
+// CRAFT decode: region>textThreshold OR affinity>linkThreshold → connected components → min-area box
+const words = decode(score_map.data, W / 2, H / 2, { textThreshold: 0.7, linkThreshold: 0.4 });</code></pre>
+      <p class="muted">
+        Inference and the whole decode run in a Web Worker so the UI never blocks, and the 83 MB model
+        is fetched through Cache Storage, so a returning visit auto-initialises with no re-download.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/inference4j/craft-mlt-25k" target="_blank" rel="noopener">Model — inference4j/craft-mlt-25k (ONNX, MIT)</a></li>
+        <li><a href="https://arxiv.org/abs/1904.01941" target="_blank" rel="noopener">Paper — Character Region Awareness for Text Detection (CRAFT)</a></li>
+        <li><a href="https://github.com/clovaai/CRAFT-pytorch" target="_blank" rel="noopener">CLOVA AI — CRAFT-pytorch (reference implementation)</a></li>
+        <li><a href="https://onnxruntime.ai/docs/tutorials/web/" target="_blank" rel="noopener">ONNX Runtime Web documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://onnxruntime.ai/docs/tutorials/web/" target="_blank" rel="noopener">ONNX Runtime Web</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import {
+        CRAFT_CSS, CraftEngine, drawHeatmap, drawImageFit, drawRegions, escapeHTML, toBitmap, urlToBitmap,
+      } from "./craftdet.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = CRAFT_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new CraftEngine();
+      const state = { bmp: null, last: null };
+
+      async function setImage(bitmap) {
+        state.bmp = bitmap;
+        const fit = drawImageFit($("canvas"), await createImageBitmap(bitmap));
+        state.fit = fit;
+        $("resultWrap").hidden = true;
+        $("insideWrap").hidden = true;
+        $("insideEmpty").hidden = false;
+      }
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        await setImage(await urlToBitmap(el.dataset.src));
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => {
+          if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); }
+        });
+      }
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      file.addEventListener("change", async () => {
+        if (!file.files[0]) return;
+        for (const t of $("samples").children) t.classList.remove("active");
+        await setImage(await toBitmap(file.files[0]));
+        $("dropText").textContent = file.files[0].name;
+      });
+      drop.addEventListener("drop", async (e) => {
+        const f = e.dataTransfer?.files?.[0];
+        if (!f?.type.startsWith("image/")) return;
+        for (const t of $("samples").children) t.classList.remove("active");
+        await setImage(await toBitmap(f));
+        $("dropText").textContent = f.name;
+      });
+
+      $("textThreshold").addEventListener("input", () => { $("textThresholdVal").textContent = (+$("textThreshold").value).toFixed(2); });
+      $("linkThreshold").addEventListener("input", () => { $("linkThresholdVal").textContent = (+$("linkThreshold").value).toFixed(2); });
+      $("limit").addEventListener("input", () => { $("limitVal").textContent = $("limit").value; });
+
+      pickSample($("samples").firstElementChild);
+
+      const autoRun = new URLSearchParams(location.search).has("auto");
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "inference4j/craft-mlt-25k", runtime: "onnxruntime-web", dtype: "fp32", sizeMB: 83, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: () => { $("run").disabled = false; if (autoRun) $("run").click(); },
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!state.bmp) { $("status").textContent = "Pick an image first."; return; }
+        $("run").disabled = true; $("status").classList.remove("err", "ok"); $("status").textContent = "Detecting text regions…";
+        try {
+          const opts = {
+            textThreshold: +$("textThreshold").value,
+            linkThreshold: +$("linkThreshold").value,
+            limit: +$("limit").value,
+          };
+          const res = await engine.detect(await createImageBitmap(state.bmp), opts);
+          state.last = res;
+          const fit = drawImageFit($("canvas"), await createImageBitmap(state.bmp));
+          drawRegions($("canvas"), res.regions, fit.scale);
+          $("canvas").setAttribute("aria-label", `Image with ${res.regions.length} detected text-region box(es)`);
+          $("resultWrap").hidden = false;
+          $("countNum").textContent = res.regions.length;
+          $("countText").textContent = res.regions.length === 1 ? "word found" : "words found";
+          $("rBackend").textContent = res.device.toUpperCase();
+          $("rInf").textContent = res.infMs + " ms";
+          $("rMs").textContent = (res.ms - res.infMs) + " ms";
+          $("rDims").textContent = res.mapW + "×" + res.mapH;
+          $("insideEmpty").hidden = true; $("insideWrap").hidden = false;
+          drawHeatmap($("heat"), res.heat, res.mapW, res.mapH);
+          drawHeatmap($("heatAff"), res.heatAff, res.mapW, res.mapH);
+          $("regionList").replaceChildren(...res.regions.map((r, i) => {
+            const li = document.createElement("li");
+            li.innerHTML = `<span class="r-idx">${i + 1}</span>` +
+              `<span>conf ${(r.score).toFixed(3)}</span>` +
+              `<span class="r-meta">${Math.round(r.box.x1 - r.box.x0)}×${Math.round(r.box.y1 - r.box.y0)}px · ${Math.round(r.angle)}°</span>`;
+            return li;
+          }));
+          $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (err) {
+          $("status").textContent = "Detection failed: " + err.message; $("status").classList.add("err");
+        } finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>
