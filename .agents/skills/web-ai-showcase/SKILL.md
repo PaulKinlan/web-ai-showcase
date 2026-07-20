@@ -138,7 +138,9 @@ of every model you can genuinely run in a browser — not a token set. Read `CLA
   selecting any mms-tts), **mms-tts-kannada** (is_uroman:false but the ONNX export is DEFECTIVE — aborts
   every input; 4.2.0 error "broadcast axis 44 by 45" = hardcoded even seq-dim vs mms-tts odd add_blank),
   **mms-tts-nepali** (no MMS-TTS Nepali ONNX exists; only Piper/sherpa phoneme-input exports, not the
-  MMS pipeline). MMS-TTS built: en/de/es/fr/ar/vi/hi/ta/gu/te. Never mislabel
+  MMS pipeline). MMS-TTS built: en/de/es/fr/ar/vi/hi/ta/gu/te/mr/pa/ml/ur/or/as), **shadow-removal**
+  (no browser-runnable ONNX — ShadowFormer/SpA-Former/DC-ShadowNet etc. are PyTorch-only; don't relabel a
+  generic brighten/low-light model). Never mislabel
   a substitute as the blocked family.
 - **Version-pin escape hatch:** a model needing a transformers.js class newer than the shared 3.7.5
   (e.g. SAM2 needs 4.2.0) may pin the newer version LOCALLY in its own `worker.js` only — never bump

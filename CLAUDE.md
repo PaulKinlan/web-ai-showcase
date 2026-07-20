@@ -267,7 +267,13 @@ family [ta/te/bn/mr/gu/ml/pa/or/as/ur/mai] has no Nepali member; `facebook/mms-t
 safetensors-only + 401. The only Nepali VITS ONNX are Piper/sherpa exports [`csukuangfj/vits-piper-
 ne_NP-*`] that take espeak-ng PHONEME input with a Piper-specific I/O signature — NOT the MMS
 character-tokenizer pipeline, so not loadable; don't substitute a Piper model. Distinct-script MMS-TTS
-BUILT so far: en/de/es/fr/ar/vi/hi/ta/gu/te). Never mislabel a substitute as the blocked family.
+BUILT so far: en/de/es/fr/ar/vi/hi/ta/gu/te/mr/pa/ml/ur/or/as), **shadow-removal** (no single-image
+shadow-removal model ships a browser-runnable ONNX — every canonical arch [ShadowFormer, SpA-Former,
+DC-ShadowNet, BMNet, DHAN] + the document deshadowers [GCDRNet, DocRes] is PyTorch/.pth-only, zero ONNX;
+the only "shadow" ONNX on HF are a security-backdoor PoC and an anime aesthetic scorer; PIE-Net delighting
+is ~800MB + license-unclear + intrinsic-decomposition, not honest cast-shadow removal. Don't relabel a
+generic brighten/low-light model as shadow removal — the built low-light/dehaze/denoise/dewarp demos cover
+adjacent restoration honestly). Never mislabel a substitute as the blocked family.
 
 **Version-pin escape hatch (isolated).** A model whose class exists only in a transformers.js newer
 than the shared 3.7.5 pin (e.g. SAM2 — `Sam2Model` lands in 4.2.0, absent from 3.7.5) may pin the

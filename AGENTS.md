@@ -144,7 +144,10 @@ short version for tools that look for `AGENTS.md`.
   (NO MMS-TTS Nepali ONNX exists — Xenova/onnx-community/naklitechie families have no Nepali member,
   `facebook/mms-tts-npi` is safetensors-only+401; the only Nepali VITS ONNX are Piper/sherpa exports
   [espeak-ng phoneme input, Piper I/O signature] incompatible with the MMS char-tokenizer pipeline —
-  don't substitute Piper).
+  don't substitute Piper), **shadow-removal** (no single-image shadow-removal model ships a
+  browser-runnable ONNX — ShadowFormer/SpA-Former/DC-ShadowNet/DHAN + doc deshadowers GCDRNet/DocRes are
+  PyTorch/.pth-only, zero ONNX; the only "shadow" ONNX are a security PoC + an anime scorer; don't relabel
+  a generic brighten/low-light model — built low-light/dehaze/denoise/dewarp cover adjacent restoration).
   Never mislabel a substitute as the blocked family.
 - **Version-pin escape hatch (isolated).** If a model's class exists only in a transformers.js newer
   than the shared 3.7.5 pin (e.g. SAM2's `Sam2Model` needs 4.2.0), pin the newer version LOCALLY in
