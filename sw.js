@@ -7,7 +7,7 @@
 //   delete or duplicate it. Serve model files via caches.match() across ALL caches; do not re-store
 //   another copy. Double-storing ~GB models is what pushes an origin into quota eviction.
 // - We only cache the small app shell (HTML/CSS/JS/JSON) ourselves.
-const SW_VERSION = "2026-07-18-v1";
+const SW_VERSION = "2026-07-20-home-search-v2";
 const SHELL_CACHE = `webai-shell-${SW_VERSION}`;
 const MODEL_HOSTS = ["huggingface.co", "cdn-lfs.huggingface.co", "cdn-lfs-us-1.huggingface.co"];
 const LIB_HOSTS = ["cdn.jsdelivr.net"];
