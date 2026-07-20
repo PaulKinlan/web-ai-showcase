@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Wild — a Slovak-only recogniser hears English · Web AI Showcase</title>
+    <meta name="description" content="Feed the Slovak wav2vec2 model English (or any non-Slovak) audio and watch it transliterate the sounds into Slovak — a vivid look at what a language-specialised acoustic model actually learned." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='13'>🗣️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/models/slovak-voxpopuli-asr/">← wav2vec2 (Slovak)</a></p>
+
+    <header>
+      <p class="eyebrow">Wild · wrong-language input · Slovak phonetics</p>
+      <h1>What happens when you feed it the wrong language?</h1>
+      <p class="lede">
+        This model's <em>output head</em> only speaks Slovak — it was fine-tuned to emit Slovak letters and
+        nothing else. Feed it English and it does the only thing it can: map the sounds it hears to the
+        nearest Slovak letters — a phonetic transliteration. It's a striking demonstration that an ASR
+        model has no idea what language you meant; it only knows its own alphabet. Compare the two clips.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+
+      <div class="audio-row">
+        <button id="upload" type="button" class="secondary" disabled>Upload any audio</button>
+        <input type="file" id="file" accept="audio/*" hidden />
+        <span class="muted" style="font-size:.82rem">or a sample:</span>
+        <span class="sample-row" id="samples">
+          <button class="chip" type="button" data-src="../sample-slk.wav" data-label="Slovak — in-language">Slovak (in-language)</button>
+          <button class="chip" type="button" data-src="../../wav2vec2-asr/jfk.wav" data-label="English — JFK inaugural (11s)">English (out-of-language)</button>
+        </span>
+      </div>
+
+      <div class="audio-row">
+        <audio id="player" controls preload="metadata"></audio>
+        <span class="muted" id="clipLabel" style="font-size:.82rem">Slovak — in-language</span>
+      </div>
+      <div class="wave-wrap"><canvas id="wave" class="wave" aria-label="Audio waveform"></canvas></div>
+
+      <button id="run" type="button" disabled>Transcribe</button>
+
+      <h3>Slovak output</h3>
+      <div class="transcript" id="transcript" aria-live="polite" lang="sk">Try the Slovak clip, then the English one, and compare.</div>
+      <div class="readout" id="readout" hidden>
+        <span>input <b id="rLang">–</b></span>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>audio <b id="rDur">–</b></span>
+        <span>process <b id="rMs">–</b></span>
+      </div>
+      <p class="muted" id="note" style="font-size:.82rem;margin-top:.6rem" hidden></p>
+    </section>
+
+    <section aria-labelledby="how-h">
+      <h2 id="how-h">What's happening</h2>
+      <p>
+        On the Slovak clip you get real words. On the English clip you get plausible-<em>sounding</em>
+        Slovak phonetics that are nonsense as Slovak — the acoustic model is honestly reporting "these are the
+        Slovak phonemes closest to what I heard". This is why a language-specialised recogniser is a
+        genuinely different model from the English wav2vec2: the fine-tuning bakes the target language's
+        alphabet and phonotactics into the output head, so the model can only ever spell in Slovak.
+      </p>
+      <p class="muted">Next rung: <a href="../multi-model/">Multi-model — Slovak ASR → English translation →</a></p>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via ONNX Runtime Web (WASM).
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { SlovakAsrEngine, urlToMono16k, drawWaveform, fmtTime, SK_ASR_CSS } from "../slovak.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = SK_ASR_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new SlovakAsrEngine();
+      let pcm = null, audioDur = 0, curLabel = "";
+
+      async function useAudio(url, label, { revoke = false } = {}) {
+        $("player").src = url; $("clipLabel").textContent = label; curLabel = label;
+        $("transcript").textContent = "Transcribe to see the Slovak text output.";
+        $("readout").hidden = true; $("note").hidden = true;
+        try {
+          const decoded = await urlToMono16k(url);
+          pcm = decoded.pcm; audioDur = decoded.duration;
+          drawWaveform($("wave"), pcm, 0); $("run").disabled = !engine.ready;
+        } catch (err) {
+          $("status").hidden = false; $("status").textContent = "Couldn't decode that audio: " + err.message;
+          $("status").classList.add("err"); pcm = null;
+        }
+        if (revoke) $("player").addEventListener("emptied", () => URL.revokeObjectURL(url), { once: true });
+      }
+      for (const chip of $("samples").children) chip.addEventListener("click", () => useAudio(chip.dataset.src, chip.dataset.label));
+      useAudio("../sample-slk.wav", "Slovak — in-language");
+
+      $("upload").addEventListener("click", () => $("file").click());
+      $("file").addEventListener("change", async () => {
+        const f = $("file").files[0];
+        if (f) await useAudio(URL.createObjectURL(f), f.name, { revoke: true });
+      });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "OpenVoiceOS/wav2vec2-base-10k-voxpopuli-ft-sk-onnx", runtime: "onnxruntime-web", dtype: "fp32", sizeMB: 360, requiresWebGPU: false },
+        load: async (onProgress) => ({ device: await engine.load((p) => onProgress(p)) }),
+        onReady: () => { $("upload").disabled = false; $("run").disabled = !pcm; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!pcm) return;
+        $("run").disabled = true; $("status").hidden = false; $("status").classList.remove("err", "ok");
+        $("status").textContent = "Running the CTC model…";
+        try {
+          const r = await engine.transcribe(pcm, audioDur);
+          $("transcript").textContent = r.text || "(no speech detected)";
+          $("readout").hidden = false;
+          const isSk = /slovak/i.test(curLabel);
+          $("rLang").textContent = isSk ? "Slovak (in-language)" : "non-Slovak (out-of-language)";
+          $("rBackend").textContent = r.device.toUpperCase(); $("rDur").textContent = fmtTime(r.audioSec);
+          $("rMs").textContent = (r.ms / 1000).toFixed(2) + " s";
+          $("note").hidden = false;
+          $("note").textContent = isSk
+            ? "In-language: this should read as real Slovak words."
+            : "Out-of-language: the Slovak text above is a phonetic approximation of English sounds — nonsense as Slovak. The Slovak-only CTC head can only spell what it hears in Slovak letters.";
+          $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (err) {
+          $("status").textContent = "Transcription failed: " + err.message; $("status").classList.add("err");
+        } finally { $("run").disabled = false; }
+      });
+      addEventListener("resize", () => pcm && drawWaveform($("wave"), pcm, 0));
+      if ("serviceWorker" in navigator) navigator.serviceWorker.register("/web-ai-showcase/sw.js").catch(() => {});
+    </script>
+  </body>
+</html>
