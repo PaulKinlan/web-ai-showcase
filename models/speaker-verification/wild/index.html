@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Wild — impersonation &amp; voice look-alikes · Speaker verification</title>
+    <meta name="description" content="Rank a line-up of voices against a reference and find the different speakers the model scores suspiciously close — where voice biometrics get fooled." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎙️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Speaker verification</a></p>
+    <header>
+      <p class="eyebrow">Wild · speaker embedding · WASM/WebGPU</p>
+      <h1>Impersonation &amp; voice look-alikes</h1>
+      <p class="lede">Voice biometrics aren't magic. Rank a whole line-up against one reference voice and
+        watch for <strong>false matches</strong> — <em>different</em> speakers the model scores above the
+        same-speaker threshold. Those are exactly where a naïve "voice unlock" would let the wrong person
+        in. Green = truly the same speaker; a red flag = the model is fooled.</p>
+    </header>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+      <div class="param-grid">
+        <div class="param"><label for="ref">Reference voice</label>
+          <select id="ref"></select></div>
+        <div class="param"><label for="thresh">Same-speaker threshold ≥ <b id="threshVal">0.86</b></label><input type="range" id="thresh" min="0.7" max="0.95" step="0.01" value="0.86" /></div>
+      </div>
+      <div class="controls-row"><button id="run" type="button" disabled>Rank the line-up</button></div>
+      <ol class="enroll-list" id="rankList" aria-label="Voices ranked by similarity to the reference"></ol>
+      <div id="resultWrap" hidden><div class="readout"><span>backend <b id="rBackend">–</b></span><span><b id="rFalse">–</b> false match(es)</span></div></div>
+      <p class="privacy-note">All embeddings are computed on your device. "Truth" labels come from how these public/sample clips are grouped by speaker — a red flag means two <em>different</em> speakers scored above your threshold, i.e. a spoof a real system must defend against with liveness and calibration.</p>
+    </section>
+
+    <section aria-labelledby="note-h">
+      <h2 id="note-h">Why look-alikes matter</h2>
+      <p>Two people can have genuinely similar voices, and short/noisy clips push different speakers
+        closer together in embedding space. Slide the threshold up and the false matches disappear — but
+        you also start rejecting genuine same-speaker pairs. That tension is the whole story of voice
+        biometrics, and it's why this showcase frames the model as a <em>similarity signal</em>, never an
+        identity decision.</p>
+    </section>
+
+    <footer class="byline">Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. <a href="../">← Back to Speaker verification</a></footer>
+
+    <script type="module">
+      import { cosine, SpeakerEngine, SPEAKER_CSS, urlToMono16k } from "../speaker.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = SPEAKER_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new SpeakerEngine();
+
+      // Each clip tagged with a speaker id so we can tell true vs false matches.
+      const LINEUP = [
+        { label: "Voice 1 · a (JFK)", src: "../kennedy-1.wav", spk: "v1" },
+        { label: "Voice 1 · b (JFK)", src: "../kennedy-2.wav", spk: "v1" },
+        { label: "Voice 2 · a", src: "../speaker-b-1.wav", spk: "v2" },
+        { label: "Voice 2 · b", src: "../speaker-b-2.wav", spk: "v2" },
+        { label: "Voice 3", src: "../speaker-c.wav", spk: "v3" },
+        { label: "Voice 4", src: "../speaker-d.wav", spk: "v4" },
+        { label: "Look-alike A", src: "../lookalike-1.wav", spk: "la" },
+        { label: "Look-alike B", src: "../lookalike-2.wav", spk: "lb" },
+      ];
+      const embs = new Map();
+
+      $("ref").replaceChildren(...LINEUP.map((s, i) => { const o = document.createElement("option"); o.value = String(i); o.textContent = s.label; return o; }));
+      $("ref").value = "6"; // Look-alike A — its top false match (Look-alike B) is a different speaker
+      $("thresh").addEventListener("input", () => { $("threshVal").textContent = (+$("thresh").value).toFixed(2); if (embs.size) render(); });
+
+      async function ensureEmb(i) { if (embs.has(i)) return embs.get(i); const { pcm } = await urlToMono16k(LINEUP[i].src); const r = await engine.embed(pcm); embs.set(i, r.embedding); return r.embedding; }
+
+      function render() {
+        const refI = +$("ref").value; const refEmb = embs.get(refI); if (!refEmb) return;
+        const th = +$("thresh").value;
+        const rows = LINEUP.map((s, i) => ({ i, s, cos: i === refI ? 1 : cosine(refEmb, embs.get(i)) })).filter((r) => r.i !== refI).sort((a, b) => b.cos - a.cos);
+        let falses = 0;
+        $("rankList").replaceChildren(...rows.map((r) => {
+          const li = document.createElement("li");
+          const truthSame = r.s.spk === LINEUP[refI].spk;
+          const modelSame = r.cos >= th;
+          const isFalse = modelSame && !truthSame;
+          const isMiss = !modelSame && truthSame;
+          if (isFalse) falses++;
+          const tone = truthSame ? "good" : (isFalse ? "bad" : "");
+          li.innerHTML = `<span class="sim-num tone-${tone}" style="font-size:1rem;min-inline-size:3.5rem">${r.cos.toFixed(3)}</span>` +
+            `<span>${r.s.label} ${truthSame ? "· same speaker" : "· different speaker"}</span>` +
+            `<span class="r-meta" style="margin-inline-start:auto;font-family:var(--font-mono);font-size:.75rem">${isFalse ? "⚠ FALSE MATCH" : isMiss ? "missed" : modelSame ? "match" : ""}</span>`;
+          return li;
+        }));
+        $("resultWrap").hidden = false; $("rBackend").textContent = engine.device.toUpperCase(); $("rFalse").textContent = falses;
+      }
+
+      const autoRun = new URLSearchParams(location.search).has("auto");
+      createModelLoader({ mount: $("model-loader"), model: { modelId: "Xenova/wavlm-base-plus-sv", runtime: "transformers.js", dtype: "q8", sizeMB: 102, requiresWebGPU: false }, load: (p) => engine.load(p), onReady: () => { $("run").disabled = false; if (autoRun) $("run").click(); } });
+      $("run").addEventListener("click", async () => {
+        $("run").disabled = true; $("status").classList.remove("err", "ok"); $("status").textContent = "Embedding the line-up…";
+        try {
+          for (let i = 0; i < LINEUP.length; i++) { $("status").textContent = `Embedding ${i + 1}/${LINEUP.length}…`; await ensureEmb(i); }
+          render();
+          $("status").textContent = "Done — check for red flags."; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+      $("ref").addEventListener("change", () => { if (embs.size === LINEUP.length) render(); });
+    </script>
+  </body>
+</html>

@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Multi-model — detect → read (TrOCR) · Scene text detection</title>
+    <meta name="description" content="Locate every text region with DBNet, then run TrOCR on each crop to actually read it — a two-model on-device OCR pipeline." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🔎</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Scene text detection</a></p>
+    <header>
+      <p class="eyebrow">Multi-model · detection → OCR · WASM</p>
+      <h1>Detect → read (DBNet → TrOCR)</h1>
+      <p class="lede">Detection finds <em>where</em> the text is; recognition reads <em>what</em> it says.
+        This chains both on-device: DBNet boxes every region, then <a href="../../trocr-ocr/">TrOCR</a>
+        transcribes each tight crop. Cropping to one line first is exactly what a single-line OCR model
+        wants — cleaner input, better reads.</p>
+    </header>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Loads two models: the ~2.4 MB detector (auto) and, on first run, TrOCR (~185 MB, q8). Both run locally.</p>
+      <div id="model-loader"></div>
+      <p class="status" id="ocrStatus" role="status" aria-live="polite"></p>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+      <div class="sample-strip" id="samples" aria-label="Sample images (generated for this demo)">
+        <img class="sample-thumb active" src="../sample-sign.jpg" data-src="../sample-sign.jpg" alt="Café sign" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-receipt.jpg" data-src="../sample-receipt.jpg" alt="Receipt" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-page.jpg" data-src="../sample-page.jpg" alt="Book page" tabindex="0" role="button" />
+      </div>
+      <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop your own image">
+        <span id="dropText">Drop / choose your own image</span>
+        <input type="file" id="file" accept="image/*" hidden />
+      </div>
+      <div class="controls-row">
+        <button id="run" type="button" disabled>Detect &amp; read</button>
+        <span class="muted" style="font-size:.8rem">reads up to <b>8</b> regions (top-to-bottom)</span>
+      </div>
+      <div class="two-col">
+        <div><div class="canvas-frame"><canvas class="det-canvas" id="canvas" width="480" height="480" role="img" aria-label="Image with numbered text regions"></canvas></div></div>
+        <div>
+          <h4 style="font-size:.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:.4rem 0 .3rem">Read text</h4>
+          <ol class="region-list" id="readList" aria-label="Recognised text per region"></ol>
+        </div>
+      </div>
+      <div id="resultWrap" hidden><div class="readout"><span><b id="countNum">–</b> regions</span><span>detect <b id="rDet">–</b></span><span>read <b id="rOcr">–</b></span></div></div>
+      <p class="privacy-note">Both models run in the browser — the image and the transcription never leave the tab. TrOCR is a single-line recogniser, so multi-line blocks read best when detection splits them into lines.</p>
+    </section>
+
+    <section aria-labelledby="note-h">
+      <h2 id="note-h">Why two models beat one</h2>
+      <p>An end-to-end OCR model has to find <em>and</em> read in one shot. Splitting the job lets each
+        model be small and good at one thing: a 2.4 MB detector localises, and TrOCR — which only knows
+        how to read a single tight line — gets exactly the input it's best at. That's how production OCR
+        pipelines (PaddleOCR, docTR) are built: detect, then recognise.</p>
+    </section>
+
+    <footer class="byline">Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. <a href="../">← Back to Scene text detection</a></footer>
+
+    <script type="module">
+      import { drawImageFit, drawRegions, TextDetEngine, TEXTDET_CSS, toBitmap, urlToBitmap } from "../textdet.js";
+      import { cropRegion, OcrEngine } from "/web-ai-showcase/models/trocr-ocr/ocr.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = TEXTDET_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const det = new TextDetEngine();
+      let ocr = null, ocrReady = null;
+      const state = { bmp: null, imgEl: null };
+
+      async function setImage(b, src) {
+        state.bmp = b;
+        drawImageFit($("canvas"), await createImageBitmap(b), 460);
+        $("resultWrap").hidden = true; $("readList").replaceChildren();
+        // keep an <img> for cropRegion (TrOCR reads pixel crops of the source)
+        const img = new Image(); img.decoding = "async"; img.crossOrigin = "anonymous";
+        img.src = src;
+        state.imgEl = img;
+      }
+      async function pick(el) { for (const t of $("samples").children) t.classList.toggle("active", t === el); const src = el.dataset.src; await setImage(await urlToBitmap(src), src); }
+      for (const th of $("samples").children) { th.addEventListener("click", () => pick(th)); th.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(th); } }); }
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function fileToImg(f) { const url = URL.createObjectURL(f); await setImage(await toBitmap(f), url); }
+      file.addEventListener("change", async () => { if (!file.files[0]) return; for (const t of $("samples").children) t.classList.remove("active"); await fileToImg(file.files[0]); $("dropText").textContent = file.files[0].name; });
+      drop.addEventListener("drop", async (e) => { const f = e.dataTransfer?.files?.[0]; if (!f?.type.startsWith("image/")) return; await fileToImg(f); });
+      pick($("samples").firstElementChild);
+
+      const autoRun = new URLSearchParams(location.search).has("auto");
+      createModelLoader({ mount: $("model-loader"), model: { modelId: "breezedeus/cnstd-ppocr-en_PP-OCRv3_det", runtime: "onnxruntime-web", dtype: "fp32", sizeMB: 3, requiresWebGPU: false }, load: (p) => det.load(p), onReady: () => { $("run").disabled = false; if (autoRun) $("run").click(); } });
+
+      function ensureOcr() {
+        if (ocrReady) return ocrReady;
+        ocr = new OcrEngine();
+        $("ocrStatus").textContent = "Loading TrOCR (Xenova/trocr-small-printed, ~185 MB)…";
+        ocrReady = ocr.load((p) => { if (p.status === "progress" && p.progress != null) $("ocrStatus").textContent = `Loading TrOCR… ${p.progress.toFixed(0)}%`; })
+          .then((d) => { $("ocrStatus").textContent = "TrOCR ready (" + d.toUpperCase() + ")."; return d; });
+        return ocrReady;
+      }
+
+      function waitImg(img) { return img.complete && img.naturalWidth ? Promise.resolve() : new Promise((r) => img.addEventListener("load", r, { once: true })); }
+
+      $("run").addEventListener("click", async () => {
+        if (!state.bmp) return;
+        $("run").disabled = true; $("status").classList.remove("err", "ok"); $("status").textContent = "Detecting text regions…";
+        try {
+          const res = await det.detect(await createImageBitmap(state.bmp), { boxThresh: 0.4 });
+          // reading order: top-to-bottom, then left-to-right
+          const regions = res.regions.slice().sort((a, b) => (a.box.y0 - b.box.y0) || (a.box.x0 - b.box.x0)).slice(0, 8);
+          const fit = drawImageFit($("canvas"), await createImageBitmap(state.bmp), 460);
+          drawRegions($("canvas"), regions, fit.scale);
+          $("resultWrap").hidden = false; $("countNum").textContent = res.regions.length;
+          $("rDet").textContent = res.ms + " ms";
+          $("readList").replaceChildren(...regions.map((r, i) => { const li = document.createElement("li"); li.id = "read-" + i; li.innerHTML = `<span class="r-idx">${i + 1}</span><span id="txt-${i}">…</span><span class="r-meta"></span>`; return li; }));
+          $("status").textContent = "Reading regions with TrOCR…";
+          await ensureOcr();
+          await waitImg(state.imgEl);
+          const t0 = performance.now();
+          for (let i = 0; i < regions.length; i++) {
+            const r = regions[i];
+            const pad = 0.01;
+            const region = {
+              x: r.box.x0 / res.imgW - pad, y: r.box.y0 / res.imgH - pad,
+              w: (r.box.x1 - r.box.x0) / res.imgW + pad * 2, h: (r.box.y1 - r.box.y0) / res.imgH + pad * 2,
+            };
+            const crop = cropRegion(state.imgEl, region);
+            try { const out = await ocr.recognize(crop, 48); document.getElementById("txt-" + i).textContent = out.text || "(no text read)"; }
+            catch (e) { document.getElementById("txt-" + i).textContent = "(read failed)"; }
+          }
+          $("rOcr").textContent = Math.round(performance.now() - t0) + " ms";
+          $("status").textContent = "Done — detected " + res.regions.length + " region(s), read " + regions.length + "."; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Pipeline failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>

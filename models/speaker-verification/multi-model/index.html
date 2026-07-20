@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Multi-model — VAD → embed · Speaker verification</title>
+    <meta name="description" content="Trim silence with Silero voice-activity detection first, then embed only the speech with WavLM-SV — a cleaner speaker comparison, both models on-device." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎙️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Speaker verification</a></p>
+    <header>
+      <p class="eyebrow">Multi-model · VAD → speaker embedding · WASM</p>
+      <h1>VAD → embed (Silero → WavLM-SV)</h1>
+      <p class="lede">Silence and noise dilute a speaker embedding. This chains two models on-device:
+        <a href="../../silero-vad/">Silero VAD</a> finds the speech regions, we keep only those samples,
+        then WavLM-SV embeds the cleaned speech. Both the raw and VAD-trimmed cosine are shown side by
+        side — the gap is largest on silence- or noise-heavy clips; on already-clean speech it's small
+        (and imperfect trimming can even nudge it down). Real numbers, no cherry-picking.</p>
+    </header>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Loads two models: WavLM-SV (~102 MB, auto) and, on first run, Silero VAD (~2 MB). Both run locally.</p>
+      <div id="model-loader"></div>
+      <p class="status" id="vadStatus" role="status" aria-live="polite"></p>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+      <div class="pair-grid">
+        <div class="voice-col"><h4>Voice A</h4><canvas class="wave" id="waveA" width="320" height="60" role="img" aria-label="Voice A waveform"></canvas><div class="sample-row" id="samplesA" role="group" aria-label="Clips for Voice A"></div></div>
+        <div class="voice-col"><h4>Voice B</h4><canvas class="wave" id="waveB" width="320" height="60" role="img" aria-label="Voice B waveform"></canvas><div class="sample-row" id="samplesB" role="group" aria-label="Clips for Voice B"></div></div>
+      </div>
+      <div class="controls-row"><button id="run" type="button" disabled>VAD → embed → compare</button></div>
+      <div id="resultWrap" hidden>
+        <table class="inside-table">
+          <tbody>
+            <tr><th>raw cosine (whole clip)</th><td id="rawCos">–</td></tr>
+            <tr><th>VAD-trimmed cosine (speech only)</th><td id="vadCos">–</td></tr>
+            <tr><th>speech kept</th><td id="kept">–</td></tr>
+            <tr><th>signal</th><td id="signal">–</td></tr>
+          </tbody>
+        </table>
+        <div class="readout"><span>backend <b id="rBackend">–</b></span><span>VAD <b id="rVad">–</b></span></div>
+      </div>
+      <p class="privacy-note">Both models run in the browser — the audio and embeddings never leave the tab. VAD trims leading/trailing/inter-word non-speech so the speaker embedding sees voice, not room tone.</p>
+    </section>
+
+    <section aria-labelledby="note-h">
+      <h2 id="note-h">Why pre-process with VAD</h2>
+      <p>A speaker embedder is trained on speech; feed it silence, breaths, or background noise and those
+        frames pull the embedding toward a generic "room" point, blurring the speaker. Running a tiny VAD
+        first — cheap, on-device — keeps only the frames that carry the voice, which helps most when a
+        clip is padded with silence or room tone. On clips that are already wall-to-wall speech the
+        embedding barely moves. Detect-then-embed is the same idea as detect-then-read in OCR: let a
+        small specialist clean the input for the bigger model.</p>
+    </section>
+
+    <footer class="byline">Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. <a href="../">← Back to Speaker verification</a></footer>
+
+    <script type="module">
+      import { cosine, drawWaveform, SpeakerEngine, SPEAKER_CSS, urlToMono16k, verdict } from "../speaker.js";
+      import { VadEngine } from "/web-ai-showcase/models/silero-vad/vad.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = SPEAKER_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const spk = new SpeakerEngine();
+      let vad = null, vadReady = null;
+      const state = { A: null, B: null };
+      const SAMPLES = [
+        { label: "Voice 1 · a", src: "../kennedy-1.wav" }, { label: "Voice 1 · b", src: "../kennedy-2.wav" },
+        { label: "Voice 2 · a", src: "../speaker-b-1.wav" }, { label: "Voice 3", src: "../speaker-c.wav" },
+      ];
+      function chips(side, def) { $("samples" + side).replaceChildren(...SAMPLES.map((s) => { const b = document.createElement("button"); b.type = "button"; b.className = "chip"; b.textContent = s.label; b.setAttribute("aria-pressed", String(s.src === def)); b.addEventListener("click", () => pick(side, s.src, b)); return b; })); }
+      async function pick(side, src, btn) { for (const c of $("samples" + side).children) c.setAttribute("aria-pressed", String(c === btn)); const { pcm } = await urlToMono16k(src); state[side] = pcm; drawWaveform($("wave" + side), pcm); $("resultWrap").hidden = true; }
+      chips("A", "../kennedy-1.wav"); chips("B", "../kennedy-2.wav");
+      pick("A", "../kennedy-1.wav", $("samplesA").children[0]); pick("B", "../kennedy-2.wav", $("samplesB").children[1]);
+
+      function ensureVad() {
+        if (vadReady) return vadReady;
+        vad = new VadEngine();
+        $("vadStatus").textContent = "Loading Silero VAD (~2 MB)…";
+        vadReady = vad.load((p) => { if (p.status === "progress" && p.progress != null) $("vadStatus").textContent = `Loading Silero VAD… ${p.progress.toFixed(0)}%`; }).then((d) => { $("vadStatus").textContent = "Silero VAD ready."; return d; });
+        return vadReady;
+      }
+
+      // Build a speech-only Float32Array by keeping only the samples inside VAD segments.
+      function trim(pcm, segments) {
+        if (!segments || !segments.length) return pcm;
+        const parts = segments.map((s) => pcm.subarray(Math.max(0, Math.floor(s.start * 16000)), Math.min(pcm.length, Math.ceil(s.end * 16000))));
+        const total = parts.reduce((a, p) => a + p.length, 0);
+        const out = new Float32Array(total); let off = 0;
+        for (const p of parts) { out.set(p, off); off += p.length; }
+        return out;
+      }
+
+      const autoRun = new URLSearchParams(location.search).has("auto");
+      createModelLoader({ mount: $("model-loader"), model: { modelId: "Xenova/wavlm-base-plus-sv", runtime: "transformers.js", dtype: "q8", sizeMB: 102, requiresWebGPU: false }, load: (p) => spk.load(p), onReady: () => { $("run").disabled = false; if (autoRun) $("run").click(); } });
+
+      $("run").addEventListener("click", async () => {
+        if (!state.A || !state.B) return;
+        $("run").disabled = true; $("status").classList.remove("err", "ok"); $("status").textContent = "Running VAD…";
+        try {
+          await ensureVad();
+          const t0 = performance.now();
+          const vA = await vad.run(state.A); const vB = await vad.run(state.B);
+          const vadMs = Math.round(performance.now() - t0);
+          const sA = trim(state.A, vA.segments), sB = trim(state.B, vB.segments);
+          $("status").textContent = "Embedding raw + trimmed…";
+          const [rawA, rawB, trA, trB] = await Promise.all([spk.embed(state.A), spk.embed(state.B), spk.embed(sA), spk.embed(sB)]);
+          const rawCos = cosine(rawA.embedding, rawB.embedding);
+          const vadCos = cosine(trA.embedding, trB.embedding);
+          const v = verdict(vadCos);
+          $("resultWrap").hidden = false;
+          $("rawCos").textContent = rawCos.toFixed(4);
+          $("vadCos").textContent = vadCos.toFixed(4);
+          const keptA = (sA.length / state.A.length * 100).toFixed(0), keptB = (sB.length / state.B.length * 100).toFixed(0);
+          $("kept").textContent = `A ${keptA}% · B ${keptB}% of samples`;
+          $("signal").textContent = v.label;
+          $("signal").className = "tone-" + v.tone;
+          $("rBackend").textContent = trA.device.toUpperCase(); $("rVad").textContent = vadMs + " ms";
+          $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Pipeline failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>

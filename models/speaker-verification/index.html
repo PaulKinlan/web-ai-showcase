@@ -1,0 +1,328 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Speaker verification — are these two voices the same person? · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run WavLM-SV locally via Transformers.js: turn two voice clips into 512-D speaker embeddings and measure how similar they are — a same/different-speaker SIGNAL computed entirely on your device. No audio or embedding ever leaves the tab. Voice similarity, not identity or surveillance."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎙️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">audio-classification (speaker-embedding) · audio · WASM/WebGPU · ~102 MB</p>
+      <h1>Speaker verification — same voice, or not?</h1>
+      <p class="lede">
+        WavLM-SV turns a voice clip into a <strong>512-number embedding</strong> — a point in "voice
+        space" where the same speaker's clips land close together and different speakers land apart.
+        Compare two clips and you get a <em>similarity signal</em>: likely the same speaker, or likely
+        not. It runs entirely on your device — the audio and the embeddings never leave the tab. This is
+        voice <strong>similarity</strong>, not identification, lookup, or surveillance.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/Xenova/wavlm-base-plus-sv" target="_blank" rel="noopener">Xenova/wavlm-base-plus-sv</a> — WavLMForXVector (VoxCeleb speaker verification)</td></tr>
+          <tr><th>Task</th><td><code>audio-classification</code> (speaker embedding / x-vector) — no pipeline task, loaded via <code>AutoModelForXVector</code></td></tr>
+          <tr><th>Runtime</th><td>Transformers.js 3.7.5 (registers <code>WavLMForXVector</code>; there is no audio-xvector pipeline)</td></tr>
+          <tr><th>Input</th><td>16 kHz mono audio (decoded in-page) → the WavLM feature extractor</td></tr>
+          <tr><th>Output</th><td><code>[1, 512]</code> — the speaker embedding; L2-normalized, then compared by cosine similarity</td></tr>
+          <tr><th>Quantization</th><td>q8 ONNX</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (WebGPU when a real adapter is available)</td></tr>
+          <tr><th>Download</th><td>~102 MB, cached after first load</td></tr>
+          <tr><th>License</th><td>MIT (ONNX export) · WavLM weights (microsoft/wavlm-base-plus-sv)</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers, Web Audio (decode), MediaRecorder (optional mic) — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Pick a clip for each side (or record/upload your own), then compare. The model embeds
+        each voice and the page measures the cosine similarity of the two embeddings — a same/different
+        SIGNAL, not a verdict.</p>
+
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="pair-grid">
+        <div class="voice-col" id="colA">
+          <h4>Voice A</h4>
+          <canvas class="wave" id="waveA" width="320" height="60" role="img" aria-label="Voice A waveform"></canvas>
+          <div class="audio-row"><audio id="audioA" controls preload="none" aria-label="Play Voice A"></audio></div>
+          <div class="sample-row" id="samplesA" role="group" aria-label="Sample clips for Voice A"></div>
+          <div class="controls-row">
+            <button type="button" class="secondary micBtn" id="micA">● Record</button>
+            <div class="dropzone" id="dropA" tabindex="0" role="button" aria-label="Upload or drop an audio clip for Voice A"><span id="dropTextA">Upload clip</span><input type="file" id="fileA" accept="audio/*" hidden /></div>
+          </div>
+        </div>
+        <div class="voice-col" id="colB">
+          <h4>Voice B</h4>
+          <canvas class="wave" id="waveB" width="320" height="60" role="img" aria-label="Voice B waveform"></canvas>
+          <div class="audio-row"><audio id="audioB" controls preload="none" aria-label="Play Voice B"></audio></div>
+          <div class="sample-row" id="samplesB" role="group" aria-label="Sample clips for Voice B"></div>
+          <div class="controls-row">
+            <button type="button" class="secondary micBtn" id="micB">● Record</button>
+            <div class="dropzone" id="dropB" tabindex="0" role="button" aria-label="Upload or drop an audio clip for Voice B"><span id="dropTextB">Upload clip</span><input type="file" id="fileB" accept="audio/*" hidden /></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="controls-row"><button id="run" type="button" disabled>Compare voices</button></div>
+
+      <div id="resultWrap" hidden>
+        <p class="big-verdict"><span class="sim-num" id="simNum">–</span><span id="verdictText"></span></p>
+        <div class="gauge" id="gauge" role="img" aria-label="Similarity gauge with the same-speaker threshold marked"></div>
+        <div class="gauge-scale"><span>−0.2 (opposite)</span><span>threshold ≈0.86</span><span>1.0 (identical)</span></div>
+        <div class="readout" id="readout">
+          <span>backend <b id="rBackend">–</b></span>
+          <span>embed A <b id="rMsA">–</b></span>
+          <span>embed B <b id="rMsB">–</b></span>
+          <span>embedding dims <b id="rDims">–</b></span>
+        </div>
+      </div>
+      <p class="privacy-note">Everything runs on your device — the clips and the embeddings never leave the tab.
+        Voice similarity is a fuzzy signal that varies with recording, noise, and phrasing; never treat it as
+        identity or a security decision. Sample voices: <strong>Voice 1</strong> is a public-domain JFK speech;
+        the others are the neutral speech clips already bundled with the showcase's ASR demos.</p>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside</h3>
+      <p class="muted">
+        The model doesn't decide "same or different" — it outputs a <strong>512-number vector</strong> per
+        clip. All the page does is measure the <em>angle</em> between the two vectors (cosine similarity)
+        and compare it to a threshold. Below are the two real embeddings (first 128 of 512 dims shown) —
+        bars up for positive dimensions, down for negative. Same-speaker clips have visibly similar
+        patterns.
+      </p>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Compare two voices to see their embeddings.</div>
+      <div id="insideWrap" hidden>
+        <h4 style="font-family:var(--font-body);font-size:.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:.6rem 0 0">Voice A embedding (first 128 of 512-D)</h4>
+        <div class="emb-strip" id="embA" role="img" aria-label="Voice A embedding, 128 signed dimensions"></div>
+        <h4 style="font-family:var(--font-body);font-size:.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:.6rem 0 0">Voice B embedding (first 128 of 512-D)</h4>
+        <div class="emb-strip" id="embB" role="img" aria-label="Voice B embedding, 128 signed dimensions"></div>
+        <table class="inside-table">
+          <tbody>
+            <tr><th>cosine similarity</th><td id="iCos">–</td></tr>
+            <tr><th>Euclidean distance (L2)</th><td id="iL2">–</td></tr>
+            <tr><th>decision threshold</th><td id="iThresh">–</td></tr>
+            <tr><th>signal</th><td id="iSignal">–</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        A speaker embedding is the building block behind "is this the same voice?" — and doing it
+        on-device means the biometric never touches a server. Once a voice is a 512-number point you can
+        compare, cluster, and threshold, all client-side:
+      </p>
+      <ul>
+        <li><strong>Private voice-note organising</strong> — group recordings by who's speaking without uploading a second of audio.</li>
+        <li><strong>Consent-first re-auth signal</strong> — a "does this sound like the enrolled user?" hint that stays a signal, with the real decision made by a proper, liveness-checked system.</li>
+        <li><strong>Diarisation seed</strong> — tell "who spoke" apart across clips of a meeting locally.</li>
+        <li><strong>Look-alike & spoof study</strong> — measure how close two voices are, and see where the model is fooled (the Wild demo).</li>
+      </ul>
+      <p class="muted">These are similarity tools. Real voice authentication needs consent, liveness / anti-spoofing, bias auditing, and calibration this demo deliberately does not provide.</p>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Two clips in, one similarity number out — see same vs different in "voice space".</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">On-device "voice unlock" concept — enrol a reference voice, then check a probe against a threshold (a signal, never a verdict).</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Impersonation &amp; look-alikes — find the different speakers the model scores as suspiciously close.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">VAD → embed: trim silence with voice-activity detection first, then embed only the speech.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>transformers.js registers <code>WavLMForXVector</code> but has no audio-xvector <em>pipeline</em>, so we
+        load the model + processor directly. The two things a pipeline would hide — feature extraction and
+        L2-normalizing the output — are a few lines:</p>
+      <pre><code>import { AutoModelForXVector, AutoProcessor } from "@huggingface/transformers";
+
+const processor = await AutoProcessor.from_pretrained("Xenova/wavlm-base-plus-sv");
+const model = await AutoModelForXVector.from_pretrained("Xenova/wavlm-base-plus-sv", { dtype: "q8" });
+
+// audioA / audioB are 16 kHz mono Float32Arrays (decoded in-page)
+const { embeddings: eA } = await model(await processor(audioA));
+const { embeddings: eB } = await model(await processor(audioB));
+
+const similarity = cosine(l2norm(eA.data), l2norm(eB.data)); // ∈ [-1, 1]; ≥0.86 ⇒ likely same speaker</code></pre>
+      <p class="muted">
+        Both embeddings are computed in a Web Worker so the UI never blocks, and the model is cached by
+        Transformers.js, so a returning visit auto-initialises with no re-download.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/Xenova/wavlm-base-plus-sv" target="_blank" rel="noopener">Model card — Xenova/wavlm-base-plus-sv</a></li>
+        <li><a href="https://huggingface.co/microsoft/wavlm-base-plus-sv" target="_blank" rel="noopener">microsoft/wavlm-base-plus-sv — original weights + 0.86 threshold</a></li>
+        <li><a href="https://arxiv.org/abs/2110.13900" target="_blank" rel="noopener">Paper — WavLM: Large-Scale Self-Supervised Pre-Training for Full Stack Speech Processing</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://huggingface.co/docs/transformers.js" target="_blank" rel="noopener">Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import {
+        blobToMono16k, cosine, drawWaveform, MicRecorder, renderEmbeddingBars, renderGauge, SAME_THRESHOLD,
+        SpeakerEngine, SPEAKER_CSS, urlToMono16k, verdict,
+      } from "./speaker.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = SPEAKER_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new SpeakerEngine();
+      const state = { A: { pcm: null }, B: { pcm: null } };
+
+      const SAMPLES = [
+        { label: "Voice 1 · a", src: "kennedy-1.wav" },
+        { label: "Voice 1 · b", src: "kennedy-2.wav" },
+        { label: "Voice 2 · a", src: "speaker-b-1.wav" },
+        { label: "Voice 2 · b", src: "speaker-b-2.wav" },
+        { label: "Voice 3", src: "speaker-c.wav" },
+        { label: "Voice 4", src: "speaker-d.wav" },
+      ];
+
+      function buildChips(side, defaultSrc) {
+        const wrap = $("samples" + side);
+        wrap.replaceChildren(...SAMPLES.map((s) => {
+          const b = document.createElement("button");
+          b.type = "button";
+          b.className = "chip";
+          b.textContent = s.label;
+          b.setAttribute("aria-pressed", String(s.src === defaultSrc));
+          b.addEventListener("click", () => pickSample(side, s.src, b));
+          return b;
+        }));
+      }
+
+      async function setClip(side, pcm, url, name) {
+        state[side].pcm = pcm;
+        drawWaveform($("wave" + side), pcm);
+        if (url) { $("audio" + side).src = url; }
+        $("dropText" + side).textContent = name || "Upload clip";
+        $("resultWrap").hidden = true;
+        $("insideWrap").hidden = true;
+        $("insideEmpty").hidden = false;
+      }
+      async function pickSample(side, src, btn) {
+        for (const c of $("samples" + side).children) c.setAttribute("aria-pressed", String(c === btn));
+        const { pcm } = await urlToMono16k(src);
+        await setClip(side, pcm, src, null);
+      }
+
+      for (const side of ["A", "B"]) {
+        const drop = $("drop" + side), file = $("file" + side);
+        drop.addEventListener("click", () => file.click());
+        drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+        ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+        ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+        async function fromBlob(f) {
+          for (const c of $("samples" + side).children) c.setAttribute("aria-pressed", "false");
+          const url = URL.createObjectURL(f);
+          const { pcm } = await blobToMono16k(f);
+          await setClip(side, pcm, url, f.name);
+        }
+        file.addEventListener("change", () => { if (file.files[0]) fromBlob(file.files[0]); });
+        drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("audio/")) fromBlob(f); });
+
+        // Mic — user-initiated only.
+        const micBtn = $("mic" + side);
+        if (!MicRecorder.supported()) { micBtn.disabled = true; micBtn.title = "Microphone not supported here"; }
+        let rec = null;
+        micBtn.addEventListener("click", async () => {
+          if (rec) {
+            const { blob, url } = await rec.stop();
+            rec = null;
+            micBtn.innerHTML = "● Record";
+            for (const c of $("samples" + side).children) c.setAttribute("aria-pressed", "false");
+            const { pcm } = await blobToMono16k(blob);
+            await setClip(side, pcm, url, "your recording");
+            return;
+          }
+          try {
+            rec = new MicRecorder();
+            await rec.start();
+            micBtn.innerHTML = '<span class="rec-dot" aria-hidden="true"></span>Stop';
+            $("status").textContent = "Recording Voice " + side + "… press Stop when done.";
+          } catch (err) {
+            rec = null;
+            $("status").textContent = "Microphone unavailable: " + err.message;
+            $("status").classList.add("err");
+          }
+        });
+      }
+
+      buildChips("A", "kennedy-1.wav");
+      buildChips("B", "kennedy-2.wav");
+      pickSample("A", "kennedy-1.wav", $("samplesA").children[0]);
+      pickSample("B", "kennedy-2.wav", $("samplesB").children[1]);
+
+      const autoRun = new URLSearchParams(location.search).has("auto");
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/wavlm-base-plus-sv", runtime: "transformers.js", dtype: "q8", sizeMB: 102, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: () => { $("run").disabled = false; if (autoRun) $("run").click(); },
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!state.A.pcm || !state.B.pcm) { $("status").textContent = "Pick two clips first."; return; }
+        $("run").disabled = true; $("status").classList.remove("err", "ok"); $("status").textContent = "Embedding both voices…";
+        try {
+          const rA = await engine.embed(state.A.pcm);
+          const rB = await engine.embed(state.B.pcm);
+          const cos = cosine(rA.embedding, rB.embedding);
+          const v = verdict(cos);
+          $("resultWrap").hidden = false;
+          $("simNum").textContent = cos.toFixed(3);
+          $("simNum").className = "sim-num tone-" + v.tone;
+          $("verdictText").textContent = v.label;
+          $("verdictText").className = "tone-" + v.tone;
+          renderGauge($("gauge"), cos);
+          $("rBackend").textContent = rA.device.toUpperCase();
+          $("rMsA").textContent = rA.ms + " ms";
+          $("rMsB").textContent = rB.ms + " ms";
+          $("rDims").textContent = rA.dims;
+          $("insideEmpty").hidden = true; $("insideWrap").hidden = false;
+          renderEmbeddingBars($("embA"), rA.embedding);
+          renderEmbeddingBars($("embB"), rB.embedding);
+          let l2 = 0;
+          for (let i = 0; i < rA.embedding.length; i++) { const d = rA.embedding[i] - rB.embedding[i]; l2 += d * d; }
+          $("iCos").textContent = cos.toFixed(4);
+          $("iL2").textContent = Math.sqrt(l2).toFixed(4);
+          $("iThresh").textContent = "≥ " + SAME_THRESHOLD + " → likely same speaker";
+          $("iSignal").textContent = v.label;
+          $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (err) {
+          $("status").textContent = "Comparison failed: " + err.message; $("status").classList.add("err");
+        } finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>
