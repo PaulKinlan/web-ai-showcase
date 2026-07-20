@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Face Parsing Multi-model — depth-shaded recolour · Web AI Showcase</title>
+    <meta name="description" content="Two on-device models composed: Face Parsing finds a part (hair, lips…), Depth Anything estimates 3D shape, and the recolour is shaded by depth — nearer pixels tint stronger — for a pseudo-3D makeover. Both run locally." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🧊</text></svg>" />
+    <style>
+      .picker-row { display:flex; flex-wrap:wrap; gap:1rem 1.4rem; align-items:center; margin:.4rem 0; }
+      .picker-row label { display:flex; align-items:center; gap:.5rem; font-size:.85rem; }
+      .picker-row input[type=color] { inline-size:44px; block-size:36px; padding:0; border:1px solid var(--border-strong); border-radius:8px; background:none; cursor:pointer; }
+      .picker-row input[type=range] { inline-size:8rem; max-inline-size:100%; accent-color:var(--accent); }
+      .picker-row select { font: inherit; padding:.35rem .5rem; min-block-size:40px; border-radius:8px; border:1px solid var(--border-strong); background:var(--bg-raised); color:var(--color); }
+    </style>
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Face Parsing</a></p>
+
+    <header>
+      <p class="eyebrow">use case · multi-model</p>
+      <h1>Multi-model: depth-shaded recolour</h1>
+      <p class="lede">
+        Compose two on-device models. <strong>Face Parsing</strong> says <em>which pixels</em> are hair or
+        lips; <strong>Depth Anything v2</strong> says <em>how near</em> each pixel is. Multiply them and a
+        recolour becomes a pseudo-3D makeover — the tint is strongest where the part bulges toward the
+        camera and fades where it recedes, so flat colour reads as shaped. Both models run locally; two
+        downloads, then everything composites instantly.
+      </p>
+    </header>
+
+    <section class="panel">
+      <p class="muted" style="font-size:.82rem;margin:0 0 .3rem"><strong>Model 1 — Face Parsing</strong> (~90 MB)</p>
+      <div id="loader-parse"></div>
+      <p class="muted" style="font-size:.82rem;margin:.6rem 0 .3rem"><strong>Model 2 — Depth Anything v2 small</strong> (~100 MB, WebGPU/WASM)</p>
+      <div id="loader-depth"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop a face photo">
+        <span id="dropText">Drop a face photo, or click to choose</span>
+        <input type="file" id="file" accept="image/*" hidden />
+      </div>
+      <div class="sample-strip" id="samples">
+        <img class="sample-thumb active" src="../sample-smile.jpg" data-src="../sample-smile.jpg" alt="Synthetic face, broad smile" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-serious.jpg" data-src="../sample-serious.jpg" alt="Synthetic face wearing glasses" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-soft.jpg" data-src="../sample-soft.jpg" alt="Synthetic face, soft neutral expression" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-portrait.jpg" data-src="../sample-portrait.jpg" alt="Public-domain studio portrait, 1940s" tabindex="0" role="button" />
+      </div>
+
+      <div style="margin:.6rem 0"><button id="run" type="button" disabled>Parse + estimate depth</button></div>
+
+      <div class="picker-row">
+        <label>Part <select id="part" disabled><option value="">— run first —</option></select></label>
+        <label>Colour <input type="color" id="color" value="#8a5a2b" /></label>
+        <label>Strength <input type="range" id="strength" min="0.2" max="1" step="0.05" value="0.7" /> <output id="strengthOut">70%</output></label>
+      </div>
+
+      <div class="canvas-grid">
+        <div class="canvas-card"><h4>Part map</h4><canvas class="viz-canvas" id="parts" aria-label="Face-part colour map"></canvas></div>
+        <div class="canvas-card"><h4>Depth</h4><canvas class="viz-canvas" id="depth" aria-label="Estimated depth map, brighter is nearer"></canvas></div>
+        <div class="canvas-card"><h4>Depth-shaded recolour</h4><canvas class="viz-canvas" id="out" aria-label="Chosen part recoloured, shaded by depth"></canvas></div>
+      </div>
+      <div class="readout" id="readout" hidden><span>parse <b id="rParse">–</b></span><span>depth <b id="rDepth">–</b></span><span>part <b id="rPart">–</b></span></div>
+
+      <p class="muted" style="font-size:.85rem">Each model runs once per photo; changing the part, colour, or strength is a pure canvas composite over the cached part map and depth map. Nothing is uploaded.</p>
+    </section>
+
+    <p class="crumbs"><a href="../wild/">← Wild</a> · <a href="../">Face Parsing</a></p>
+
+    <script type="module">
+      import { FaceParsingEngine, fileToDataURL, urlToDataURL, loadImage, paintPhoto, paintMapOnly, scaledOverlayData, escapeHTML, FACEPARSING_CSS } from "../faceparsing.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = FACEPARSING_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+
+      // Face-parsing engine (existing worker) + a small local Depth engine (own worker).
+      const parseEngine = new FaceParsingEngine();
+      class DepthEngine {
+        constructor() { this.worker = new Worker("./depth-worker.js", { type: "module" }); this.ready = false; this.device = "wasm"; this.onProgress = null; this._lw = []; this._p = new Map(); this._id = 0;
+          this.worker.addEventListener("message", (e) => this._m(e.data));
+          this.worker.addEventListener("error", (e) => { const err = new Error(e.message || "Depth worker failed"); this._lw.forEach((w) => w.reject(err)); this._lw = []; for (const [, p] of this._p) p.reject(err); this._p.clear(); });
+        }
+        _m(msg) { if (msg.type === "progress") this.onProgress?.(msg.p); else if (msg.type === "ready") { this.ready = true; this.device = msg.device; this._lw.forEach((w) => w.resolve(msg.device)); this._lw = []; } else if (msg.type === "result") { const p = this._p.get(msg.id); if (p) { this._p.delete(msg.id); msg.depth = new Uint8Array(msg.depth); p.resolve(msg); } } else if (msg.type === "error") { if (msg.id != null && this._p.has(msg.id)) { this._p.get(msg.id).reject(new Error(msg.message)); this._p.delete(msg.id); } else { this._lw.forEach((w) => w.reject(new Error(msg.message))); this._lw = []; } } }
+        load(onProgress) { if (onProgress) this.onProgress = onProgress; if (this.ready) return Promise.resolve(this.device); return new Promise((res, rej) => { this._lw.push({ resolve: res, reject: rej }); this.worker.postMessage({ type: "load" }); }); }
+        estimate(url) { const id = ++this._id; return new Promise((res, rej) => { this._p.set(id, { resolve: res, reject: rej }); this.worker.postMessage({ type: "run", id, image: url }); }); }
+      }
+      const depthEngine = new DepthEngine();
+
+      let currentImageURL = null, currentImg = null, parseResult = null, depthResult = null;
+      let parseReady = false, depthReady = false;
+      const rgb = (c) => `rgb(${c.r},${c.g},${c.b})`;
+      const overlaySrc = (r) => (r && r.overlayBitmap) ? r.overlayBitmap : r.overlay;
+      function hexToRgb(h) { const n = parseInt(h.slice(1), 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255]; }
+      function maybeEnable() { $("run").disabled = !(parseReady && depthReady); }
+
+      async function useURL(url, preview) {
+        currentImageURL = url; currentImg = await loadImage(preview || url); parseResult = null; depthResult = null;
+        $("readout").hidden = true; $("part").disabled = true; $("part").replaceChildren(Object.assign(document.createElement("option"), { value: "", textContent: "— run first —" }));
+        paintPhoto($("parts"), currentImg); paintPhoto($("depth"), currentImg); paintPhoto($("out"), currentImg);
+      }
+      async function pickSample(el) { for (const t of $("samples").children) t.classList.toggle("active", t === el); await useURL(await urlToDataURL(el.dataset.src), el.dataset.src); }
+      for (const thumb of $("samples").children) { thumb.addEventListener("click", () => pickSample(thumb)); thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } }); }
+      pickSample($("samples").firstElementChild);
+
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) { for (const t of $("samples").children) t.classList.remove("active"); const u = await fileToDataURL(f); await useURL(u, u); $("dropText").textContent = f.name; }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
+
+      createModelLoader({ mount: $("loader-parse"), model: { modelId: "Xenova/face-parsing", runtime: "transformers.js", dtype: "q8", sizeMB: 90, requiresWebGPU: false }, load: (p) => parseEngine.load(p), onReady: () => { parseReady = true; maybeEnable(); } });
+      createModelLoader({ mount: $("loader-depth"), model: { modelId: "onnx-community/depth-anything-v2-small", runtime: "transformers.js", dtype: "fp16", sizeMB: 100, requiresWebGPU: false }, load: (p) => depthEngine.load(p), onReady: () => { depthReady = true; maybeEnable(); } });
+
+      $("run").addEventListener("click", async () => {
+        if (!currentImageURL) { $("status").textContent = "Pick a face photo first."; return; }
+        $("run").disabled = true; $("status").classList.remove("err", "ok"); $("status").textContent = "Running both models…";
+        try {
+          const [pr, dr] = await Promise.all([parseEngine.segment(currentImageURL), depthEngine.estimate(currentImageURL)]);
+          parseResult = pr; depthResult = dr;
+          $("rParse").textContent = pr.ms + " ms"; $("rDepth").textContent = dr.ms + " ms";
+          paintMapOnly($("parts"), overlaySrc(pr), pr.width, pr.height, currentImg.naturalWidth, currentImg.naturalHeight);
+          paintDepth(dr);
+          buildParts(pr.classes); compose(); $("readout").hidden = false;
+          $("status").textContent = "Done — pick a part, colour, and strength."; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Composition failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+
+      function paintDepth(dr) {
+        const c = $("depth"); c.width = dr.width; c.height = dr.height; const ctx = c.getContext("2d");
+        const id = ctx.createImageData(dr.width, dr.height);
+        for (let i = 0; i < dr.width * dr.height; i++) { const v = dr.depth[i]; const o = i * 4; id.data[o] = v; id.data[o + 1] = v; id.data[o + 2] = v; id.data[o + 3] = 255; }
+        ctx.putImageData(id, 0, 0);
+      }
+      function buildParts(classes) {
+        const usable = classes.filter((c) => !c.isBackground && c.coverage > 0.001);
+        const sel = $("part"); const prev = sel.value;
+        sel.replaceChildren(...usable.map((c) => { const o = document.createElement("option"); o.value = c.label; o.textContent = `${c.pretty} (${(c.coverage * 100).toFixed(1)}%)`; return o; }));
+        const hair = usable.find((c) => c.label === "hair");
+        sel.value = usable.some((c) => c.label === prev) ? prev : (hair ? "hair" : (usable[0]?.label || ""));
+        sel.disabled = false;
+      }
+      $("part").addEventListener("change", compose);
+      $("color").addEventListener("input", compose);
+      $("strength").addEventListener("input", () => { $("strengthOut").textContent = Math.round($("strength").value * 100) + "%"; compose(); });
+
+      function compose() {
+        if (!parseResult || !depthResult) return;
+        const label = $("part").value; const cls = parseResult.classes.find((c) => c.label === label); if (!cls) return;
+        const w = currentImg.naturalWidth, h = currentImg.naturalHeight;
+        const clsData = scaledOverlayData(parseResult.overlay, parseResult.width, parseResult.height, w, h);
+        // Scale depth to photo res via a temp canvas.
+        const dc = document.createElement("canvas"); dc.width = depthResult.width; dc.height = depthResult.height;
+        const dctx = dc.getContext("2d"); const did = dctx.createImageData(depthResult.width, depthResult.height);
+        for (let i = 0; i < depthResult.width * depthResult.height; i++) { const v = depthResult.depth[i]; const o = i * 4; did.data[o] = did.data[o + 1] = did.data[o + 2] = v; did.data[o + 3] = 255; }
+        dctx.putImageData(did, 0, 0);
+        const dsc = document.createElement("canvas"); dsc.width = w; dsc.height = h; const dsx = dsc.getContext("2d"); dsx.imageSmoothingEnabled = true; dsx.drawImage(dc, 0, 0, w, h);
+        const depthPx = dsx.getImageData(0, 0, w, h).data;
+
+        const out = $("out"); out.width = w; out.height = h; const octx = out.getContext("2d"); octx.drawImage(currentImg, 0, 0, w, h);
+        const base = octx.getImageData(0, 0, w, h); const d = base.data;
+        const [tr, tg, tb] = hexToRgb($("color").value); const gain = +$("strength").value;
+        let n = 0;
+        for (let i = 0; i < w * h; i++) {
+          const o = i * 4;
+          if (clsData[o] === cls.r && clsData[o + 1] === cls.g && clsData[o + 2] === cls.b) {
+            const a = gain * (depthPx[o] / 255); // depth-modulated strength: nearer = stronger
+            d[o] = Math.round(d[o] * (1 - a) + tr * a); d[o + 1] = Math.round(d[o + 1] * (1 - a) + tg * a); d[o + 2] = Math.round(d[o + 2] * (1 - a) + tb * a); n++;
+          }
+        }
+        octx.putImageData(base, 0, 0);
+        $("rPart").textContent = `${escapeHTML(cls.pretty)} · ${(n / (w * h) * 100).toFixed(1)}%`;
+      }
+
+      if (new URLSearchParams(location.search).has("auto")) {
+        (async () => {
+          await pickSample($("samples").firstElementChild); const t0 = Date.now();
+          const kick = (m) => { const b = $(m).querySelector(".loader-actions button"); if (b && /download/i.test(b.textContent)) b.click(); };
+          let cl = false;
+          while ($("run").disabled && Date.now() - t0 < 160000) { if (!cl) { kick("loader-parse"); kick("loader-depth"); cl = true; } await new Promise((r) => setTimeout(r, 250)); }
+          if (!$("run").disabled) $("run").click();
+        })();
+      }
+    </script>
+  </body>
+</html>

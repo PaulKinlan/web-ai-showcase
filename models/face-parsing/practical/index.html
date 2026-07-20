@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Face Parsing Practical — digital makeup · Web AI Showcase</title>
+    <meta name="description" content="Face parts put to work: pick lips, hair, or eyes and recolour just those pixels — on-device digital makeup with a colour picker and strength control. The model runs once; recolouring is instant." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>💄</text></svg>" />
+    <style>
+      .part-toggles { display:flex; flex-wrap:wrap; gap:.5rem; margin:.6rem 0; }
+      .picker-row { display:flex; flex-wrap:wrap; gap:1rem 1.4rem; align-items:center; margin:.4rem 0; }
+      .picker-row label { display:flex; align-items:center; gap:.5rem; font-size:.85rem; }
+      .picker-row input[type=color] { inline-size:44px; block-size:36px; padding:0; border:1px solid var(--border-strong); border-radius:8px; background:none; cursor:pointer; }
+      .picker-row input[type=range] { inline-size:9rem; max-inline-size:100%; accent-color:var(--accent); }
+    </style>
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Face Parsing</a></p>
+
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Practical: digital makeup</h1>
+      <p class="lede">
+        Knowing which pixels are "upper lip" or "hair" lets you recolour <em>just those</em> — no manual
+        masking, no upload. Parse a face once, then pick parts (lips, hair, brows, eyes…), choose a
+        colour, and dial the strength. Everything after the single model pass is an instant on-device
+        canvas composite over the part map.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop a face photo">
+        <span id="dropText">Drop a face photo, or click to choose</span>
+        <input type="file" id="file" accept="image/*" hidden />
+      </div>
+      <div class="sample-strip" id="samples">
+        <img class="sample-thumb active" src="../sample-smile.jpg" data-src="../sample-smile.jpg" alt="Synthetic face, broad smile" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-serious.jpg" data-src="../sample-serious.jpg" alt="Synthetic face wearing glasses" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-soft.jpg" data-src="../sample-soft.jpg" alt="Synthetic face, soft neutral expression" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-portrait.jpg" data-src="../sample-portrait.jpg" alt="Public-domain studio portrait, 1940s" tabindex="0" role="button" />
+      </div>
+
+      <div style="margin:.6rem 0"><button id="run" type="button" disabled>Parse face</button></div>
+
+      <p class="muted" style="font-size:.8rem;margin:.4rem 0 .2rem;text-transform:uppercase;letter-spacing:.05em">Recolour these parts</p>
+      <div class="part-toggles" id="parts" role="group" aria-label="Face parts to recolour"><span class="muted" style="font-size:.82rem">Parse a face first.</span></div>
+
+      <div class="picker-row">
+        <label>Colour <input type="color" id="color" value="#c81e5a" /></label>
+        <label>Strength <input type="range" id="strength" min="0.1" max="0.9" step="0.05" value="0.45" /> <output id="strengthOut">45%</output></label>
+      </div>
+
+      <div class="canvas-grid">
+        <div class="canvas-card"><h4>Original</h4><canvas class="viz-canvas" id="orig" aria-label="Original photo"></canvas></div>
+        <div class="canvas-card"><h4>Made up</h4><canvas class="viz-canvas" id="out" aria-label="Photo with the selected face parts recoloured"></canvas></div>
+      </div>
+      <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>latency <b id="rMs">–</b></span><span>parts recoloured <b id="rParts">–</b></span></div>
+
+      <p class="muted" style="font-size:.85rem">The recolour tints only the pixels the model assigned to the chosen parts, blended over the original at your chosen strength. Nothing is uploaded.</p>
+    </section>
+
+    <p class="crumbs"><a href="../basics/">← Basics</a> · <a href="../">Face Parsing</a> · <a href="../wild/">Wild →</a></p>
+
+    <script type="module">
+      import { FaceParsingEngine, fileToDataURL, urlToDataURL, loadImage, paintPhoto, tintClasses, escapeHTML, FACEPARSING_CSS } from "../faceparsing.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = FACEPARSING_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new FaceParsingEngine();
+      let currentImageURL = null, currentImg = null, lastResult = null;
+      const selected = new Set(["u_lip", "l_lip"]); // default: lipstick
+
+      function hexToRgb(h) { const n = parseInt(h.slice(1), 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255]; }
+
+      async function useURL(url, preview) {
+        currentImageURL = url; currentImg = await loadImage(preview || url); lastResult = null;
+        $("readout").hidden = true; $("parts").replaceChildren(Object.assign(document.createElement("span"), { className: "muted", textContent: "Parse a face first.", style: "font-size:.82rem" }));
+        paintPhoto($("orig"), currentImg); paintPhoto($("out"), currentImg);
+      }
+      async function pickSample(el) { for (const t of $("samples").children) t.classList.toggle("active", t === el); await useURL(await urlToDataURL(el.dataset.src), el.dataset.src); }
+      for (const thumb of $("samples").children) { thumb.addEventListener("click", () => pickSample(thumb)); thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } }); }
+      pickSample($("samples").firstElementChild);
+
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) { for (const t of $("samples").children) t.classList.remove("active"); const u = await fileToDataURL(f); await useURL(u, u); $("dropText").textContent = f.name; }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/face-parsing", runtime: "transformers.js", dtype: "q8", sizeMB: 90, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: () => { $("run").disabled = false; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!currentImageURL) { $("status").textContent = "Pick a face photo first."; return; }
+        $("run").disabled = true; $("status").classList.remove("err", "ok"); $("status").textContent = "Parsing face…";
+        try {
+          const r = await engine.segment(currentImageURL); lastResult = r;
+          $("rBackend").textContent = r.device.toUpperCase(); $("rMs").textContent = r.ms + " ms";
+          buildParts(r.classes); compose(); $("readout").hidden = false;
+          $("status").textContent = "Done — toggle parts and pick a colour."; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Face parsing failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+
+      function buildParts(classes) {
+        const usable = classes.filter((c) => !c.isBackground && c.coverage > 0.001);
+        $("parts").replaceChildren(...usable.map((c) => {
+          const b = document.createElement("button"); b.type = "button"; b.className = "swatch-btn";
+          b.setAttribute("aria-pressed", String(selected.has(c.label)));
+          b.innerHTML = `<span class="dot" style="background:rgb(${c.r},${c.g},${c.b})"></span>${escapeHTML(c.pretty)}`;
+          b.addEventListener("click", () => { if (selected.has(c.label)) selected.delete(c.label); else selected.add(c.label); b.setAttribute("aria-pressed", String(selected.has(c.label))); compose(); });
+          return b;
+        }));
+        if (!usable.length) $("parts").replaceChildren(Object.assign(document.createElement("span"), { className: "muted", textContent: "No face parts found — try another photo.", style: "font-size:.82rem" }));
+      }
+
+      function compose() {
+        if (!lastResult) return;
+        const tint = hexToRgb($("color").value);
+        const alpha = +$("strength").value;
+        const targets = lastResult.classes.filter((c) => selected.has(c.label)).map((c) => ({ rgb: [c.r, c.g, c.b], tint, alpha }));
+        tintClasses($("out"), currentImg, lastResult.overlay, lastResult.width, lastResult.height, targets);
+        $("rParts").textContent = targets.length ? [...selected].join(", ") : "none";
+      }
+      $("color").addEventListener("input", compose);
+      $("strength").addEventListener("input", () => { $("strengthOut").textContent = Math.round($("strength").value * 100) + "%"; compose(); });
+
+      if (new URLSearchParams(location.search).has("auto")) {
+        (async () => { await pickSample($("samples").firstElementChild); const t0 = Date.now(); let cl = false; while ($("run").disabled && Date.now() - t0 < 130000) { if (!cl) { const b = $("model-loader").querySelector(".loader-actions button"); if (b && /download/i.test(b.textContent)) { b.click(); cl = true; } } await new Promise((r) => setTimeout(r, 200)); } if (!$("run").disabled) $("run").click(); })();
+      }
+    </script>
+  </body>
+</html>

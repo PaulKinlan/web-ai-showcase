@@ -1,0 +1,308 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Face Parsing (SegFormer) — label every pixel of a face in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run a SegFormer face-parsing model locally in your browser: it labels every pixel of a face with one of 19 parts — skin, hair, eyes, brows, nose, lips, ears, neck, clothing — and paints a colour-coded part map with a legend and per-part coverage. Real per-pixel inference, nothing uploaded."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🧑‍🎨</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">image-segmentation · vision · WASM · ~90 MB</p>
+      <h1>Face Parsing — give every pixel of a face a name</h1>
+      <p class="lede">
+        This is <em>fine-grained face segmentation</em>: not "cut out the head" and not "find the face
+        box" — every single pixel of a face is classified into one of <strong>19 parts</strong> (skin,
+        hair, left/right eye, brows, nose, upper/lower lip, ears, neck, glasses, hat, clothing…). Pick a
+        portrait and watch it become a colour-blocked map of facial regions, entirely on your device.
+      </p>
+      <p class="muted">
+        A different job from the face demos already here: <a href="/web-ai-showcase/models/face-detector/">face detection</a>
+        draws a box, <a href="/web-ai-showcase/models/face-landmarker/">face landmarks</a> place points, and
+        <a href="/web-ai-showcase/models/modnet-portrait-matting/">portrait matting</a> cuts the whole person out.
+        Face parsing labels the <strong>interior</strong> — the actual pixels of hair vs skin vs lips vs eyes.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/Xenova/face-parsing" target="_blank" rel="noopener">Xenova/face-parsing</a> (ONNX build of <a href="https://huggingface.co/jonathandinu/face-parsing" target="_blank" rel="noopener">jonathandinu/face-parsing</a>)</td></tr>
+          <tr><th>Task / pipeline</th><td><code>image-segmentation</code> (semantic subtask — a full 19-class label map)</td></tr>
+          <tr><th>Architecture</th><td>SegFormer (MiT-B5 hierarchical transformer encoder + all-MLP decode head), finetuned on CelebAMask-HQ</td></tr>
+          <tr><th>Classes</th><td>19 face parts: background, skin, nose, glasses, l/r eye, l/r brow, l/r ear, mouth, upper/lower lip, hair, hat, earring, necklace, neck, clothing</td></tr>
+          <tr><th>Quantization</th><td>q8 (8-bit) ONNX</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (runs anywhere; no WebGPU needed)</td></tr>
+          <tr><th>Download</th><td>~90 MB (q8), cached after first load</td></tr>
+          <tr><th>License</th><td><a href="https://huggingface.co/jonathandinu/face-parsing" target="_blank" rel="noopener">Non-commercial research</a> — CelebAMask-HQ terms (research/educational use)</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers, Canvas, FileReader — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Pick or drop a face photo and hit Parse. Every pixel gets a part label; the map is drawn over your photo. Slide the opacity to fade between the photo and the pure colour map.</p>
+
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop a face photo">
+        <span id="dropText">Drop a face photo here, or click to choose</span>
+        <input type="file" id="file" accept="image/*" hidden />
+      </div>
+      <div class="sample-strip" id="samples" aria-label="Sample face images">
+        <img class="sample-thumb active" src="sample-smile.jpg" data-src="sample-smile.jpg" alt="Synthetic face, broad smile" tabindex="0" role="button" />
+        <img class="sample-thumb" src="sample-serious.jpg" data-src="sample-serious.jpg" alt="Synthetic face, serious expression, wearing glasses" tabindex="0" role="button" />
+        <img class="sample-thumb" src="sample-soft.jpg" data-src="sample-soft.jpg" alt="Synthetic face, soft neutral expression" tabindex="0" role="button" />
+        <img class="sample-thumb" src="sample-portrait.jpg" data-src="sample-portrait.jpg" alt="Public-domain studio portrait of a young woman, 1940s" tabindex="0" role="button" />
+      </div>
+
+      <div style="margin:.6rem 0">
+        <button id="run" type="button" disabled>Parse face</button>
+      </div>
+
+      <div class="slider-row">
+        <label for="opacity">Map opacity</label>
+        <input type="range" id="opacity" min="0" max="1" step="0.05" value="0.6" />
+        <output id="opacityOut" for="opacity">60%</output>
+      </div>
+
+      <div class="canvas-wrap">
+        <canvas id="stage" class="stage-canvas" aria-label="Face parsing result: portrait with a colour-coded part map painted over it"></canvas>
+      </div>
+
+      <p class="muted" style="font-size:.8rem;margin:.5rem 0 .2rem;text-transform:uppercase;letter-spacing:.05em">Part legend</p>
+      <div class="legend" id="legend" role="list" aria-label="Face parts and their colours"><span class="muted" style="font-size:.82rem">Run parsing to label the face.</span></div>
+
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+        <span>parts found <b id="rClasses">–</b></span>
+        <span>map resolution <b id="rDims">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside</h3>
+      <p class="muted">
+        The model outputs a score for every one of the 19 parts at every pixel, then takes the
+        <strong>argmax</strong> — the winning part per pixel — to make the label map. On the left is that
+        map on its own (the raw model output, no photo). On the right, the part distribution: how much of
+        the frame each part claimed. That coverage vector is a compact "how is this face composed?"
+        signature — useful for cropping, framing, or driving region-aware edits.
+      </p>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Run parsing to see the label map and part distribution.</div>
+      <div id="insideWrap" hidden>
+        <div class="canvas-grid">
+          <div class="canvas-card">
+            <h4>Argmax label map (raw output)</h4>
+            <canvas class="viz-canvas" id="mapOnly" aria-label="Colour-blocked map of the winning face part at every pixel"></canvas>
+          </div>
+          <div class="canvas-card">
+            <h4>Per-part coverage</h4>
+            <div class="cov-list" id="covList"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        A per-pixel face-part map is the raw material for portrait and avatar features — and having it run
+        locally means you can analyse or edit a face without uploading someone's photo to a server.
+      </p>
+      <ul>
+        <li><strong>Digital makeup &amp; recolour</strong> — tint only the "lips," recolour only the "hair," brighten only the "skin" — precise, region-aware edits with no manual masking.</li>
+        <li><strong>Beauty &amp; AR try-on</strong> — the eye/brow/lip masks are exactly what a lipstick, blush, or coloured-contact preview needs, computed on-device for privacy.</li>
+        <li><strong>Portrait tooling</strong> — smart crop to the face, blur just the background around parsed skin+hair, or check that a headshot frames hair and neck properly.</li>
+        <li><strong>Dataset &amp; annotation prep</strong> — auto-label face parts to bootstrap a training set, or QA an avatar pipeline, without sending faces off the device.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Parse a face and read the colour map and legend — see fine-grained face segmentation plainly.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Digital makeup: tint the lips, hair, or eyes by selecting their parts — on-device recolour.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Turn a portrait into a flat colour-blocked "anatomy" poster of its parts, downloadable.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">Face parsing + DepthAnything → recolour hair only where it faces the light.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>Face parsing is the standard Transformers.js semantic-segmentation pipeline. It returns one entry per part present, each with a full-resolution mask:</p>
+      <pre><code>import { pipeline } from "@huggingface/transformers";
+
+const parse = await pipeline(
+  "image-segmentation",
+  "Xenova/face-parsing",
+); // downloads + caches ~90 MB once
+
+const output = await parse(imageURL);
+// → [{ score: null, label: "skin", mask: RawImage },
+//    { score: null, label: "hair", mask: RawImage },
+//    { score: null, label: "l_eye", mask: RawImage }, … ]
+//   each mask is 0/255 for that part; together they tile the whole image</code></pre>
+      <p class="muted">
+        This page runs that in a Web Worker, then folds the per-part masks into a single colour-coded
+        overlay (argmax per pixel) and a per-part pixel count — so the map, legend, and coverage bars are
+        all views of the one label map the model produced. Nothing is uploaded.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/Xenova/face-parsing" target="_blank" rel="noopener">Model card — Xenova/face-parsing (ONNX)</a></li>
+        <li><a href="https://huggingface.co/jonathandinu/face-parsing" target="_blank" rel="noopener">Original weights — jonathandinu/face-parsing</a></li>
+        <li><a href="https://arxiv.org/abs/2105.15203" target="_blank" rel="noopener">Paper — SegFormer (Xie et al., 2021, arXiv:2105.15203)</a></li>
+        <li><a href="https://mmlab.ie.cuhk.edu.hk/projects/CelebA/CelebAMask_HQ.html" target="_blank" rel="noopener">CelebAMask-HQ — the 19-part face dataset</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { FaceParsingEngine, fileToDataURL, urlToDataURL, loadImage, paintPhoto, paintFaceMap, paintMapOnly, escapeHTML, FACEPARSING_CSS }
+        from "./faceparsing.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = FACEPARSING_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new FaceParsingEngine();
+      let currentImageURL = null, currentImg = null, lastResult = null;
+
+      const rgb = (c) => `rgb(${c.r},${c.g},${c.b})`;
+
+      // Prefer the worker-composited ImageBitmap (drawImage-only, no main-thread putImageData); the raw
+      // buffer stays the fallback. Free a superseded bitmap so repeated runs don't leak GPU memory.
+      const overlaySrc = (r) => (r && r.overlayBitmap) ? r.overlayBitmap : r.overlay;
+      function releaseResult(r) { try { r?.overlayBitmap?.close?.(); } catch { /* noop */ } }
+
+      async function useURL(url, srcForPreview) {
+        currentImageURL = url;
+        currentImg = await loadImage(srcForPreview || url);
+        releaseResult(lastResult);
+        lastResult = null;
+        $("insideWrap").hidden = true;
+        $("insideEmpty").hidden = false;
+        $("readout").hidden = true;
+        $("legend").replaceChildren(Object.assign(document.createElement("span"), { className: "muted", textContent: "Run parsing to label the face.", style: "font-size:.82rem" }));
+        paintPhoto($("stage"), currentImg);
+      }
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        await useURL(await urlToDataURL(el.dataset.src), el.dataset.src);
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } });
+      }
+      pickSample($("samples").firstElementChild);
+
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) { for (const t of $("samples").children) t.classList.remove("active"); const u = await fileToDataURL(f); await useURL(u, u); $("dropText").textContent = f.name; }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/face-parsing", runtime: "transformers.js", dtype: "q8", sizeMB: 90, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: () => { $("run").disabled = false; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!currentImageURL) { $("status").textContent = "Pick a face photo first."; return; }
+        $("run").disabled = true; $("status").classList.remove("err", "ok"); $("status").textContent = "Labelling every pixel…";
+        try {
+          const r = await engine.segment(currentImageURL);
+          releaseResult(lastResult);
+          lastResult = r;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = r.ms + " ms";
+          $("rClasses").textContent = r.classCount;
+          $("rDims").textContent = `${r.width} × ${r.height}`;
+          renderMap();
+          renderLegend(r.classes);
+          renderInside(r);
+          $("readout").hidden = false;
+          $("status").textContent = `Labelled ${r.width * r.height} pixels across ${r.classCount} parts.`;
+          $("status").classList.add("ok");
+        } catch (err) {
+          $("status").textContent = "Face parsing failed: " + err.message;
+          $("status").classList.add("err");
+        } finally { $("run").disabled = false; }
+      });
+
+      const opacity = $("opacity");
+      opacity.addEventListener("input", () => { $("opacityOut").textContent = Math.round(opacity.value * 100) + "%"; if (lastResult) renderMap(); });
+
+      function renderMap() {
+        paintFaceMap($("stage"), currentImg, overlaySrc(lastResult), lastResult.width, lastResult.height, +opacity.value);
+      }
+      function renderLegend(classes) {
+        $("legend").replaceChildren(...classes.filter((c) => !c.isBackground).map((c) => {
+          const el = document.createElement("span");
+          el.className = "legend-item"; el.setAttribute("role", "listitem");
+          el.innerHTML = `<span class="swatch" style="background:${rgb(c)}"></span>${escapeHTML(c.pretty)} <b>${(c.coverage * 100).toFixed(1)}%</b>`;
+          return el;
+        }));
+      }
+      function renderInside(r) {
+        $("insideEmpty").hidden = true; $("insideWrap").hidden = false;
+        paintMapOnly($("mapOnly"), overlaySrc(r), r.width, r.height, r.width, r.height);
+        const shown = r.classes.filter((c) => !c.isBackground);
+        const max = Math.max(...shown.map((c) => c.coverage), 0.0001);
+        $("covList").replaceChildren(...shown.map((c) => {
+          const row = document.createElement("div"); row.className = "cov-row";
+          row.innerHTML = `<span class="name"><span class="swatch" style="background:${rgb(c)}"></span>${escapeHTML(c.pretty)}</span>` +
+            `<span class="bar"><span style="inline-size:${(c.coverage / max * 100).toFixed(1)}%;background:${rgb(c)}"></span></span>` +
+            `<span class="pct">${(c.coverage * 100).toFixed(1)}%</span>`;
+          return row;
+        }));
+      }
+
+      // Headless / deep-link auto-run: ?auto picks a sample, kicks the loader (Download on first visit;
+      // cached auto-inits with no button), waits for ready, and parses — for verification.
+      if (new URLSearchParams(location.search).has("auto")) {
+        (async () => {
+          await pickSample($("samples").firstElementChild);
+          const t0 = Date.now();
+          let clicked = false;
+          while ($("run").disabled && Date.now() - t0 < 130000) {
+            if (!clicked) {
+              const b = $("model-loader").querySelector(".loader-actions button");
+              if (b && /download/i.test(b.textContent)) { b.click(); clicked = true; }
+            }
+            await new Promise((r) => setTimeout(r, 200));
+          }
+          if (!$("run").disabled) $("run").click();
+        })();
+      }
+    </script>
+  </body>
+</html>
