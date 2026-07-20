@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>NeoBERT — Wild: cluster a mixed pile · Web AI Showcase</title>
+    <meta name="description" content="Drop a mixed pile of sentences and watch a 2025 encoder self-organize them into unlabeled groups by meaning — k-means over NeoBERT vectors, plotted on a 2D map, entirely in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🧬</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">NeoBERT</a></p>
+
+    <header>
+      <p class="eyebrow">Wild · feature-extraction · WASM</p>
+      <h1>Unsupervised clustering — no labels, no training</h1>
+      <p class="lede">
+        Give a mixed pile of sentences and NeoBERT turns each into a point in 768-d space. Run <em>k</em>-means
+        and they self-organize into groups — support tickets here, science facts there — with nobody labelling
+        anything. Watch the clusters and their 2D map.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Cluster it</h3>
+      <div id="model-loader"></div>
+
+      <label style="display:flex;flex-direction:column;gap:.3rem;font-size:.82rem;margin-top:.6rem">
+        Sentences (one per line)
+        <textarea id="corpus" rows="11" disabled>My password reset email never arrived.
+I can't log into my account at all.
+Two-factor authentication is blocking me out.
+How do I get a refund for my order?
+The item arrived damaged and I want my money back.
+Can I return this within 30 days?
+Mount Everest is the highest mountain on Earth.
+The Great Barrier Reef is the largest coral reef system.
+Photosynthesis converts sunlight into chemical energy.
+The mitochondrion produces ATP for the cell.
+I love the new dashboard, it looks beautiful.
+The onboarding flow was smooth and clear.</textarea>
+      </label>
+
+      <div style="display:flex;gap:.6rem;flex-wrap:wrap;align-items:center;margin:.5rem 0">
+        <label style="font-size:.82rem">Clusters (k) <span class="val" id="kVal" style="font-family:var(--font-mono)">3</span>
+          <input type="range" id="k" min="2" max="6" step="1" value="3" style="vertical-align:middle" />
+        </label>
+        <button id="run" type="button" disabled>Cluster</button>
+        <span class="status" id="status" role="status" aria-live="polite"></span>
+      </div>
+
+      <div class="grid-2">
+        <div id="clusterOut" aria-live="polite"></div>
+        <div>
+          <div id="projection" aria-live="polite"></div>
+          <p class="muted" id="explained" style="font-size:.78rem;font-family:var(--font-mono)"></p>
+        </div>
+      </div>
+      <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>latency <b id="rMs">–</b></span><span>items <b id="rN">–</b></span></div>
+    </section>
+
+    <p class="crumbs" style="margin-top:1.5rem"><a href="../multi-model/">Next: Multi-model — three encoder generations →</a></p>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via 🤗 Transformers.js.
+      <a href="../">← Back to NeoBERT</a>
+    </footer>
+
+    <script type="module">
+      import { NeoBertEngine, cosine, parseLines, pca2d, renderProjection, escapeHTML, NEOBERT_CSS } from "../neobert.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = NEOBERT_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new NeoBertEngine();
+
+      $("k").addEventListener("input", () => { $("kVal").textContent = $("k").value; });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/NeoBERT-ONNX", runtime: "transformers.js", dtype: "q8", sizeMB: 223, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { for (const id of ["corpus", "k", "run"]) $(id).disabled = false; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        const texts = parseLines($("corpus").value);
+        if (texts.length < 3) { $("status").textContent = "Give at least three sentences."; return; }
+        $("run").disabled = true; $("status").classList.remove("err"); $("status").textContent = "Embedding + clustering…";
+        try {
+          const r = await engine.embed(texts);
+          const k = +$("k").value;
+          const { assign, centroids } = kmeans(r.embeddings, k);
+          const groups = Array.from({ length: k }, () => []);
+          assign.forEach((g, i) => groups[g].push(i));
+          $("clusterOut").innerHTML = groups.map((idxs, g) => {
+            if (!idxs.length) return "";
+            const central = idxs.slice().sort((a, b) => cosine(r.embeddings[b], centroids[g]) - cosine(r.embeddings[a], centroids[g]))[0];
+            const items = idxs.map((i) => `<li>${escapeHTML(r.texts[i])}</li>`).join("");
+            return `<div class="cluster"><h4>Cluster ${g + 1} · ${idxs.length} item(s) · theme ≈ “${escapeHTML(r.texts[central])}”</h4><ul>${items}</ul></div>`;
+          }).join("");
+          const { points, explained } = pca2d(r.embeddings);
+          renderProjection($("projection"), points, r.texts, { groups: assign });
+          $("explained").textContent = `PC1+PC2 explain ${(explained * 100).toFixed(0)}% of the variance · colour = cluster`;
+          $("readout").hidden = false; $("rBackend").textContent = r.device.toUpperCase(); $("rMs").textContent = r.ms + " ms"; $("rN").textContent = r.texts.length;
+          $("status").textContent = "";
+        } catch (err) { $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+
+      // --- Tiny k-means over unit vectors (cosine ~ Euclidean on the sphere). Deterministic k-means++ seed. ---
+      function kmeans(vecs, k, iters = 25) {
+        const n = vecs.length, d = vecs[0].length;
+        k = Math.min(k, n);
+        let seed = 42; const rnd = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+        const centroids = [vecs[Math.floor(rnd() * n)].slice()];
+        while (centroids.length < k) {
+          const d2 = vecs.map((v) => Math.min(...centroids.map((c) => 1 - cosine(v, c))));
+          const sum = d2.reduce((a, b) => a + b, 0) || 1;
+          let r = rnd() * sum, pick = 0;
+          for (let i = 0; i < n; i++) { r -= d2[i]; if (r <= 0) { pick = i; break; } }
+          centroids.push(vecs[pick].slice());
+        }
+        let assign = new Array(n).fill(0);
+        for (let it = 0; it < iters; it++) {
+          let moved = false;
+          for (let i = 0; i < n; i++) {
+            let best = 0, bs = -Infinity;
+            for (let g = 0; g < k; g++) { const s = cosine(vecs[i], centroids[g]); if (s > bs) { bs = s; best = g; } }
+            if (assign[i] !== best) { assign[i] = best; moved = true; }
+          }
+          for (let g = 0; g < k; g++) {
+            const members = []; for (let i = 0; i < n; i++) if (assign[i] === g) members.push(i);
+            if (!members.length) continue;
+            const c = new Array(d).fill(0);
+            for (const i of members) for (let j = 0; j < d; j++) c[j] += vecs[i][j];
+            let norm = Math.sqrt(c.reduce((a, x) => a + x * x, 0)) || 1;
+            for (let j = 0; j < d; j++) c[j] /= norm;
+            centroids[g] = c;
+          }
+          if (!moved && it > 0) break;
+        }
+        return { assign, centroids };
+      }
+    </script>
+  </body>
+</html>

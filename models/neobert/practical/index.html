@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>NeoBERT — Practical: semantic search &amp; dedup · Web AI Showcase</title>
+    <meta name="description" content="Two shippable retrieval jobs over your own text with the NeoBERT encoder, all in the browser: semantic search that ranks passages by a query, and near-duplicate detection that flags 'same thing, different words' at a threshold." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🧬</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">NeoBERT</a></p>
+
+    <header>
+      <p class="eyebrow">Practical · feature-extraction · WASM</p>
+      <h1>Search, and de-duplicate</h1>
+      <p class="lede">
+        The two jobs an encoder earns its keep on. <strong>Semantic search</strong>: rank a corpus against a
+        query by meaning, not keyword overlap — the guts of search and RAG. <strong>Near-duplicate
+        detection</strong>: find pairs that say the same thing even when the words differ, so you can collapse
+        them. Both run entirely on your device.
+      </p>
+    </header>
+
+    <div id="model-loader"></div>
+
+    <section class="panel" aria-labelledby="corpus-h">
+      <h3 id="corpus-h">Your passages (one per line)</h3>
+      <p class="muted">Everything below runs on these lines. Edit them, or keep the mixed support/knowledge sample.</p>
+      <textarea id="corpus" rows="10" disabled>To reset your password, open Settings and choose "Forgot password".
+You can recover a locked account from the login screen's "Forgot password" link.
+Enable two-factor authentication under Security settings.
+Turn on 2FA in the Security section of your profile.
+Refunds are issued within 30 days of the delivery date.
+We offer money back for a month after the item is delivered.
+The invoice is generated automatically after a successful payment.
+Mount Everest is the highest mountain above sea level.
+The Great Barrier Reef is the largest coral reef system on Earth.
+Photosynthesis lets plants turn sunlight into chemical energy.</textarea>
+    </section>
+
+    <section class="panel" aria-labelledby="search-h">
+      <h3 id="search-h">1 · Semantic search</h3>
+      <p class="muted">The query and every passage are embedded with NeoBERT; ranking is by cosine — no
+        keyword overlap required.</p>
+      <div style="display:flex;gap:.4rem;flex-wrap:wrap;align-items:center;margin:.4rem 0">
+        <input id="q" type="text" value="I'm locked out and can't sign in" style="flex:1;min-inline-size:14rem" disabled />
+        <button id="searchBtn" type="button" disabled>Search</button>
+      </div>
+      <div class="sent-list" id="searchOut" aria-live="polite"></div>
+    </section>
+
+    <section class="panel" aria-labelledby="dedup-h">
+      <h3 id="dedup-h">2 · Near-duplicate detection</h3>
+      <p class="muted">Embed every line, then flag pairs whose cosine is above a threshold — "same thing,
+        different words". Drag the slider to trade recall for precision. (Base-encoder cosines run high, so
+        the useful threshold sits higher than for a fine-tuned embedder.)</p>
+      <div style="display:flex;gap:.6rem;flex-wrap:wrap;align-items:center;margin:.4rem 0">
+        <label style="font-size:.82rem">Duplicate threshold <span class="val" id="thVal" style="font-family:var(--font-mono)">0.90</span>
+          <input type="range" id="th" min="0.7" max="0.99" step="0.01" value="0.90" style="vertical-align:middle" />
+        </label>
+        <button id="dedupBtn" type="button" disabled>Find duplicates</button>
+      </div>
+      <div id="dedupOut" aria-live="polite"></div>
+    </section>
+
+    <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>last op <b id="rMs">–</b></span></div>
+
+    <p class="crumbs" style="margin-top:1.5rem"><a href="../wild/">Next: Wild — cluster a mixed pile →</a></p>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via 🤗 Transformers.js.
+      <a href="../">← Back to NeoBERT</a>
+    </footer>
+
+    <script type="module">
+      import { NeoBertEngine, cosine, parseLines, renderRanked, escapeHTML, NEOBERT_CSS } from "../neobert.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = NEOBERT_CSS + `
+        .dup { border:1px solid var(--border); border-inline-start:4px solid var(--warn); border-radius:8px;
+          background:var(--bg-raised); padding:.5rem .7rem; margin:.5rem 0; }
+        .dup .score { font-family:var(--font-mono); color:var(--muted); font-size:.76rem; }`;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new NeoBertEngine();
+      let corpusCache = null;
+
+      $("th").addEventListener("input", () => { $("thVal").textContent = (+$("th").value).toFixed(2); });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/NeoBERT-ONNX", runtime: "transformers.js", dtype: "q8", sizeMB: 223, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { for (const id of ["corpus", "q", "searchBtn", "th", "dedupBtn"]) $(id).disabled = false; },
+      });
+
+      async function embedCorpus() {
+        const texts = parseLines($("corpus").value);
+        if (corpusCache && corpusCache.key === $("corpus").value) return corpusCache;
+        const r = await engine.embed(texts);
+        corpusCache = { key: $("corpus").value, texts: r.texts, embeddings: r.embeddings, device: r.device, ms: r.ms };
+        showReadout(r.device, r.ms);
+        return corpusCache;
+      }
+      function showReadout(device, ms) { $("readout").hidden = false; $("rBackend").textContent = device.toUpperCase(); $("rMs").textContent = ms + " ms"; }
+
+      $("searchBtn").addEventListener("click", async () => {
+        $("searchBtn").disabled = true;
+        const q = $("q").value.trim() || "help";
+        try {
+          const c = await embedCorpus();
+          const qr = await engine.embed([q]);
+          const hits = c.texts.map((text, i) => ({ text, score: cosine(qr.embeddings[0], c.embeddings[i]) }))
+            .sort((a, b) => b.score - a.score);
+          renderRanked($("searchOut"), hits);
+        } catch (e) { $("searchOut").textContent = "Failed: " + e.message; }
+        finally { $("searchBtn").disabled = false; }
+      });
+
+      $("dedupBtn").addEventListener("click", async () => {
+        $("dedupBtn").disabled = true;
+        try {
+          const c = await embedCorpus();
+          const th = +$("th").value;
+          const pairs = [];
+          for (let i = 0; i < c.texts.length; i++) {
+            for (let j = i + 1; j < c.texts.length; j++) {
+              const s = cosine(c.embeddings[i], c.embeddings[j]);
+              if (s >= th) pairs.push({ i, j, s });
+            }
+          }
+          pairs.sort((a, b) => b.s - a.s);
+          if (!pairs.length) {
+            $("dedupOut").innerHTML = `<p class="muted">No pairs above cosine ${th.toFixed(2)}. Lower the threshold to catch looser matches.</p>`;
+          } else {
+            $("dedupOut").innerHTML = pairs.map((p) =>
+              `<div class="dup"><span class="score">cosine ${p.s.toFixed(3)} — likely duplicate</span>
+                <div>“${escapeHTML(c.texts[p.i])}”</div><div>“${escapeHTML(c.texts[p.j])}”</div></div>`
+            ).join("");
+          }
+        } catch (e) { $("dedupOut").textContent = "Failed: " + e.message; }
+        finally { $("dedupBtn").disabled = false; }
+      });
+    </script>
+  </body>
+</html>
