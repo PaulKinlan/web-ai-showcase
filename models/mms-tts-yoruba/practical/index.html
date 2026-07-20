@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MMS-TTS Yoruba Practical — a Yoruba narrator · Web AI Showcase</title>
+    <meta name="description" content="A private, offline Yoruba narrator: pick a register — notification, weather report, article snippet — and MMS-TTS reads it aloud in Yoruba, in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🗣️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">MMS-TTS Yoruba (VITS)</a></p>
+
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Practical: a Yoruba narrator</h1>
+      <p class="lede">
+        The shape of a real read-aloud feature — Yoruba content in, spoken Yoruba out, entirely on-device.
+        Pick a register below (a push notification, a weather report, an article snippet), tweak the text, and
+        MMS narrates it. Nothing is uploaded and there's no per-character bill.
+      </p>
+    </header>
+
+    <section class="panel">
+      <label class="field" style="max-inline-size:26rem">Register
+        <select id="register"></select>
+      </label>
+
+      <div id="model-loader" style="margin-top:.6rem"></div>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+
+      <label class="field" style="margin-top:.6rem">Ọ̀rọ̀ láti kà (Yoruba)
+        <textarea id="text" class="tts" lang="yo" style="min-block-size:6rem" disabled></textarea>
+      </label>
+      <div class="tts-grid"><span></span><button id="run" type="button" disabled>Kà á</button></div>
+
+      <div class="audio-row">
+        <audio id="player" controls preload="none"></audio>
+        <a id="download" class="button secondary" download="mms-tts-yor.wav" hidden>Download .wav</a>
+      </div>
+      <div class="wave-wrap"><canvas id="wave" class="wave" aria-label="Spoken Yoruba waveform"></canvas></div>
+      <div class="readout" id="readout" hidden>
+        <span>register <b id="rReg">–</b></span>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>gen time <b id="rMs">–</b></span>
+        <span>audio <b id="rDur">–</b></span>
+      </div>
+    </section>
+
+    <p class="muted" style="font-size:.85rem">
+      One Yoruba checkpoint covers every register — the model doesn't know or care whether it's reading a
+      weather report or a warning; it just turns Yoruba characters into a waveform. That makes it a practical
+      building block for an offline Yoruba voice in any app.
+    </p>
+
+    <p class="crumbs"><a href="../basics/">← Basics</a> · <a href="../">Back to MMS-TTS Yoruba</a> · Next: <a href="../wild/">Wild →</a></p>
+
+    <script type="module">
+      import { MmsYoEngine, wavUrl, drawWaveform, MMS_YO_CSS } from "../mmsttsyo.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = MMS_YO_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new MmsYoEngine();
+      let pcm = null, curUrl = null;
+
+      const REGISTERS = [
+        { name: "Ìfitónilétí (Push notification)", text: "A ti fi ẹrù rẹ ránṣẹ́, ó sì wà lẹ́gbẹ̀ẹ́ ìlẹ̀kùn. Kí ọjọ́ rẹ dára." },
+        { name: "Ìjìnlẹ̀ ojú ọjọ́ (Weather report)", text: "Ní ìparí ọ̀sẹ̀ yìí, ojú ọjọ́ yóò mọ́ jù, ooru yóò pọ̀ lọ́sàn-án, yóò sì tutù díẹ̀ lóru." },
+        { name: "Àyọkà ìròyìn (News snippet)", text: "Àwọn olùwádìí ti ṣàfihàn ọ̀nà tuntun láti ṣàmúlò àwòṣe èdè pátápátá nínú ẹ̀rọ aṣàwákiri." },
+        { name: "Ìkéde ibùdókọ̀ (Station announcement)", text: "Ẹ jọ̀wọ́ fetí sílẹ̀: ọkọ̀ ojú irin tí ń lọ sí Èkó yóò kúrò ní pẹpẹ karùn-ún lónìí. A tọrọ àforíjì fún ìdààmú náà." },
+        { name: "Ìgbésẹ̀ ìdáná (Recipe step)", text: "Nísinsìnyí, fi ṣíbí ìyẹ̀fun ńlá méjì kún un, kí o sì pò ó dáadáa kí ó má baà di odidi." },
+      ];
+      const sel = $("register");
+      for (const r of REGISTERS) { const o = document.createElement("option"); o.value = r.name; o.textContent = r.name; sel.append(o); }
+      let current = REGISTERS[0];
+      function setRegister(r) { current = r; $("text").value = r.text; }
+      sel.addEventListener("change", () => setRegister(REGISTERS.find((r) => r.name === sel.value)));
+      setRegister(REGISTERS[0]);
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/mms-tts-yor", runtime: "transformers.js", dtype: "q8", sizeMB: 38, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("text").disabled = false; $("run").disabled = false; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        const text = $("text").value.trim();
+        if (!text) return;
+        $("run").disabled = true; $("status").hidden = false; $("status").classList.remove("err","ok");
+        $("status").textContent = "Synthesising…";
+        try {
+          const r = await engine.speak(text);
+          pcm = r.audio;
+          if (curUrl) URL.revokeObjectURL(curUrl);
+          curUrl = wavUrl(pcm, r.rate);
+          $("player").src = curUrl; $("download").href = curUrl; $("download").hidden = false;
+          drawWaveform($("wave"), pcm, 0);
+          const durSec = pcm.length / r.rate;
+          $("readout").hidden = false;
+          $("rReg").textContent = current.name;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = (r.ms/1000).toFixed(2)+" s";
+          $("rDur").textContent = durSec.toFixed(2)+" s";
+          $("status").textContent = "Done — press play."; $("status").classList.add("ok");
+          $("player").play().catch(()=>{});
+        } catch (err) { $("status").textContent = "Synthesis failed: "+err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+      $("player").addEventListener("timeupdate", () => { if (pcm && $("player").duration) drawWaveform($("wave"), pcm, $("player").currentTime/$("player").duration); });
+      $("player").addEventListener("ended", () => pcm && drawWaveform($("wave"), pcm, 1));
+      addEventListener("resize", () => pcm && drawWaveform($("wave"), pcm, 0));
+    </script>
+  </body>
+</html>
