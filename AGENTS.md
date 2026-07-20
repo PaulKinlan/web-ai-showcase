@@ -226,6 +226,18 @@ short version for tools that look for `AGENTS.md`.
   to pull license-verified originals), then regenerate the ledger and run the gate. CC-BY/CC-BY-SA images
   shown on a page get a visible credit via the shared annotator `public/image-credit.js` (include it once
   per page); the full record renders at `/image-credits/`. Strip EXIF on bundled images.
+- **Every downloading demo is classified in the route inventory (Task 2b · Phase 1).**
+  `download-routes.json` classifies all 270 built routes by download runtime/loader family
+  (transformers-pipeline / -from_pretrained / -wrapped / -resumable-prefetch, webllm, mediapipe, raw-ort,
+  browser-builtin, non-applicable), who controls the byte transfer, and the honest resume capability
+  (resumable / restart-only / runtime-owned / cached-only). The gate
+  `node scripts/check-download-inventory.mjs` (in `deno task gate` + CI) re-classifies the current source
+  and FAILS if any built route is missing, orphaned, `unknown`, or drifts from the committed inventory — so
+  a new downloading demo can't land un-classified. Regenerate with
+  `node scripts/route-download-inventory.mjs` after adding/retooling a demo. This is the coverage
+  denominator for the site-wide `<model-download-status>` component (subsequent phases: reducer/adapters →
+  component → central adoption via `createModelLoader` → crawler + CI adoption gate). **Never ship an
+  ad-hoc last-callback-wins progress UI**; route progress through the shared loader/adapter.
 - **Off-main-thread reference architecture (measure, don't infer).** All inference AND any pre/post
   that could exceed an 8ms frame slice runs off-main-thread; verify by measuring long tasks/INP +
   code paths. Use `lib/worker-protocol.js` (typed/versioned protocol, request ids, transfer not
