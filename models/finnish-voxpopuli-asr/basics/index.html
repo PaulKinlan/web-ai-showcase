@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Basics — Finnish speech to Finnish text · Web AI Showcase</title>
+    <meta name="description" content="The fundamental loop: one Finnish clip in, Finnish text out — plus the per-frame CTC strip that produced it, running on-device via wav2vec2-large." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='13'>🗣️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/models/finnish-voxpopuli-asr/">← wav2vec2-large (Finnish)</a></p>
+
+    <header>
+      <p class="eyebrow">Basics · automatic-speech-recognition · CTC · Finnish</p>
+      <h1>One Finnish clip in, Finnish text out</h1>
+      <p class="lede">
+        The core capability, plainly: pick a Finnish clip, and the model labels every ~20 ms frame with a
+        Finnish character, then collapses the frames into a transcript — entirely on your device.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+
+      <div class="audio-row">
+        <button id="upload" type="button" class="secondary" disabled>Upload Finnish audio</button>
+        <input type="file" id="file" accept="audio/*" hidden />
+        <span class="muted" style="font-size:.82rem">or a sample:</span>
+        <span class="sample-row" id="samples">
+          <button class="chip" type="button" data-src="../sample-fin.wav" data-label="Finnish — spoken dialogue (Public Domain, 13s)">Finnish sample</button>
+        </span>
+      </div>
+
+      <div class="audio-row">
+        <audio id="player" controls preload="metadata"></audio>
+        <span class="muted" id="clipLabel" style="font-size:.82rem">Finnish — spoken dialogue (Public Domain, 13s)</span>
+      </div>
+      <div class="wave-wrap"><canvas id="wave" class="wave" aria-label="Audio waveform"></canvas></div>
+
+      <button id="run" type="button" disabled>Transcribe</button>
+
+      <h3>Transcript (Finnish)</h3>
+      <div class="transcript" id="transcript" aria-live="polite" lang="fi">Transcribe a clip to see the Finnish text here.</div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>audio <b id="rDur">–</b></span>
+        <span>process <b id="rMs">–</b></span>
+        <span>frames <b id="rFrames">–</b></span>
+      </div>
+
+      <div id="insideWrap" hidden>
+        <p class="muted" style="font-size:.8rem;margin:.8rem 0 .2rem">Raw per-frame argmax (<span id="frameCount">–</span> frames):</p>
+        <div class="ctc-strip" id="strip" role="img" aria-label="Per-frame Finnish character predictions" lang="fi"></div>
+      </div>
+    </section>
+
+    <section aria-labelledby="how-h">
+      <h2 id="how-h">What's happening</h2>
+      <p>
+        Audio is resampled to 16 kHz mono and fed to the wav2vec2-large encoder. It emits, per frame, a
+        probability over 34 Latin-Finnish symbols; we take the argmax, merge consecutive duplicates, and drop
+        the blanks. No decoder generates the text — it's read directly off the frames, so the model can't
+        invent an unspoken word.
+      </p>
+      <p class="muted">Next rung: <a href="../practical/">Practical — per-word forced alignment →</a></p>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      🤗 Transformers.js. <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { FinnishVoxEngine, urlToMono16k, drawWaveform, fmtTime, renderStrip, FI_VOX_CSS } from "../finnish.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = FI_VOX_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new FinnishVoxEngine();
+      let pcm = null, audioDur = 0;
+
+      async function useAudio(url, label, { revoke = false } = {}) {
+        $("player").src = url; $("clipLabel").textContent = label;
+        $("transcript").textContent = "Transcribe a clip to see the Finnish text here.";
+        $("readout").hidden = true; $("insideWrap").hidden = true;
+        try {
+          const decoded = await urlToMono16k(url);
+          pcm = decoded.pcm; audioDur = decoded.duration;
+          drawWaveform($("wave"), pcm, 0); $("run").disabled = !engine.ready;
+        } catch (err) {
+          $("status").hidden = false; $("status").textContent = "Couldn't decode that audio: " + err.message;
+          $("status").classList.add("err"); pcm = null;
+        }
+        if (revoke) $("player").addEventListener("emptied", () => URL.revokeObjectURL(url), { once: true });
+      }
+      for (const chip of $("samples").children) chip.addEventListener("click", () => useAudio(chip.dataset.src, chip.dataset.label));
+      useAudio("../sample-fin.wav", "Finnish — spoken dialogue (Public Domain, 13s)");
+
+      $("upload").addEventListener("click", () => $("file").click());
+      $("file").addEventListener("change", async () => {
+        const f = $("file").files[0];
+        if (f) await useAudio(URL.createObjectURL(f), f.name, { revoke: true });
+      });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "KalleLaht/wav2vec2-large-uralic-voxpopuli-v2-finnish-ONNX", runtime: "transformers.js", dtype: "fp32", sizeMB: 1260, requiresWebGPU: false },
+        load: async (onProgress) => ({ device: await engine.load((p) => onProgress(p)) }),
+        onReady: () => { $("upload").disabled = false; $("run").disabled = !pcm; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!pcm) return;
+        $("run").disabled = true; $("status").hidden = false; $("status").classList.remove("err", "ok");
+        $("status").textContent = "Running the CTC model…";
+        try {
+          const r = await engine.transcribe(pcm, audioDur);
+          $("transcript").textContent = r.text || "(no speech detected)";
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase(); $("rDur").textContent = fmtTime(r.audioSec);
+          $("rMs").textContent = (r.ms / 1000).toFixed(2) + " s"; $("rFrames").textContent = r.frames;
+          $("insideWrap").hidden = false; $("frameCount").textContent = r.frames; renderStrip($("strip"), r.strip);
+          $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (err) {
+          $("status").textContent = "Transcription failed: " + err.message; $("status").classList.add("err");
+        } finally { $("run").disabled = false; }
+      });
+      addEventListener("resize", () => pcm && drawWaveform($("wave"), pcm, 0));
+      if ("serviceWorker" in navigator) navigator.serviceWorker.register("/web-ai-showcase/sw.js").catch(() => {});
+    </script>
+  </body>
+</html>
