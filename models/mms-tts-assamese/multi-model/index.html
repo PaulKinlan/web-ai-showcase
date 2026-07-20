@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MMS-TTS Assamese Multi-model — translate, then speak Assamese · Web AI Showcase</title>
+    <meta name="description" content="Chain two on-device models: NLLB-200 translates English to Assamese, then MMS-TTS speaks the Assamese aloud — a private, offline English-to-spoken-Assamese pipeline in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🗣️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">MMS-TTS Assamese (VITS)</a></p>
+
+    <header>
+      <p class="eyebrow">use case · multi-model</p>
+      <h1>Multi-model: translate, then speak Assamese</h1>
+      <p class="lede">
+        Two models, one pipeline, zero servers. <a href="../../nllb-200-translation/">NLLB-200</a>
+        (No Language Left Behind, English→Assamese) translates what you type into native Assamese script, then
+        MMS-TTS Assamese reads the translation aloud. We pair with NLLB here — not M2M100 — because NLLB-200
+        covers Assamese (<code>asm_Beng</code>), which M2M100's 100-language set does not. Type English, get
+        spoken Assamese — entirely on your device.
+      </p>
+    </header>
+
+    <section class="panel">
+      <h3 style="margin-top:0">1 · Translator (NLLB-200 · English → Assamese)</h3>
+      <div id="tr-loader"></div>
+      <h3>2 · Assamese voice (MMS-TTS)</h3>
+      <div id="tts-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+
+      <label class="field" style="margin-top:.6rem">English text
+        <textarea id="text" class="tts" disabled>This voice is generated entirely inside your browser, with no server involved.</textarea>
+      </label>
+      <div style="display:flex;flex-wrap:wrap;gap:.5rem;align-items:center;margin-top:.5rem">
+        <button id="run" type="button" disabled>Translate &amp; speak</button>
+      </div>
+
+      <div id="outWrap" hidden style="margin-top:.8rem">
+        <p class="eyebrow">Assamese translation</p>
+        <p id="translation" lang="as" style="font-size:1.05rem"></p>
+        <div class="audio-row">
+          <audio id="player" controls preload="none"></audio>
+          <a id="download" class="button secondary" download="mms-tts-asm.wav" hidden>Download .wav</a>
+        </div>
+        <div class="wave-wrap"><canvas id="wave" class="wave" aria-label="Spoken Assamese translation waveform"></canvas></div>
+        <div class="readout" id="readout" hidden>
+          <span>translate <b id="rTrMs">–</b></span>
+          <span>speak <b id="rTtsMs">–</b></span>
+          <span>audio <b id="rDur">–</b></span>
+          <span>backend <b id="rBackend">–</b></span>
+        </div>
+      </div>
+    </section>
+
+    <p class="muted" style="font-size:.85rem">
+      This is a common shape for localisation features — English source in, spoken Assamese out — but done
+      locally, so the source text never leaves the tab and there's no per-request bill. NLLB-200 translates
+      between 200 languages (including many low-resource ones like Assamese), so you can swap in another target
+      and pair it with that language's MMS checkpoint.
+    </p>
+
+    <p class="crumbs"><a href="../wild/">← Wild</a> · <a href="../">Back to MMS-TTS Assamese</a></p>
+
+    <script type="module">
+      import { MmsAsEngine, wavUrl, drawWaveform, MMS_AS_CSS } from "../mmsttsas.js";
+      import { NllbEngine } from "../../nllb-200-translation/nllb.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = MMS_AS_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+
+      const tts = new MmsAsEngine();
+      const tr = new NllbEngine();
+      let ttsReady = false, trReady = false, pcm = null, curUrl = null;
+      function maybeEnable() { if (ttsReady && trReady) { $("run").disabled = false; $("text").disabled = false; } }
+
+      createModelLoader({
+        mount: $("tr-loader"),
+        model: { modelId: "Xenova/nllb-200-distilled-600M", runtime: "transformers.js", dtype: "q8", sizeMB: 900, requiresWebGPU: false },
+        load: async (onProgress) => { await tr.load(onProgress); return tr; },
+        onReady: () => { trReady = true; maybeEnable(); },
+      });
+      createModelLoader({
+        mount: $("tts-loader"),
+        model: { modelId: "naklitechie/mms-tts-as-ONNX", runtime: "transformers.js", dtype: "fp32", sizeMB: 114, requiresWebGPU: false },
+        load: async (onProgress) => { await tts.load(onProgress); return tts; },
+        onReady: () => { ttsReady = true; maybeEnable(); },
+      });
+
+      $("run").addEventListener("click", async () => {
+        const text = $("text").value.trim();
+        if (!text) return;
+        $("run").disabled = true; $("status").hidden = false; $("status").classList.remove("err","ok");
+        $("outWrap").hidden = false; $("translation").textContent = "";
+        try {
+          $("status").textContent = "Translating to Assamese…";
+          const t0 = performance.now();
+          const t = await tr.translate(text, "eng_Latn", "asm_Beng", { numBeams: 1 }, (partial) => { $("translation").textContent = partial; });
+          const trMs = Math.round(performance.now() - t0);
+          const asm = (t.translation || $("translation").textContent).trim();
+          $("translation").textContent = asm;
+
+          $("status").textContent = "Speaking the Assamese…";
+          const r = await tts.speak(asm);
+          pcm = r.audio;
+          if (curUrl) URL.revokeObjectURL(curUrl);
+          curUrl = wavUrl(pcm, r.rate);
+          $("player").src = curUrl; $("download").href = curUrl; $("download").hidden = false;
+          drawWaveform($("wave"), pcm, 0);
+          const durSec = pcm.length / r.rate;
+          $("readout").hidden = false;
+          $("rTrMs").textContent = (trMs/1000).toFixed(2)+" s";
+          $("rTtsMs").textContent = (r.ms/1000).toFixed(2)+" s";
+          $("rDur").textContent = durSec.toFixed(2)+" s";
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("status").textContent = "Done — press play to hear the Assamese."; $("status").classList.add("ok");
+          $("player").play().catch(()=>{});
+        } catch (err) { $("status").textContent = "Pipeline failed: "+err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+      $("player").addEventListener("timeupdate", () => { if (pcm && $("player").duration) drawWaveform($("wave"), pcm, $("player").currentTime/$("player").duration); });
+      $("player").addEventListener("ended", () => pcm && drawWaveform($("wave"), pcm, 1));
+      addEventListener("resize", () => pcm && drawWaveform($("wave"), pcm, 0));
+    </script>
+  </body>
+</html>
