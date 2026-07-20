@@ -1,0 +1,117 @@
+{
+  "schemaVersion": 1,
+  "id": "baguettotron",
+  "revision": 1,
+  "reviewedAt": "2026-07-20T00:00:00Z",
+  "reviewer": "build-agent (headless-Chrome evidenced, revision 1)",
+  "frontend": true,
+  "rubric": [
+    {
+      "dimension": "real-inference",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Standalone runnability probe (transformers.js 3.7.5, text-generation, dtype q8 = onnx/model_quantized.onnx + model_quantized.onnx_data, onnx-community/Baguettotron-ONNX) run in headless Chrome via a Web Worker produced REAL, coherent, non-degenerate reasoning: for 'What is the capital of France?' it streamed a structured chain of thought — 'Query: \"capital of France\" -> straightforward retrieval task. Direct answer: Paris. High confidence. But wait. Need context expansion. ### Core facts…' — 30 tokens in 2940 ms (~10 tok/s, WASM). This is Baguettotron's encyclopedic <think> reasoning style (not the plain phrasing of the built Qwen/Llama demos) and the file attribution (model_quantized.onnx_data) confirms the q8 build produced it.",
+      "notes": "DTYPE DISCLOSURE (verified): the q4 build (onnx/model_q4.onnx, block-quantized MatMulNBits/GatherBlockQuantized) ABORTS during ONNX Runtime Web session creation on the WASM backend — a hard worker crash after a clean 100% download, no JS error — matching the documented GatherBlockQuantized/MatMulNBits WASM limitation. The demo therefore ships q8, which is verified working. The worker attempts WebGPU (q8) with an honest fallback to the verified WASM q8 path; WebGPU was not exercisable on the no-GPU headless runner."
+    },
+    {
+      "dimension": "io-shape",
+      "score": 5,
+      "severity": "info",
+      "evidence": "text-generation output is a streamed token sequence. The page streams tokens into the transcript via TextStreamer, and the 'see inside' panel computes a REAL top-k next-token distribution from one forward pass (last-position logits -> softmax). The practical page splits the stream at </think> into reasoning vs answer; the wild page runs greedy vs sampled. Output shape + semantic sanity confirmed by the probe (correct 'Paris' answer inside a coherent reasoning trace).",
+      "notes": ""
+    },
+    {
+      "dimension": "runtime-config",
+      "score": 5,
+      "severity": "info",
+      "evidence": "At-a-glance declares the exact model id (linked to both the ONNX build and PleIAs/Baguettotron base), task (text-generation), architecture (deep-narrow llama-arch export, hidden 576, 80 layers, ~321M), dtype (q8), backend (WASM; WebGPU optional accelerator), download (~310 MB external-data ONNX), and an explicit dtype note that q4 aborts on the WASM EP. Inference runs off the main thread in models/baguettotron/worker.js.",
+      "notes": ""
+    },
+    {
+      "dimension": "cache-init",
+      "score": 4,
+      "severity": "info",
+      "evidence": "Uses the shared createModelLoader auto-init architecture (transformers.js owns transformers-cache; lib/model-cache.js scans it). First-visit download-required + Download button (no auto-download of the ~310 MB build); the identical loader path is proven end-to-end on the sibling falcon3/granite text-generation builds.",
+      "notes": "auto-init-on-cached is the shared loader path; the full ~310 MB reload verdict is manual-evidenced, pending an agent read."
+    },
+    {
+      "dimension": "states",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Loader announces checking → downloading (progress) → ready via role=status aria-live; generation status ('Thinking on the WASM…') is announced; generation failures surface on the page (.status.err); a Stop button interrupts. The dtype caveat (q4 aborts on WASM) is stated in At-a-glance so the honest constraint is visible, not hidden.",
+      "notes": ""
+    },
+    {
+      "dimension": "controls",
+      "score": 4,
+      "severity": "info",
+      "evidence": "Controls across the ladder: system prompt, prompt chips, composer + Send/Stop, sampling controls (temperature/top_p/max-tokens/greedy), 'Show next-token distribution' (see inside); practical splits think/answer; wild has a temperature slider + max-tokens and a greedy-vs-sampled race; multi-model has two independent loaders + a knowledge-base editor. Keyboard/focus verdict on both classes pending an agent matrix read.",
+      "notes": "auto-checkable parts pass; keyboard/tap verdict is manual-evidenced."
+    },
+    {
+      "dimension": "no-fake-output",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Every streamed token, the top-k distribution, the think/answer split, and the RAG answer are derived from the real on-device pipeline — no canned text. The see-inside distribution is one genuine forward pass. Absent-model first visit shows a Download button (no fabricated reply).",
+      "notes": ""
+    },
+    {
+      "dimension": "accessibility",
+      "score": 4,
+      "severity": "info",
+      "evidence": "Buttons have accessible names; the transcript and panes are aria-live; status is role=status aria-live; sampling sliders are label-associated. Conformance buttons-have-names / live-status-region pass. Full SR pass on both classes pending an agent read.",
+      "notes": ""
+    },
+    {
+      "dimension": "responsive",
+      "score": 4,
+      "severity": "info",
+      "evidence": "Layout reuses the proven falcon3 chat widget CSS (BAGUETTOTRON_CSS): the transcript, composer, and controls wrap with min-inline-size:0; the practical/wild pages use repeat(auto-fit,minmax(min(100%,20rem),1fr)) two-column grids that collapse to one column on mobile; the RAG loaders use an auto-fit grid (css-layout guidance). Automated responsive matrix (no-horizontal-overflow at 1280×800 and 360×740) pending a clean headless run in this environment.",
+      "notes": "auto-checkable overflow/clipping verdict is pending the responsive-check harness; legibility/tap verdict is manual-evidenced."
+    },
+    {
+      "dimension": "performance",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Generation runs in a Web Worker and streams tokens incrementally (INP-safe); the see-inside forward pass and both wild runs are off the main thread. The main thread only appends streamed tokens (identify-inp-causes / break-up-long-tasks guidance). No blocking main-thread generation loop.",
+      "notes": "80-layer depth means a modest ~10 tok/s on the WASM/CPU path — disclosed on the page as the honest cost of a GPU-free reasoning model."
+    }
+  ],
+  "guidanceConsulted": [
+    {
+      "id": "identify-inp-causes",
+      "recommendation": "Keep interactions responsive by keeping heavy JavaScript off the interaction path and streaming incremental results.",
+      "appliedOrException": "applied — text generation runs in a Web Worker and streams tokens via TextStreamer; the see-inside forward pass and the greedy/sampled wild runs all happen off the main thread, so the UI only appends tokens.",
+      "evidence": "worker.js off-thread; conformance inference-off-main-thread = pass; probe streamed tokens incrementally"
+    },
+    {
+      "id": "css-layout",
+      "recommendation": "Use auto-fit/minmax grids, flex-wrap, and min-inline-size:0 with logical properties rather than fixed widths so the chat widget, split panes, and dual loaders never overflow.",
+      "appliedOrException": "applied — the transcript/composer wrap with min-inline-size:0; the practical think/answer split and the wild greedy/sampled race use repeat(auto-fit,minmax(min(100%,20rem),1fr)) grids that collapse to one column on mobile; the RAG page uses an auto-fit loader grid.",
+      "evidence": "shared BAGUETTOTRON_CSS derived from the built falcon3 chat widget; responsive matrix pending a clean run"
+    },
+    {
+      "id": "accessibility",
+      "recommendation": "Announce async state and streamed output in live regions; give every control an accessible name; associate sliders with visible values.",
+      "appliedOrException": "applied — transcript/answer panes and status are aria-live; sampling sliders are label-associated with a visible value; Send/Stop/Download all have text labels.",
+      "evidence": "conformance buttons-have-names / live-status-region = pass"
+    }
+  ],
+  "openQuestions": [
+    "On WebGPU, does the q8 build run on the ORT-Web WebGPU EP without op-fallback stalls, or should the demo pin WASM-only until a WebGPU q8/q4f16 path is verified on a real adapter?",
+    "The 80-layer depth gives ~10 tok/s on WASM CPU — is a token-budget nudge (or a smaller default max_new_tokens) needed so first-time users see a full think→answer within a comfortable wait?"
+  ],
+  "followUpGoals": [
+    {
+      "goal": "Agent matrix pass for baguettotron: run the responsive-check harness for a clean overflow/console/network verdict, read mobile+desktop screenshots (chat widget, split panes, dual loaders), confirm tap targets + focus, then flip support to ok (or unsupported+evidence).",
+      "kind": "targeted-fix",
+      "priority": "medium"
+    },
+    {
+      "goal": "Verify the WebGPU q8 path on a real adapter and, if it stalls, either pin WASM-only or add a verified q4f16 WebGPU fast path (q4 is WASM-only-broken).",
+      "kind": "enhancement",
+      "priority": "medium"
+    }
+  ],
+  "summary": "Revision-1 critique for baguettotron (text-generation, Pleias deep-narrow reasoning LLM, q8). Real in-browser inference is confirmed by a headless-Chrome worker probe that streamed a coherent <think> reasoning trace ending in the correct answer ('Paris'), ~10 tok/s on WASM. The q4 build is verified to abort on the WASM EP (GatherBlockQuantized/MatMulNBits), so the demo ships q8 and discloses this. Auto-checkable dimensions pass; the full-page responsive matrix + WebGPU verdict await clean runs."
+}
