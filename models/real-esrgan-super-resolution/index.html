@@ -1,0 +1,283 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Real-ESRGAN — 4× super-resolution on-device · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run Real-ESRGAN locally via ONNX Runtime Web: hand it a small or compressed image and it reconstructs a 4× larger one with real, synthesised detail — far beyond a naive enlargement. No image ever leaves the tab."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🔍</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">image-to-image (super-resolution) · vision · WASM · ~67 MB</p>
+      <h1>Real-ESRGAN — enlarge a small image 4×</h1>
+      <p class="lede">
+        Give this model a <strong>small</strong> or <strong>compressed</strong> image and it
+        reconstructs a <strong>4× larger</strong> one with real detail — sharp edges, recovered texture,
+        cleaned-up JPEG blocking. Real-ESRGAN (ICCVW 2021) is a GAN trained on <em>real-world</em>
+        degradation, so it does far more than a bicubic enlargement: it <em>synthesises</em> plausible
+        high-frequency detail. It's a different architecture from the built Swin2SR (a GAN, not a
+        transformer, and 4× not 2×). Runs entirely on your device via ONNX Runtime Web; the image never
+        leaves the tab.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/SceneWorks/real-esrgan-onnx" target="_blank" rel="noopener">SceneWorks/real-esrgan-onnx</a> — an ONNX export of Real-ESRGAN x4plus (RRDBNet)</td></tr>
+          <tr><th>Task</th><td><code>image-to-image</code> (super-resolution / upscaling) — run via raw ONNX Runtime Web (see note below)</td></tr>
+          <tr><th>Runtime</th><td>onnxruntime-web 1.21 (transformers.js has no Real-ESRGAN / RRDBNet class)</td></tr>
+          <tr><th>Input</th><td><code>[1, 3, h, w]</code> float32 — the low-res image, values 0–1 (no normalisation); we bound the input so 4× stays feasible on WASM</td></tr>
+          <tr><th>Output</th><td><code>[1, 3, 4h, 4w]</code> float32 — the 4× upscaled image</td></tr>
+          <tr><th>Quantization</th><td>fp32 ONNX — runs on the plain WASM execution provider, no WebGPU needed</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (single-threaded on GitHub Pages) — a 4× pass on a small thumbnail is a few seconds</td></tr>
+          <tr><th>Download</th><td>~67 MB, cached after first load (auto-inits on return)</td></tr>
+          <tr><th>License</th><td>BSD-3-Clause (ONNX export) · Real-ESRGAN (BSD-3-Clause)</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers, OffscreenCanvas, ImageBitmap — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Pick a photo and shrink it to a small, low-quality source so you can watch
+        Real-ESRGAN enlarge it — or drop your own small/compressed image. The divider wipes between a
+        plain <strong>bicubic</strong> upscale and the <strong>Real-ESRGAN</strong> upscale, both at the
+        same 4× resolution, so the comparison is honest.</p>
+
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="two-col">
+        <div>
+          <div class="reveal" id="reveal">
+            <canvas class="reveal-before" id="before" width="640" height="480" role="img" aria-label="Bicubic 4× upscale (naive enlargement)"></canvas>
+            <canvas class="reveal-after" id="after" width="640" height="480" role="img" aria-label="Real-ESRGAN 4× upscale"></canvas>
+            <span class="reveal-handle" id="handle"></span>
+            <input class="reveal-range" id="revealRange" type="range" min="0" max="100" value="55"
+              aria-label="Reveal Real-ESRGAN result — drag to wipe between the bicubic and Real-ESRGAN upscales" />
+          </div>
+          <div class="reveal-labels"><span>◀ bicubic (naive)</span><span>Real-ESRGAN ▶</span></div>
+          <div id="gallery" style="margin-top:.7rem"></div>
+          <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop your own small or low-resolution image">
+            <span id="dropText">Drop / choose your own small or low-res image</span>
+            <input type="file" id="file" accept="image/*" hidden />
+          </div>
+        </div>
+
+        <div>
+          <div class="param-grid">
+            <div class="param">
+              <label for="size">Source size (long side) <b id="sizeVal">128</b>px</label>
+              <input type="range" id="size" min="48" max="192" step="8" value="128" />
+            </div>
+            <div class="param">
+              <label for="jpeg">JPEG compression <b id="jpegVal">40</b></label>
+              <input type="range" id="jpeg" min="0" max="80" step="5" value="40" />
+            </div>
+          </div>
+          <div class="controls-row">
+            <button id="run" type="button" disabled>Upscale 4×</button>
+          </div>
+          <div id="resultWrap" hidden>
+            <div class="readout" id="readout">
+              <span>backend <b id="rBackend">–</b></span>
+              <span>size <b id="rDims">–</b></span>
+              <span>inference <b id="rInf">–</b></span>
+              <span>sharpness <b id="rSharp">–</b></span>
+            </div>
+            <p class="slow-note">The wipe above is the real evidence — slide it to see Real-ESRGAN's detail
+              against a plain bicubic enlargement at the same size. “Sharpness” is the Laplacian variance
+              (the standard detail measure) of the bicubic → the Real-ESRGAN result; it rises sharply as
+              the GAN reconstructs edges and texture a naive upscale can't.</p>
+          </div>
+        </div>
+      </div>
+      <p class="privacy-note">Everything runs on your device — the image and every upscaled pixel never
+        leave the tab. Gallery images are rights-cleared samples (see each caption for the source).</p>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside</h3>
+      <p class="muted">
+        What did the model actually <em>add</em>? This is the <strong>detail-gain map</strong>: the
+        per-pixel difference between the Real-ESRGAN result and a plain bicubic upscale of the same
+        thumbnail, amplified. It lights up along edges, text, and fine texture — the high-frequency detail
+        a GAN <em>synthesises</em> and a naive enlargement can never produce. Flat areas (sky, walls) stay
+        dark: bicubic already gets those right.
+      </p>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Upscale an image to see what detail the model added.</div>
+      <div id="insideWrap" hidden>
+        <div class="two-col">
+          <div>
+            <h4 style="font-family:var(--font-body);font-size:.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:.6rem 0 .3rem">Detail-gain (Real-ESRGAN over bicubic)</h4>
+            <canvas class="delta-canvas" id="delta" width="300" height="300" role="img" aria-label="Per-pixel difference between the Real-ESRGAN and bicubic upscales, amplified"></canvas>
+          </div>
+          <div>
+            <h4 style="font-family:var(--font-body);font-size:.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:.6rem 0 .3rem">How to read it</h4>
+            <p class="muted" style="font-size:.85rem">Bright indigo = big gain (an edge or texture the GAN
+              rebuilt); dark = the two upscales agree. A simple sharpen filter would just amplify existing
+              contrast; Real-ESRGAN invents structurally-plausible detail, which is why the map traces
+              objects and textures, not uniform noise.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        Low-resolution is usually a dead end — you can't re-shoot the source. On-device super-resolution
+        means you can enlarge it privately, with no upload and no per-image cloud cost:
+      </p>
+      <ul>
+        <li><strong>Photo apps</strong> — a client-side "enhance / enlarge" button that runs on the user's phone or laptop, no server.</li>
+        <li><strong>E-commerce & media</strong> — upscale tiny product thumbnails or legacy assets to modern display sizes in a static web tool.</li>
+        <li><strong>Archives & scanning</strong> — batch-enlarge small scans and rescue over-compressed images with zero backend.</li>
+        <li><strong>Pre-processing for other models</strong> — enlarge a thumbnail so a detector, OCR, or classifier has enough pixels to work with.</li>
+      </ul>
+      <p class="muted">Real-ESRGAN reconstructs <em>plausible</em> detail; it can't recover information the
+        downscaling erased entirely. On faces it may over-smooth — pair it with a face-restoration model
+        (see the multi-model demo). It's an enhancement, not a source of ground truth.</p>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Shrink a photo to a thumbnail, then watch Real-ESRGAN enlarge it 4× — wipe between bicubic and Real-ESRGAN and see the sharpness jump.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Rescue an over-compressed image so it's usable at display size again, then download the 4× result.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Push it: shrink the source tiny and find where the GAN starts inventing detail that isn't in the original.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">Enlarge → colourise: upscale a tiny old photo with Real-ESRGAN, then run DDColor on the result.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>transformers.js has no Real-ESRGAN (RRDBNet) class, so we run the ONNX graph directly with ONNX
+        Runtime Web. In goes the small image, out comes a 4× larger one:</p>
+      <pre><code>import * as ort from "onnxruntime-web";
+
+const session = await ort.InferenceSession.create(esrganBytes, { executionProviders: ["wasm"] });
+
+// small image → [1,3,h,w] float32 in [0,1] (plain RGB, no normalisation)
+const input = new ort.Tensor("float32", toNCHW(small, h, w), [1, 3, h, w]);
+const { [session.outputNames[0]]: big } = await session.run({ [session.inputNames[0]]: input });
+
+// big is [1,3,4h,4w] in [0,1] → clamp to RGBA (a 4× larger image)
+const upscaled = tensorToImage(big.data, 4 * w, 4 * h);</code></pre>
+      <p class="muted">
+        Inference and the whole output composite (clamp, bicubic baseline, detail-gain map) run in a Web
+        Worker so the UI never blocks, and the 67 MB model is fetched through Cache Storage, so a
+        returning visit auto-initialises with no re-download.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/SceneWorks/real-esrgan-onnx" target="_blank" rel="noopener">Model — SceneWorks/real-esrgan-onnx (ONNX export)</a></li>
+        <li><a href="https://arxiv.org/abs/2107.10833" target="_blank" rel="noopener">Paper — Real-ESRGAN: Training Real-World Blind Super-Resolution with Pure Synthetic Data (ICCVW 2021)</a></li>
+        <li><a href="https://github.com/xinntao/Real-ESRGAN" target="_blank" rel="noopener">Real-ESRGAN — reference implementation (xinntao)</a></li>
+        <li><a href="https://onnxruntime.ai/docs/tutorials/web/" target="_blank" rel="noopener">ONNX Runtime Web documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://onnxruntime.ai/docs/tutorials/web/" target="_blank" rel="noopener">ONNX Runtime Web</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { EsrganEngine, ESRGAN_CSS, shrink, drawBitmapFit, RevealCompare, toBitmap, urlToBitmap } from "./esrgan.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      import { createExampleGallery } from "/web-ai-showcase/lib/example-gallery.js";
+
+      const style = document.createElement("style");
+      style.textContent = ESRGAN_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new EsrganEngine();
+      const reveal = new RevealCompare($("reveal"));
+      const state = { bmp: null, thumb: null };
+
+      async function preview() {
+        if (!state.bmp) return;
+        const size = +$("size").value, jpeg = +$("jpeg").value;
+        const thumb = await shrink(await createImageBitmap(state.bmp), { size, jpeg });
+        state.thumb = thumb;
+        // Preview both panes as a plain enlargement of the thumbnail until the model runs.
+        drawBitmapFit($("before"), thumb);
+        drawBitmapFit($("after"), thumb);
+        $("resultWrap").hidden = true;
+        $("insideWrap").hidden = true;
+        $("insideEmpty").hidden = false;
+      }
+      async function setImage(bitmap) { state.bmp = bitmap; await preview(); }
+
+      createExampleGallery({
+        mount: $("gallery"),
+        manifestUrl: "/web-ai-showcase/media/manifest.json",
+        filter: (a) => !/statistics-chart|screenshot/.test(a.id),
+        onSelect: async (asset) => { await setImage(await urlToBitmap(asset.url)); },
+      }).then((g) => { if (g?.assets?.length) g.selectId(g.assets[0].id); });
+
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      file.addEventListener("change", async () => {
+        if (!file.files[0]) return;
+        await setImage(await toBitmap(file.files[0]));
+        $("dropText").textContent = file.files[0].name;
+      });
+      drop.addEventListener("drop", async (e) => {
+        const f = e.dataTransfer?.files?.[0];
+        if (!f?.type.startsWith("image/")) return;
+        await setImage(await toBitmap(f));
+        $("dropText").textContent = f.name;
+      });
+
+      $("size").addEventListener("input", () => { $("sizeVal").textContent = $("size").value; preview(); });
+      $("jpeg").addEventListener("input", () => { $("jpegVal").textContent = $("jpeg").value; preview(); });
+
+      const autoRun = new URLSearchParams(location.search).has("auto");
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "SceneWorks/real-esrgan-onnx", runtime: "onnxruntime-web", dtype: "fp32", sizeMB: 67, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: () => { $("run").disabled = false; if (autoRun) $("run").click(); },
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!state.thumb) { $("status").textContent = "Pick an image first."; return; }
+        $("run").disabled = true; $("status").classList.remove("err", "ok");
+        $("status").textContent = "Upscaling 4×… (a WASM pass takes a few seconds)";
+        try {
+          const res = await engine.upscale(await createImageBitmap(state.thumb), { maxIn: 192 });
+          reveal.set(res.bicBmp, res.esrBmp);
+          $("resultWrap").hidden = false;
+          $("rBackend").textContent = res.device.toUpperCase();
+          $("rDims").textContent = `${res.inW}×${res.inH} → ${res.outW}×${res.outH} (${res.scale}×)`;
+          $("rInf").textContent = res.infMs + " ms";
+          $("rSharp").textContent = res.sharpBic.toFixed(3) + " → " + res.sharpEsr.toFixed(3);
+          $("insideEmpty").hidden = true; $("insideWrap").hidden = false;
+          drawBitmapFit($("delta"), res.deltaBmp, 300);
+          $("status").textContent = "Done — drag the divider to compare."; $("status").classList.add("ok");
+        } catch (err) {
+          $("status").textContent = "Upscaling failed: " + err.message; $("status").classList.add("err");
+        } finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>

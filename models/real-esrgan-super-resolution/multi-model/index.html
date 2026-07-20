@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Multi-model — rescue a tiny old photo: enlarge → colourise · Real-ESRGAN</title>
+    <meta name="description" content="Chain two on-device models: Real-ESRGAN enlarges a tiny black-and-white thumbnail 4×, then DDColor colourises the result — a full small-photo revival pipeline, entirely local." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🔍</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Real-ESRGAN super-resolution</a></p>
+    <header>
+      <p class="eyebrow">Multi-model · enlarge → colourise · WASM</p>
+      <h1>Rescue a tiny old photo: enlarge, then colour</h1>
+      <p class="lede">A tiny black-and-white thumbnail is small <em>and</em> grey. This pipeline fixes both:
+        Real-ESRGAN enlarges it 4× and reconstructs detail, then <a href="../../ddcolor-image-colorization/">DDColor</a>
+        invents plausible colour. Two models, chained, running entirely on your device — a private
+        one-click revival for a small archival scan.</p>
+    </header>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Two models load below (enlarge ~67 MB, colour ~130 MB). Pick a photo — we shrink it to
+        a tiny grey thumbnail to mimic a small old scan — then run the pipeline: enlarge → colourise.</p>
+      <div style="display:grid;gap:.5rem">
+        <div><small class="muted">1 · Real-ESRGAN (enlarge 4×)</small><div id="loader-esr"></div></div>
+        <div><small class="muted">2 · DDColor (colourise)</small><div id="loader-color"></div></div>
+      </div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+      <div class="reveal" id="reveal">
+        <canvas class="reveal-before" id="before" width="640" height="480" role="img" aria-label="Tiny grey thumbnail, enlarged naively"></canvas>
+        <canvas class="reveal-after" id="after" width="640" height="480" role="img" aria-label="Enlarged and colourised result"></canvas>
+        <span class="reveal-handle" id="handle"></span>
+        <input class="reveal-range" id="revealRange" type="range" min="0" max="100" value="55" aria-label="Reveal enlarged + colourised result" />
+      </div>
+      <div class="reveal-labels"><span>◀ tiny grey thumbnail</span><span>enlarged + colourised ▶</span></div>
+      <div id="gallery" style="margin-top:.7rem"></div>
+      <div class="controls-row"><button id="run" type="button" disabled>Revive photo</button></div>
+      <div class="readout" id="resultWrap" hidden><span>enlarge <b id="rEsr">–</b></span><span>colour <b id="rColor">–</b></span><span>size <b id="rDims">–</b></span><span>backend <b id="rBackend">–</b></span></div>
+      <p class="privacy-note">Both models run on-device; the scan and every restored pixel never leave the tab.</p>
+    </section>
+
+    <section aria-labelledby="note-h">
+      <h2 id="note-h">Order matters</h2>
+      <p>Enlarge <em>before</em> colourise: DDColor reads luminance to decide colour, so giving it a larger,
+        detail-reconstructed image means better-placed colour than colourising a tiny thumbnail directly.
+        Resolution first, colour second — each model does the job it's best at.</p>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>.
+      <a href="../">← Back to Real-ESRGAN super-resolution</a>
+    </footer>
+
+    <script type="module">
+      import { EsrganEngine, ESRGAN_CSS, drawBitmapFit, RevealCompare, urlToBitmap } from "../esrgan.js";
+      import { ColorizeEngine } from "/web-ai-showcase/models/ddcolor-image-colorization/colorize.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      import { createExampleGallery } from "/web-ai-showcase/lib/example-gallery.js";
+      const style = document.createElement("style"); style.textContent = ESRGAN_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const esrgan = new EsrganEngine();
+      const colorize = new ColorizeEngine();
+      const reveal = new RevealCompare($("reveal"));
+      const ready = { esr: false, color: false };
+      const state = { bmp: null, thumb: null };
+      function maybeEnable() { $("run").disabled = !(ready.esr && ready.color && state.thumb); }
+      // "shrink + age": desaturate to grayscale + shrink to a tiny thumbnail, mimicking a small old scan.
+      async function makeThumb(bitmap) {
+        const long = Math.max(bitmap.width, bitmap.height);
+        const s = Math.min(96 / long, 1);
+        const w = Math.max(1, Math.round(bitmap.width * s)), h = Math.max(1, Math.round(bitmap.height * s));
+        const c = new OffscreenCanvas(w, h); const ctx = c.getContext("2d");
+        ctx.filter = "grayscale(1)"; ctx.imageSmoothingQuality = "high"; ctx.drawImage(bitmap, 0, 0, w, h); ctx.filter = "none";
+        return c.transferToImageBitmap();
+      }
+      async function setImage(b) {
+        state.bmp = b; state.thumb = await makeThumb(await createImageBitmap(b));
+        drawBitmapFit($("before"), state.thumb); drawBitmapFit($("after"), state.thumb);
+        $("resultWrap").hidden = true; maybeEnable();
+      }
+      createExampleGallery({ mount: $("gallery"), manifestUrl: "/web-ai-showcase/media/manifest.json", filter: (a) => !/screenshot|chart/.test(a.id), onSelect: async (a) => { await setImage(await urlToBitmap(a.url)); } }).then((g) => { const p = g?.assets?.find((a) => a.id === "portrait-person") || g?.assets?.[0]; if (p) g.selectId(p.id); });
+      createModelLoader({ mount: $("loader-esr"), model: { modelId: "SceneWorks/real-esrgan-onnx", runtime: "onnxruntime-web", dtype: "fp32", sizeMB: 67, requiresWebGPU: false }, load: (p) => esrgan.load(p), onReady: () => { ready.esr = true; maybeEnable(); } });
+      createModelLoader({ mount: $("loader-color"), model: { modelId: "edgetools/ddcolor", runtime: "onnxruntime-web", dtype: "fp16", sizeMB: 130, requiresWebGPU: false }, load: (p) => colorize.load(p), onReady: () => { ready.color = true; maybeEnable(); } });
+      $("run").addEventListener("click", async () => {
+        if (!state.thumb) return;
+        $("run").disabled = true; $("status").classList.remove("err", "ok"); $("status").textContent = "Enlarging, then colourising…";
+        try {
+          const up = await esrgan.upscale(await createImageBitmap(state.thumb), { maxIn: 96 });
+          const coloured = await colorize.colorize(await createImageBitmap(up.esrBmp), { maxSide: 1024 });
+          reveal.set(await createImageBitmap(state.thumb), coloured.colorBmp);
+          $("resultWrap").hidden = false; $("rEsr").textContent = up.infMs + " ms"; $("rColor").textContent = coloured.ms + " ms"; $("rDims").textContent = `${up.inW}×${up.inH} → ${up.outW}×${up.outH}`; $("rBackend").textContent = coloured.device.toUpperCase();
+          $("status").textContent = "Revived — drag the divider to compare."; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Pipeline failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>
