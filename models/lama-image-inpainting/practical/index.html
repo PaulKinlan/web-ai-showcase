@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Practical — privacy redaction: erase & fill, then save · LaMa</title>
+    <meta name="description" content="A real workflow: paint out a face, plate, or bystander with LaMa so the region is filled with background, then download the cleaned image — all on-device." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🩹</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">LaMa inpainting</a></p>
+    <header>
+      <p class="eyebrow">Practical · image-to-image (inpainting) · WASM</p>
+      <h1>Privacy redaction: erase and fill, then save</h1>
+      <p class="lede">The everyday case: something in a photo shouldn't be shared — a face, a license plate, a
+        bystander, a screen. Paint over it, let LaMa fill the region with background, and download the
+        cleaned image. The original never leaves your device.</p>
+    </header>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Drop your own photo or pick a sample, brush over the sensitive region, Inpaint, then
+        <b>Download result</b>.</p>
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+      <div class="two-col">
+        <div>
+          <div class="paint-stage" id="stage">
+            <canvas id="base" width="480" height="360" role="img" aria-label="Image to edit"></canvas>
+            <canvas class="paint-overlay" id="overlay" width="480" height="360" tabindex="0" role="application" aria-label="Mask editor — drag to brush over the region to redact"></canvas>
+          </div>
+          <div class="controls-row" role="group" aria-label="Mask tools">
+            <button id="rect" type="button">Rectangle preset</button>
+            <button id="clearMask" type="button">Clear mask</button>
+          </div>
+          <div class="param-grid">
+            <div class="param"><label for="brush">Brush size <b id="brushVal">40</b>px</label><input type="range" id="brush" min="8" max="90" step="2" value="40" /></div>
+          </div>
+          <div id="gallery" style="margin-top:.7rem"></div>
+          <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop your own photo">
+            <span id="dropText">Drop / choose a photo to redact</span>
+            <input type="file" id="file" accept="image/*" hidden />
+          </div>
+        </div>
+        <div>
+          <div class="controls-row"><button id="run" type="button" disabled>Inpaint</button><button id="save" type="button" disabled>Download result</button></div>
+          <div id="resultBox" hidden>
+            <h4 style="font-family:var(--font-body);font-size:.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:.2rem 0 .3rem">Redacted result</h4>
+            <canvas class="result-canvas" id="result" width="480" height="360" role="img" aria-label="Redacted result"></canvas>
+          </div>
+          <div class="readout" id="resultWrap" hidden><span>backend <b id="rBackend">–</b></span><span>latency <b id="rMs">–</b></span><span>mask area <b id="rHole">–</b></span></div>
+        </div>
+      </div>
+      <p class="privacy-note">Redaction happens entirely on-device — the original, the mask, and the filled
+        result never leave the tab. For hard privacy guarantees, verify the saved image before sharing.</p>
+    </section>
+
+    <section aria-labelledby="note-h">
+      <h2 id="note-h">Why fill instead of blur/box</h2>
+      <p>A black box or blur announces "something was here" and can sometimes be reversed. Inpainting
+        <em>replaces</em> the region with plausible background, so the result looks like the object was never
+        there — a cleaner, less reversible redaction, produced without uploading the sensitive image anywhere.</p>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>.
+      <a href="../">← Back to LaMa inpainting</a>
+    </footer>
+
+    <script type="module">
+      import { InpaintEngine, INPAINT_CSS, drawBitmapFit, MaskEditor, toBitmap, urlToBitmap } from "../inpaint.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      import { createExampleGallery } from "/web-ai-showcase/lib/example-gallery.js";
+      const style = document.createElement("style"); style.textContent = INPAINT_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new InpaintEngine();
+      const editor = new MaskEditor({ base: $("base"), overlay: $("overlay"), brushSize: 40 });
+      const state = { bmp: null, result: null };
+      function setImage(b) { state.bmp = b; editor.setImage(b, 480); $("resultBox").hidden = true; $("resultWrap").hidden = true; $("save").disabled = true; }
+      createExampleGallery({ mount: $("gallery"), manifestUrl: "/web-ai-showcase/media/manifest.json", onSelect: async (a) => { setImage(await urlToBitmap(a.url)); } }).then((g) => { if (!g?.assets?.length) return; const p = g.assets.find((a) => /portrait|market|street|crowd/.test(a.id)); g.selectId((p || g.assets[0]).id); });
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      file.addEventListener("change", async () => { if (!file.files[0]) return; setImage(await toBitmap(file.files[0])); $("dropText").textContent = file.files[0].name; });
+      drop.addEventListener("drop", async (e) => { const f = e.dataTransfer?.files?.[0]; if (!f?.type.startsWith("image/")) return; setImage(await toBitmap(f)); $("dropText").textContent = f.name; });
+      $("brush").addEventListener("input", () => { editor.brush = +$("brush").value; $("brushVal").textContent = $("brush").value; });
+      $("rect").addEventListener("click", () => editor.presetRect(0.4));
+      $("clearMask").addEventListener("click", () => editor.clear());
+      const autoRun = new URLSearchParams(location.search).has("auto");
+      createModelLoader({ mount: $("model-loader"), model: { modelId: "Carve/LaMa-ONNX", runtime: "onnxruntime-web", dtype: "fp32", sizeMB: 208, requiresWebGPU: false }, load: (p) => engine.load(p), onReady: () => { $("run").disabled = false; if (autoRun) { editor.presetRect(0.4); $("run").click(); } } });
+      $("run").addEventListener("click", async () => {
+        if (!state.bmp) return;
+        if (editor.isEmpty()) { $("status").textContent = "Paint over a region first (or use the rectangle preset)."; $("status").classList.add("err"); return; }
+        $("run").disabled = true; $("status").classList.remove("err", "ok"); $("status").textContent = "Inpainting…";
+        try {
+          const res = await engine.inpaint(await createImageBitmap(state.bmp), await editor.maskBitmap(), { maxSide: 900 });
+          state.result = res.resultBmp;
+          drawBitmapFit($("result"), res.resultBmp, 480);
+          $("resultBox").hidden = false; $("resultWrap").hidden = false; $("save").disabled = false; $("rBackend").textContent = res.device.toUpperCase(); $("rMs").textContent = res.ms + " ms";
+          $("rHole").textContent = (res.holeFraction * 100).toFixed(1) + "%";
+          $("status").textContent = "Done — region redacted. Download when ready."; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+      $("save").addEventListener("click", async () => {
+        if (!state.result) return;
+        const c = document.createElement("canvas"); c.width = state.result.width; c.height = state.result.height;
+        c.getContext("2d").drawImage(state.result, 0, 0);
+        const blob = await new Promise((r) => c.toBlob(r, "image/png"));
+        const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "redacted.png"; a.click();
+        setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+      });
+    </script>
+  </body>
+</html>

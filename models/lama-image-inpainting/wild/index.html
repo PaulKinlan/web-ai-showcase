@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Wild — how big a hole can it fill? · LaMa</title>
+    <meta name="description" content="Push LaMa's large-mask inpainting: grow the masked region bigger and bigger and find where coherent reconstruction turns into invented blur — on-device, with a live mask-area readout." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🩹</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">LaMa inpainting</a></p>
+    <header>
+      <p class="eyebrow">Wild · image-to-image (inpainting) · WASM</p>
+      <h1>How big a hole can it fill?</h1>
+      <p class="lede">LaMa was built for <em>large</em> masks — that's its whole thesis. Grow the masked
+        rectangle step by step and watch where the fill stays coherent versus where the model runs out of
+        surrounding context and starts inventing smooth, plausible-but-empty texture.</p>
+    </header>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Set the hole size, Inpaint, and log the result. Larger holes → more of the image is
+        invented rather than reconstructed from context.</p>
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+      <div class="two-col">
+        <div>
+          <div class="paint-stage" id="stage">
+            <canvas id="base" width="480" height="360" role="img" aria-label="Image to edit"></canvas>
+            <canvas class="paint-overlay" id="overlay" width="480" height="360" tabindex="0" role="application" aria-label="Mask preview"></canvas>
+          </div>
+          <div class="param-grid">
+            <div class="param"><label for="holeSize">Hole size <b id="holeVal">40</b>%</label><input type="range" id="holeSize" min="15" max="80" step="5" value="40" /></div>
+          </div>
+          <div id="gallery" style="margin-top:.7rem"></div>
+        </div>
+        <div>
+          <div class="controls-row"><button id="run" type="button" disabled>Inpaint at this size</button></div>
+          <div id="resultBox" hidden>
+            <h4 style="font-family:var(--font-body);font-size:.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:.2rem 0 .3rem">Result</h4>
+            <canvas class="result-canvas" id="result" width="480" height="360" role="img" aria-label="Inpainted result"></canvas>
+          </div>
+          <div class="readout" id="resultWrap" hidden><span>backend <b id="rBackend">–</b></span><span>latency <b id="rMs">–</b></span><span>mask area <b id="rHole">–</b></span></div>
+          <table class="inside-table" id="log" hidden>
+            <thead><tr><th>Hole size</th><th>Mask area</th><th>Inference</th></tr></thead>
+            <tbody id="logBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section aria-labelledby="note-h">
+      <h2 id="note-h">Where it breaks</h2>
+      <p>Small holes are near-perfect — there's plenty of surrounding context to continue. As the hole grows
+        past roughly half the image, LaMa has less real structure to anchor on, so the centre of large fills
+        goes soft and generic. That's the honest limit of inpainting: it interpolates and extrapolates
+        surrounding structure; it can't reconstruct a subject that was entirely inside the mask.</p>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>.
+      <a href="../">← Back to LaMa inpainting</a>
+    </footer>
+
+    <script type="module">
+      import { InpaintEngine, INPAINT_CSS, drawBitmapFit, MaskEditor, urlToBitmap } from "../inpaint.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      import { createExampleGallery } from "/web-ai-showcase/lib/example-gallery.js";
+      const style = document.createElement("style"); style.textContent = INPAINT_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new InpaintEngine();
+      const editor = new MaskEditor({ base: $("base"), overlay: $("overlay"), brushSize: 36 });
+      const state = { bmp: null };
+      function refreshMask() { if (!state.bmp) return; editor.clear(); editor.presetRect(+$("holeSize").value / 100); }
+      function setImage(b) { state.bmp = b; editor.setImage(b, 480); refreshMask(); $("resultBox").hidden = true; $("resultWrap").hidden = true; }
+      createExampleGallery({ mount: $("gallery"), manifestUrl: "/web-ai-showcase/media/manifest.json", onSelect: async (a) => { setImage(await urlToBitmap(a.url)); } }).then((g) => { if (g?.assets?.length) g.selectId(g.assets[0].id); });
+      $("holeSize").addEventListener("input", () => { $("holeVal").textContent = $("holeSize").value; refreshMask(); });
+      const autoRun = new URLSearchParams(location.search).has("auto");
+      createModelLoader({ mount: $("model-loader"), model: { modelId: "Carve/LaMa-ONNX", runtime: "onnxruntime-web", dtype: "fp32", sizeMB: 208, requiresWebGPU: false }, load: (p) => engine.load(p), onReady: () => { $("run").disabled = false; if (autoRun) $("run").click(); } });
+      $("run").addEventListener("click", async () => {
+        if (!state.bmp) return;
+        refreshMask();
+        $("run").disabled = true; $("status").classList.remove("err", "ok"); $("status").textContent = "Inpainting…";
+        try {
+          const res = await engine.inpaint(await createImageBitmap(state.bmp), await editor.maskBitmap(), { maxSide: 720 });
+          drawBitmapFit($("result"), res.resultBmp, 480);
+          $("resultBox").hidden = false; $("resultWrap").hidden = false; $("rBackend").textContent = res.device.toUpperCase(); $("rMs").textContent = res.ms + " ms";
+          $("rHole").textContent = (res.holeFraction * 100).toFixed(1) + "%";
+          $("log").hidden = false;
+          const tr = document.createElement("tr");
+          tr.innerHTML = `<td>${$("holeSize").value}%</td><td>${(res.holeFraction * 100).toFixed(1)}%</td><td>${res.infMs} ms</td>`;
+          $("logBody").prepend(tr);
+          $("status").textContent = `Filled a ${(res.holeFraction * 100).toFixed(1)}% hole.`; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>

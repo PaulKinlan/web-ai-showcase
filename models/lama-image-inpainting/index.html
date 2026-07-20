@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LaMa — erase objects & inpaint photos on-device · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run LaMa (big-lama) locally via ONNX Runtime Web: brush over an unwanted object or defect, and it fills the region with plausible background — entirely on your device. Large-mask inpainting with Fourier convolutions. No image ever leaves the tab."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🩹</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">image-to-image (inpainting) · vision · WASM · ~208 MB</p>
+      <h1>LaMa — erase an object, fill the gap</h1>
+      <p class="lede">
+        Brush over something you want gone — a passer-by, a power line, a blemish — and LaMa
+        <strong>fills the region with plausible background</strong>, reconstructing texture and structure that
+        were never there. LaMa (WACV 2022) is a <strong>large-mask inpainting</strong> network built on
+        <strong>Fourier convolutions</strong>, so it can fill big holes coherently, not just tiny scratches.
+        Runs entirely on your device via ONNX Runtime Web; the image and the mask never leave the tab.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/Carve/LaMa-ONNX" target="_blank" rel="noopener">Carve/LaMa-ONNX</a> — big-lama (LaMa, Fourier-convolution inpainting)</td></tr>
+          <tr><th>Task</th><td><code>image-to-image</code> (inpainting) — run via raw ONNX Runtime Web (see note below)</td></tr>
+          <tr><th>Runtime</th><td>onnxruntime-web 1.21 (transformers.js has no LaMa class / no inpainting task)</td></tr>
+          <tr><th>Inputs</th><td><code>image</code> <code>[1, 3, 512, 512]</code> float32 0–1 · <code>mask</code> <code>[1, 1, 512, 512]</code> float32 (1 = fill, 0 = keep)</td></tr>
+          <tr><th>Output</th><td><code>[1, 3, 512, 512]</code> float32 in 0–255 — we composite the filled region back over the untouched original</td></tr>
+          <tr><th>Quantization</th><td>fp32 ONNX — runs on the plain WASM execution provider, no WebGPU needed</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (single-threaded on GitHub Pages) — a 512×512 pass is a handful of seconds</td></tr>
+          <tr><th>Download</th><td>~208 MB, cached after first load (auto-inits on return). A one-time transfer — plan for it on mobile data.</td></tr>
+          <tr><th>License</th><td>Apache-2.0 (ONNX export) · LaMa (Apache-2.0)</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers, OffscreenCanvas, ImageBitmap, Pointer Events — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Pick a photo, then <strong>brush over the thing you want removed</strong> (or use the
+        rectangle preset). Hit Inpaint and LaMa fills the masked region.</p>
+
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="two-col">
+        <div>
+          <div class="paint-stage" id="stage">
+            <canvas id="base" width="640" height="480" role="img" aria-label="Image to edit"></canvas>
+            <canvas class="paint-overlay" id="overlay" width="640" height="480" tabindex="0"
+              role="application" aria-label="Mask editor — drag to brush over the region to remove; the rectangle preset and clear buttons are below"></canvas>
+          </div>
+          <div class="controls-row" role="group" aria-label="Mask tools">
+            <div class="seg-toggle" role="group" aria-label="Brush mode">
+              <button id="modeBrush" type="button" aria-pressed="true">Brush</button>
+              <button id="modeErase" type="button" aria-pressed="false">Erase mask</button>
+            </div>
+            <button id="rect" type="button">Rectangle preset</button>
+            <button id="clearMask" type="button">Clear mask</button>
+          </div>
+          <div class="param-grid">
+            <div class="param">
+              <label for="brush">Brush size <b id="brushVal">36</b>px</label>
+              <input type="range" id="brush" min="8" max="90" step="2" value="36" />
+            </div>
+          </div>
+          <div id="gallery" style="margin-top:.7rem"></div>
+          <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop your own photo">
+            <span id="dropText">Drop / choose your own photo to edit</span>
+            <input type="file" id="file" accept="image/*" hidden />
+          </div>
+        </div>
+
+        <div>
+          <div class="controls-row">
+            <button id="run" type="button" disabled>Inpaint</button>
+          </div>
+          <div id="resultBox" hidden>
+            <h4 style="font-family:var(--font-body);font-size:.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:.2rem 0 .3rem">Result (masked region filled)</h4>
+            <canvas class="result-canvas" id="result" width="640" height="480" role="img" aria-label="Inpainted result"></canvas>
+            <div class="controls-row"><button id="save" type="button">Download result</button></div>
+          </div>
+          <div id="resultWrap" hidden>
+            <div class="readout" id="readout">
+              <span>backend <b id="rBackend">–</b></span>
+              <span>inference <b id="rInf">–</b></span>
+              <span>+ composite <b id="rMs">–</b></span>
+              <span>mask area <b id="rHole">–</b></span>
+            </div>
+            <p class="slow-note">LaMa reconstructs <em>plausible</em> content for the hole from the surrounding
+              context — it invents coherent texture and structure, it doesn't recover what was truly there. The
+              untouched pixels outside the mask are copied through exactly.</p>
+          </div>
+        </div>
+      </div>
+      <p class="privacy-note">Everything runs on your device — the photo, the mask, and every filled pixel
+        never leave the tab. Gallery images are rights-cleared samples (see each caption for the source).</p>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside</h3>
+      <p class="muted">
+        This is the <strong>fill map</strong>: the exact region LaMa synthesised (indigo) over a dimmed copy
+        of the original. Everything outside it is your untouched photo — the model only rewrites the masked
+        pixels, and we composite them back so there's no seam or global colour shift. The size and shape of
+        the indigo area is precisely the mask you painted, resampled to the network's 512×512 grid.
+      </p>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Inpaint a region to see exactly what the model filled.</div>
+      <div id="insideWrap" hidden>
+        <div class="two-col">
+          <div>
+            <h4 style="font-family:var(--font-body);font-size:.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:.6rem 0 .3rem">Fill map (what the model synthesised)</h4>
+            <canvas class="fill-canvas" id="fill" width="300" height="300" role="img" aria-label="The region the model filled, tinted indigo"></canvas>
+          </div>
+          <div>
+            <h4 style="font-family:var(--font-body);font-size:.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:.6rem 0 .3rem">How to read it</h4>
+            <p class="muted" style="font-size:.85rem">Indigo = pixels invented by LaMa; dimmed = your original,
+              copied through untouched. A good inpaint has the indigo region blend seamlessly into the
+              surrounding structure when you look at the result — LaMa's Fourier convolutions let it continue
+              periodic texture (brick, foliage, water) across the hole rather than smudging it.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        "Remove this thing from my photo" is one of the most-wanted edits there is. On-device inpainting means
+        you can do it privately, with no upload and no per-image cloud cost:
+      </p>
+      <ul>
+        <li><strong>Photo apps</strong> — a "magic eraser" / object-removal brush that runs client-side on the user's phone or laptop, no server.</li>
+        <li><strong>Privacy redaction</strong> — paint out a face, license plate, or bystander and fill the gap with background before sharing — the original never leaves the device.</li>
+        <li><strong>Restoration</strong> — remove scratches, dust, date-stamps, or watermarks from a scan and reconstruct the underlying image.</li>
+        <li><strong>Real-estate & product shots</strong> — erase clutter, cables, or reflections from a listing photo entirely in the browser.</li>
+      </ul>
+      <p class="muted">LaMa fills big masks coherently, but it reconstructs <em>plausible</em> content, not the
+        truth — it's an eraser-and-filler, not an undelete. Very large holes over complex subjects fill
+        approximately.</p>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Brush over an object, hit Inpaint, and watch LaMa fill the gap with plausible background.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Privacy redaction: paint out a face or plate, fill the hole, and download the cleaned image.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Push the mask: grow it bigger and bigger and find where coherent fill turns into invented blur.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">Inpaint → super-res: erase an object, then upscale the cleaned photo — two models, all local.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>transformers.js has no LaMa class and no inpainting task, so we run the ONNX graph directly with
+        ONNX Runtime Web. In go the image and a binary mask, out comes the filled image:</p>
+      <pre><code>import * as ort from "onnxruntime-web";
+
+const session = await ort.InferenceSession.create(lamaBytes, { executionProviders: ["wasm"] });
+
+// image → [1,3,512,512] in [0,1]; mask → [1,1,512,512] with 1 = fill, 0 = keep
+const feeds = {
+  image: new ort.Tensor("float32", toNCHW(img, 512, 512), [1, 3, 512, 512]),
+  mask:  new ort.Tensor("float32", toMask(userMask, 512, 512), [1, 1, 512, 512]),
+};
+const { output } = await session.run(feeds);   // [1,3,512,512] in [0,255]
+
+// composite the filled region back over the original: final = orig·(1−mask) + output·mask
+const filled = composite(img, output.data, userMask);</code></pre>
+      <p class="muted">
+        Inference and the whole output composite run in a Web Worker so the UI never blocks, and the 208 MB
+        model is fetched through Cache Storage, so a returning visit auto-initialises with no re-download.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/Carve/LaMa-ONNX" target="_blank" rel="noopener">Model card — Carve/LaMa-ONNX</a></li>
+        <li><a href="https://arxiv.org/abs/2109.07161" target="_blank" rel="noopener">Paper — Resolution-robust Large Mask Inpainting with Fourier Convolutions (LaMa, WACV 2022)</a></li>
+        <li><a href="https://github.com/advimman/lama" target="_blank" rel="noopener">LaMa — reference implementation</a></li>
+        <li><a href="https://onnxruntime.ai/docs/tutorials/web/" target="_blank" rel="noopener">ONNX Runtime Web documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://onnxruntime.ai/docs/tutorials/web/" target="_blank" rel="noopener">ONNX Runtime Web</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { InpaintEngine, INPAINT_CSS, drawBitmapFit, MaskEditor, toBitmap, urlToBitmap } from "./inpaint.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      import { createExampleGallery } from "/web-ai-showcase/lib/example-gallery.js";
+
+      const style = document.createElement("style");
+      style.textContent = INPAINT_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new InpaintEngine();
+      const editor = new MaskEditor({ base: $("base"), overlay: $("overlay"), brushSize: 36 });
+      const state = { bmp: null, result: null };
+
+      function setImage(bitmap) {
+        state.bmp = bitmap;
+        editor.setImage(bitmap, 640);
+        $("resultBox").hidden = true; $("resultWrap").hidden = true;
+        $("insideWrap").hidden = true; $("insideEmpty").hidden = false;
+      }
+
+      createExampleGallery({
+        mount: $("gallery"),
+        manifestUrl: "/web-ai-showcase/media/manifest.json",
+        onSelect: async (asset) => { setImage(await urlToBitmap(asset.url)); },
+      }).then((g) => { if (g?.assets?.length) g.selectId(g.assets[0].id); });
+
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      file.addEventListener("change", async () => { if (!file.files[0]) return; setImage(await toBitmap(file.files[0])); $("dropText").textContent = file.files[0].name; });
+      drop.addEventListener("drop", async (e) => { const f = e.dataTransfer?.files?.[0]; if (!f?.type.startsWith("image/")) return; setImage(await toBitmap(f)); $("dropText").textContent = f.name; });
+
+      $("brush").addEventListener("input", () => { editor.brush = +$("brush").value; $("brushVal").textContent = $("brush").value; });
+      $("modeBrush").addEventListener("click", () => { editor.mode = "brush"; $("modeBrush").setAttribute("aria-pressed", "true"); $("modeErase").setAttribute("aria-pressed", "false"); });
+      $("modeErase").addEventListener("click", () => { editor.mode = "erase"; $("modeErase").setAttribute("aria-pressed", "true"); $("modeBrush").setAttribute("aria-pressed", "false"); });
+      $("rect").addEventListener("click", () => editor.presetRect(0.4));
+      $("clearMask").addEventListener("click", () => editor.clear());
+
+      const autoRun = new URLSearchParams(location.search).has("auto");
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Carve/LaMa-ONNX", runtime: "onnxruntime-web", dtype: "fp32", sizeMB: 208, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: () => { $("run").disabled = false; if (autoRun) { editor.presetRect(0.4); $("run").click(); } },
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!state.bmp) { $("status").textContent = "Pick a photo first."; return; }
+        if (editor.isEmpty()) { $("status").textContent = "Paint over a region to remove first (or use the rectangle preset)."; $("status").classList.add("err"); return; }
+        $("run").disabled = true; $("status").classList.remove("err", "ok");
+        $("status").textContent = "Inpainting… (a 512×512 pass on WASM takes a few seconds)";
+        try {
+          const res = await engine.inpaint(await createImageBitmap(state.bmp), await editor.maskBitmap(), { maxSide: 900 });
+          state.result = res.resultBmp;
+          drawBitmapFit($("result"), res.resultBmp, 640);
+          $("resultBox").hidden = false; $("resultWrap").hidden = false;
+          $("rBackend").textContent = res.device.toUpperCase();
+          $("rInf").textContent = res.infMs + " ms";
+          $("rMs").textContent = (res.ms - res.infMs) + " ms";
+          $("rHole").textContent = (res.holeFraction * 100).toFixed(1) + "%";
+          $("insideEmpty").hidden = true; $("insideWrap").hidden = false;
+          drawBitmapFit($("fill"), res.fillBmp, 300);
+          $("status").textContent = "Done — the masked region is filled."; $("status").classList.add("ok");
+        } catch (err) {
+          $("status").textContent = "Inpainting failed: " + err.message; $("status").classList.add("err");
+        } finally { $("run").disabled = false; }
+      });
+
+      $("save").addEventListener("click", async () => {
+        if (!state.result) return;
+        const c = document.createElement("canvas"); c.width = state.result.width; c.height = state.result.height;
+        c.getContext("2d").drawImage(state.result, 0, 0);
+        const blob = await new Promise((r) => c.toBlob(r, "image/png"));
+        const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "inpainted.png"; a.click();
+        setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+      });
+    </script>
+  </body>
+</html>
