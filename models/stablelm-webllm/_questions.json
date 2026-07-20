@@ -1,0 +1,135 @@
+{
+  "schemaVersion": 1,
+  "id": "stablelm-webllm",
+  "revision": 1,
+  "reviewedAt": "2026-07-20T00:00:00Z",
+  "reviewer": "retrospective critique backfill (code-grounded + existing immutable conformance suite), revision 1",
+  "frontend": true,
+  "rubric": [
+    {
+      "dimension": "real-inference",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Generation runs off the main thread in a dedicated module Worker (models/stablelm-webllm/worker.js), which imports lib/webllm.js and calls streamChat() → engine.chat.completions.create({ ...req, stream: true }) on the MLC WebLLM engine created for build \"stablelm-2-zephyr-1_6b-q4f16_1-MLC\" (from stabilityai/stablelm-2-zephyr-1_6b). Tokens are streamed back as real deltas; there is no canned path. Conformance calls-real-inference (source, matches CreateMLCEngine/createModelLoader) and loads-clean (console-clean) are tested pass; io-shape-semantic is a manual-evidenced assertion.",
+      "notes": "WebLLM is WebGPU-ONLY (no WASM fallback); the page gates on a real GPU adapter via webGPUAdapterAvailable() before ever asking the worker to load. I did not run a fresh live inference in this backfill, so no measured latency/token numbers are claimed."
+    },
+    {
+      "dimension": "io-shape",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Expected output = an OpenAI-shaped streaming chat completion; the page reads chunk.choices[0].delta.content, appends each delta to the assistant bubble, and shows the final text. The exact messages array sent (system + history + user) is rendered in the 'See inside' wire panel, and real engine.runtimeStatsText() tok/s is shown when exposed.",
+      "notes": "See-inside splits prefill (time-to-first-token) vs decode from the real streamed timing (performance.now() in the worker); generated count is honestly labelled as streamed chunks (≈ tokens), context as a ~4-chars/token estimate."
+    },
+    {
+      "dimension": "runtime-config",
+      "score": 5,
+      "severity": "info",
+      "evidence": "At-a-glance declares the exact source model id (stabilityai/stablelm-2-zephyr-1_6b, linked to its card), the MLC build id (stablelm-2-zephyr-1_6b-q4f16_1-MLC), runtime = WebLLM/MLC (explicitly NOT transformers.js), task = text-generation, params/dtype (q4f16_1), backend = WebGPU-only, download ≈1000 MB (cached after first load), context window, and license (Stability AI Community License). Conformance declares-model-id/declares-task/declares-quantisation (q4f16) + declares-backend all tested pass.",
+      "notes": "The worker's MODEL_ID constant matches the at-a-glance MLC build id — no invented model or backend. WebLLM weights are downloaded+compiled by MLC into WebGPU shaders."
+    },
+    {
+      "dimension": "cache-init",
+      "score": 5,
+      "severity": "info",
+      "evidence": "The page loads through the shared createModelLoader auto-init architecture (MODEL = { modelId: \"stablelm-2-zephyr-1_6b-q4f16_1-MLC\", runtime: \"webllm\", dtype: \"q4f16_1\", sizeMB: 1000, requiresWebGPU: true }); conformance shared-auto-init-loader (source, createModelLoader) tested pass. A valid current on-device model auto-initialises with no Load click; no-adapter surfaces the honest needs-WebGPU state instead of a fake reply.",
+      "notes": "modelId is keyed on the MLC build id so the cache is tracked for the never-silently-re-download guarantee (auto-init-on-cached is a manual-evidenced assertion)."
+    },
+    {
+      "dimension": "states",
+      "score": 4,
+      "severity": "minor",
+      "evidence": "Loading/progress/ready/error is announced in role=status aria-live (conformance live-status-region pass). Failures surface on the page ('Generation failed: ' + message on status.err), not just console (errors-on-the-page source pass). On a device with no GPU adapter the page shows a labelled needs-WebGPU state (webgpuFallbackHTML) with the real reason, chrome://gpu / enable-unsafe-webgpu steps, and the ≈1000 MB cost — webgpu-capability-honest (probe) is in the suite. A cooperative Stop button calls engine.interruptGenerate().",
+      "notes": "WebGPU-only + ~1 GB: capable phones may run it; the needs-WebGPU state degrades honestly otherwise. License is a non-commercial-style Stability community license (noted in at-a-glance)."
+    },
+    {
+      "dimension": "controls",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Every control is real and keyboard-operable: the system-prompt textarea, temperature/top_p/max-tokens range sliders (values reflect live via input listeners), the message composer textarea (Enter to send, Shift+Enter newline), Send, Stop (hidden until generating), and Clear conversation. The ladder adds basics/practical/wild/multi-model pages driving the same engine.",
+      "notes": "controls-operable is a manual-evidenced conformance assertion; the sliders feed the real generation options passed to the worker."
+    },
+    {
+      "dimension": "no-fake-output",
+      "score": 5,
+      "severity": "info",
+      "evidence": "No canned output — the assistant bubble is filled purely from streamed WebLLM deltas; the runtime stats come from engine.runtimeStatsText(). When WebGPU is unavailable the page shows the honest needs-WebGPU explanation, never a fabricated reply. no-fake-output is a manual-evidenced assertion in the suite.",
+      "notes": ""
+    },
+    {
+      "dimension": "accessibility",
+      "score": 4,
+      "severity": "minor",
+      "evidence": "Conformance buttons-have-names + images-have-alt (script) and live-status-region (dom, [role=status][aria-live]) tested pass at build. The status line is role=status aria-live=polite; the chat log is aria-live. HOWEVER the responsive pre-scan flagged sub-24px tap targets pending agent verification (support=needs-review, automatedNotes: 13 on desktop / 7 on mobile — mostly the range-slider thumbs and small secondary buttons), below this repo's ~44px tap-target bar.",
+      "notes": "Light+dark use the WCAG-AA design system (public/styles.css). The sub-24px flag is the real open a11y item on this demo."
+    },
+    {
+      "dimension": "responsive",
+      "score": 4,
+      "severity": "minor",
+      "evidence": "Layout uses fluid flex/grid: controls flex-wrap, the chat/transcript log is intrinsically sized (min/max-block-size + overflow-y), textareas/canvas use inline-size, and the see-inside stat grid is auto-fit minmax. Conformance responsive-desktop + responsive-mobile (no-horizontal-overflow) are in the immutable suite. support=needs-review on both classes: the automated pre-scan reported 13 sub-24px target(s) desktop / 7 mobile awaiting an agent matrix pass — no live matrix was run in this backfill. This build is ≈1000 MB; at ~1 GB it may run on a capable recent phone but is a heavy first download.",
+      "notes": "I did NOT run responsive-check in this retrospective pass, so I do not claim a measured 0px-overflow result; the honest status is needs-review with the sub-24px tap-target flag."
+    },
+    {
+      "dimension": "performance",
+      "score": 5,
+      "severity": "info",
+      "evidence": "All decoding runs in the Web Worker via the MLC WebGPU engine; the main thread only appends streamed deltas and updates a blinking caret (guarded by prefers-reduced-motion) — no synchronous inference or unbounded loop on the UI thread. Conformance inference-off-main-thread (source, new Worker/worker.js) tested pass; inp-stays-low is a manual-evidenced assertion.",
+      "notes": "The composer textareas use field-sizing:content so they grow/shrink without JS reflow work."
+    }
+  ],
+  "guidanceConsulted": [
+    {
+      "id": "performance",
+      "query": "keep INP low off main thread web worker streaming tokens",
+      "recommendation": "Keep interactions responsive (INP): move heavy work off the main thread; avoid long blocking tasks.",
+      "appliedOrException": "applied — all token decoding runs in a dedicated module Worker driving MLC's WebGPU engine; the UI thread only appends streamed deltas, keeping INP low.",
+      "evidence": "worker.js off-thread streamChat; conformance inference-off-main-thread pass"
+    },
+    {
+      "id": "break-up-long-tasks",
+      "query": "break up long tasks main thread responsiveness",
+      "recommendation": "Break up heavy synchronous processing so the browser can handle input and repaint.",
+      "appliedOrException": "applied — generation is streamed token-by-token from the worker rather than a single blocking main-thread call; the page never runs a long synchronous loop.",
+      "evidence": "streamChat async iterator posts per-delta messages; no main-thread generate()"
+    },
+    {
+      "id": "accessibility",
+      "query": "accessible live region status updates aria-live",
+      "recommendation": "Announce loading/ready/error via role=status aria-live; give every control an accessible name; keyboard operability.",
+      "appliedOrException": "applied — load/progress/ready/error announced via role=status aria-live; every button carries an accessible name (buttons-have-names pass). EXCEPTION pending: sub-24px slider/secondary-button tap targets flagged for an agent matrix pass.",
+      "evidence": "conformance live-status-region + buttons-have-names pass; support=needs-review sub-24px note"
+    },
+    {
+      "id": "css-layout",
+      "query": "responsive control panel without horizontal overflow",
+      "recommendation": "Use fluid flex/grid with flex-wrap + intrinsic sizing and logical properties; avoid fixed widths that force horizontal overflow.",
+      "appliedOrException": "applied — controls flex-wrap, the chat log is intrinsically sized with overflow-y, textareas use inline-size:100%, and the stat grid is auto-fit minmax — no fixed widths.",
+      "evidence": "CHAT_CSS flex-wrap + min/max-block-size + auto-fit grid; responsive-desktop/mobile assertions in suite"
+    },
+    {
+      "id": "form-fields-automatically-fit-contents",
+      "query": "auto-size textarea field-sizing content",
+      "recommendation": "Let form fields grow/shrink to fit input with field-sizing plus min/max limits for a responsive composer.",
+      "appliedOrException": "applied — the composer + system-prompt textareas use field-sizing:content with min/max-block-size so they auto-fit the message without manual JS resizing.",
+      "evidence": "CHAT_CSS .composer textarea/.sysbox textarea { field-sizing:content }"
+    }
+  ],
+  "openQuestions": [
+    "Verify and enlarge the 13 desktop / 7 mobile sub-24px tap targets (mainly range-slider thumbs and secondary buttons) to the ~44px bar, then flip support from needs-review to ok with a real mobile+desktop matrix pass.",
+    "Does the ~1 GB StableLM-2-1.6B build load on mid-range mobile GPUs, or should mobile be recorded as constrained?",
+    "The MLC engine is dynamic-imported from the esm.run CDN (https://esm.run/@mlc-ai/web-llm) at runtime — worth confirming first-load resilience/offline behaviour and whether a pinned/self-hosted build is warranted."
+  ],
+  "followUpGoals": [
+    {
+      "goal": "Run the responsive matrix (scripts/responsive-check.mjs) at 360×740 and 1280×800, enlarge the flagged sub-24px tap targets, and record support=ok/unsupported per class.",
+      "kind": "targeted-fix",
+      "priority": "medium"
+    },
+    {
+      "goal": "Verify/record honest mobile support for the ~1 GB StableLM build after a real device check.",
+      "kind": "targeted-fix",
+      "priority": "low"
+    }
+  ],
+  "summary": "Revision-1 retrospective critique backfill for stablelm-webllm (stabilityai/stablelm-2-zephyr-1_6b → MLC build stablelm-2-zephyr-1_6b-q4f16_1-MLC, text-generation, WebLLM/MLC, q4f16_1, WebGPU-ONLY, ≈1000 MB, Stability AI Community License). Evidence grounded in code inspection + the immutable conformance suite (calls-real-inference, shared-auto-init-loader, inference-off-main-thread, declares-* , live-status-region, buttons-have-names all tested pass at build). Real streaming chat via lib/webllm.js streamChat in a dedicated worker; honest needs-WebGPU degrade (no WASM fallback), never a faked reply; see-inside splits real prefill/decode timing + engine tok/s. Ladder pages drive the same shared WebLLM engine. GENUINE OPEN ITEM: support=needs-review with 13/7 sub-24px tap targets pending an agent matrix pass; no fresh live-inference numbers are claimed in this backfill."
+}

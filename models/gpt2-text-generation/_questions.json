@@ -1,0 +1,127 @@
+{
+  "schemaVersion": 1,
+  "id": "gpt2-text-generation",
+  "revision": 1,
+  "reviewedAt": "2026-07-20T00:00:00Z",
+  "reviewer": "retrospective critique backfill (code-grounded + existing immutable conformance suite), revision 1",
+  "frontend": true,
+  "rubric": [
+    {
+      "dimension": "real-inference",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Generation runs off the main thread in models/gpt2-text-generation/worker.js. Rather than the pipeline's generate(), it runs its OWN autoregressive decode loop over AutoModelForCausalLM.from_pretrained('Xenova/gpt2', { dtype:'int8', device:'wasm' }): each step does model(makeInputs(ids)) → last-position logits → top-k → softmax sampling (or greedy), feeds the chosen token back, and reports the chosen token's probability + the top-8 candidates. Conformance calls-real-inference (source) and loads-clean tested pass; io-shape-semantic is manual-evidenced.",
+      "notes": "Every number (chosen prob, top-k candidates) is the model's real output over the 50,257-token BPE vocab — that is what powers the see-inside 'watch the model pick' surface and the choose-the-next-token game. int8 on WASM runs everywhere; no WebGPU gate. No fresh live run performed in this backfill, so no measured latency is claimed."
+    },
+    {
+      "dimension": "io-shape",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Expected output = an autoregressive continuation of the raw prompt (GPT-2 has no chat template). The worker streams { piece, generated, chosen:{token,prob}, topk:[{token,prob,chosen}] } per step and a final { text, generated, ms, tokens }; the distribution() op returns top-k next-token candidates for the interactive branching demo.",
+      "notes": "maxNew is capped (≤80) and EOS (50256) breaks the loop; sampling uses temperature+top-k, greedy is offered."
+    },
+    {
+      "dimension": "runtime-config",
+      "score": 5,
+      "severity": "info",
+      "evidence": "At-a-glance declares the exact model id (Xenova/gpt2, linked), task = text-generation, backend = WASM, dtype = int8, size ≈280 MB, license MIT. Conformance declares-model-id/declares-task/declares-quantisation (int8)/declares-backend tested pass. env.allowLocalModels=false lets the library own its Cache Storage.",
+      "notes": "The worker MODEL_ID matches the declared id; no invented API surface."
+    },
+    {
+      "dimension": "cache-init",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Loads through the shared createModelLoader auto-init architecture (conformance shared-auto-init-loader source pass); WASM/int8 has no WebGPU requirement, so it auto-initialises on any device with no Load click.",
+      "notes": "auto-init-on-cached is manual-evidenced; progress_callback drives the loader."
+    },
+    {
+      "dimension": "states",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Loading/progress/ready/error announced in role=status aria-live (live-status-region pass); worker errors surface on the page (errors-on-the-page source pass). Runs on WASM everywhere, so there is no needs-WebGPU dead-end.",
+      "notes": "webgpu-capability-honest is not required for this demo (backend is WASM)."
+    },
+    {
+      "dimension": "controls",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Every control is real and keyboard-operable: the prompt textarea, greedy/sample mode buttons (mGreedy/mSample), max-new/temperature/top-k range inputs, Run and Stop. The interactive branching demo lets you pick from the real top-k next tokens.",
+      "notes": "controls-operable is manual-evidenced."
+    },
+    {
+      "dimension": "no-fake-output",
+      "score": 5,
+      "severity": "info",
+      "evidence": "No canned output — the continuation and every probability come from the model's real logits (own decode loop). no-fake-output is a manual-evidenced assertion.",
+      "notes": ""
+    },
+    {
+      "dimension": "accessibility",
+      "score": 4,
+      "severity": "minor",
+      "evidence": "Conformance buttons-have-names + images-have-alt (script) and live-status-region (dom, [role=status][aria-live]) tested pass at build. The status line is role=status aria-live=polite; the chat log is aria-live. HOWEVER the responsive pre-scan flagged sub-24px tap targets pending agent verification (support=needs-review, automatedNotes: 9 on desktop / 6 on mobile — mostly the range-slider thumbs and small secondary buttons), below this repo's ~44px tap-target bar.",
+      "notes": "Light+dark use the WCAG-AA design system (public/styles.css). The sub-24px flag is the real open a11y item on this demo."
+    },
+    {
+      "dimension": "responsive",
+      "score": 4,
+      "severity": "minor",
+      "evidence": "Layout uses fluid flex/grid: controls flex-wrap, the chat/transcript log is intrinsically sized (min/max-block-size + overflow-y), textareas/canvas use inline-size, and the see-inside stat grid is auto-fit minmax. Conformance responsive-desktop + responsive-mobile (no-horizontal-overflow) are in the immutable suite. support=needs-review on both classes: the automated pre-scan reported 9 sub-24px target(s) desktop / 6 mobile awaiting an agent matrix pass — no live matrix was run in this backfill. Runs on WASM/int8 on any device (no WebGPU gate); ≈280 MB download.",
+      "notes": "I did NOT run responsive-check in this retrospective pass, so I do not claim a measured 0px-overflow result; the honest status is needs-review with the sub-24px tap-target flag."
+    },
+    {
+      "dimension": "performance",
+      "score": 4,
+      "severity": "minor",
+      "evidence": "The decode loop + vocab-wide softmax run in the Web Worker, off the UI thread (inference-off-main-thread source pass); the main thread only paints streamed pieces and top-k bars. int8-on-WASM decoding is inherently slower than WebGPU, but it never blocks the interface.",
+      "notes": "topkIndices uses a bounded partial selection (not a full 50k sort) each step. gpt2 has no CSS animation, so no prefers-reduced-motion guard is needed."
+    }
+  ],
+  "guidanceConsulted": [
+    {
+      "id": "performance",
+      "query": "keep INP low off main thread web worker streaming tokens",
+      "recommendation": "Keep interactions responsive (INP): move heavy work off the main thread; avoid long blocking tasks.",
+      "appliedOrException": "applied — the autoregressive decode loop and vocab softmax run entirely in a dedicated module Worker; the UI thread only paints streamed pieces and probability bars.",
+      "evidence": "worker.js own decode loop off-thread; conformance inference-off-main-thread pass"
+    },
+    {
+      "id": "break-up-long-tasks",
+      "query": "break up long tasks main thread responsiveness",
+      "recommendation": "Break up heavy synchronous processing so the browser can handle input and repaint.",
+      "appliedOrException": "applied — generation is a per-step streamed loop in the worker posting one message per token, not a single blocking main-thread call; top-k selection is a bounded partial-select, not a full 50k sort.",
+      "evidence": "generate() posts per-step; topkIndices bounded selection in worker.js"
+    },
+    {
+      "id": "accessibility",
+      "query": "accessible live region status updates aria-live",
+      "recommendation": "Announce loading/ready/error via role=status aria-live; give every control an accessible name; keyboard operability.",
+      "appliedOrException": "applied — role=status aria-live announcements + accessible button names (buttons-have-names pass). EXCEPTION pending: sub-24px tap targets flagged for an agent matrix pass.",
+      "evidence": "conformance live-status-region + buttons-have-names pass; support=needs-review sub-24px note"
+    },
+    {
+      "id": "css-layout",
+      "query": "responsive control panel without horizontal overflow",
+      "recommendation": "Use fluid flex/grid with flex-wrap + intrinsic sizing and logical properties; avoid fixed widths that force horizontal overflow.",
+      "appliedOrException": "applied — controls flex-wrap and the top-k rows use a grid; no fixed widths forcing horizontal overflow.",
+      "evidence": "responsive-desktop/mobile assertions in suite; flex-wrap controls"
+    }
+  ],
+  "openQuestions": [
+    "Verify and enlarge the 9 desktop / 6 mobile sub-24px tap targets (range-slider thumbs / mode buttons) to ~44px, then flip support to ok with a real matrix pass.",
+    "int8-on-WASM decode is slow on low-end mobile — worth surfacing an explicit expectation and/or a smaller maxNew default there."
+  ],
+  "followUpGoals": [
+    {
+      "goal": "Run scripts/responsive-check.mjs at 360×740 and 1280×800, enlarge the flagged sub-24px tap targets, record support=ok per class.",
+      "kind": "targeted-fix",
+      "priority": "medium"
+    },
+    {
+      "goal": "Consider an optional WebGPU path (q4f16) for GPT-2 to speed up the decode game on capable devices while keeping the WASM default.",
+      "kind": "additive-demo",
+      "priority": "low"
+    }
+  ],
+  "summary": "Revision-1 retrospective critique backfill for gpt2-text-generation (Xenova/gpt2, text-generation, Transformers.js, WASM/int8, ≈280 MB, MIT). Evidence grounded in code inspection + the immutable conformance suite (calls-real-inference, shared-auto-init-loader, inference-off-main-thread, declares-*, live-status-region, buttons-have-names tested pass). Distinctive demo: an OWN autoregressive decode loop over AutoModelForCausalLM that exposes the real full next-token distribution each step (chosen prob + top-8 candidates) — powering the see-inside 'watch the model pick' and the choose-the-next-token game. Runs on WASM everywhere (no WebGPU gate). GENUINE OPEN ITEMS: support=needs-review with 9/6 sub-24px tap targets pending a matrix pass, and WASM/int8 decode is inherently slow on low-end mobile. No fresh live-inference numbers claimed."
+}

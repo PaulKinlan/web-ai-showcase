@@ -1,0 +1,127 @@
+{
+  "schemaVersion": 1,
+  "id": "flan-t5-instruct",
+  "revision": 1,
+  "reviewedAt": "2026-07-20T00:00:00Z",
+  "reviewer": "retrospective critique backfill (code-grounded + existing immutable conformance suite), revision 1",
+  "frontend": true,
+  "rubric": [
+    {
+      "dimension": "real-inference",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Generation runs off the main thread in models/flan-t5-instruct/worker.js via pipeline('text2text-generation', 'Xenova/flan-t5-small', { device:'wasm', dtype:'q8' }). FLAN-T5 is an encoder-decoder (seq2seq) instruction model: the ENTIRE input is one natural-language instruction string (no chat template, no system prompt). The encoder reads it, the decoder streams the answer token-by-token via TextStreamer. Conformance calls-real-inference (source) and loads-clean tested pass; io-shape-semantic is manual-evidenced.",
+      "notes": "Beam search (num_beams>1) reorders tokens at the end, so the worker honestly skips the per-token streamer for beams>1 and reports aggregate timing only. No fresh live run performed in this backfill, so no measured latency is claimed."
+    },
+    {
+      "dimension": "io-shape",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Expected output = the decoder's answer string for a single instruction (e.g. 'translate English to German: …', 'summarize: …'). The worker returns { input, output, inTokens, inTokenStrings, outTokens, intervals, beams, sampled, ms }; the see-inside surface shows the exact input string, its SentencePiece token strings (▁ word marks), and per-token decode cadence.",
+      "notes": "no_repeat_ngram_size:3; greedy/sampling for beams===1, beam search otherwise — all real generation options."
+    },
+    {
+      "dimension": "runtime-config",
+      "score": 5,
+      "severity": "info",
+      "evidence": "At-a-glance declares the exact model id (Xenova/flan-t5-small, linked), task = text2text-generation, backend = WASM, dtype = q8, size ≈100 MB, license Apache-2.0. Conformance declares-model-id/declares-task/declares-quantisation (q8)/declares-backend tested pass. env.allowLocalModels=false.",
+      "notes": "The worker matches the declared id; the seq2seq/no-chat-template nature is disclosed on the page."
+    },
+    {
+      "dimension": "cache-init",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Loads through the shared createModelLoader auto-init architecture (shared-auto-init-loader source pass); WASM/q8 with no WebGPU requirement, so it auto-initialises on any device with no Load click.",
+      "notes": "auto-init-on-cached is manual-evidenced; progress_callback drives the loader."
+    },
+    {
+      "dimension": "states",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Loading/progress/ready/error announced in role=status aria-live (live-status-region pass); worker errors surface on the page (errors-on-the-page source pass). Runs on WASM everywhere — no needs-WebGPU dead-end.",
+      "notes": "Smallest model in the batch (≈100 MB q8), so it initialises quickly relative to the LLMs."
+    },
+    {
+      "dimension": "controls",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Every control is real and keyboard-operable: the instruction textarea, max-tokens + beams range sliders, a sample checkbox, sample instruction chips, and Run. The controls map directly to real generation options (max_new_tokens, num_beams, do_sample/temperature/top_k).",
+      "notes": "controls-operable is manual-evidenced; sample chips prefill canonical FLAN instruction formats."
+    },
+    {
+      "dimension": "no-fake-output",
+      "score": 5,
+      "severity": "info",
+      "evidence": "No canned output — the answer, token strings, and per-token intervals all come from the real seq2seq run. no-fake-output is a manual-evidenced assertion.",
+      "notes": ""
+    },
+    {
+      "dimension": "accessibility",
+      "score": 4,
+      "severity": "minor",
+      "evidence": "Conformance buttons-have-names + images-have-alt (script) and live-status-region (dom, [role=status][aria-live]) tested pass at build. The status line is role=status aria-live=polite; the chat log is aria-live. HOWEVER the responsive pre-scan flagged sub-24px tap targets pending agent verification (support=needs-review, automatedNotes: 12 on desktop / 7 on mobile — mostly the range-slider thumbs and small secondary buttons), below this repo's ~44px tap-target bar.",
+      "notes": "Light+dark use the WCAG-AA design system (public/styles.css). The sub-24px flag is the real open a11y item on this demo."
+    },
+    {
+      "dimension": "responsive",
+      "score": 4,
+      "severity": "minor",
+      "evidence": "Layout uses fluid flex/grid: controls flex-wrap, the chat/transcript log is intrinsically sized (min/max-block-size + overflow-y), textareas/canvas use inline-size, and the see-inside stat grid is auto-fit minmax. Conformance responsive-desktop + responsive-mobile (no-horizontal-overflow) are in the immutable suite. support=needs-review on both classes: the automated pre-scan reported 12 sub-24px target(s) desktop / 7 mobile awaiting an agent matrix pass — no live matrix was run in this backfill. Runs on WASM/q8 on any device (no WebGPU gate); ≈100 MB — the lightest download in the batch.",
+      "notes": "I did NOT run responsive-check in this retrospective pass, so I do not claim a measured 0px-overflow result; the honest status is needs-review with the sub-24px tap-target flag."
+    },
+    {
+      "dimension": "performance",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Encoding + decoding run in the Web Worker (inference-off-main-thread source pass); the main thread only paints streamed text and the token/timing readout. At ≈100 MB q8 it is the lightest model here.",
+      "notes": "Per-token timing is captured with performance.now() in the worker; flan-t5 has no CSS animation, so no prefers-reduced-motion guard is needed."
+    }
+  ],
+  "guidanceConsulted": [
+    {
+      "id": "performance",
+      "query": "keep INP low off main thread web worker streaming tokens",
+      "recommendation": "Keep interactions responsive (INP): move heavy work off the main thread; avoid long blocking tasks.",
+      "appliedOrException": "applied — encoder+decoder inference runs in a dedicated module Worker; the UI thread only paints streamed text and the timing readout.",
+      "evidence": "worker.js off-thread pipeline; conformance inference-off-main-thread pass"
+    },
+    {
+      "id": "break-up-long-tasks",
+      "query": "break up long tasks main thread responsiveness",
+      "recommendation": "Break up heavy synchronous processing so the browser can handle input and repaint.",
+      "appliedOrException": "applied — for single-sequence (beams===1) generation output streams token-by-token from the worker via TextStreamer; there is no long blocking main-thread call.",
+      "evidence": "TextStreamer callback posts per-token; beam-search path reports aggregate timing honestly"
+    },
+    {
+      "id": "accessibility",
+      "query": "accessible live region status updates aria-live",
+      "recommendation": "Announce loading/ready/error via role=status aria-live; give every control an accessible name; keyboard operability.",
+      "appliedOrException": "applied — role=status aria-live announcements + accessible button names (buttons-have-names pass). EXCEPTION pending: sub-24px tap targets flagged for an agent matrix pass.",
+      "evidence": "conformance live-status-region + buttons-have-names pass; support=needs-review sub-24px note"
+    },
+    {
+      "id": "css-layout",
+      "query": "responsive control panel without horizontal overflow",
+      "recommendation": "Use fluid flex/grid with flex-wrap + intrinsic sizing and logical properties; avoid fixed widths that force horizontal overflow.",
+      "appliedOrException": "applied — the instruction textarea and controls flex-wrap with intrinsic sizing; no fixed widths forcing horizontal overflow.",
+      "evidence": "responsive-desktop/mobile assertions in suite; flex-wrap controls"
+    }
+  ],
+  "openQuestions": [
+    "Verify and enlarge the 12 desktop / 7 mobile sub-24px tap targets (range-slider thumbs / sample chips) to ~44px, then flip support to ok with a real matrix pass.",
+    "Beam search skips per-token streaming (honest) — worth a small UI note so users understand why the beams>1 path shows aggregate timing rather than live tokens."
+  ],
+  "followUpGoals": [
+    {
+      "goal": "Run scripts/responsive-check.mjs at 360×740 and 1280×800, enlarge the flagged sub-24px tap targets, record support=ok per class.",
+      "kind": "targeted-fix",
+      "priority": "medium"
+    },
+    {
+      "goal": "Add a short inline note on the beams>1 path explaining why it reports aggregate (not per-token) timing.",
+      "kind": "targeted-fix",
+      "priority": "low"
+    }
+  ],
+  "summary": "Revision-1 retrospective critique backfill for flan-t5-instruct (Xenova/flan-t5-small, text2text-generation, Transformers.js, WASM/q8, ≈100 MB, Apache-2.0). Evidence grounded in code inspection + the immutable conformance suite (calls-real-inference, shared-auto-init-loader, inference-off-main-thread, declares-*, live-status-region, buttons-have-names tested pass). Distinctive demo: an encoder-decoder (seq2seq) INSTRUCTION model — the whole input is one natural-language instruction string (no chat template/system prompt); the decoder streams the answer token-by-token, with the exact input token strings + decode cadence in the see-inside surface. Beam-search path honestly reports aggregate timing (tokens reorder at the end). Runs on WASM everywhere; lightest download in the batch. GENUINE OPEN ITEM: support=needs-review with 12/7 sub-24px tap targets pending a matrix pass. No fresh live-inference numbers claimed."
+}

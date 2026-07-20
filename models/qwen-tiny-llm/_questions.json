@@ -1,0 +1,127 @@
+{
+  "schemaVersion": 1,
+  "id": "qwen-tiny-llm",
+  "revision": 1,
+  "reviewedAt": "2026-07-20T00:00:00Z",
+  "reviewer": "retrospective critique backfill (code-grounded + existing immutable conformance suite), revision 1",
+  "frontend": true,
+  "rubric": [
+    {
+      "dimension": "real-inference",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Generation runs off the main thread in models/qwen-tiny-llm/worker.js via the canonical Transformers.js pipeline(\"text-generation\", \"onnx-community/Qwen2.5-0.5B-Instruct\") + TextStreamer for token streaming. The 'see inside' top-k surface is a REAL extra forward pass (generator.model(inputs) → last-position logits → softmax → top-k) — genuine probabilities, not a mock. Conformance calls-real-inference (source, matches pipeline(/createModelLoader) and loads-clean tested pass; io-shape-semantic is manual-evidenced.",
+      "notes": "Primary path is WebGPU+q4f16; WASM+q4 is offered as an honest, clearly-slow opt-in fallback (requiresWebGPU:false). Either path is real inference — nothing faked. I did not run a fresh live inference in this backfill, so no measured latency/token numbers are claimed."
+    },
+    {
+      "dimension": "io-shape",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Expected output = streamed continuation tokens from apply_chat_template(messages). The worker streams tokens via TextStreamer (skip_prompt, skip_special_tokens) and returns the final generated_text; the exact templated prompt string the model receives is shown in the see-inside panel, and top-k next-token probabilities are rendered as bars.",
+      "notes": "do_sample with temperature/top_p/top_k + repetition_penalty 1.1; an InterruptableStoppingCriteria backs the Stop control."
+    },
+    {
+      "dimension": "runtime-config",
+      "score": 5,
+      "severity": "info",
+      "evidence": "At-a-glance declares the exact model id (onnx-community/Qwen2.5-0.5B-Instruct, linked), task = text-generation, backend, and dtype (q4f16 on WebGPU, q4 on the WASM fallback), size ≈500 MB, license Apache-2.0. Conformance declares-model-id/declares-task/declares-quantisation (q4f16)/declares-backend tested pass.",
+      "notes": "The worker's MODEL_ID matches the declared id; the backend actually used (webgpu vs wasm) is reported back from the worker in the ready message."
+    },
+    {
+      "dimension": "cache-init",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Loads through the shared createModelLoader auto-init architecture (conformance shared-auto-init-loader source pass); requiresWebGPU:false, so a valid on-device model auto-initialises on WebGPU when an adapter exists and on WebAssembly (q4) otherwise — no Load click needed either way.",
+      "notes": "auto-init-on-cached is manual-evidenced; the model owns transformers-cache (progress_callback drives the loader progress)."
+    },
+    {
+      "dimension": "states",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Loading/progress/ready/error announced in role=status aria-live (live-status-region pass). Worker errors surface on the page (errors-on-the-page source pass). Because there is a genuine WASM path, no-GPU devices still run for real (auto-picked), and an honest opt-in WASM note/needs-WebGPU explanation is shown — never a blank panel. webgpu-capability-honest (probe) is in the suite.",
+      "notes": "A real WebGPU probe (adapter must resolve) picks the device; navigator.gpu existing alone is not treated as sufficient."
+    },
+    {
+      "dimension": "controls",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Every control is real and keyboard-operable: system-prompt textarea, temperature/top_p/top_k/max-tokens sliders (reflect live), the composer, Send, Stop (InterruptableStoppingCriteria), Clear, and sample chips; the see-inside top-k panel is driven by a real forward pass.",
+      "notes": "controls-operable is a manual-evidenced conformance assertion."
+    },
+    {
+      "dimension": "no-fake-output",
+      "score": 5,
+      "severity": "info",
+      "evidence": "No canned output — bubbles are filled from streamed TextStreamer tokens; top-k bars are the softmax of real logits. no-fake-output is a manual-evidenced assertion.",
+      "notes": ""
+    },
+    {
+      "dimension": "accessibility",
+      "score": 4,
+      "severity": "minor",
+      "evidence": "Conformance buttons-have-names + images-have-alt (script) and live-status-region (dom, [role=status][aria-live]) tested pass at build. The status line is role=status aria-live=polite; the chat log is aria-live. HOWEVER the responsive pre-scan flagged sub-24px tap targets pending agent verification (support=needs-review, automatedNotes: 9 on desktop / 5 on mobile — mostly the range-slider thumbs and small secondary buttons), below this repo's ~44px tap-target bar.",
+      "notes": "Light+dark use the WCAG-AA design system (public/styles.css). The sub-24px flag is the real open a11y item on this demo."
+    },
+    {
+      "dimension": "responsive",
+      "score": 4,
+      "severity": "minor",
+      "evidence": "Layout uses fluid flex/grid: controls flex-wrap, the chat/transcript log is intrinsically sized (min/max-block-size + overflow-y), textareas/canvas use inline-size, and the see-inside stat grid is auto-fit minmax. Conformance responsive-desktop + responsive-mobile (no-horizontal-overflow) are in the immutable suite. support=needs-review on both classes: the automated pre-scan reported 9 sub-24px target(s) desktop / 5 mobile awaiting an agent matrix pass — no live matrix was run in this backfill. This build is ≈500 MB — small enough that the WASM fallback keeps it usable on no-GPU devices.",
+      "notes": "I did NOT run responsive-check in this retrospective pass, so I do not claim a measured 0px-overflow result; the honest status is needs-review with the sub-24px tap-target flag."
+    },
+    {
+      "dimension": "performance",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Inference + the top-k forward pass run in the Web Worker; the main thread only appends streamed tokens and updates a caret (guarded by prefers-reduced-motion). Conformance inference-off-main-thread (source) tested pass; inp-stays-low is manual-evidenced.",
+      "notes": "The top-k softmax loop over the vocab runs in the worker, off the UI thread."
+    }
+  ],
+  "guidanceConsulted": [
+    {
+      "id": "performance",
+      "query": "keep INP low off main thread web worker streaming tokens",
+      "recommendation": "Keep interactions responsive (INP): move heavy work off the main thread; avoid long blocking tasks.",
+      "appliedOrException": "applied — pipeline inference + the see-inside top-k forward pass both run in a dedicated module Worker; the UI thread only paints streamed tokens.",
+      "evidence": "worker.js off-thread pipeline + TextStreamer; conformance inference-off-main-thread pass"
+    },
+    {
+      "id": "break-up-long-tasks",
+      "query": "break up long tasks main thread responsiveness",
+      "recommendation": "Break up heavy synchronous processing so the browser can handle input and repaint.",
+      "appliedOrException": "applied — output is streamed token-by-token from the worker; the vocab-wide softmax for top-k also runs in the worker, never blocking the main thread.",
+      "evidence": "TextStreamer callback posts per-token; topk() softmax loop in worker.js"
+    },
+    {
+      "id": "accessibility",
+      "query": "accessible live region status updates aria-live",
+      "recommendation": "Announce loading/ready/error via role=status aria-live; give every control an accessible name; keyboard operability.",
+      "appliedOrException": "applied — role=status aria-live announcements + accessible button names (buttons-have-names pass). EXCEPTION pending: sub-24px tap targets flagged for an agent matrix pass.",
+      "evidence": "conformance live-status-region + buttons-have-names pass; support=needs-review sub-24px note"
+    },
+    {
+      "id": "css-layout",
+      "query": "responsive control panel without horizontal overflow",
+      "recommendation": "Use fluid flex/grid with flex-wrap + intrinsic sizing and logical properties; avoid fixed widths that force horizontal overflow.",
+      "appliedOrException": "applied — controls flex-wrap, the transcript is intrinsically sized with overflow-y, the composer textarea uses resize:vertical with a min-block-size, and the top-k rows use a grid template — no fixed widths forcing overflow.",
+      "evidence": "QWEN_CSS flex-wrap + max-block-size transcript + grid top-k rows"
+    }
+  ],
+  "openQuestions": [
+    "Verify and enlarge the 9 desktop / 5 mobile sub-24px tap targets (mainly range-slider thumbs) to ~44px, then flip support from needs-review to ok with a real matrix pass.",
+    "The composer textareas use resize:vertical rather than field-sizing:content — worth considering field-sizing (as the WebLLM demos use) for a smoother auto-fit composer."
+  ],
+  "followUpGoals": [
+    {
+      "goal": "Run scripts/responsive-check.mjs at 360×740 and 1280×800, enlarge the flagged sub-24px tap targets, and record support=ok per class.",
+      "kind": "targeted-fix",
+      "priority": "medium"
+    },
+    {
+      "goal": "Consider adopting field-sizing:content on the composer/system-prompt textareas for parity with the WebLLM chat demos.",
+      "kind": "targeted-fix",
+      "priority": "low"
+    }
+  ],
+  "summary": "Revision-1 retrospective critique backfill for qwen-tiny-llm (onnx-community/Qwen2.5-0.5B-Instruct, text-generation, Transformers.js, q4f16 on WebGPU with a real q4 WASM fallback, ≈500 MB, Apache-2.0). Evidence grounded in code inspection + the immutable conformance suite (calls-real-inference, shared-auto-init-loader, inference-off-main-thread, declares-*, live-status-region, buttons-have-names tested pass). Real streaming chat via pipeline()+TextStreamer in a worker, with an honest see-inside top-k from a genuine extra forward pass (softmax of real logits). requiresWebGPU:false → auto-picks WebGPU/WASM, so it runs for real on no-GPU devices too. GENUINE OPEN ITEM: support=needs-review with 9/5 sub-24px tap targets pending an agent matrix pass; no fresh live-inference numbers claimed."
+}
