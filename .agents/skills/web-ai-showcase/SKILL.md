@@ -121,7 +121,11 @@ of every model you can genuinely run in a browser — not a token set. Read `CLA
   built jina-v2-base-en), **dutch-sentiment** / **indonesian-fill-mask** / **korean-bert-fill-mask**
   (language-native classifiers/MLMs whose canonical weights are safetensors/Flax-only with 0 real-head
   ONNX — the only exports are head-less feature-extraction [`logits===undefined`] or the wrong head;
-  don't relabel a multilingual model). Never mislabel a substitute as the blocked family.
+  don't relabel a multilingual model), **wav2vec2-large-xlsr-53-dutch** / **wav2vec2-large-xlsr-53-arabic**
+  (no Dutch/Arabic XLSR-53 ASR ships a browser ONNX; full Hub enumeration of every wav2vec2-large-xlsr ONNX
+  found no NL/AR export — but other XLSR languages [zh/ja/ko/th/tr/fi …] with ONNX mirrors remain buildable),
+  **gte-multilingual-reranker-base** (custom `new` model_type → `Unsupported model type: new` in 3.7.5 and
+  4.2.0). Never mislabel a substitute as the blocked family.
 - **Version-pin escape hatch:** a model needing a transformers.js class newer than the shared 3.7.5
   (e.g. SAM2 needs 4.2.0) may pin the newer version LOCALLY in its own `worker.js` only — never bump
   shared `lib/webai.js`. model-cache is version-agnostic so auto-init still works. Precedent:

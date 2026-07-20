@@ -111,7 +111,13 @@ short version for tools that look for `AGENTS.md`.
   canonical Indonesian MLM [indobert p1/p2, cahya, indolem] is safetensors/Flax-only — 0 fill-mask ONNX;
   the only Indonesian ONNX carry the wrong head; don't relabel a multilingual MLM), **korean-bert-fill-mask**
   (canonical Korean MLMs are safetensors-only; the only Korean BERT ONNX are head-less feature-extraction
-  [`logits===undefined`] with broken SentencePiece→WordPiece tokenizers; don't relabel a multilingual MLM).
+  [`logits===undefined`] with broken SentencePiece→WordPiece tokenizers; don't relabel a multilingual MLM),
+  **wav2vec2-large-xlsr-53-dutch** / **wav2vec2-large-xlsr-53-arabic** (no Dutch/Arabic XLSR-53 ASR ships a
+  browser ONNX — full Hub enumeration of every wav2vec2-large-xlsr ONNX [327 candidates] has no NL/AR export;
+  the multilingual-56 model transliterates Arabic to Latin and relabeling it as the NL/AR family is forbidden.
+  Other XLSR languages with ONNX mirrors [zh/ja/ko/th/tr/fi …] remain buildable — block is language-specific),
+  **gte-multilingual-reranker-base** (custom `new`/`NewForSequenceClassification` model_type absent from
+  transformers.js 3.7.5 AND 4.2.0 → `Unsupported model type: new`; don't relabel a built reranker/embedder).
   Never mislabel a substitute as the blocked family.
 - **Version-pin escape hatch (isolated).** If a model's class exists only in a transformers.js newer
   than the shared 3.7.5 pin (e.g. SAM2's `Sam2Model` needs 4.2.0), pin the newer version LOCALLY in

@@ -220,7 +220,17 @@ safetensors/PyTorch/Flax-only — 0 fill-mask ONNX; the only Indonesian ONNX car
 Korean MLMs [klue bert/roberta, kcbert, bert-kor-base, kobert, KR-BERT] are safetensors-only; the only
 Korean BERT ONNX [`Xenova/kobert`, `skt/kobert-base-v1`] are head-less feature-extraction exports
 [`out.logits===undefined`] with broken SentencePiece→WordPiece tokenizers [common words → `[UNK]`];
-don't relabel a multilingual MLM). Never mislabel a substitute as the blocked family.
+don't relabel a multilingual MLM), **wav2vec2-large-xlsr-53-dutch** / **wav2vec2-large-xlsr-53-arabic**
+(no Dutch or Arabic wav2vec2-large-xlsr-53 ASR ships a browser-loadable ONNX — a 135-repo Dutch sweep +
+187-repo Arabic sweep + full Hub enumeration of every `wav2vec2-large-xlsr` ONNX [327 candidates: km/th/zh/
+fr/de/it/ja/ko/pt/es/en/fi/faroese/icelandic/ru/tr + one multilingual-56] found NO Dutch and NO Arabic
+export; the one NL NeMo ONNX declares `model_type: wav2vec2-ctc` → `Unsupported model type`; the
+multilingual-56 model runs but transliterates Arabic to Latin and using it as the NL/AR family would be
+forbidden relabeling. NOTE: other XLSR languages WITH ONNX mirrors [zh/ja/ko/th/tr/fi …] remain buildable —
+this block is language-specific, not the whole XLSR seam), **gte-multilingual-reranker-base** (Alibaba GTE
+multilingual reranker uses a custom `new`/`NewForSequenceClassification` model_type absent from transformers.js
+3.7.5 AND 4.2.0 → `Unsupported model type: new`; the same `new` type affects gte-multilingual base variants —
+don't relabel a built reranker/embedder). Never mislabel a substitute as the blocked family.
 
 **Version-pin escape hatch (isolated).** A model whose class exists only in a transformers.js newer
 than the shared 3.7.5 pin (e.g. SAM2 — `Sam2Model` lands in 4.2.0, absent from 3.7.5) may pin the
