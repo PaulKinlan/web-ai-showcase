@@ -128,7 +128,7 @@ evidence lives in `inventory/` (retained every run).
 REAL build runs in the browser today — dynamic-import the exact CDN build and confirm inference
 returns, not just that an ONNX folder or weights exist. A family that cannot run gets
 `status:"blocked"` + a concrete `blockedReason` (evidence + what would unblock) so the routine stops
-reselecting it. **Known-blocked as of 2026-07-19 (re-check only on upstream change): pegasus**
+reselecting it. **Known-blocked as of 2026-07-20 (re-check only on upstream change): pegasus**
 (transformers.js registers no `pegasus` model class in any version →
 `Unsupported model type:
 pegasus`), **gliner** (same failure — `Unsupported model type: gliner`;
@@ -200,8 +200,18 @@ working domain MLM like Bio_ClinicalBERT instead, don't relabel), **keyphrase-ex
 token-classification keyphrase model ships a browser-loadable ONNX — a 151-repo scan found only
 seq2seq generators, which can't produce per-token B/I/O spans; don't mislabel a generator or plain
 NER as keyphrase span extraction), **electra** (ONNX exports encoder-only; RTD discriminator head
-absent), **blip** / **bark** (gated / no usable ONNX). Never mislabel a substitute as the blocked
-family.
+absent), **blip** / **bark** (gated / no usable ONNX), **italian-sentiment** (every Italian-NATIVE
+sentiment classifier [FEEL-IT `MilaNLProc/feel-it-italian-sentiment`, `neuraly/bert-base-italian-cased-sentiment`,
+`osiria/bert-tweet-italian-uncased-sentiment`] is safetensors/PyTorch-only — 0 Italian-native
+sentiment ONNX on HF; the only `language=it` classification ONNX exports are NER/PII, not sentiment;
+architecture [UmBERTo/BERT/XLM-R] is supported, only the export is missing; don't relabel the built
+multilingual-sentiment), **jina-embeddings-v3** (canonical `jinaai/jina-embeddings-v3` ships ONNX but
+no WASM path: fp32 `model.onnx`+`model.onnx_data` external-data sidecar fails at ORT-Web session
+creation [`Module.MountedFiles is not available`], fp16 `model_fp16.onnx` creates but aborts at
+execution on the WASM EP [fp16 compute is a WebGPU-only kernel path], and the required LoRA `task_id`
+path never runs [`Missing the following inputs: task_id`] and still aborts when supplied; no q8/int8
+export exists; a third-party Q8 re-export is non-canonical; don't relabel the built jina-v2-base-en).
+Never mislabel a substitute as the blocked family.
 
 **Version-pin escape hatch (isolated).** A model whose class exists only in a transformers.js newer
 than the shared 3.7.5 pin (e.g. SAM2 — `Sam2Model` lands in 4.2.0, absent from 3.7.5) may pin the

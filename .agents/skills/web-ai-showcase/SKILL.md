@@ -113,7 +113,12 @@ of every model you can genuinely run in a browser — not a token set. Read `CLA
   broken near-uniform; use a working domain MLM like Bio_ClinicalBERT instead, don't relabel),
   **keyphrase-extraction** (no token-classification keyphrase ONNX — only seq2seq generators),
   **electra** (ONNX is encoder-only; no RTD discriminator head), **blip** / **bark** (gated / no
-  usable ONNX). Never mislabel a substitute as the blocked family.
+  usable ONNX), **italian-sentiment** (every Italian-NATIVE sentiment classifier is
+  safetensors/PyTorch-only — 0 Italian-native sentiment ONNX on HF; only `language=it` classification
+  ONNX are NER/PII; don't relabel the built multilingual-sentiment), **jina-embeddings-v3** (canonical
+  repo's ONNX has no WASM path: fp32 external-data sidecar fails ORT-Web session creation, fp16 aborts
+  on the WASM EP [WebGPU-only fp16], required LoRA `task_id` path never runs; no q8; don't relabel the
+  built jina-v2-base-en). Never mislabel a substitute as the blocked family.
 - **Version-pin escape hatch:** a model needing a transformers.js class newer than the shared 3.7.5
   (e.g. SAM2 needs 4.2.0) may pin the newer version LOCALLY in its own `worker.js` only — never bump
   shared `lib/webai.js`. model-cache is version-agnostic so auto-init still works. Precedent:

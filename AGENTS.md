@@ -100,7 +100,13 @@ short version for tools that look for `AGENTS.md`.
   **keyphrase-extraction** (no token-classification keyphrase model has a browser ONNX — only
   seq2seq generators; don't mislabel a generator/NER as keyphrase spans), **electra** (ONNX exports
   are encoder-only; the replaced-token-detection discriminator head is absent), **blip** / **bark**
-  (repos gated / no usable ONNX). Never mislabel a substitute as the blocked family.
+  (repos gated / no usable ONNX), **italian-sentiment** (every Italian-NATIVE sentiment classifier
+  [FEEL-IT/neuraly/osiria] is safetensors/PyTorch-only — 0 Italian-native sentiment ONNX on HF; only
+  `language=it` classification ONNX are NER/PII; don't relabel the built multilingual-sentiment),
+  **jina-embeddings-v3** (canonical repo ships ONNX but no WASM path: fp32 external-data sidecar fails
+  ORT-Web session creation, fp16 aborts at execution on the WASM EP [WebGPU-only fp16 compute], the
+  required LoRA `task_id` path never runs; no q8 export; don't relabel the built jina-v2-base-en).
+  Never mislabel a substitute as the blocked family.
 - **Version-pin escape hatch (isolated).** If a model's class exists only in a transformers.js newer
   than the shared 3.7.5 pin (e.g. SAM2's `Sam2Model` needs 4.2.0), pin the newer version LOCALLY in
   that one model's `worker.js` only — never bump shared `lib/webai.js`. `lib/model-cache.js` is
