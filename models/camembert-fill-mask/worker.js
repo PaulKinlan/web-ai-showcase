@@ -122,7 +122,7 @@ async function fillMany(id, texts, topk) {
 // Leading-subword id for a candidate word (SentencePiece word-initial ▁word). Multi-token candidates
 // are compared by their leading token — a deliberate, disclosed simplification for the probe surface.
 function firstTokenId(word) {
-  const enc = tokenizer.encode(word, null, { add_special_tokens: false });
+  const enc = tokenizer.encode(word, { add_special_tokens: false });
   return enc && enc.length ? enc[0] : null;
 }
 
