@@ -8,7 +8,9 @@ export class PaliGemmaEngine {
   constructor() {
     this.worker = new Worker(WORKER_URL, { type: "module" });
     this.ready = false;
-    this.onProgress = null;
+    this.onProgress = null; // legacy single-% callback (kept for back-compat)
+    this.onEvent = null; // NEW: raw download-tracker events {status, file, loaded, total, …}
+    this.onPaused = null; // fires when a Pause takes effect (partials preserved → Resume works)
     this._loadWaiters = [];
     this._probeWaiters = [];
     this._active = null; // { id, onToken, onPrompt, resolve, reject }
@@ -31,8 +33,17 @@ export class PaliGemmaEngine {
 
   _onMessage(msg) {
     switch (msg.type) {
-      case "progress":
+      case "dl":
+        this.onEvent?.(msg.evt);
+        if (msg.evt?.status === "progress" && typeof msg.evt.progress === "number") {
+          this.onProgress?.(msg.evt); // legacy consumers still get a %-ish signal
+        }
+        break;
+      case "progress": // legacy path (pre-resumable worker)
         this.onProgress?.(msg.p);
+        break;
+      case "paused":
+        this.onPaused?.();
         break;
       case "probe-result":
         for (const w of this._probeWaiters) w.resolve(msg.gpu);
@@ -73,13 +84,29 @@ export class PaliGemmaEngine {
     });
   }
 
-  load(onProgress) {
+  // load({ onEvent, onProgress, onPaused }) → resolves when the model is READY. Pause keeps the
+  // promise pending (a later resume() continues the same resumable prefetch from persisted partials).
+  load(arg = {}) {
+    // Back-compat: a bare function arg is the legacy onProgress callback.
+    const { onEvent, onProgress, onPaused } = typeof arg === "function" ? { onProgress: arg } : arg;
+    if (onEvent) this.onEvent = onEvent;
     if (onProgress) this.onProgress = onProgress;
+    if (onPaused) this.onPaused = onPaused;
     if (this.ready) return Promise.resolve("webgpu");
-    return new Promise((resolve, reject) => {
-      this._loadWaiters.push({ resolve, reject });
-      this.worker.postMessage({ type: "load" });
-    });
+    const first = this._loadWaiters.length === 0;
+    const p = new Promise((resolve, reject) => this._loadWaiters.push({ resolve, reject }));
+    if (first) this.worker.postMessage({ type: "load" });
+    return p;
+  }
+
+  /** Pause the in-flight resumable download; partials are preserved on disk. Safe no-op if not loading. */
+  pause() {
+    this.worker.postMessage({ type: "pause" });
+  }
+
+  /** Resume a paused download from persisted partials (a genuine continuation, never a fresh restart). */
+  resume() {
+    this.worker.postMessage({ type: "resume" });
   }
 
   /**
@@ -192,4 +219,26 @@ export const PALI_CSS = `
 .tok { padding:.05rem .3rem; border-radius:4px; background:var(--bg-secondary); border:1px solid var(--border); white-space:pre; }
 .tok b { color:var(--muted); font-weight:400; font-size:.62rem; margin-inline-start:.2rem; }
 .tmpl { font-family:var(--font-mono); font-size:.78rem; white-space:pre-wrap; word-break:break-word; }
+/* Shared multi-file download panel (lib/download-ui.mjs) — inherited by every PaliGemma page. */
+#model-loader { container-type:inline-size; }
+.dl-panel { display:flex; flex-direction:column; gap:.5rem; }
+.dl-phase { margin:0; font-family:var(--font-display); }
+.dl-bar { inline-size:100%; block-size:.7rem; }
+.dl-agg, .dl-storage { margin:0; font-size:.82rem; font-family:var(--font-mono); }
+.dl-actions { display:flex; flex-wrap:wrap; gap:.5rem; }
+.dl-actions button { min-block-size:2.6rem; }
+.dl-files { margin-top:.2rem; }
+.dl-files > summary { cursor:pointer; font-size:.85rem; }
+.dl-file-list { display:flex; flex-direction:column; gap:.3rem; margin-top:.5rem; }
+.dl-file { display:grid; grid-template-columns:minmax(0,1fr) auto; grid-template-areas:"name state" "bytes bytes" "bar bar";
+  gap:.15rem .5rem; padding:.4rem .5rem; border:1px solid var(--border); border-radius:8px; background:var(--bg-raised); font-size:.78rem; }
+@container (min-width: 30rem) { .dl-file { grid-template-columns:minmax(0,1fr) 6rem 8rem 6rem; grid-template-areas:"name state bytes bar"; align-items:center; } }
+.dl-fname { grid-area:name; font-family:var(--font-mono); overflow-wrap:anywhere; }
+.dl-fstate { grid-area:state; font-size:.72rem; text-transform:uppercase; letter-spacing:.03em; color:var(--muted); }
+.dl-fstate[data-state="complete"], .dl-fstate[data-state="cached"] { color:var(--accent); }
+.dl-fstate[data-state="failed"] { color:#c0392b; }
+.dl-fbytes { grid-area:bytes; font-family:var(--font-mono); color:var(--muted); }
+.dl-fbar { grid-area:bar; inline-size:100%; block-size:.5rem; }
+.attribution { font-size:.85rem; color:var(--muted); margin:.2rem 0 1.2rem; line-height:1.6; }
+.attribution a { color:inherit; }
 `;

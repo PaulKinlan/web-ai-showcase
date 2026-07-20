@@ -9,11 +9,19 @@
 // The model card includes the "<image>" marker in the prompt string, so we prepend it here.
 
 import { TRANSFORMERS_URL } from "/web-ai-showcase/lib/webai.js";
+import { prefetchModel } from "/web-ai-showcase/lib/model-prefetch.mjs";
+import { PALIGEMMA_BIG_FILES, PALIGEMMA_MODEL_ID } from "./manifest.mjs";
 
-const MODEL_ID = "onnx-community/paligemma2-3b-pt-224";
+const MODEL_ID = PALIGEMMA_MODEL_ID;
+// The big weight files (~2.9 GB) come from the shared manifest so the prefetch here and the pages'
+// "Discard" can't drift. We prefetch them RESUMABLY (Range/206/sha256 → transformers-cache);
+// from_pretrained then reads them from cache (no re-download) and fetches the tiny configs itself.
+const BIG_FILES = PALIGEMMA_BIG_FILES;
 let processor = null;
 let model = null;
 let mod = null;
+let loadAC = null; // aborts the resumable prefetch on Pause (partials are KEPT for a real resume)
+let loading = false;
 
 function post(msg) {
   self.postMessage(msg);
@@ -33,25 +41,52 @@ async function probeGPU() {
   return { ok: true, shaderF16 };
 }
 
+// Forward every download/lifecycle event to the main thread as {type:"dl", evt}; the page runs the
+// shared download-tracker reducer + UI over these (per-file bytes, byte-weighted aggregate, phases).
+function dl(evt) {
+  post({ type: "dl", evt });
+}
+
 async function ensureLoaded() {
   if (model) return;
-  mod = await import(TRANSFORMERS_URL);
-  const { AutoProcessor, PaliGemmaForConditionalGeneration } = mod;
-  console.log(`[paligemma worker] loading ${MODEL_ID} on webgpu (decoder q4f16)`);
-  processor = await AutoProcessor.from_pretrained(MODEL_ID, {
-    progress_callback: (p) => post({ type: "progress", p }),
-  });
-  model = await PaliGemmaForConditionalGeneration.from_pretrained(MODEL_ID, {
-    dtype: {
-      embed_tokens: "q8",
-      vision_encoder: "fp16",
-      decoder_model_merged: "q4f16",
-    },
-    device: "webgpu",
-    progress_callback: (p) => post({ type: "progress", p }),
-  });
-  console.log("[paligemma worker] ready on webgpu");
-  post({ type: "ready", device: "webgpu" });
+  if (loading) return; // a concurrent load/resume is already in flight
+  loading = true;
+  try {
+    mod = await import(TRANSFORMERS_URL);
+    const { AutoProcessor, PaliGemmaForConditionalGeneration } = mod;
+    console.log(`[paligemma worker] loading ${MODEL_ID} on webgpu (decoder q4f16)`);
+
+    // 1) RESUMABLE prefetch of the ~2.9 GB weights into transformers-cache (survives reload/abort).
+    loadAC = new AbortController();
+    try {
+      await prefetchModel({
+        modelId: MODEL_ID,
+        files: BIG_FILES,
+        onEvent: dl,
+        signal: loadAC.signal,
+      });
+    } catch (err) {
+      if (err?.name === "AbortError") {
+        dl({ status: "file-paused" });
+        post({ type: "paused" }); // partials are preserved on disk → Resume continues from here
+        return;
+      }
+      throw err;
+    }
+
+    // 2) from_pretrained now hits cache for the big weights (no re-download) + fetches the tiny configs.
+    //    Its progress_callback is fed to the SAME reducer (keyed by file → idempotent with the prefetch).
+    processor = await AutoProcessor.from_pretrained(MODEL_ID, { progress_callback: dl });
+    model = await PaliGemmaForConditionalGeneration.from_pretrained(MODEL_ID, {
+      dtype: { embed_tokens: "q8", vision_encoder: "fp16", decoder_model_merged: "q4f16" },
+      device: "webgpu",
+      progress_callback: dl,
+    });
+    console.log("[paligemma worker] ready on webgpu");
+    post({ type: "ready", device: "webgpu" });
+  } finally {
+    loading = false;
+  }
 }
 
 // `task` is the PaliGemma prefix (e.g. "caption en", "detect car"). skipSpecial=false keeps the
@@ -94,8 +129,10 @@ self.addEventListener("message", async (e) => {
   try {
     if (type === "probe") {
       post({ type: "probe-result", gpu: await probeGPU() });
-    } else if (type === "load") {
-      await ensureLoaded();
+    } else if (type === "load" || type === "resume") {
+      await ensureLoaded(); // resume re-enters the prefetch, which continues from persisted partials
+    } else if (type === "pause") {
+      loadAC?.abort(); // stop the transfer; partials are kept for a genuine resume (never a fake restart)
     } else if (type === "run") {
       await run(e.data.id, e.data.image, e.data.prompt, e.data.maxTokens, e.data.skipSpecial);
     }
