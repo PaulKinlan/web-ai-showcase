@@ -1,0 +1,127 @@
+{
+  "schemaVersion": 1,
+  "id": "wav2vec2-asr",
+  "revision": 1,
+  "reviewedAt": "2026-07-20T00:00:00Z",
+  "reviewer": "retrospective critique backfill (code-grounded + existing conformance suite), revision 1",
+  "frontend": true,
+  "rubric": [
+    {
+      "dimension": "real-inference",
+      "score": 5,
+      "severity": "info",
+      "evidence": "worker.js runs REAL CTC inference on `Xenova/wav2vec2-base-960h`, loaded as `AutoProcessor` + `AutoModelForCTC` (NOT the ASR pipeline, deliberately, so the per-frame frames are visible). It runs `processor(audio)` → `model(inputs)` → logits Tensor [1, T, V], then does a genuine per-frame argmax over the 32-symbol vocab and a real greedy CTC decode (merge duplicates, drop blanks) to produce the transcript + per-word forced-alignment timings. Conformance calls-real-inference (source pattern includes createModelLoader) + io-shape-semantic (transcript matches spoken audio) cover it. Code-grounded backfill; the page measures + reports real frames/timing.",
+      "notes": "Distinct architecture from Whisper/Moonshine/Distil-Whisper (seq2seq): CTC has no decoder + no autoregression, so it cannot hallucinate words — the see-inside surface shows the raw per-frame argmax strip collapsing into text."
+    },
+    {
+      "dimension": "io-shape",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Input = a 16 kHz mono Float32Array. Output = logits [1, T, V=32]; the worker returns { text, strip (per-frame chars/blank/boundary), collapsed, words (with start/end derived from frame index × frameSec), frames, emitted chars, charsPerSec }. The ID2CHAR map is the real vocab.json for this pinned model (0=<pad>/CTC blank, 4='|'/word boundary, 5..31 letters). Real per-word timings come from the frame at which each character was emitted.",
+      "notes": "Forced-alignment word timings for free are the key differentiator this io-shape exposes."
+    },
+    {
+      "dimension": "runtime-config",
+      "score": 5,
+      "severity": "info",
+      "evidence": "At-a-glance declares the exact model id (Xenova/wav2vec2-base-960h, linked; facebook/wav2vec2-base-960h English), the task (ASR, loaded as AutoModelForCTC to see the frames), the CTC architecture + 32-symbol vocab, quantisation (q8, onnx/model_quantized.onnx), backend (WASM; WebGPU when a real adapter exists), download (~95 MB), and license (Apache-2.0). ensureLoaded probes WebGPU and falls back to WASM honestly, reporting device. Conformance declares-model-id/task/quantisation(q8)/backend covered.",
+      "notes": ""
+    },
+    {
+      "dimension": "cache-init",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Loads through the shared createModelLoader (modelId Xenova/wav2vec2-base-960h, dtype q8, sizeMB 95); a valid current cached model auto-initialises with no Load click; onReady enables the mic/upload/Transcribe controls. Conformance shared-auto-init-loader + auto-init-on-cached cover it.",
+      "notes": ""
+    },
+    {
+      "dimension": "states",
+      "score": 4,
+      "severity": "info",
+      "evidence": "#status is role=status aria-live=polite; #transcript is aria-live. Failures surface: 'Couldn't decode that audio: …', 'Transcription failed: …' (.err), and a #micFallback panel when the mic is unavailable/denied. Download progress flows from the AutoProcessor/AutoModel progress_callback. The shared loader exposes retry/recovery.",
+      "notes": "wav2vec2 is trained on clean read speech, so the page honestly notes it does best on clear speech (the JFK sample)."
+    },
+    {
+      "dimension": "controls",
+      "score": 5,
+      "severity": "info",
+      "evidence": "All controls real + keyboard-operable: Record (mic, user-initiated), Upload audio (file input), two sample chips (JFK, TED), the Transcribe button, and native <audio controls>. Mic capture requires a click + shows an explicit unavailable fallback. buttons-have-names passes.",
+      "notes": ""
+    },
+    {
+      "dimension": "no-fake-output",
+      "score": 5,
+      "severity": "info",
+      "evidence": "No canned transcript — text, the per-frame argmax strip, the collapse, and the word timings are all derived from the real logits; frames/emitted-chars/charsPerSec are measured. Conformance no-fake-output (manual-evidenced) holds.",
+      "notes": "The per-frame argmax strip is a strong no-fake signal: it exposes the model's raw output before collapse."
+    },
+    {
+      "dimension": "accessibility",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Every button has an accessible name; the waveform canvas carries aria-label='Audio waveform'; transcript + status are aria-live; the frames/emitted-chars readout is text. The CTC strip is rendered as accessible DOM/text alongside the transcript. Light+dark WCAG-AA design system. buttons-have-names + live-status-region conformance pass.",
+      "notes": ""
+    },
+    {
+      "dimension": "responsive",
+      "score": 4,
+      "severity": "minor",
+      "evidence": ".audio-row/.sample-row flex-wrap, .wave inline-size:100%, readout wraps. responsive-desktop/responsive-mobile conformance assert no horizontal overflow. models.json support is needs-review with an automated note flagging sub-24px targets (desktop 10, mobile 5).",
+      "notes": "HONEST WEAKNESS: sub-24px tap targets flagged (sample chips + native audio controls + possibly the dense per-frame strip cells). Follow-up matrix pass should verify the CTC strip scrolls/wraps cleanly on a 360px viewport and raise chip tap size, then flip support to ok."
+    },
+    {
+      "dimension": "performance",
+      "score": 4,
+      "severity": "info",
+      "evidence": "The model forward runs in the Web Worker; the argmax over [T, 32] and CTC decode also run in the worker (bounded by T frames × 32 symbols). The main thread only decodes audio and draws the bounded waveform. Conformance inference-off-main-thread passes.",
+      "notes": "The per-frame argmax loop is O(T·V) but small (V=32) and off-thread; INP stays low."
+    }
+  ],
+  "guidanceConsulted": [
+    {
+      "query": "keep INP low move CTC forward + per-frame argmax off main thread web worker",
+      "id": "performance",
+      "recommendation": "Move heavy work off the main thread and keep interactions responsive (INP); avoid long blocking tasks on the main thread.",
+      "appliedOrException": "applied — the model forward, the per-frame argmax, and the CTC decode all run in a dedicated module Web Worker; only audio decode + a bounded waveform draw run on the main thread.",
+      "evidence": "worker.js off-thread; conformance inference-off-main-thread pass"
+    },
+    {
+      "query": "responsive audio panel with a dense per-frame strip without horizontal overflow",
+      "id": "css-layout",
+      "recommendation": "Use fluid flex/grid with flex-wrap + intrinsic sizing; let dense content scroll inside its own container rather than overflowing the page.",
+      "appliedOrException": "applied — .audio-row/.sample-row flex-wrap; canvas inline-size:100%. Follow-up: confirm the CTC frame strip scrolls/wraps at 360px and raise chip tap targets.",
+      "evidence": "responsive-desktop/responsive-mobile assert no-horizontal-overflow; support needs-review"
+    },
+    {
+      "query": "accessible live region status + transcript announcement; media element accessibility",
+      "id": "accessibility",
+      "recommendation": "Announce loading/ready/error + live transcript via role=status/aria-live; give every control an accessible name; use native <audio controls>.",
+      "appliedOrException": "applied — #status role=status aria-live; #transcript aria-live; native <audio controls>; labelled buttons.",
+      "evidence": "buttons-have-names + live-status-region conformance pass"
+    },
+    {
+      "query": "accessible error announcement for mic unavailable / decode failure",
+      "id": "accessible-error-announcement",
+      "recommendation": "Surface errors to the user in an accessible, live-announced way rather than only in the console.",
+      "appliedOrException": "applied — decode/transcription failures set an .err status in the aria-live region; #micFallback explains an unavailable microphone with a sample/upload alternative.",
+      "evidence": "errors-on-the-page conformance + #micFallback"
+    }
+  ],
+  "openQuestions": [
+    "The dense per-frame argmax strip could be wide on a long clip — does it scroll within its container on a narrow mobile viewport without pushing the page into horizontal overflow?",
+    "Word-level forced-alignment timings are derived from frame index — how accurate are they versus a reference aligner, and is that worth surfacing as a caveat?"
+  ],
+  "followUpGoals": [
+    {
+      "goal": "Run the mobile+desktop responsive matrix, confirm the CTC frame strip contains its own overflow at 360px, raise sub-24px tap targets, and flip models.json support to ok.",
+      "kind": "targeted-fix",
+      "priority": "medium"
+    },
+    {
+      "goal": "Add a karaoke-style 'wild' surface that highlights each word as the audio plays using the real forced-alignment timings this model already computes.",
+      "kind": "additive-demo",
+      "priority": "low"
+    }
+  ],
+  "summary": "Retrospective code-grounded critique backfill for wav2vec2-asr (Xenova/wav2vec2-base-960h, ASR loaded as AutoModelForCTC, q8, ~95 MB, Apache-2.0, WASM). REAL inference: the worker runs the processor + CTC model directly (not the pipeline) to expose the raw per-frame logits, does a genuine argmax + greedy CTC decode (merge duplicates, drop blanks) and derives real per-word forced-alignment timings — all off the main thread. Distinct from seq2seq ASR: no decoder, no hallucination; the see-inside surface shows the per-frame strip collapsing into text. Controls (mic user-initiated + fallback, upload, samples, transcribe, audio) are all real. Auto-init via createModelLoader. HONEST WEAKNESS: automated pre-scan flagged sub-24px tap targets (10 desktop / 5 mobile) and the dense frame strip needs a narrow-viewport overflow check; support needs-review. guidanceConsulted: performance, css-layout, accessibility, accessible-error-announcement. Grounded in code + the immutable conformance suite; no measured numbers fabricated."
+}

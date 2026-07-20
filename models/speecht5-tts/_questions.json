@@ -1,0 +1,127 @@
+{
+  "schemaVersion": 1,
+  "id": "speecht5-tts",
+  "revision": 1,
+  "reviewedAt": "2026-07-20T00:00:00Z",
+  "reviewer": "retrospective critique backfill (code-grounded + existing conformance suite), revision 1",
+  "frontend": true,
+  "rubric": [
+    {
+      "dimension": "real-inference",
+      "score": 5,
+      "severity": "info",
+      "evidence": "worker.js calls the REAL transformers.js text-to-speech pipeline: `pipeline(\"text-to-speech\", \"Xenova/speecht5_tts\", { dtype: \"q8\", device })`, then `synth(text, { speaker_embeddings: emb })` where emb is a real 512-float CMU-Arctic x-vector fetched from ./speakers/<id>.bin. The pipeline auto-loads the matching HiFi-GAN vocoder (Xenova/speecht5_hifigan). Output `out.audio` (Float32Array) + `out.sampling_rate` are used directly — no canned audio. The conformance suite asserts calls-real-inference (source pattern `pipeline\\(|createModelLoader`) and io-shape-semantic (manual-evidenced: a real run produces playable audio whose speech matches the input text). Backfill is code-grounded; no measured latency is claimed here.",
+      "notes": "Inference runs off the main thread in a dedicated module Worker (new Worker(WORKER_URL, { type: 'module' })); the WAV buffer, PCM, x-vector copy and spectrogram are transferred (not cloned) back to the page via postMessage transfer list."
+    },
+    {
+      "dimension": "io-shape",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Expected output = a mono 16 kHz waveform Float32Array conditioned on a 512-dim speaker x-vector. The page reads out.audio, encodes it to a 16-bit PCM WAV (encodeWav) for the <audio> element + Download .wav, and draws the same samples as the waveform. The worker also derives a real log-magnitude STFT spectrogram of the produced audio and ships the exact 512-dim x-vector used, so the io shape is inspectable. Conformance io-shape-semantic covers the semantic match (speech ↔ text).",
+      "notes": "Speaker-conditioned TTS: the voice identity is the 512-dim x-vector argument, not a named-voice enum — swapping the x-vector changes the voice while text stays identical."
+    },
+    {
+      "dimension": "runtime-config",
+      "score": 5,
+      "severity": "info",
+      "evidence": "At-a-glance declares the exact model id (Xenova/speecht5_tts, linked to its card) plus the vocoder (Xenova/speecht5_hifigan), the task (text-to-speech, encoder-decoder + HiFi-GAN), quantisation (q8), backend (WebGPU when a real adapter exists, honest WASM fallback), download (~180 MB), and license (MIT). The worker probes WebGPU with navigator.gpu.requestAdapter() and falls back to WASM honestly, reporting device.toUpperCase() in the readout. Conformance declares-model-id/declares-task/declares-quantisation(q8)/declares-backend all covered.",
+      "notes": "The reported backend in the readout is the one that actually loaded (webgpu or wasm), not a claim."
+    },
+    {
+      "dimension": "cache-init",
+      "score": 5,
+      "severity": "info",
+      "evidence": "The page loads through the shared createModelLoader auto-init architecture: `createModelLoader({ mount, model: { modelId: 'Xenova/speecht5_tts', runtime: 'transformers.js', dtype: 'q8', sizeMB: 180, requiresWebGPU: false }, load, onReady })`. A valid current on-device model auto-initialises with no Load click; only Download/Re-download/Update surface otherwise. Conformance shared-auto-init-loader (source pattern createModelLoader) + auto-init-on-cached cover this.",
+      "notes": "modelId keyed on Xenova/speecht5_tts so the ~180 MB cache (encoder + decoder + vocoder) is tracked for the never-silently-re-download guarantee."
+    },
+    {
+      "dimension": "states",
+      "score": 4,
+      "severity": "info",
+      "evidence": "Loading/synthesising state is announced in a role=status aria-live=polite region (#status). Failures surface on the page: the catch block sets `Synthesis failed: <message>` with a `.err` class; an empty-text guard shows 'Type something to speak.' The shared loader exposes a Retry/recovery path and reports checking → initialising → ready. Because the model prefers WebGPU, the worker degrades honestly to WASM when no adapter is present (webgpu-capability-honest conformance assertion is present for this demo).",
+      "notes": "A honest-progress-retry-offline path is inherited from the shared loader; download progress comes from the pipeline progress_callback forwarded as {type:'progress'}."
+    },
+    {
+      "dimension": "controls",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Every control is real and keyboard-operable: the text <textarea>, four sample chips (intro/pangram/a notification/a story) as real <button>s that set the textarea, the speaker <select> populated with 6 CMU-Arctic x-vector options, the Speak <button>, the native <audio controls> element, and the Download .wav link. No dead/decorative controls; buttons-have-names conformance passes.",
+      "notes": "The speaker <select> is disabled until onReady fills it, then enabled — matching actual state."
+    },
+    {
+      "dimension": "no-fake-output",
+      "score": 5,
+      "severity": "info",
+      "evidence": "No canned output — the audio, WAV, spectrogram, waveform, and x-vector fingerprint are all derived from the real pipeline run and the real bundled x-vector. The spectrogram is a genuine STFT of the produced waveform, not a decorative animation (see the spectrogram() comment in worker.js). Conformance no-fake-output (manual-evidenced) holds.",
+      "notes": ""
+    },
+    {
+      "dimension": "accessibility",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Every button has an accessible name (buttons-have-names conformance pass). The three canvases carry descriptive aria-labels: the x-vector strip ('Speaker embedding vector, 512 dimensions as a bar strip'), the spectrogram ('Spectrogram of the generated audio'), and the waveform ('Generated speech waveform'), and the numeric readout duplicates samples/rate/duration as text. Status uses role=status aria-live. Light+dark use the WCAG-AA design system.",
+      "notes": "The x-vector/spectrogram/waveform are visual — the text readout and aria-labels give AT users the same information."
+    },
+    {
+      "dimension": "responsive",
+      "score": 4,
+      "severity": "minor",
+      "evidence": "Layout uses fluid patterns from the design system: .tts-grid is flex-wrap with align-items:flex-end, .audio-row + .sample-row flex-wrap, #text and the canvases are inline-size:100%, and the readout wraps. models.json support is currently needs-review with an automated note flagging sub-24px targets (desktop 13, mobile 9) for an agent to verify tap size. responsive-desktop/responsive-mobile conformance assert no horizontal overflow.",
+      "notes": "HONEST WEAKNESS: automated pre-scan flagged multiple sub-24px tap targets (mostly the sample chips at .2rem/.6rem padding + the native <audio> controls). A follow-up matrix pass should confirm/raise the chip tap height to ≈44px and flip support from needs-review to ok."
+    },
+    {
+      "dimension": "performance",
+      "score": 5,
+      "severity": "info",
+      "evidence": "All synthesis runs off the main thread in a Web Worker; the WAV/PCM/x-vector/spectrogram buffers are transferred (not cloned) back. The waveform draw is a bounded per-pixel min/max reduction over ~600 canvas columns (step = floor(pcm.length/w)), redrawn only on play/seek/resize; the spectrogram is a fixed frames×bins fill. No main-thread inference or unbounded loop. Conformance inference-off-main-thread passes.",
+      "notes": "INP kept low — synthesis never blocks the interface; the STFT itself is computed in the worker."
+    }
+  ],
+  "guidanceConsulted": [
+    {
+      "query": "keep INP low move heavy work off main thread web worker; audio synthesis without blocking the UI",
+      "id": "performance",
+      "recommendation": "Move heavy work off the main thread and keep interactions responsive (INP); avoid long blocking tasks on the main thread.",
+      "appliedOrException": "applied — all TTS inference + the STFT spectrogram run in a dedicated module Web Worker; audio/spectrogram/x-vector buffers are transferred back; the waveform draw is a bounded per-pixel reduction, not per-sample.",
+      "evidence": "worker.js off-thread + transfer([wav, pcm.buffer, embCopy.buffer, spec.data.buffer]); conformance inference-off-main-thread pass"
+    },
+    {
+      "query": "responsive control panel and audio player without horizontal overflow",
+      "id": "css-layout",
+      "recommendation": "Use fluid flex/grid with flex-wrap + intrinsic sizing and logical properties; avoid fixed widths that force horizontal overflow.",
+      "appliedOrException": "applied — .tts-grid/.audio-row/.sample-row flex-wrap; textarea + canvases inline-size:100%; readout wraps. Follow-up: raise sub-24px chip tap targets.",
+      "evidence": "responsive-desktop/responsive-mobile conformance assert no-horizontal-overflow; support flagged needs-review for tap size"
+    },
+    {
+      "query": "accessible live region status updates, canvas labelling, media element accessibility",
+      "id": "accessibility",
+      "recommendation": "Announce loading/ready/error via role=status aria-live; give every control an accessible name; use native <audio controls> for media.",
+      "appliedOrException": "applied — #status is role=status aria-live=polite; sample chips + buttons carry accessible names; native <audio controls> for playback.",
+      "evidence": "buttons-have-names + live-status-region conformance pass"
+    },
+    {
+      "query": "expose canvas content (embedding, spectrogram, waveform) to assistive tech",
+      "id": "expose-canvas-content-to-browser-features",
+      "recommendation": "Give a meaningful accessible name to canvas-rendered content and duplicate its information as text where possible.",
+      "appliedOrException": "applied — each canvas has a descriptive aria-label and the numeric readout (samples/rate/duration/embedding) conveys the same information as text.",
+      "evidence": "aria-labels on #emb/#spec/#wave + #insideStats text readout"
+    }
+  ],
+  "openQuestions": [
+    "The automated responsive pre-scan flagged 13 desktop / 9 mobile sub-24px tap targets — how many are the native <audio> controls (outside our control) versus our sample chips that should be enlarged?",
+    "SpeechT5 prefers WebGPU (q8) but also runs on WASM — is the WebGPU path actually faster for this small model on typical hardware, or is WASM comparable (worth measuring before recommending the WebGPU download)?"
+  ],
+  "followUpGoals": [
+    {
+      "goal": "Run the mobile+desktop responsive matrix, raise sample-chip tap targets to ≈44px, and flip models.json support from needs-review to ok (or record an honest exception for the native audio controls).",
+      "kind": "targeted-fix",
+      "priority": "medium"
+    },
+    {
+      "goal": "Add a speaker-interpolation 'wild' surface that blends two x-vectors (0..1 slider) to explore the embedding space directly — a natural extension of the vector-conditioned design.",
+      "kind": "additive-demo",
+      "priority": "low"
+    }
+  ],
+  "summary": "Retrospective code-grounded critique backfill for speecht5-tts (Xenova/speecht5_tts + Xenova/speecht5_hifigan vocoder, text-to-speech, q8, ~180 MB, MIT). REAL inference: the worker runs the transformers.js text-to-speech pipeline with a real 512-dim CMU-Arctic x-vector as speaker_embeddings, off the main thread, and returns a 16 kHz Float32 waveform encoded to WAV; the see-inside surface shows the real x-vector, a genuine STFT spectrogram of the output, and the waveform. Auto-init via shared createModelLoader; WebGPU-preferred with an honest WASM fallback (webgpu-capability-honest asserted). Controls (text, sample chips, speaker select, Speak, audio, download) are all real + keyboard-operable. HONEST WEAKNESS: the automated responsive pre-scan flagged sub-24px tap targets (13 desktop / 9 mobile) and models.json support is needs-review — a follow-up matrix pass should raise chip tap sizes. guidanceConsulted: performance, css-layout, accessibility, expose-canvas-content-to-browser-features. Evidence grounded in code + the existing immutable conformance suite; no measured latency fabricated."
+}

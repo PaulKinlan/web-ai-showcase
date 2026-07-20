@@ -1,0 +1,127 @@
+{
+  "schemaVersion": 1,
+  "id": "whisper-large-v3-turbo",
+  "revision": 1,
+  "reviewedAt": "2026-07-20T00:00:00Z",
+  "reviewer": "retrospective critique backfill (code-grounded + existing conformance suite), revision 1",
+  "frontend": true,
+  "rubric": [
+    {
+      "dimension": "real-inference",
+      "score": 5,
+      "severity": "info",
+      "evidence": "worker.js runs the REAL transformers.js automatic-speech-recognition pipeline on `onnx-community/whisper-large-v3-turbo`. Two genuine passes per run: (1) language detection — a single decoder step (`pipe.model({ input_features, decoder_input_ids: <startoftranscript> })`) whose logits are softmaxed over Whisper's real language-token ids to produce an honest language distribution; (2) transcription — `pipe(audio, { return_timestamps: true, chunk_length_s: 30, stride_length_s: 5, task })`. Both use the real model; the transcript, detected language, and segments are the pipeline output. Conformance calls-real-inference (source pattern) + io-shape-semantic (a transcript whose words match the spoken audio) cover it. Code-grounded backfill; no measured latency fabricated (the page itself measures + reports real ms/tok-per-s).",
+      "notes": "Inference runs off the main thread in a dedicated module Worker; only 16 kHz mono audio decode + waveform draw happen on the main thread."
+    },
+    {
+      "dimension": "io-shape",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Input = a 16 kHz mono Float32Array (decoded + resampled via Web Audio). Output = { text, chunks:[{text, timestamp:[start,end]}] } plus, from the detection pass, a real per-language probability list. The page renders the transcript in an aria-live region, the timestamped segments in a table, and the top-8 detected-language probability bars. Matches Whisper's documented ASR I/O exactly — no invented surface.",
+      "notes": "Turbo = full large-v3 encoder + pruned 4-layer decoder; the WLANG_CODES list (99 codes) is the real Whisper language block, used to resolve language-token ids for detection."
+    },
+    {
+      "dimension": "runtime-config",
+      "score": 5,
+      "severity": "info",
+      "evidence": "At-a-glance declares the exact model id (onnx-community/whisper-large-v3-turbo, linked; noted as the ONNX build of openai/whisper-large-v3-turbo), the task, the dtype split (WebGPU q4f16 / WASM q8), the backend policy (WebGPU when a real adapter exists, honest WASM fallback), and the honest download range (~560 MB WebGPU / ~1.1 GB WASM). The worker's ensureLoaded probes hasWebGPU() and tries [webgpu q4f16] then [wasm q8], reporting the device+dtype that actually ran (rBackend/rDtype). Conformance declares-model-id/task/quantisation(q4f16)/backend covered.",
+      "notes": "The loader labels the size/dtype it will actually use by probing WebGPU before mount (560 MB vs 1100 MB)."
+    },
+    {
+      "dimension": "cache-init",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Loads through the shared createModelLoader with modelId onnx-community/whisper-large-v3-turbo and the WebGPU-probed dtype/size; a valid current cached model auto-initialises with no Load click; onReady enables the mic/upload/language/task controls. Conformance shared-auto-init-loader + auto-init-on-cached cover it.",
+      "notes": "Because this is a big model (~560 MB–1.1 GB), the never-silently-re-download guarantee matters most here — the loader distinguishes absent/partial/current."
+    },
+    {
+      "dimension": "states",
+      "score": 4,
+      "severity": "info",
+      "evidence": "#status is role=status aria-live=polite; the transcript region is aria-live. Failures surface on the page: audio-decode errors ('Couldn't decode that audio: …'), transcription errors ('Transcription failed: …' with .err), and a dedicated #micFallback panel when MicRecorder.supported() is false or getUserMedia throws (common headless). The WebGPU→WASM fallback is announced via a progress message ('WebGPU load failed — retrying on WASM…'). webgpu-capability-honest conformance assertion present.",
+      "notes": "Honest big-model behaviour: the page warns an 11 s clip can take ~30 s on WASM and reports the real backend/dtype/timing."
+    },
+    {
+      "dimension": "controls",
+      "score": 5,
+      "severity": "info",
+      "evidence": "All controls real + keyboard-operable: Record (mic via MicRecorder), Upload audio (file input), two sample chips (JFK, TED), the language <select> (auto-detect + 99 languages via fillWhisperLangs), the task <select> (transcribe / translate-to-English), the Transcribe button, and the native <audio controls>. Mic capture is user-initiated (click Record) with an explicit unavailable fallback. buttons-have-names passes.",
+      "notes": "Language + task are genuine generation options passed to the pipeline (genOpts.language / task)."
+    },
+    {
+      "dimension": "no-fake-output",
+      "score": 5,
+      "severity": "info",
+      "evidence": "No canned transcript — text/segments come from the real pipeline; the detected-language bars are a real softmax over the model's own language-token logits (see detectLanguage()); tokens/tok-per-s are measured. Empty result honestly shows '(no speech detected)'. Conformance no-fake-output (manual-evidenced) holds.",
+      "notes": ""
+    },
+    {
+      "dimension": "accessibility",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Every button has an accessible name; the waveform canvas carries aria-label='Audio waveform'; the transcript + status are aria-live; the language/task selects have <label> text. Timestamped segments are a real <table> with th headers. Light+dark WCAG-AA design system. buttons-have-names + live-status-region conformance pass.",
+      "notes": "The language-probability bars are DOM (renderLangBars) not canvas, so they are natively readable."
+    },
+    {
+      "dimension": "responsive",
+      "score": 4,
+      "severity": "minor",
+      "evidence": "Layout uses .audio-row/.opt-row flex-wrap, .wave inline-size:100%, and design-system tables. responsive-desktop/responsive-mobile conformance assert no horizontal overflow. models.json support is needs-review with an automated note flagging sub-24px targets (desktop 10, mobile 4).",
+      "notes": "HONEST WEAKNESS: sub-24px tap targets flagged (largely the sample chips + native audio controls). Additionally, on a constrained mobile device the ~560 MB–1.1 GB download + memory footprint is a real limit — the page degrades honestly (WASM path, real timing) but a matrix pass should confirm it stays usable / labels the cost. Follow-up: raise chip tap size and confirm mobile behaviour, then flip support to ok."
+    },
+    {
+      "dimension": "performance",
+      "score": 4,
+      "severity": "info",
+      "evidence": "Both the detection and transcription passes run in the Web Worker; the main thread only decodes audio and draws the bounded waveform (step-reduced over canvas width). Conformance inference-off-main-thread passes. Turbo's pruned 4-layer decoder is chosen specifically to keep decode fast.",
+      "notes": "On WASM this is genuinely slow for a big model (reported honestly), but it never blocks the UI thread — INP stays low; the wait is compute, not jank."
+    }
+  ],
+  "guidanceConsulted": [
+    {
+      "query": "keep INP low move heavy work off main thread web worker; long ASR decode without blocking UI",
+      "id": "performance",
+      "recommendation": "Move heavy work off the main thread and keep interactions responsive (INP); avoid long blocking tasks on the main thread.",
+      "appliedOrException": "applied — language detection + transcription both run in a dedicated module Web Worker; only audio decode + a bounded waveform draw run on the main thread.",
+      "evidence": "worker.js off-thread; conformance inference-off-main-thread pass"
+    },
+    {
+      "query": "responsive control panel and audio player without horizontal overflow",
+      "id": "css-layout",
+      "recommendation": "Use fluid flex/grid with flex-wrap + intrinsic sizing and logical properties; avoid fixed widths that force horizontal overflow.",
+      "appliedOrException": "applied — .audio-row/.opt-row flex-wrap; canvas + selects fluid. Follow-up: raise sub-24px chip tap targets and confirm mobile memory/download behaviour.",
+      "evidence": "responsive-desktop/responsive-mobile assert no-horizontal-overflow; support needs-review for tap size"
+    },
+    {
+      "query": "accessible live region status + transcript announcement; media element accessibility",
+      "id": "accessibility",
+      "recommendation": "Announce loading/ready/error + live transcript via role=status/aria-live; give every control an accessible name; use native <audio controls>.",
+      "appliedOrException": "applied — #status role=status aria-live; #transcript aria-live; labelled selects; native <audio controls>.",
+      "evidence": "buttons-have-names + live-status-region conformance pass"
+    },
+    {
+      "query": "accessible error announcement for failed load / mic unavailable / decode failure",
+      "id": "accessible-error-announcement",
+      "recommendation": "Surface errors to the user in an accessible, live-announced way rather than only in the console.",
+      "appliedOrException": "applied — decode/transcription failures set an .err status in the aria-live region; a dedicated #micFallback panel explains an unavailable microphone with an alternative (sample/upload).",
+      "evidence": "errors-on-the-page conformance (source pattern err|error|Retry) + #micFallback"
+    }
+  ],
+  "openQuestions": [
+    "On a mid-range mobile device, does the WASM q8 path (~1.1 GB) stay within memory, or should the demo more prominently gate/label the download before committing on mobile?",
+    "The language-detection pass adds one decoder step before every transcription — worth an option to skip it when the user has already forced a language (the worker supports opts.detect:false but the UI always detects)?"
+  ],
+  "followUpGoals": [
+    {
+      "goal": "Run the mobile+desktop responsive matrix on a real device, confirm the big-model download/memory behaviour degrades honestly on mobile, raise sub-24px tap targets, and flip models.json support to ok/unsupported+evidence.",
+      "kind": "targeted-fix",
+      "priority": "medium"
+    },
+    {
+      "goal": "Expose the existing worker opts.detect toggle in the UI so users who force a language can skip the detection pass and save a decoder step.",
+      "kind": "targeted-fix",
+      "priority": "low"
+    }
+  ],
+  "summary": "Retrospective code-grounded critique backfill for whisper-large-v3-turbo (onnx-community/whisper-large-v3-turbo, ASR, WebGPU q4f16 / WASM q8, ~560 MB–1.1 GB, MIT). REAL inference: the worker runs the transformers.js ASR pipeline with two genuine passes — a single-decoder-step language detection (softmax over Whisper's language-token logits) and a timestamped transcription (transcribe/translate) — off the main thread, reporting the real backend/dtype/timing. Controls (mic record with user-initiated capture + fallback, upload, samples, language + task selects, audio) are all real; transcript + detected-language bars + segment table are the real output. Auto-init via createModelLoader; honest WebGPU→WASM fallback. HONEST WEAKNESSES: automated pre-scan flagged sub-24px tap targets (10 desktop / 4 mobile) and, as a big model, the ~560 MB–1.1 GB download + mobile memory cost needs a real-device matrix pass (support currently needs-review). guidanceConsulted: performance, css-layout, accessibility, accessible-error-announcement. Grounded in code + the immutable conformance suite; no measured numbers fabricated."
+}

@@ -1,0 +1,127 @@
+{
+  "schemaVersion": 1,
+  "id": "ast-audio-classification",
+  "revision": 1,
+  "reviewedAt": "2026-07-20T00:00:00Z",
+  "reviewer": "retrospective critique backfill (code-grounded + existing conformance suite), revision 1",
+  "frontend": true,
+  "rubric": [
+    {
+      "dimension": "real-inference",
+      "score": 5,
+      "severity": "info",
+      "evidence": "worker.js runs the REAL transformers.js audio-classification pipeline on `Xenova/ast-finetuned-audioset-10-10-0.4593` via the shared loadPipeline() helper (dtype q8), then `pipe(audio, { top_k })` returns ranked AudioSet labels with scores. Separately the worker computes a genuine 128-band log-mel spectrogram of the same audio (real radix-2 FFT + triangular mel filterbank) so the see-inside surface shows the actual image the ViT reasons over. Conformance calls-real-inference (source pattern) + io-shape-semantic (ranked class labels with probabilities) cover it. Code-grounded backfill; the page measures + reports real latency.",
+      "notes": "AST = Audio Spectrogram Transformer (a ViT over a log-mel spectrogram). Inference + the spectrogram computation both run off the main thread in a dedicated module Worker; the spectrogram buffer is transferred back."
+    },
+    {
+      "dimension": "io-shape",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Input = a 16 kHz mono Float32Array. Output = an array of { label, score } across the 527 AudioSet classes (top_k, default 15), rendered as a ranked scores list + a top-15 table. The see-inside also returns the 128-band × frames log-mel spectrogram (data + min/max) drawn as the real input image. Matches the audio-classification task exactly.",
+      "notes": "The spectrogram is capped at 1024 frames to keep the canvas a sane width — a viz cap, not a change to what the pipeline classifies."
+    },
+    {
+      "dimension": "runtime-config",
+      "score": 5,
+      "severity": "info",
+      "evidence": "At-a-glance declares the exact model id (Xenova/ast-finetuned-audioset-10-10-0.4593, linked), the task, the architecture (ViT over a 128-band log-mel spectrogram, fine-tuned on AudioSet), the 527 classes, quantisation (q8), backend (WASM; WebGPU when an adapter exists), download (~90 MB), and license (BSD-3-Clause). ensureLoaded probes WebGPU and falls back to WASM honestly, reporting device. Conformance declares-model-id/task/quantisation(q8)/backend covered.",
+      "notes": ""
+    },
+    {
+      "dimension": "cache-init",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Loads through the shared createModelLoader (modelId Xenova/ast-finetuned-audioset-10-10-0.4593, dtype q8, sizeMB 90); a valid current cached model auto-initialises with no Load click; onReady enables the classify path. Conformance shared-auto-init-loader + auto-init-on-cached cover it.",
+      "notes": ""
+    },
+    {
+      "dimension": "states",
+      "score": 4,
+      "severity": "info",
+      "evidence": "#status is role=status aria-live=polite; #recState + #scores are aria-live. Failures surface on the page via the status; a Record-from-mic control handles permission errors. Download progress flows from the pipeline progress_callback. The shared loader exposes retry/recovery.",
+      "notes": "Bundled sample sounds (speech/tone/whistle) mean the demo works with zero permissions if the mic is unavailable."
+    },
+    {
+      "dimension": "controls",
+      "score": 5,
+      "severity": "info",
+      "evidence": "All controls real + keyboard-operable: a dropzone (role=button, tabindex=0, click/drop to upload), three sample chips (speech/tone/whistle) with aria-pressed, a Record-from-mic button (user-initiated), native <audio controls>, and the Classify button. The scores list + top-15 table render the real per-class output. buttons-have-names passes.",
+      "notes": "The dropzone is keyboard-focusable (tabindex=0, role=button) with an aria-label; sample chips track selection with aria-pressed."
+    },
+    {
+      "dimension": "no-fake-output",
+      "score": 5,
+      "severity": "info",
+      "evidence": "No canned labels — the scores come from the real pipeline; the spectrogram is a genuine FFT-based log-mel of the input, not decorative. Conformance no-fake-output (manual-evidenced) holds.",
+      "notes": ""
+    },
+    {
+      "dimension": "accessibility",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Every button has an accessible name; the waveform canvas has aria-label='Waveform of the selected audio'; the spectrogram canvas has a full descriptive aria-label (time x-axis, frequency low-to-high y-axis, brightness=energy) plus a text legend; #scores + #recState are aria-live; the dropzone has role=button + aria-label. Light+dark WCAG-AA. buttons-have-names + live-status-region + images-have-alt conformance pass.",
+      "notes": "The per-class scores are DOM (natively readable) in addition to the visual bars; the top-15 table duplicates them."
+    },
+    {
+      "dimension": "responsive",
+      "score": 4,
+      "severity": "minor",
+      "evidence": "Dropzone + .sample-row + .field-row + .audio-row are fluid, canvases inline-size:100%, scores/table wrap. responsive-desktop/responsive-mobile conformance assert no horizontal overflow. models.json support is needs-review with an automated note flagging sub-24px targets (desktop 10, mobile 5).",
+      "notes": "HONEST WEAKNESS: sub-24px tap targets flagged (sample chips + native audio controls). Follow-up matrix pass should verify the spectrogram canvas + scores don't overflow at 360px and raise chip tap size, then flip support to ok."
+    },
+    {
+      "dimension": "performance",
+      "score": 4,
+      "severity": "info",
+      "evidence": "The pipeline inference AND the log-mel FFT (radix-2 over 512-pt frames, up to 1024 frames × 128 mels) both run in the Web Worker; the spectrogram buffer is transferred back (not cloned). The main thread only draws the bounded waveform + spectrogram heatmap. Conformance inference-off-main-thread passes.",
+      "notes": "Doing the FFT off-thread avoids a main-thread hotspot; INP stays low. If a future feature needs a bigger FFT window, break-up-long-tasks/scheduler.yield would apply."
+    }
+  ],
+  "guidanceConsulted": [
+    {
+      "query": "keep INP low move inference and FFT spectrogram off main thread web worker",
+      "id": "performance",
+      "recommendation": "Move heavy work off the main thread and keep interactions responsive (INP); avoid long blocking tasks on the main thread.",
+      "appliedOrException": "applied — both the audio-classification inference and the log-mel FFT run in a dedicated module Web Worker; the spectrogram buffer is transferred back; only bounded canvas draws run on the main thread.",
+      "evidence": "worker.js off-thread + transfer([spectrogram.data.buffer]); conformance inference-off-main-thread pass"
+    },
+    {
+      "query": "break up long tasks / yield during heavy FFT computation",
+      "id": "break-up-long-tasks",
+      "recommendation": "Break up heavy synchronous processing / long loops so the browser can handle input and repaint; yield periodically.",
+      "appliedOrException": "applied-by-architecture — the FFT/mel loop is entirely off the main thread (worker) and frame-capped (≤1024), so the main thread never runs the long task; scheduler.yield would be the pattern if any of it moved on-thread.",
+      "evidence": "logMel() runs in worker.js, capped at 1024 frames"
+    },
+    {
+      "query": "expose canvas spectrogram + waveform content to assistive tech",
+      "id": "expose-canvas-content-to-browser-features",
+      "recommendation": "Give a meaningful accessible name to canvas-rendered content and duplicate its information as text where possible.",
+      "appliedOrException": "applied — the spectrogram canvas has a full descriptive aria-label + a text legend (axes/brightness); the per-class scores are DOM + a table, duplicating the visual bars.",
+      "evidence": "aria-labels on #wave/#spec + #scores DOM + #insideRows table"
+    },
+    {
+      "query": "responsive classifier panel + accessible live status without horizontal overflow",
+      "id": "css-layout",
+      "recommendation": "Use fluid flex/grid with flex-wrap + intrinsic sizing; avoid fixed widths that force horizontal overflow.",
+      "appliedOrException": "applied — dropzone/sample-row/field-row/audio-row fluid; canvases inline-size:100%. Follow-up: raise sub-24px chip tap targets + confirm spectrogram fits 360px.",
+      "evidence": "responsive-desktop/responsive-mobile assert no-horizontal-overflow; support needs-review"
+    }
+  ],
+  "openQuestions": [
+    "The spectrogram canvas is frame-capped at 1024 for width — on a long clip does the visible window (~10 s) mislead about which part of the audio drove the label, and should the demo note that?",
+    "How many of the flagged sub-24px targets are the native <audio> controls versus sample chips we can enlarge?"
+  ],
+  "followUpGoals": [
+    {
+      "goal": "Run the mobile+desktop responsive matrix, confirm the spectrogram + scores contain overflow at 360px, raise sub-24px tap targets, and flip models.json support to ok.",
+      "kind": "targeted-fix",
+      "priority": "medium"
+    },
+    {
+      "goal": "Add a live 'practical' sound-event monitor that runs AST on rolling mic chunks (AudioWorklet) and alerts on a chosen AudioSet class — the accessibility-alert use case.",
+      "kind": "additive-demo",
+      "priority": "low"
+    }
+  ],
+  "summary": "Retrospective code-grounded critique backfill for ast-audio-classification (Xenova/ast-finetuned-audioset-10-10-0.4593, audio-classification, q8, ~90 MB, BSD-3-Clause, WASM). REAL inference: the worker runs the transformers.js audio-classification pipeline (top_k over 527 AudioSet classes) AND computes a genuine 128-band log-mel spectrogram (real radix-2 FFT + mel filterbank) — both off the main thread, spectrogram transferred back. Controls (dropzone upload, sample chips with aria-pressed, mic record user-initiated, audio, classify) are all real + keyboard-operable; scores list + top-15 table + spectrogram are the real output. Auto-init via createModelLoader. HONEST WEAKNESS: automated pre-scan flagged sub-24px tap targets (10 desktop / 5 mobile), support needs-review — a follow-up matrix pass should raise chip tap sizes and confirm the spectrogram fits a 360px viewport. guidanceConsulted: performance, break-up-long-tasks, expose-canvas-content-to-browser-features, css-layout. Grounded in code + the immutable conformance suite; no measured numbers fabricated."
+}

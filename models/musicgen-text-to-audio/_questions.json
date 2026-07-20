@@ -1,0 +1,127 @@
+{
+  "schemaVersion": 1,
+  "id": "musicgen-text-to-audio",
+  "revision": 1,
+  "reviewedAt": "2026-07-20T00:00:00Z",
+  "reviewer": "retrospective critique backfill (code-grounded + existing conformance suite), revision 1",
+  "frontend": true,
+  "rubric": [
+    {
+      "dimension": "real-inference",
+      "score": 5,
+      "severity": "info",
+      "evidence": "worker.js runs REAL music generation: it loads the canonical low-level classes `MusicgenForConditionalGeneration.from_pretrained('Xenova/musicgen-small', { dtype:{ text_encoder:'q8', decoder_model_merged:'q8', encodec_decode:'fp32' }, device:'wasm' })` + AutoTokenizer, then `model.generate({ ...inputs, max_length, guidance_scale, temperature, do_sample:true, streamer })`. MusicGen autoregressively predicts EnCodec audio tokens which EnCodec decodes to a 32 kHz waveform (audioValues.data → Float32Array). Nothing is faked. Conformance calls-real-inference (source pattern includes `.generate(` and createModelLoader) + io-shape-semantic (playable audio corresponding to the prompt) cover it. Code-grounded; the page measures + reports real gen time/rtf/token count.",
+      "notes": "The low-level classes (not pipeline()) are used deliberately — it is the only way to attach a BaseStreamer for HONEST token-level progress. encodec_decode is kept fp32 because quantising it garbles the audio (matches HF's own musicgen-web config)."
+    },
+    {
+      "dimension": "io-shape",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Input = a text prompt tokenised by AutoTokenizer. Output = a mono Float32 waveform at model.config.audio_encoder.sampling_rate (32000). The page encodes it to a 16-bit WAV for <audio> + Download .wav and draws the same samples as the waveform; it reports the real audio-token count (streamer.count), samples, and sample rate. max_length is derived from the requested seconds at ~50 audio tokens/second, capped by the model's generation_config.",
+      "notes": "This is text-to-AUDIO/music, not TTS — the see-inside note explains the EnCodec-token→waveform path."
+    },
+    {
+      "dimension": "runtime-config",
+      "score": 5,
+      "severity": "info",
+      "evidence": "At-a-glance declares the exact model id (Xenova/musicgen-small, linked; Meta MusicGen ONNX), the task (text-to-audio), the precise dtype split (q8 text-encoder + q8 decoder + fp32 EnCodec decode, with the rationale), the backend (WebAssembly — no reliable WebGPU path for this model, runs on CPU and is slow), the download (~656 MB), and the license (CC-BY-NC-4.0, non-commercial). The worker explicitly does NOT enable wasm proxy (already in a worker) and logs the load. Conformance declares-model-id/task/quantisation(q8)/backend covered.",
+      "notes": "CC-BY-NC-4.0 non-commercial is stated in at-a-glance; the prompts stay in the tab, only the weights are non-commercial."
+    },
+    {
+      "dimension": "cache-init",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Loads through the shared createModelLoader ({ modelId:'Xenova/musicgen-small', dtype:'q8', sizeMB:656, requiresWebGPU:false }); a valid current cached model auto-initialises with no Load click; onReady enables Generate. Conformance shared-auto-init-loader + auto-init-on-cached cover it.",
+      "notes": "Large ~656 MB model — the never-silently-re-download guarantee is important; the loader distinguishes absent/partial/current."
+    },
+    {
+      "dimension": "states",
+      "score": 5,
+      "severity": "info",
+      "evidence": "#status is role=status aria-live=polite; a dedicated #genWrap shows a REAL token-level <progress> bar driven by the BaseStreamer put() callback (done/total updated per decoded token) plus a #genStatus aria-live line ('Generating audio tokens… done/total (pct%)'). Failures surface: 'Generation failed: …' with .err. The 'compute-heavy' heads-up warns the user before they commit.",
+      "notes": "The progress bar reflects genuine decode steps, not a spinner — a strong honest-progress example."
+    },
+    {
+      "dimension": "controls",
+      "score": 5,
+      "severity": "info",
+      "evidence": "All controls real + keyboard-operable: the prompt <textarea>, six preset chips (lo-fi/synthwave/cinematic/acoustic folk/ambient/disco funk), three <input type=range> sliders (Length 2–15 s, Guidance 1–10, Temperature 0.1–1.5) with live value labels, the Generate button, native <audio controls>, and Download .wav. Sliders feed real generate() options (max_length/guidance_scale/temperature). buttons-have-names passes.",
+      "notes": "Range inputs are keyboard-operable and each shows its current value in an adjacent label."
+    },
+    {
+      "dimension": "no-fake-output",
+      "score": 5,
+      "severity": "info",
+      "evidence": "No pre-baked audio — the waveform, WAV, and token stats are all derived from the real generate() run; the heads-up explicitly says 'nothing here is pre-baked' and the timing readout is real. Conformance no-fake-output (manual-evidenced) holds.",
+      "notes": ""
+    },
+    {
+      "dimension": "accessibility",
+      "score": 4,
+      "severity": "info",
+      "evidence": "Every button has an accessible name; the <progress> has aria-label='Music generation progress'; the waveform canvas carries aria-label='Generated music waveform'; status + genStatus are aria-live; slider labels are associated. Light+dark WCAG-AA design system. buttons-have-names + live-status-region conformance pass.",
+      "notes": "Range slider labels use wrapping <label> text rather than explicit for/id, but each control is reachable and labelled."
+    },
+    {
+      "dimension": "responsive",
+      "score": 4,
+      "severity": "minor",
+      "evidence": ".mg-grid + .sample-row flex-wrap, textarea + canvas inline-size:100%, readout wraps. responsive-desktop/responsive-mobile conformance assert no horizontal overflow. models.json support is needs-review with an automated note flagging sub-24px targets (desktop 9, mobile 5).",
+      "notes": "HONEST WEAKNESS: sub-24px tap targets flagged (preset chips + native audio controls), AND on mobile the ~656 MB download + CPU-only generation is genuinely heavy — the page warns honestly, but a real-device matrix pass should confirm it degrades gracefully (and consider gating the download on mobile). Follow-up: raise chip tap size, confirm mobile behaviour, flip support."
+    },
+    {
+      "dimension": "performance",
+      "score": 4,
+      "severity": "info",
+      "evidence": "The entire generation loop runs in the Web Worker; the PCM + WAV buffers are transferred back (not cloned). The main thread only updates the progress bar and draws the bounded waveform. Conformance inference-off-main-thread passes. Generation is genuinely slow on CPU (reported honestly via rtf, often >1.0×), but the wait is compute in the worker, not main-thread jank.",
+      "notes": "Because the long decode is off-thread and progress is token-level, INP stays low even during a multi-second generation."
+    }
+  ],
+  "guidanceConsulted": [
+    {
+      "query": "keep INP low during long autoregressive generation off main thread; token-level progress",
+      "id": "performance",
+      "recommendation": "Move heavy work off the main thread and keep interactions responsive (INP); stream progress incrementally rather than blocking.",
+      "appliedOrException": "applied — the whole generate() loop runs in a dedicated module Web Worker with a BaseStreamer emitting per-token progress; PCM/WAV buffers transferred back.",
+      "evidence": "worker.js off-thread + transfer([pcm.buffer, wav]); conformance inference-off-main-thread pass"
+    },
+    {
+      "query": "break up long tasks yield to main thread during heavy generation loop",
+      "id": "break-up-long-tasks",
+      "recommendation": "Break up heavy synchronous processing / long loops so the browser can handle input and repaint; yield periodically.",
+      "appliedOrException": "applied-by-architecture — the heavy loop is entirely off the main thread (worker), and the streamer posts incremental progress each step, so the main thread never runs the long task; no main-thread yielding needed.",
+      "evidence": "generation runs in worker.js; #genProg updated per BaseStreamer.put()"
+    },
+    {
+      "query": "responsive control panel with sliders and audio player without horizontal overflow",
+      "id": "css-layout",
+      "recommendation": "Use fluid flex/grid with flex-wrap + intrinsic sizing; avoid fixed widths that force horizontal overflow.",
+      "appliedOrException": "applied — .mg-grid/.sample-row flex-wrap; textarea + canvas inline-size:100%. Follow-up: raise sub-24px chip tap targets + confirm mobile download/compute cost.",
+      "evidence": "responsive-desktop/responsive-mobile assert no-horizontal-overflow; support needs-review"
+    },
+    {
+      "query": "accessible live progress + status announcement; progress element labelling",
+      "id": "accessibility",
+      "recommendation": "Announce progress/ready/error via role=status/aria-live; give <progress> and every control an accessible name.",
+      "appliedOrException": "applied — <progress aria-label>; #status + #genStatus role=status aria-live; labelled sliders + buttons.",
+      "evidence": "buttons-have-names + live-status-region conformance pass"
+    }
+  ],
+  "openQuestions": [
+    "On mobile, the ~656 MB download + CPU-only generation is heavy — should the demo gate/label the download more assertively (or mark mobile as degraded-with-evidence) rather than letting a small phone attempt a long generation?",
+    "EnCodec decode is pinned fp32 for audio quality — is there any browser path (WebGPU) that could speed the autoregressive decoder without garbling the codec output?"
+  ],
+  "followUpGoals": [
+    {
+      "goal": "Run the mobile+desktop responsive matrix, raise sub-24px tap targets, decide+record the honest mobile support classification (ok vs degraded-with-evidence) given the ~656 MB / CPU-heavy profile, and flip support off needs-review.",
+      "kind": "targeted-fix",
+      "priority": "medium"
+    },
+    {
+      "goal": "Add a per-codebook EnCodec token 'see inside' visualisation (the 4 codebook streams over time) to make the token→waveform path legible beyond the waveform.",
+      "kind": "additive-demo",
+      "priority": "low"
+    }
+  ],
+  "summary": "Retrospective code-grounded critique backfill for musicgen-text-to-audio (Xenova/musicgen-small, text-to-audio, q8 text-encoder+decoder / fp32 EnCodec, ~656 MB, CC-BY-NC-4.0, WASM). REAL generation: the worker uses MusicgenForConditionalGeneration + AutoTokenizer + model.generate() with a BaseStreamer for honest token-level progress, decoding EnCodec audio tokens to a 32 kHz Float32 waveform entirely off the main thread; the progress bar reflects genuine decode steps, not a spinner. Controls (prompt, preset chips, length/guidance/temperature sliders, generate, audio, download) are all real and feed real generate() options. Auto-init via createModelLoader. HONEST WEAKNESSES: automated pre-scan flagged sub-24px tap targets (9 desktop / 5 mobile), and the ~656 MB download + CPU-only generation is genuinely heavy on mobile — the page warns honestly but needs a real-device matrix pass + an explicit mobile support decision (support currently needs-review). guidanceConsulted: performance, break-up-long-tasks, css-layout, accessibility. Grounded in code + the immutable conformance suite; no measured numbers fabricated."
+}

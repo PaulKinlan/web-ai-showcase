@@ -1,0 +1,127 @@
+{
+  "schemaVersion": 1,
+  "id": "clap-zero-shot-audio",
+  "revision": 1,
+  "reviewedAt": "2026-07-20T00:00:00Z",
+  "reviewer": "retrospective critique backfill (code-grounded + existing conformance suite), revision 1",
+  "frontend": true,
+  "rubric": [
+    {
+      "dimension": "real-inference",
+      "score": 5,
+      "severity": "info",
+      "evidence": "worker.js runs REAL zero-shot inference on `Xenova/clap-htsat-unfused` via the shared loadPipeline() helper, then reuses the pipeline's own processor/tokenizer/model to reach the low-level tensors in ONE forward pass: `pipe.processor(audio)` + `pipe.tokenizer(labels, {padding,truncation})` → `pipe.model({...textInputs, ...audioInputs})`, reading output.logits_per_audio (scaled cosine sims) → softmax → probabilities, and computing real audio↔label cosine similarities from output.audio_embeds/text_embeds. Conformance calls-real-inference (source pattern) + io-shape-semantic (scores across the supplied candidate labels) cover it. Code-grounded backfill; the page measures + reports real latency.",
+      "notes": "CLAP = CLIP for sound (HTSAT audio encoder + RoBERTa text encoder → shared 512-d space). Inference + a genuine 64-band log-mel spectrogram both run off the main thread; the spectrogram buffer is transferred back."
+    },
+    {
+      "dimension": "io-shape",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Input = a 48 kHz mono Float32Array + a list of free-text labels. Output = { probs (softmax), logits (scaled cosine), cosines (raw audio↔label), audioDims, txtDims } rendered as softmax bars + a table (cosine sim / logit×scale / softmax per label) + the embedding dims. The 64-band log-mel spectrogram (ClapFeatureExtractor params: 48 kHz, n_fft 1024, hop 480, 64 mels over 50–14000 Hz) is drawn as the real audio-encoder input.",
+      "notes": "The label vocabulary is an INPUT decided at runtime — the defining property of zero-shot; same sound + different words → different winner."
+    },
+    {
+      "dimension": "runtime-config",
+      "score": 5,
+      "severity": "info",
+      "evidence": "At-a-glance declares the exact model id (Xenova/clap-htsat-unfused, linked), the task (zero-shot-audio-classification), the architecture (HTSAT + RoBERTa → shared 512-d space), the 48 kHz / 64-mel input + free-text labels, quantisation (q8, model_quantized.onnx), backend (WASM; WebGPU when an adapter exists), download (~160 MB), and license (Apache-2.0). ensureLoaded probes WebGPU and falls back to WASM honestly, reporting device. Conformance declares-model-id/task/quantisation(q8)/backend covered.",
+      "notes": ""
+    },
+    {
+      "dimension": "cache-init",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Loads through the shared createModelLoader (modelId Xenova/clap-htsat-unfused, dtype q8, sizeMB 160); a valid current cached model auto-initialises with no Load click; onReady enables the classify path. Conformance shared-auto-init-loader + auto-init-on-cached cover it.",
+      "notes": ""
+    },
+    {
+      "dimension": "states",
+      "score": 4,
+      "severity": "info",
+      "evidence": "#status is role=status aria-live=polite; #recState + #bars are aria-live. Failures surface on the page via status; the Record button handles mic permission errors. Download progress flows from the pipeline progress_callback. The shared loader exposes retry/recovery. A 'Reset labels' control restores the default vocabulary.",
+      "notes": "Bundled sample sounds (tone/rain/siren/alarm) let the demo work with zero permissions when the mic is unavailable."
+    },
+    {
+      "dimension": "controls",
+      "score": 5,
+      "severity": "info",
+      "evidence": "All controls real + keyboard-operable: a dropzone (role=button, tabindex=0), four sample chips (tone/rain/siren/alarm) with aria-pressed, a Record-from-mic button (user-initiated), native <audio controls>, the free-text labels <textarea> (comma-separated — the zero-shot vocabulary), the Classify button, and a Reset-labels button. The softmax bars + per-label table render the real output. buttons-have-names passes.",
+      "notes": "The labels textarea is the star control — it makes the class set a runtime input."
+    },
+    {
+      "dimension": "no-fake-output",
+      "score": 5,
+      "severity": "info",
+      "evidence": "No canned scores — probs/logits/cosines come from the real CLAP forward pass; the spectrogram is a genuine FFT-based 64-band log-mel of the input. Conformance no-fake-output (manual-evidenced) holds.",
+      "notes": "The per-label cosine/logit/softmax table exposes the raw numbers behind the bars — a strong no-fake signal."
+    },
+    {
+      "dimension": "accessibility",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Every button has an accessible name; the waveform canvas has aria-label; the spectrogram canvas has a full descriptive aria-label (axes/brightness) + a text legend; #bars + #recState are aria-live; the dropzone has role=button + aria-label; the labels textarea has a wrapping <label>. Light+dark WCAG-AA. buttons-have-names + live-status-region + images-have-alt conformance pass.",
+      "notes": "The per-label numbers are DOM (natively readable) in addition to the visual bars."
+    },
+    {
+      "dimension": "responsive",
+      "score": 4,
+      "severity": "minor",
+      "evidence": "The run panel is a two-column flex (audio column flex:1 1 300px, labels column flex:1 1 280px) that stacks on narrow screens; canvases inline-size:100%; bars/table wrap. responsive-desktop/responsive-mobile conformance assert no horizontal overflow. models.json support is needs-review with an automated note flagging sub-24px targets (desktop 9, mobile 5).",
+      "notes": "HONEST WEAKNESS: sub-24px tap targets flagged (sample chips + native audio controls). Follow-up matrix pass should confirm the two-column panel stacks cleanly + the spectrogram fits at 360px, raise chip tap size, then flip support to ok."
+    },
+    {
+      "dimension": "performance",
+      "score": 4,
+      "severity": "info",
+      "evidence": "The CLAP forward pass AND the 64-band log-mel FFT (radix-2 over 1024-pt frames, capped ~1000 frames / 10 s) both run in the Web Worker; the spectrogram buffer is transferred back. The main thread only draws bounded canvases. Conformance inference-off-main-thread passes.",
+      "notes": "Doing the FFT off-thread keeps INP low; the one forward pass embeds both audio and all labels together."
+    }
+  ],
+  "guidanceConsulted": [
+    {
+      "query": "keep INP low move CLAP forward + FFT spectrogram off main thread web worker",
+      "id": "performance",
+      "recommendation": "Move heavy work off the main thread and keep interactions responsive (INP); avoid long blocking tasks on the main thread.",
+      "appliedOrException": "applied — the CLAP forward pass and the log-mel FFT both run in a dedicated module Web Worker; the spectrogram buffer is transferred back; only bounded canvas draws run on the main thread.",
+      "evidence": "worker.js off-thread + transfer([spectrogram.data.buffer]); conformance inference-off-main-thread pass"
+    },
+    {
+      "query": "break up long tasks / yield during heavy FFT computation",
+      "id": "break-up-long-tasks",
+      "recommendation": "Break up heavy synchronous processing / long loops so the browser can handle input and repaint; yield periodically.",
+      "appliedOrException": "applied-by-architecture — the FFT/mel loop is entirely off the main thread and frame-capped (≤1000), so the main thread never runs the long task; scheduler.yield would be the pattern if any of it moved on-thread.",
+      "evidence": "logMel() runs in worker.js, capped at ~1000 frames"
+    },
+    {
+      "query": "expose canvas spectrogram + waveform content to assistive tech",
+      "id": "expose-canvas-content-to-browser-features",
+      "recommendation": "Give a meaningful accessible name to canvas-rendered content and duplicate its information as text where possible.",
+      "appliedOrException": "applied — the spectrogram canvas has a descriptive aria-label + text legend; the per-label cosine/logit/softmax numbers are DOM + a table, duplicating the visual bars.",
+      "evidence": "aria-labels on #wave/#spec + #bars DOM + #insideRows table"
+    },
+    {
+      "query": "responsive two-column classifier panel with free-text labels without horizontal overflow",
+      "id": "css-layout",
+      "recommendation": "Use fluid flex/grid with flex-wrap + intrinsic sizing so multi-column panels stack on narrow screens instead of overflowing.",
+      "appliedOrException": "applied — the run panel is a flex:1 1 300px / 1 1 280px two-column layout that stacks narrow; canvases + textarea fluid. Follow-up: confirm stack at 360px + raise chip tap targets.",
+      "evidence": "responsive-desktop/responsive-mobile assert no-horizontal-overflow; support needs-review"
+    }
+  ],
+  "openQuestions": [
+    "Very long label lists widen the softmax bars/table — do they wrap/scroll cleanly on a 360px viewport, or should the label count be soft-capped for the mobile layout?",
+    "How many of the flagged sub-24px targets are the native <audio> controls versus sample chips we can enlarge?"
+  ],
+  "followUpGoals": [
+    {
+      "goal": "Run the mobile+desktop responsive matrix, confirm the two-column panel + spectrogram + long label lists contain overflow at 360px, raise sub-24px tap targets, and flip models.json support to ok.",
+      "kind": "targeted-fix",
+      "priority": "medium"
+    },
+    {
+      "goal": "Add a 'wild' vibe-sorter that scores a clip against abstract qualities (calm/chaotic/ominous) to showcase runtime-defined labels no fixed classifier has a class for.",
+      "kind": "additive-demo",
+      "priority": "low"
+    }
+  ],
+  "summary": "Retrospective code-grounded critique backfill for clap-zero-shot-audio (Xenova/clap-htsat-unfused, zero-shot-audio-classification, q8, ~160 MB, Apache-2.0, WASM). REAL inference: the worker reuses the pipeline's processor/tokenizer/model to run ONE forward pass embedding the 48 kHz audio + all free-text labels into CLAP's shared 512-d space, reading logits_per_audio → softmax + real cosine similarities, plus a genuine 64-band log-mel spectrogram — all off the main thread. The comma-separated labels textarea makes the class set a runtime input (the zero-shot property). Controls (dropzone, sample chips with aria-pressed, mic user-initiated, labels textarea, classify, reset, audio) are all real; softmax bars + per-label cosine/logit/softmax table + spectrogram are the real output. Auto-init via createModelLoader. HONEST WEAKNESS: automated pre-scan flagged sub-24px tap targets (9 desktop / 5 mobile), support needs-review — a follow-up matrix pass should verify the two-column panel + long label lists stack/scroll at 360px and raise chip tap sizes. guidanceConsulted: performance, break-up-long-tasks, expose-canvas-content-to-browser-features, css-layout. Grounded in code + the immutable conformance suite; no measured numbers fabricated."
+}

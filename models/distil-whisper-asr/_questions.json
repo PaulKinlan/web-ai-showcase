@@ -1,0 +1,127 @@
+{
+  "schemaVersion": 1,
+  "id": "distil-whisper-asr",
+  "revision": 1,
+  "reviewedAt": "2026-07-20T00:00:00Z",
+  "reviewer": "retrospective critique backfill (code-grounded + existing conformance suite), revision 1",
+  "frontend": true,
+  "rubric": [
+    {
+      "dimension": "real-inference",
+      "score": 5,
+      "severity": "info",
+      "evidence": "worker.js runs the REAL transformers.js automatic-speech-recognition pipeline on `distil-whisper/distil-small.en` via the shared loadPipeline() helper (dtype q8), then `pipe(audio, { return_timestamps:true, chunk_length_s:20, stride_length_s:3 })`. Distil-Whisper keeps Whisper's seq2seq architecture + timestamp tokens (12 encoder layers, decoder cut to 4), so it returns text + timestamped chunks. Conformance calls-real-inference (source pattern) + io-shape-semantic (transcript matches spoken audio) cover it. Code-grounded backfill; the page measures + reports real ms/rtf/speedup/tok-per-s.",
+      "notes": "Inference runs off the main thread in a dedicated module Worker; the 16 kHz mono Float32 samples go in and text + segments come back."
+    },
+    {
+      "dimension": "io-shape",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Input = a 16 kHz mono Float32Array. Output = { text, chunks:[{text, timestamp:[start,end]}] }; the page renders the transcript in an aria-live region and the timestamped segments in a table. Unlike a CTC model it keeps timestamps (seq2seq), which the see-inside surface calls out. Empty result honestly shows '(no speech detected)'.",
+      "notes": "English-only (distil-small.en) — stated in at-a-glance."
+    },
+    {
+      "dimension": "runtime-config",
+      "score": 5,
+      "severity": "info",
+      "evidence": "At-a-glance declares the exact model id (distil-whisper/distil-small.en, linked; distilled from whisper-small, English-only), the task, the distillation (12 encoder / 4 decoder layers, ~166M params, 80-bin log-Mel), quantisation (q8, *_quantized.onnx encoder + merged decoder), backend (WASM; WebGPU when a real adapter exists), download (~172 MB), and license (MIT). ensureLoaded probes WebGPU and falls back to WASM honestly, reporting device. Conformance declares-model-id/task/quantisation(q8)/backend covered.",
+      "notes": ""
+    },
+    {
+      "dimension": "cache-init",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Loads through the shared createModelLoader (modelId distil-whisper/distil-small.en, dtype q8, sizeMB 172); a valid current cached model auto-initialises with no Load click; onReady enables the mic/upload/Transcribe controls. Conformance shared-auto-init-loader + auto-init-on-cached cover it.",
+      "notes": ""
+    },
+    {
+      "dimension": "states",
+      "score": 4,
+      "severity": "info",
+      "evidence": "#status is role=status aria-live=polite; #transcript is aria-live. Failures surface: 'Couldn't decode that audio: …', 'Transcription failed: …' (.err), and a #micFallback panel when the mic is unavailable/denied. Download progress flows from the pipeline progress_callback. The shared loader exposes retry/recovery.",
+      "notes": "WASM default path runs everywhere; no WebGPU required."
+    },
+    {
+      "dimension": "controls",
+      "score": 5,
+      "severity": "info",
+      "evidence": "All controls real + keyboard-operable: Record (mic, user-initiated), Upload audio (file input), two sample chips (JFK, TED), the Transcribe button, and native <audio controls>. Mic capture requires a click + shows an explicit unavailable fallback. buttons-have-names passes.",
+      "notes": ""
+    },
+    {
+      "dimension": "no-fake-output",
+      "score": 5,
+      "severity": "info",
+      "evidence": "No canned transcript — text + segments come from the real pipeline; tokens, rtf, speedup, and tok-per-s are measured on-device. Conformance no-fake-output (manual-evidenced) holds.",
+      "notes": ""
+    },
+    {
+      "dimension": "accessibility",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Every button has an accessible name; the waveform canvas carries aria-label='Audio waveform'; transcript + status are aria-live; timestamped segments are a real <table> with th headers; the speed readout is text. Light+dark WCAG-AA design system. buttons-have-names + live-status-region conformance pass.",
+      "notes": ""
+    },
+    {
+      "dimension": "responsive",
+      "score": 4,
+      "severity": "minor",
+      "evidence": ".audio-row/.sample-row flex-wrap, .wave inline-size:100%, readout wraps, segment table in the design system. responsive-desktop/responsive-mobile conformance assert no horizontal overflow. models.json support is needs-review with an automated note flagging sub-24px targets (desktop 9, mobile 5).",
+      "notes": "HONEST WEAKNESS: sub-24px tap targets flagged (sample chips + native audio controls). Follow-up matrix pass should raise chip tap size and flip support to ok."
+    },
+    {
+      "dimension": "performance",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Inference runs in the Web Worker; the main thread only decodes audio and draws the bounded waveform. Distil-Whisper's 4-layer decoder is chosen to cut wall-clock time, which the page measures honestly (rtf + Nx speed-up badge). Conformance inference-off-main-thread passes.",
+      "notes": "INP kept low — the transcribe call never blocks the interface."
+    }
+  ],
+  "guidanceConsulted": [
+    {
+      "query": "keep INP low move ASR inference off main thread web worker",
+      "id": "performance",
+      "recommendation": "Move heavy work off the main thread and keep interactions responsive (INP); avoid long blocking tasks on the main thread.",
+      "appliedOrException": "applied — transcription runs in a dedicated module Web Worker; only audio decode + a bounded waveform draw run on the main thread.",
+      "evidence": "worker.js off-thread; conformance inference-off-main-thread pass"
+    },
+    {
+      "query": "responsive audio control panel and segment table without horizontal overflow",
+      "id": "css-layout",
+      "recommendation": "Use fluid flex/grid with flex-wrap + intrinsic sizing; avoid fixed widths that force horizontal overflow.",
+      "appliedOrException": "applied — .audio-row/.sample-row flex-wrap; canvas inline-size:100%; design-system segment table. Follow-up: raise sub-24px chip tap targets.",
+      "evidence": "responsive-desktop/responsive-mobile assert no-horizontal-overflow; support needs-review"
+    },
+    {
+      "query": "accessible live region status + transcript announcement; media element accessibility",
+      "id": "accessibility",
+      "recommendation": "Announce loading/ready/error + live transcript via role=status/aria-live; give every control an accessible name; use native <audio controls>.",
+      "appliedOrException": "applied — #status role=status aria-live; #transcript aria-live; native <audio controls>; labelled buttons; segment <table> with headers.",
+      "evidence": "buttons-have-names + live-status-region conformance pass"
+    },
+    {
+      "query": "accessible error announcement for mic unavailable / decode failure",
+      "id": "accessible-error-announcement",
+      "recommendation": "Surface errors to the user in an accessible, live-announced way rather than only in the console.",
+      "appliedOrException": "applied — decode/transcription failures set an .err status in the aria-live region; #micFallback explains an unavailable microphone with a sample/upload alternative.",
+      "evidence": "errors-on-the-page conformance + #micFallback"
+    }
+  ],
+  "openQuestions": [
+    "How does distil-small.en's measured speed-up over whisper-small actually land on WASM for the bundled clips — worth a documented number once verified in a real browser?",
+    "How many of the flagged sub-24px targets are the native <audio> controls versus sample chips we can enlarge?"
+  ],
+  "followUpGoals": [
+    {
+      "goal": "Run the mobile+desktop responsive matrix, raise sample-chip tap targets to ≈44px, and flip models.json support from needs-review to ok.",
+      "kind": "targeted-fix",
+      "priority": "medium"
+    },
+    {
+      "goal": "Add a side-by-side 'basics' comparison against whisper-base on the same clip to make the distillation speed/accuracy tradeoff tangible.",
+      "kind": "additive-demo",
+      "priority": "low"
+    }
+  ],
+  "summary": "Retrospective code-grounded critique backfill for distil-whisper-asr (distil-whisper/distil-small.en, ASR, q8, ~172 MB, MIT, English-only, WASM default). REAL inference: the worker runs the transformers.js ASR pipeline via the shared loadPipeline helper with return_timestamps + chunking, off the main thread, and reports the real speed-up (distilled 4-layer decoder) + tok-per-s it measured. Keeps Whisper's timestamped segments (seq2seq). Controls (mic user-initiated + fallback, upload, samples, transcribe, audio) are all real; transcript + segment table are the real output. Auto-init via createModelLoader. HONEST WEAKNESS: automated pre-scan flagged sub-24px tap targets (9 desktop / 5 mobile), support needs-review — a follow-up matrix pass should raise chip tap sizes. guidanceConsulted: performance, css-layout, accessibility, accessible-error-announcement. Grounded in code + the immutable conformance suite; no measured numbers fabricated."
+}
