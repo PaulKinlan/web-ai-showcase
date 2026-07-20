@@ -129,7 +129,7 @@ async function run(id, imageURL) {
   // Degrade to null where OffscreenCanvas is unavailable; the page keeps its per-pixel fallback.
   const cutout = buildCutout(image, alpha, w, h);
 
-  const transfer = [buf];
+  const transfer = [alpha.buffer];
   if (cutout) transfer.push(cutout);
   post(
     {
@@ -137,7 +137,7 @@ async function run(id, imageURL) {
       id,
       width: w,
       height: h,
-      alpha: buf,
+      alpha: alpha,
       cutout,
       coverage: fg / alpha.length,
       softEdge: soft,
