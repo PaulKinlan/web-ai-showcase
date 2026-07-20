@@ -140,7 +140,11 @@ short version for tools that look for `AGENTS.md`.
   broadcast an axis by a dimension other than 1. 44 by 45` [a hardcoded even seq dim no add_blank
   mms-tts input can match]; no other Kannada MMS-TTS ONNX exists. Sibling Hindi [`Xenova/mms-tts-hin`,
   plain pipeline] + Tamil [`naklitechie/mms-tts-ta-ONNX`, AutoModel + a VitsTokenizer verified
-  byte-identical to the real one since that export omits tokenizer.json] are BUILT).
+  byte-identical to the real one since that export omits tokenizer.json] are BUILT), **mms-tts-nepali**
+  (NO MMS-TTS Nepali ONNX exists — Xenova/onnx-community/naklitechie families have no Nepali member,
+  `facebook/mms-tts-npi` is safetensors-only+401; the only Nepali VITS ONNX are Piper/sherpa exports
+  [espeak-ng phoneme input, Piper I/O signature] incompatible with the MMS char-tokenizer pipeline —
+  don't substitute Piper).
   Never mislabel a substitute as the blocked family.
 - **Version-pin escape hatch (isolated).** If a model's class exists only in a transformers.js newer
   than the shared 3.7.5 pin (e.g. SAM2's `Sam2Model` needs 4.2.0), pin the newer version LOCALLY in

@@ -261,7 +261,13 @@ dimension other than 1. 44 by 45` [a hardcoded even sequence dim that no add_bla
 (2N+1, odd) can ever match]. Defective export, not a device limit; no other Kannada MMS-TTS ONNX
 exists. NOTE: sibling Hindi (`Xenova/mms-tts-hin`) and Tamil (`naklitechie/mms-tts-ta-ONNX`, loaded
 via AutoModel + a VitsTokenizer verified byte-identical to the real one, since that export omits
-tokenizer.json) are BUILT). Never mislabel a substitute as the blocked family.
+tokenizer.json) are BUILT), **mms-tts-nepali** (NO MMS-TTS Nepali ONNX exists anywhere on the Hub —
+Xenova ships 12 mms-tts langs but not npi/nep; onnx-community has only kan/aka; the naklitechie Indic
+family [ta/te/bn/mr/gu/ml/pa/or/as/ur/mai] has no Nepali member; `facebook/mms-tts-npi` is
+safetensors-only + 401. The only Nepali VITS ONNX are Piper/sherpa exports [`csukuangfj/vits-piper-
+ne_NP-*`] that take espeak-ng PHONEME input with a Piper-specific I/O signature — NOT the MMS
+character-tokenizer pipeline, so not loadable; don't substitute a Piper model. Distinct-script MMS-TTS
+BUILT so far: en/de/es/fr/ar/vi/hi/ta/gu/te). Never mislabel a substitute as the blocked family.
 
 **Version-pin escape hatch (isolated).** A model whose class exists only in a transformers.js newer
 than the shared 3.7.5 pin (e.g. SAM2 — `Sam2Model` lands in 4.2.0, absent from 3.7.5) may pin the

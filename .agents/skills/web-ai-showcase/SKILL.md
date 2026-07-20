@@ -135,7 +135,10 @@ of every model you can genuinely run in a browser — not a token set. Read `CLA
   repos have zero `.onnx`; language-specific — other mms-tts languages remain buildable), **mms-tts-korean**
   (`Xenova/mms-tts-kor` is `is_uroman:true`, 25-symbol Latin-only vocab [no Hangul] → Hangul input
   gives empty `input_ids` and VITS aborts; runs only on pre-romanized Latin — check `is_uroman` before
-  selecting any mms-tts). Never mislabel
+  selecting any mms-tts), **mms-tts-kannada** (is_uroman:false but the ONNX export is DEFECTIVE — aborts
+  every input; 4.2.0 error "broadcast axis 44 by 45" = hardcoded even seq-dim vs mms-tts odd add_blank),
+  **mms-tts-nepali** (no MMS-TTS Nepali ONNX exists; only Piper/sherpa phoneme-input exports, not the
+  MMS pipeline). MMS-TTS built: en/de/es/fr/ar/vi/hi/ta/gu/te. Never mislabel
   a substitute as the blocked family.
 - **Version-pin escape hatch:** a model needing a transformers.js class newer than the shared 3.7.5
   (e.g. SAM2 needs 4.2.0) may pin the newer version LOCALLY in its own `worker.js` only — never bump
