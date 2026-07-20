@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>NuExtract — template-driven structured extraction in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run NuExtract-1.5-tiny locally: a small LLM specialised to fill a JSON template from free text. Give it messy text and a schema, get back valid JSON — validated with JSON.parse, generated on-device via WebAssembly. Not a chatbot; a pure extraction model."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='13'>🧩</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">text-generation (structured) · text · WebAssembly (CPU) · ~770 MB</p>
+      <h1>NuExtract — turn messy text into the JSON you asked for</h1>
+      <p class="lede">
+        NuExtract is <strong>not a chatbot</strong>. It's a small LLM (a fine-tune of Qwen2.5-0.5B) trained
+        for exactly one job: you hand it a block of <strong>text</strong> and a <strong>JSON template</strong>
+        naming the fields you want, and it returns JSON that fills the template — copying values verbatim
+        from the text, not paraphrasing or inventing. Give it an invoice, a résumé, a support email; get
+        back a clean object you can <code>JSON.parse()</code>. All on your device, no key, no server.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="glance">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/onnx-community/NuExtract-1.5-tiny-ONNX" target="_blank" rel="noopener">onnx-community/NuExtract-1.5-tiny-ONNX</a> <span class="muted">(base: numind/NuExtract-1.5-tiny)</span></td></tr>
+          <tr><th>Task</th><td><code>text-generation</code> — but constrained to <strong>template-conditioned extraction</strong>, not open chat</td></tr>
+          <tr><th>Architecture</th><td>Qwen2 decoder-only transformer, 0.5B params, fine-tuned on a private high-quality extraction dataset. Multilingual (EN/FR/ES/DE/PT/IT).</td></tr>
+          <tr><th>Params / dtype</th><td>0.5B · <code>q4</code> (4-bit weights, <code>onnx/model_q4.onnx</code>) <span class="muted">— the q8/int8 exports of this fine-tune are degenerate (empty output); q4 is the honest runnable one</span></td></tr>
+          <tr><th>Backend</th><td>WebAssembly (CPU) — <strong>no WebGPU required</strong></td></tr>
+          <tr><th>Download</th><td>~770 MB, cached after first load</td></tr>
+          <tr><th>License</th><td>MIT</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="chips" id="examples" aria-label="Example inputs">
+        <button type="button" class="chip" data-ex="person">Person &amp; role</button>
+        <button type="button" class="chip" data-ex="product">Product spec</button>
+        <button type="button" class="chip" data-ex="event">Event details</button>
+      </div>
+
+      <div class="extract-grid">
+        <div class="field">
+          <label for="text">Source text — the messy input</label>
+          <textarea id="text" class="text-in" rows="8" spellcheck="false"></textarea>
+        </div>
+        <div class="field">
+          <label for="template">JSON template — the fields you want (values left empty)</label>
+          <textarea id="template" rows="8" spellcheck="false"></textarea>
+        </div>
+      </div>
+
+      <div class="actions">
+        <button id="run" type="button" disabled>Extract JSON</button>
+        <span id="validBadge" class="badge" hidden></span>
+      </div>
+
+      <h4 style="font-family:var(--font-body);font-size:.9rem;margin:.6rem 0 .2rem">Extracted JSON</h4>
+      <div class="json-out" id="out" aria-live="polite"><span class="muted">Load the model, pick an example (or write your own), then Extract.</span></div>
+
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>tokens <b id="rTok">–</b></span>
+        <span>time <b id="rMs">–</b></span>
+        <span>JSON.parse <b id="rValid">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside — the template-conditioned prompt</h3>
+      <p class="muted">
+        NuExtract has no special "extraction API" — the magic is entirely in the <strong>prompt format</strong>
+        the model was fine-tuned on. Your template and text are slotted into a fixed scaffold, and the model
+        is trained to continue it with the filled JSON after the <code>&lt;|output|&gt;</code> marker. This is
+        the <strong>exact string</strong> sent to the model on your last run, plus the raw decoded output —
+        nothing pre-computed.
+      </p>
+      <h4 style="font-family:var(--font-body);font-size:.85rem;margin:.6rem 0 .2rem">Constructed prompt</h4>
+      <pre class="tmpl" id="promptView"><span class="muted">Run an extraction to see the prompt the model receives.</span></pre>
+      <h4 style="font-family:var(--font-body);font-size:.85rem;margin:.8rem 0 .2rem">Raw decoded output (before JSON.parse)</h4>
+      <pre class="tmpl" id="rawView"><span class="muted">The raw generation appears here.</span></pre>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        "Turn this text into structured data" is one of the most common real jobs for an LLM — and it's
+        usually done by sending your documents to a cloud API. NuExtract shows it can run <strong>entirely
+        on-device</strong>: private by construction (contracts, medical notes, PII never leave the machine),
+        free per call, and offline once cached. Because it's template-driven, the output shape is
+        <strong>predictable</strong> — you define the schema, so the JSON is ready for a form, a database,
+        or an API without a second parsing step.
+      </p>
+      <ul>
+        <li><strong>Document → database</strong> — invoices, receipts, forms, and résumés into typed records.</li>
+        <li><strong>Inbox triage</strong> — pull the order number, amount, and intent out of support emails.</li>
+        <li><strong>Private PII handling</strong> — extract fields from sensitive text with nothing uploaded.</li>
+        <li><strong>Pipeline glue</strong> — the structuring step after OCR or speech-to-text (see Multi-model).</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Extract a few named fields from a sentence — the core template → JSON loop.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Real documents: invoice, résumé, and support email → schema-shaped JSON.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Nested templates and deliberately messy, multi-entity text.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">OCR a receipt image with TrOCR → NuExtract structures the text into JSON.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>
+        There is no bespoke library — it's the standard <code>text-generation</code> pipeline with a
+        specific prompt. Build the template-conditioned string, generate greedily (the card recommends
+        temperature ≈ 0 for pure extraction), and take everything after <code>&lt;|output|&gt;</code>:
+      </p>
+      <pre><code>import { pipeline } from "@huggingface/transformers";
+
+const gen = await pipeline(
+  "text-generation",
+  "onnx-community/NuExtract-1.5-tiny-ONNX",
+  { device: "wasm", dtype: "q4" },   // q4 is the runnable export
+);
+
+const template = JSON.stringify({ Name: "", Role: "", Company: "" }, null, 4);
+const text = "Maria Garcia is the CTO at Northwind Robotics, based in Berlin.";
+const prompt = `&lt;|input|&gt;\n### Template:\n${template}\n### Text:\n${text}\n\n&lt;|output|&gt;`;
+
+const out = await gen(prompt, { max_new_tokens: 256, do_sample: false });
+const json = out[0].generated_text.split("&lt;|output|&gt;")[1].trim();
+JSON.parse(json);   // → { Name: "Maria Garcia", Role: "CTO", Company: "Northwind Robotics" }</code></pre>
+      <p class="muted">
+        Everything runs in a Web Worker so the CPU-bound generation never blocks the page; the loader
+        auto-inits an already-cached copy and never silently re-downloads. The output is validated with
+        <code>JSON.parse()</code> on the page — if it isn't valid JSON, the page says so honestly.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/onnx-community/NuExtract-1.5-tiny-ONNX" target="_blank" rel="noopener">Model card — NuExtract-1.5-tiny (ONNX)</a></li>
+        <li><a href="https://huggingface.co/numind/NuExtract-1.5-tiny" target="_blank" rel="noopener">Base — numind/NuExtract-1.5-tiny</a></li>
+        <li><a href="https://numind.ai/blog/nuextract-1-5---multilingual-infinite-context-still-small-and-better-than-gpt-4o" target="_blank" rel="noopener">NuExtract 1.5 blog post</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a> on WebAssembly.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <style>
+      .glance { inline-size:100%; border-collapse:collapse; font-size:.85rem; }
+      .glance th, .glance td { text-align:left; padding:.3rem .5rem; border-bottom:1px solid var(--border); vertical-align:top; }
+      .glance th { color:var(--muted); font-weight:600; inline-size:11rem; }
+      .glance td { overflow-wrap:anywhere; }
+    </style>
+
+    <script type="module">
+      import { NuExtractEngine, escapeHTML, prettyJSON, NUEXTRACT_CSS } from "./nuextract.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = NUEXTRACT_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new NuExtractEngine();
+      let loaded = false, backend = "WASM", busy = false;
+
+      const EXAMPLES = {
+        person: {
+          text: "Maria Garcia is the Chief Technology Officer at Northwind Robotics, a company she joined in 2021. She is based in Berlin and previously led engineering at a fintech startup.",
+          template: { "Name": "", "Role": "", "Company": "", "Location": "" },
+        },
+        product: {
+          text: "The AeroBook Pro 14 ships with 32 GB of RAM, a 1 TB SSD, and a 14.2-inch display. It weighs 1.6 kg and starts at $1,999. Battery life is rated at 18 hours.",
+          template: { "Product": "", "RAM": "", "Storage": "", "Price": "", "Battery": "" },
+        },
+        event: {
+          text: "Join us for the Web AI Summit on March 12, 2026 at the Moscone Center in San Francisco. Doors open at 9:00 AM. Keynote by Dr. Lena Ortiz. Tickets are $249.",
+          template: { "Event": "", "Date": "", "Venue": "", "City": "", "Speaker": "", "Price": "" },
+        },
+      };
+
+      function setExample(key) {
+        const ex = EXAMPLES[key];
+        if (!ex) return;
+        $("text").value = ex.text;
+        $("template").value = JSON.stringify(ex.template, null, 2);
+        for (const c of document.querySelectorAll("#examples .chip")) {
+          c.setAttribute("aria-pressed", String(c.dataset.ex === key));
+        }
+      }
+      for (const chip of document.querySelectorAll("#examples .chip")) {
+        chip.addEventListener("click", () => setExample(chip.dataset.ex));
+      }
+      setExample("person");
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: {
+          modelId: "onnx-community/NuExtract-1.5-tiny-ONNX",
+          runtime: "transformers.js",
+          dtype: "q4",
+          sizeMB: 770,
+          requiresWebGPU: false,
+        },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: (device) => {
+          loaded = true; backend = String(device || "wasm").toUpperCase();
+          $("run").disabled = false;
+        },
+      });
+
+      async function run() {
+        if (!loaded || busy) return;
+        const text = $("text").value.trim();
+        const template = $("template").value.trim();
+        if (!text || !template) { $("status").textContent = "Add both source text and a JSON template."; return; }
+        busy = true;
+        $("run").disabled = true; $("status").classList.remove("err", "ok");
+        $("status").textContent = "Extracting on the CPU…";
+        $("out").textContent = ""; $("validBadge").hidden = true; $("readout").hidden = true;
+        $("rawView").textContent = "";
+        let acc = "";
+        try {
+          const res = await engine.extract(template, text, {
+            maxTokens: 512,
+            onPrompt: (p) => { $("promptView").textContent = p; },
+            onToken: (tok) => { acc += tok; $("rawView").textContent = acc; },
+          });
+          $("rawView").textContent = res.raw || acc || "(no output)";
+          $("out").textContent = res.valid ? prettyJSON(res.parsed) : (res.raw || "(no output)");
+          $("out").className = "json-out " + (res.valid ? "valid" : "invalid");
+          $("validBadge").hidden = false;
+          $("validBadge").className = "badge " + (res.valid ? "ok" : "no");
+          $("validBadge").textContent = res.valid ? "✓ valid JSON (JSON.parse OK)" : "✗ not valid JSON";
+          $("readout").hidden = false;
+          $("rBackend").textContent = backend; $("rTok").textContent = res.tokens;
+          $("rMs").textContent = res.ms + " ms"; $("rValid").textContent = res.valid ? "passed" : "failed";
+          $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (err) {
+          $("out").textContent = acc || "(extraction failed)"; $("out").className = "json-out invalid";
+          $("status").textContent = "Extraction failed: " + err.message; $("status").classList.add("err");
+        } finally {
+          busy = false; $("run").disabled = false;
+        }
+      }
+      $("run").addEventListener("click", run);
+
+      if ("serviceWorker" in navigator) navigator.serviceWorker.register("/web-ai-showcase/sw.js").catch(() => {});
+    </script>
+  </body>
+</html>

@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>NuExtract Multi-model — OCR → structured JSON · Web AI Showcase</title>
+    <meta name="description" content="Chain two models in your browser: TrOCR reads printed text from a receipt image, then NuExtract structures that text into JSON — the classic document-to-data pipeline, fully on-device." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='13'>🧩</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">NuExtract</a></p>
+
+    <header>
+      <p class="eyebrow">use case · multi-model</p>
+      <h1>Multi-model: image → text → structured JSON</h1>
+      <p class="lede">
+        Extraction usually starts from a <em>document</em>, not clean text. So chain two models:
+        <a href="../../trocr-ocr/">TrOCR</a> reads the printed text off a receipt image, then NuExtract
+        turns that text into JSON. Pixels in, a typed record out — both models running in your browser,
+        nothing uploaded.
+      </p>
+    </header>
+
+    <section class="panel">
+      <h3>Step 1 — TrOCR (image → text)</h3>
+      <div id="ocr-loader"></div>
+      <h3 style="margin-top:1rem">Step 2 — NuExtract (text → JSON)</h3>
+      <div id="nx-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+
+      <div style="margin-top:.8rem">
+        <p class="muted" style="font-size:.82rem;margin:.2rem 0">Pick a printed sample (TrOCR reads one line of print):</p>
+        <div class="sample-strip" id="samples">
+          <img class="sample-thumb active" src="sample-total.png" data-src="sample-total.png" alt="A receipt line reading Grand Total $42.99" tabindex="0" role="button" />
+        </div>
+      </div>
+
+      <button id="read" type="button" disabled>Read image with TrOCR</button>
+
+      <div class="extract-grid" style="margin-top:.8rem">
+        <div class="field">
+          <label for="text">Recognized text (from OCR — editable)</label>
+          <textarea id="text" class="text-in" rows="4" spellcheck="false" placeholder="Run 'Read image' to fill this from the receipt…"></textarea>
+        </div>
+        <div class="field">
+          <label for="template">JSON template</label>
+          <textarea id="template" rows="4" spellcheck="false">{
+  "Label": "",
+  "Amount": "",
+  "Currency": ""
+}</textarea>
+        </div>
+      </div>
+
+      <div class="actions">
+        <button id="extract" type="button" disabled>Extract JSON</button>
+        <span id="validBadge" class="badge" hidden></span>
+      </div>
+
+      <h4 style="font-family:var(--font-body);font-size:.9rem;margin:.6rem 0 .2rem">Extracted JSON</h4>
+      <div class="json-out" id="out" aria-live="polite"><span class="muted">Read the image, then Extract.</span></div>
+      <div class="readout" id="readout" hidden>
+        <span>OCR backend <b id="rOcr">–</b></span><span>OCR time <b id="rOcrMs">–</b></span>
+        <span>NX backend <b id="rNx">–</b></span><span>NX time <b id="rNxMs">–</b></span>
+        <span>JSON.parse <b id="rValid">–</b></span>
+      </div>
+    </section>
+
+    <section aria-labelledby="how-h">
+      <h2 id="how-h">What's happening</h2>
+      <p>
+        TrOCR is a single-line printed-text recogniser, so it reads the total line off the receipt image;
+        that string flows into NuExtract, which fills your template. Both models run in their own Web
+        Workers — the ViT-decoder OCR and the CPU-bound extraction never block the page. This is the shape
+        of real document automation on the edge: a reader model plus a structuring model, composed
+        client-side, working offline once cached.
+      </p>
+    </section>
+
+    <p class="crumbs"><a href="../wild/">← Wild</a> · <a href="../">Back to NuExtract</a></p>
+
+    <script type="module">
+      import { NuExtractEngine, prettyJSON, NUEXTRACT_CSS } from "../nuextract.js";
+      import { OcrEngine, OCR_CSS } from "/web-ai-showcase/models/trocr-ocr/ocr.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = NUEXTRACT_CSS + OCR_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const ocr = new OcrEngine();
+      const nx = new NuExtractEngine();
+      let ocrReady = false, nxReady = false, ocrBackend = "WASM", nxBackend = "WASM";
+      let curImg = "sample-total.png", ocrMs = 0;
+
+      for (const thumb of $("samples").children) {
+        const pick = () => {
+          curImg = thumb.dataset.src;
+          for (const t of $("samples").children) t.classList.toggle("active", t === thumb);
+        };
+        thumb.addEventListener("click", pick);
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(); } });
+      }
+
+      createModelLoader({
+        mount: $("ocr-loader"),
+        model: { modelId: "Xenova/trocr-small-printed", runtime: "transformers.js", dtype: "q8", sizeMB: 185, requiresWebGPU: false },
+        load: async (onProgress) => ({ device: await ocr.load((p) => onProgress(p)) }),
+        onReady: (r) => { ocrReady = true; ocrBackend = String(r?.device || "wasm").toUpperCase(); $("read").disabled = false; },
+      });
+      createModelLoader({
+        mount: $("nx-loader"),
+        model: { modelId: "onnx-community/NuExtract-1.5-tiny-ONNX", runtime: "transformers.js", dtype: "q4", sizeMB: 770, requiresWebGPU: false },
+        load: (onProgress) => nx.load(onProgress),
+        onReady: (device) => { nxReady = true; nxBackend = String(device || "wasm").toUpperCase(); syncExtract(); },
+      });
+
+      function syncExtract() { $("extract").disabled = !(nxReady && $("text").value.trim()); }
+      $("text").addEventListener("input", syncExtract);
+
+      $("read").addEventListener("click", async () => {
+        if (!ocrReady) return;
+        $("read").disabled = true; $("status").hidden = false; $("status").classList.remove("err", "ok");
+        $("status").textContent = "Reading the image with TrOCR…";
+        try {
+          const r = await ocr.recognize(curImg, 64);
+          ocrMs = r.ms; ocrBackend = String(r.device || "wasm").toUpperCase();
+          $("text").value = (r.text || "").trim();
+          syncExtract();
+          $("status").textContent = "OCR done — now Extract."; $("status").classList.add("ok");
+        } catch (err) {
+          $("status").textContent = "OCR failed: " + err.message; $("status").classList.add("err");
+        } finally { $("read").disabled = false; }
+      });
+
+      $("extract").addEventListener("click", async () => {
+        const text = $("text").value.trim(), template = $("template").value.trim();
+        if (!nxReady || !text) return;
+        $("extract").disabled = true; $("status").hidden = false; $("status").classList.remove("err", "ok");
+        $("status").textContent = "Structuring with NuExtract…"; $("out").textContent = ""; $("validBadge").hidden = true; $("readout").hidden = true;
+        try {
+          const res = await nx.extract(template, text, { maxTokens: 300 });
+          $("out").textContent = res.valid ? prettyJSON(res.parsed) : (res.raw || "(no output)");
+          $("out").className = "json-out " + (res.valid ? "valid" : "invalid");
+          $("validBadge").hidden = false; $("validBadge").className = "badge " + (res.valid ? "ok" : "no");
+          $("validBadge").textContent = res.valid ? "✓ valid JSON" : "✗ not valid JSON";
+          $("readout").hidden = false;
+          $("rOcr").textContent = ocrBackend; $("rOcrMs").textContent = ocrMs ? (ocrMs / 1000).toFixed(2) + " s" : "–";
+          $("rNx").textContent = nxBackend; $("rNxMs").textContent = res.ms + " ms"; $("rValid").textContent = res.valid ? "passed" : "failed";
+          $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (err) {
+          $("out").textContent = "(extraction failed)"; $("out").className = "json-out invalid";
+          $("status").textContent = "Extraction failed: " + err.message; $("status").classList.add("err");
+        } finally { $("extract").disabled = false; }
+      });
+      if ("serviceWorker" in navigator) navigator.serviceWorker.register("/web-ai-showcase/sw.js").catch(() => {});
+    </script>
+  </body>
+</html>

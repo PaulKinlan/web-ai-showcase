@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Wild — nested templates and messy multi-entity text · Web AI Showcase</title>
+    <meta name="description" content="Push NuExtract: nested JSON templates, lists of entities, and deliberately messy real-world text — and see where a 0.5B extraction model holds up and where it strains." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='13'>🧩</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/models/nuextract-extraction/">← NuExtract</a></p>
+
+    <header>
+      <p class="eyebrow">Wild · nested schemas · multi-entity</p>
+      <h1>Nested templates and deliberately messy text</h1>
+      <p class="lede">
+        How far does a 0.5B extraction model go? These examples use <strong>nested</strong> templates,
+        <strong>lists of objects</strong>, and messy, run-on, multi-entity text. NuExtract fills the whole
+        tree in one pass — and because the output is validated with <code>JSON.parse()</code>, you see
+        honestly whether it held the structure or not.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="chips" id="examples" aria-label="Wild examples">
+        <button type="button" class="chip" data-ex="roster">Team roster (list)</button>
+        <button type="button" class="chip" data-ex="trip">Trip (nested)</button>
+        <button type="button" class="chip" data-ex="chat">Messy chat log</button>
+      </div>
+
+      <div class="extract-grid">
+        <div class="field">
+          <label for="text">Source text</label>
+          <textarea id="text" class="text-in" rows="11" spellcheck="false"></textarea>
+        </div>
+        <div class="field">
+          <label for="template">Nested JSON template</label>
+          <textarea id="template" rows="11" spellcheck="false"></textarea>
+        </div>
+      </div>
+
+      <div class="actions">
+        <button id="run" type="button" disabled>Extract JSON</button>
+        <span id="validBadge" class="badge" hidden></span>
+      </div>
+
+      <h4 style="font-family:var(--font-body);font-size:.9rem;margin:.6rem 0 .2rem">Extracted JSON</h4>
+      <div class="json-out" id="out" aria-live="polite"><span class="muted">Pick an example, then Extract.</span></div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span><span>tokens <b id="rTok">–</b></span>
+        <span>time <b id="rMs">–</b></span><span>JSON.parse <b id="rValid">–</b></span>
+      </div>
+    </section>
+
+    <section aria-labelledby="how-h">
+      <h2 id="how-h">What's happening</h2>
+      <p>
+        A nested template asks the model to hold a deeper structure while still copying values verbatim.
+        Small models can drop a field or mis-close a bracket on the hardest inputs — this rung is honest
+        about that: valid JSON lights up green, invalid lights up red with the raw output shown. That
+        transparency is the point; nothing is hidden to make the demo look perfect.
+      </p>
+      <p class="muted">Next rung: <a href="../multi-model/">Multi-model — OCR → NuExtract →</a></p>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      🤗 Transformers.js on WebAssembly. <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { NuExtractEngine, prettyJSON, NUEXTRACT_CSS } from "../nuextract.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = NUEXTRACT_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new NuExtractEngine();
+      let loaded = false, backend = "WASM", busy = false;
+
+      const EXAMPLES = {
+        roster: {
+          text: "The project pod: Sam Okafor (Engineering Lead, based in Lagos), Wei Chen (Designer, Singapore), and Olga Petrova (PM, remote). Sam has been on the team 4 years; Wei joined last spring; Olga started two weeks ago.",
+          template: { "Team": [{ "Name": "", "Role": "", "Location": "" }] },
+        },
+        trip: {
+          text: "Booking confirmed: round trip. Outbound LX318 departs Zurich 08:15 on 2026-05-02, arrives London 09:05. Return LX319 departs London 18:40 on 2026-05-06. Traveler: Marco Rossi, seat 14C, Economy. Total CHF 214.",
+          template: { "Traveler": { "Name": "", "Seat": "", "Class": "" }, "Flights": [{ "FlightNumber": "", "From": "", "To": "", "Date": "" }], "Total": "" },
+        },
+        chat: {
+          text: "hey so re the outage — started ~2:14am, api p99 spiked to like 8s, root cause was the db connection pool maxed at 50. we bumped it to 200 and it recovered by 2:51. affected ~3400 users. ticket OPS-771. owner: raj",
+          template: { "Incident": { "Ticket": "", "Start": "", "End": "", "RootCause": "", "UsersAffected": "", "Owner": "" } },
+        },
+      };
+      function setExample(key) {
+        const ex = EXAMPLES[key]; if (!ex) return;
+        $("text").value = ex.text; $("template").value = JSON.stringify(ex.template, null, 2);
+        for (const c of document.querySelectorAll("#examples .chip")) c.setAttribute("aria-pressed", String(c.dataset.ex === key));
+      }
+      for (const chip of document.querySelectorAll("#examples .chip")) chip.addEventListener("click", () => setExample(chip.dataset.ex));
+      setExample("roster");
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/NuExtract-1.5-tiny-ONNX", runtime: "transformers.js", dtype: "q4", sizeMB: 770, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: (device) => { loaded = true; backend = String(device || "wasm").toUpperCase(); $("run").disabled = false; },
+      });
+
+      async function run() {
+        if (!loaded || busy) return;
+        const text = $("text").value.trim(), template = $("template").value.trim();
+        if (!text || !template) { $("status").textContent = "Add both text and a template."; return; }
+        busy = true; $("run").disabled = true; $("status").classList.remove("err", "ok");
+        $("status").textContent = "Extracting on the CPU…"; $("out").textContent = ""; $("validBadge").hidden = true; $("readout").hidden = true;
+        try {
+          const res = await engine.extract(template, text, { maxTokens: 700 });
+          $("out").textContent = res.valid ? prettyJSON(res.parsed) : (res.raw || "(no output)");
+          $("out").className = "json-out " + (res.valid ? "valid" : "invalid");
+          $("validBadge").hidden = false; $("validBadge").className = "badge " + (res.valid ? "ok" : "no");
+          $("validBadge").textContent = res.valid ? "✓ valid JSON" : "✗ not valid JSON — raw output shown";
+          $("readout").hidden = false; $("rBackend").textContent = backend; $("rTok").textContent = res.tokens;
+          $("rMs").textContent = res.ms + " ms"; $("rValid").textContent = res.valid ? "passed" : "failed";
+          $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (err) {
+          $("out").textContent = "(extraction failed)"; $("out").className = "json-out invalid";
+          $("status").textContent = "Extraction failed: " + err.message; $("status").classList.add("err");
+        } finally { busy = false; $("run").disabled = false; }
+      }
+      $("run").addEventListener("click", run);
+      if ("serviceWorker" in navigator) navigator.serviceWorker.register("/web-ai-showcase/sw.js").catch(() => {});
+    </script>
+  </body>
+</html>
