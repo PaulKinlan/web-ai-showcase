@@ -1,0 +1,120 @@
+{
+  "schemaVersion": 1,
+  "id": "nsfw-image-detection",
+  "revision": 1,
+  "reviewedAt": "2026-07-20T00:00:00Z",
+  "reviewer": "retrospective critique backfill (code-grounded + existing conformance suite), revision 1",
+  "frontend": true,
+  "rubric": [
+    {
+      "dimension": "real-inference",
+      "score": 4,
+      "severity": "info",
+      "evidence": "The demo runs a REAL in-browser image-classification pass: worker.js imports the shared loadPipeline (lib/webai.js) and calls the low-level forward (pipe.processor → pipe.model → logits) for the two-class ViTForImageClassification (sfw / nsfw), then softmax; also batch-screen and a downstream safety-gate helper. No canned result. Grounded in the actual worker source + the immutable conformance suite, which tests `loads-clean` (console-clean, headless Chrome) and `calls-real-inference` (source pattern: pipeline(|createModelLoader|...). id2label comes from pipe.model.config.id2label (defaulting to {0:'sfw',1:'nsfw'}); it is single-label softmax so the two probabilities sum to 1 — the 'safe to display?' verdict is a threshold on the real nsfw probability. NOTE: this is a retrospective code+suite-grounded score — no fresh measured latency/screenshot was captured in this backfill pass, hence 4 not 5.",
+      "notes": "Inference runs off the main thread in a dedicated module Web Worker (new Worker(worker.js, {type:'module'})); scoreImage runs the forward + softmax; screen() batches many data-URLs; gate() answers a downstream safety question — all off-thread."
+    },
+    {
+      "dimension": "io-shape",
+      "score": 4,
+      "severity": "info",
+      "evidence": "Expected output = a two-class {sfw, nsfw} probability + a clear 'safe to display?' verdict at your threshold. Shown as labelled probability bars + a verdict; See-inside lists raw logit + softmax per class. No canvas overlay.",
+      "notes": "Defensive content-safety tooling: the image never leaves the device (private client-side screening). The verdict is an honest threshold on a real probability, not a black-box pass."
+    },
+    {
+      "dimension": "runtime-config",
+      "score": 5,
+      "severity": "info",
+      "evidence": "At-a-glance declares the exact model id (AdamCodd/vit-base-nsfw-detector, linked to its HF card), the real pipeline task (image-classification), backend (WASM — no WebGPU needed), quantisation (q8), download size (~88 MB) and license (Apache-2.0). The worker's loadPipeline call and the createModelLoader model config both use the SAME id/dtype/sizeMB — no invented API surface.",
+      "notes": ""
+    },
+    {
+      "dimension": "cache-init",
+      "score": 5,
+      "severity": "info",
+      "evidence": "The page loads through the shared createModelLoader auto-init architecture (model:{modelId:'AdamCodd/vit-base-nsfw-detector', runtime:'transformers.js', dtype:'q8', sizeMB:88, requiresWebGPU:false}) — no hand-rolled Load button. A valid current on-device model auto-initialises (checking → initialising → ready); only Download/Re-download/Update surface otherwise. Conformance tests `shared-auto-init-loader` (source: createModelLoader).",
+      "notes": "modelId keyed on AdamCodd/vit-base-nsfw-detector so the ~88 MB cache is tracked against the never-silently-re-download guarantee."
+    },
+    {
+      "dimension": "states",
+      "score": 4,
+      "severity": "info",
+      "evidence": "Loading/ready/inference state is announced in role=status aria-live regions (2 aria-live=polite regions in the page). Failures surface on the page as a readable `.status.err` message (\"Screening failed: …\"), never only in the console; the shared loader exposes Retry/re-download recovery. Runs on the WASM path everywhere — no WebGPU gate. Conformance tests `live-status-region`, `errors-on-the-page`.",
+      "notes": "The screening loop surfaces per-item verdicts; a downstream gate() supports multi-model safety composition."
+    },
+    {
+      "dimension": "controls",
+      "score": 4,
+      "severity": "info",
+      "evidence": "Real keyboard-operable controls: file dropzone (role=button), sample thumbnails (role=button, Enter/Space), a threshold range slider that moves the safe/unsafe boundary live, and a Screen-image button.",
+      "notes": ""
+    },
+    {
+      "dimension": "no-fake-output",
+      "score": 5,
+      "severity": "info",
+      "evidence": "No canned/hardcoded output: every visible result is derived from the real worker run — the sfw/nsfw probabilities and verdict are computed from the real two-class logits. Conformance carries `no-fake-output` (manual-evidenced) and `calls-real-inference`.",
+      "notes": ""
+    },
+    {
+      "dimension": "accessibility",
+      "score": 4,
+      "severity": "minor",
+      "evidence": "Sample thumbnails carry alt text; the threshold slider and Screen button are labelled/named; status uses role=status aria-live; the verdict + bars are text DOM. Conformance tests `images-have-alt` and `buttons-have-names` (both script assertions over the DOM).",
+      "notes": "models.json records support.desktop/mobile = needs-review with an automated pre-scan flag of several sub-24px tap targets (sample thumbnails / small chips) 'agent to verify tap size' — a genuine open item, not yet manually confirmed."
+    },
+    {
+      "dimension": "responsive",
+      "score": 4,
+      "severity": "minor",
+      "evidence": "Layout uses the shared design system (public/styles.css) with fluid flex/grid, flex-wrap and intrinsic sizing; conformance carries `responsive-desktop` and `responsive-mobile` (no-horizontal-overflow at ≈1280×800 and ≈360×740 DPR3 touch) plus `parity-both-classes`.",
+      "notes": "support.desktop/mobile are still needs-review in models.json (awaiting an agent parity verdict); models.json records support.desktop/mobile = needs-review with an automated pre-scan flag of several sub-24px tap targets (sample thumbnails / small chips) 'agent to verify tap size' — a genuine open item, not yet manually confirmed."
+    },
+    {
+      "dimension": "performance",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Inference runs off the main thread in a dedicated module Web Worker (new Worker(worker.js, {type:'module'})); The forward + softmax run in the worker; the threshold slider recomputes the verdict from cached probabilities without re-inference. No main-thread inference or unbounded main-thread loop — INP stays low. Conformance carries `inference-off-main-thread` (source) and `inp-stays-low`.",
+      "notes": ""
+    }
+  ],
+  "guidanceConsulted": [
+    {
+      "query": "accessible live region status role status aria-live; every control keyboard-operable with a name",
+      "id": "accessibility",
+      "recommendation": "Announce loading/ready/error via role=status aria-live; give every control an accessible name; keep all controls keyboard-operable.",
+      "appliedOrException": "applied — role=status aria-live, labelled threshold slider + Screen button, text-labelled probability bars and a readable verdict.",
+      "evidence": "live-status-region + buttons-have-names assertions"
+    },
+    {
+      "query": "break up long tasks keep INP low off main thread web worker",
+      "id": "break-up-long-tasks",
+      "recommendation": "Break heavy synchronous processing out of the main thread (or yield) so the browser can handle input and repaint.",
+      "appliedOrException": "applied — the classification forward + softmax (and batch screening) run in worker.js off the main thread.",
+      "evidence": "worker.js off-thread; inference-off-main-thread assertion"
+    },
+    {
+      "query": "responsive layout no horizontal overflow fluid grid intrinsic sizing",
+      "id": "css-layout",
+      "recommendation": "Use fluid flex/grid with wrap + intrinsic sizing and logical properties; avoid fixed widths that force horizontal overflow.",
+      "appliedOrException": "applied — fluid flex/grid + design-system sizing; verdict + bars wrap.",
+      "evidence": "responsive-desktop/mobile assertions"
+    }
+  ],
+  "openQuestions": [
+    "A two-class NSFW ViT is a coarse safety signal (safe/unsafe only, no category breakdown) — is a multi-class content classifier worth an additive companion demo?",
+    "No fresh measured run captured here; a headless run citing a real sfw/nsfw score on a sample would let real-inference score 5. Sub-24px tap targets also need manual verification."
+  ],
+  "followUpGoals": [
+    {
+      "goal": "Capture a retained headless run citing a real sfw/nsfw score + verdict + latency so real-inference can be evidenced at 5.",
+      "kind": "targeted-fix",
+      "priority": "low"
+    },
+    {
+      "goal": "Verify sub-24px tap targets and enlarge to ≥24px, then flip support to ok.",
+      "kind": "targeted-fix",
+      "priority": "medium"
+    }
+  ],
+  "summary": "Retrospective code+conformance-grounded critique for nsfw-image-detection (AdamCodd/vit-base-nsfw-detector, image-classification, q8, ~88 MB, Apache-2.0). Runs the real two-class ViT forward off-thread (single-label softmax, sfw/nsfw sum to 1) and turns it into a private, on-device 'safe to display?' upload gate with a live threshold slider, batch screening and a downstream safety-gate helper. Text-labelled bars + verdict (no opaque canvas), shared auto-init loader, live status + on-page errors. Honest gaps: coarse two-class signal, no fresh measured run captured here (real-inference 4), sub-24px tap-target flags at needs-review."
+}

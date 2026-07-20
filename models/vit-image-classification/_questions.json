@@ -1,0 +1,120 @@
+{
+  "schemaVersion": 1,
+  "id": "vit-image-classification",
+  "revision": 1,
+  "reviewedAt": "2026-07-20T00:00:00Z",
+  "reviewer": "retrospective critique backfill (code-grounded + existing conformance suite), revision 1",
+  "frontend": true,
+  "rubric": [
+    {
+      "dimension": "real-inference",
+      "score": 4,
+      "severity": "info",
+      "evidence": "The demo runs a REAL in-browser image-classification pass: worker.js imports the shared loadPipeline (lib/webai.js) and calls the LOW-LEVEL forward pass (pipe.processor(image) → pipe.model(inputs)) instead of the convenience pipeline, so one pass yields raw pre-softmax logits over ImageNet-1k; the worker computes softmax, top-k, and confidence diagnostics. No canned result. Grounded in the actual worker source + the immutable conformance suite, which tests `loads-clean` (console-clean, headless Chrome) and `calls-real-inference` (source pattern: pipeline(|createModelLoader|...). id2label comes from pipe.model.config.id2label (the real 1000-class map); the worker computes normalised Shannon entropy and top-1-vs-top-2 margin from the real distribution — no hardcoded labels. NOTE: this is a retrospective code+suite-grounded score — no fresh measured latency/screenshot was captured in this backfill pass, hence 4 not 5.",
+      "notes": "Inference runs off the main thread in a dedicated module Web Worker (new Worker(worker.js, {type:'module'})); RawImage.read decodes the image; softmax/entropy/margin are cheap array reductions in the worker."
+    },
+    {
+      "dimension": "io-shape",
+      "score": 4,
+      "severity": "info",
+      "evidence": "Expected output = a probability distribution over 1000 ImageNet classes. The page renders top-k labelled probability bars plus a See-inside surface with the raw logit, softmax probability, normalised entropy (uncertainty) and top-1 margin. No canvas overlay — output is DOM bars + a data table.",
+      "notes": ""
+    },
+    {
+      "dimension": "runtime-config",
+      "score": 5,
+      "severity": "info",
+      "evidence": "At-a-glance declares the exact model id (Xenova/vit-base-patch16-224, linked to its HF card), the real pipeline task (image-classification), backend (WASM — no WebGPU needed), quantisation (q8), download size (~88 MB) and license (Apache-2.0). The worker's loadPipeline call and the createModelLoader model config both use the SAME id/dtype/sizeMB — no invented API surface.",
+      "notes": ""
+    },
+    {
+      "dimension": "cache-init",
+      "score": 5,
+      "severity": "info",
+      "evidence": "The page loads through the shared createModelLoader auto-init architecture (model:{modelId:'Xenova/vit-base-patch16-224', runtime:'transformers.js', dtype:'q8', sizeMB:88, requiresWebGPU:false}) — no hand-rolled Load button. A valid current on-device model auto-initialises (checking → initialising → ready); only Download/Re-download/Update surface otherwise. Conformance tests `shared-auto-init-loader` (source: createModelLoader).",
+      "notes": "modelId keyed on Xenova/vit-base-patch16-224 so the ~88 MB cache is tracked against the never-silently-re-download guarantee."
+    },
+    {
+      "dimension": "states",
+      "score": 4,
+      "severity": "info",
+      "evidence": "Loading/ready/inference state is announced in role=status aria-live regions (2 aria-live=polite regions in the page). Failures surface on the page as a readable `.status.err` message (\"Classification failed: …\"), never only in the console; the shared loader exposes Retry/re-download recovery. Runs on the WASM path everywhere — no WebGPU gate. Conformance tests `live-status-region`, `errors-on-the-page`.",
+      "notes": ""
+    },
+    {
+      "dimension": "controls",
+      "score": 4,
+      "severity": "info",
+      "evidence": "Real keyboard-operable controls: file dropzone (role=button), sample thumbnails (role=button, Enter/Space), a top-k range slider, and a Classify button. Output bars update from the real distribution.",
+      "notes": ""
+    },
+    {
+      "dimension": "no-fake-output",
+      "score": 5,
+      "severity": "info",
+      "evidence": "No canned/hardcoded output: every visible result is derived from the real worker run — the top-k labels, probabilities, logits, entropy and margin are all computed from the real model logits. Conformance carries `no-fake-output` (manual-evidenced) and `calls-real-inference`.",
+      "notes": ""
+    },
+    {
+      "dimension": "accessibility",
+      "score": 4,
+      "severity": "minor",
+      "evidence": "Sample thumbnails carry alt text; the top-k slider and Classify button are labelled/named; status uses role=status aria-live; probability bars are DOM elements with text labels and values (not an opaque canvas). Conformance tests `images-have-alt` and `buttons-have-names` (both script assertions over the DOM).",
+      "notes": "models.json records support.desktop/mobile = needs-review with an automated pre-scan flag of several sub-24px tap targets (sample thumbnails / small chips) 'agent to verify tap size' — a genuine open item, not yet manually confirmed."
+    },
+    {
+      "dimension": "responsive",
+      "score": 4,
+      "severity": "minor",
+      "evidence": "Layout uses the shared design system (public/styles.css) with fluid flex/grid, flex-wrap and intrinsic sizing; conformance carries `responsive-desktop` and `responsive-mobile` (no-horizontal-overflow at ≈1280×800 and ≈360×740 DPR3 touch) plus `parity-both-classes`.",
+      "notes": "support.desktop/mobile are still needs-review in models.json (awaiting an agent parity verdict); models.json records support.desktop/mobile = needs-review with an automated pre-scan flag of several sub-24px tap targets (sample thumbnails / small chips) 'agent to verify tap size' — a genuine open item, not yet manually confirmed."
+    },
+    {
+      "dimension": "performance",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Inference runs off the main thread in a dedicated module Web Worker (new Worker(worker.js, {type:'module'})); The forward pass + softmax/entropy run in the worker; the top-k slider re-slices a cached distribution without re-inference. No main-thread inference or unbounded main-thread loop — INP stays low. Conformance carries `inference-off-main-thread` (source) and `inp-stays-low`.",
+      "notes": ""
+    }
+  ],
+  "guidanceConsulted": [
+    {
+      "query": "accessible live region status role status aria-live; every control keyboard-operable with a name",
+      "id": "accessibility",
+      "recommendation": "Announce loading/ready/error via role=status aria-live; give every control an accessible name; keep all controls keyboard-operable.",
+      "appliedOrException": "applied — role=status aria-live for state; labelled top-k slider + Classify button; probability bars are text-labelled DOM (not a canvas) so values are directly readable.",
+      "evidence": "live-status-region + buttons-have-names assertions"
+    },
+    {
+      "query": "break up long tasks keep INP low off main thread web worker",
+      "id": "break-up-long-tasks",
+      "recommendation": "Break heavy synchronous processing out of the main thread (or yield) so the browser can handle input and repaint.",
+      "appliedOrException": "applied — the model forward + softmax/entropy reductions run in worker.js, off the main thread, so the UI never blocks.",
+      "evidence": "worker.js off-thread; inference-off-main-thread assertion"
+    },
+    {
+      "query": "responsive layout no horizontal overflow fluid grid intrinsic sizing",
+      "id": "css-layout",
+      "recommendation": "Use fluid flex/grid with wrap + intrinsic sizing and logical properties; avoid fixed widths that force horizontal overflow.",
+      "appliedOrException": "applied — fluid flex/grid, wrapping bar rows and design-system sizing.",
+      "evidence": "responsive-desktop/mobile assertions"
+    }
+  ],
+  "openQuestions": [
+    "No fresh measured run captured here; a headless run citing a real top-1 label (e.g. on sample-cats.jpg) with latency would let real-inference score 5.",
+    "Automated scan flags sub-24px tap targets on both classes — needs manual verification."
+  ],
+  "followUpGoals": [
+    {
+      "goal": "Capture a retained headless run citing a real ImageNet top-1 label + latency so real-inference can be evidenced at 5.",
+      "kind": "targeted-fix",
+      "priority": "low"
+    },
+    {
+      "goal": "Verify sub-24px tap targets and enlarge to ≥24px, then flip support to ok.",
+      "kind": "targeted-fix",
+      "priority": "medium"
+    }
+  ],
+  "summary": "Retrospective code+conformance-grounded critique for vit-image-classification (Xenova/vit-base-patch16-224, image-classification, q8, ~88 MB, Apache-2.0). Runs the real low-level ViT forward off-thread to expose raw logits + a softmax over 1000 ImageNet classes, with legible confidence diagnostics (entropy, top-1 margin) and top-k probability bars as text-labelled DOM. Shared auto-init loader, live status + on-page errors. Honest gaps: no fresh measured run captured here (real-inference 4) and sub-24px tap-target flags keeping support at needs-review."
+}
