@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MMS-TTS Odia Practical — an Odia narrator · Web AI Showcase</title>
+    <meta name="description" content="A private, offline Odia narrator: pick a register — notification, weather report, article snippet — and MMS-TTS reads it aloud in Odia, in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🗣️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">MMS-TTS Odia (VITS)</a></p>
+
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Practical: an Odia narrator</h1>
+      <p class="lede">
+        The shape of a real read-aloud feature — Odia content in, spoken Odia out, entirely on-device. Pick a
+        register below (a push notification, a weather report, an article snippet), tweak the text, and MMS
+        narrates it. Nothing is uploaded and there's no per-character bill.
+      </p>
+    </header>
+
+    <section class="panel">
+      <label class="field" style="max-inline-size:26rem">Register
+        <select id="register"></select>
+      </label>
+
+      <div id="model-loader" style="margin-top:.6rem"></div>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+
+      <label class="field" style="margin-top:.6rem">ପଢ଼ିବା ପାଇଁ ଲେଖା (Odia)
+        <textarea id="text" class="tts" lang="or" style="min-block-size:6rem" disabled></textarea>
+      </label>
+      <div class="tts-grid"><span></span><button id="run" type="button" disabled>ପଢ଼ନ୍ତୁ</button></div>
+
+      <div class="audio-row">
+        <audio id="player" controls preload="none"></audio>
+        <a id="download" class="button secondary" download="mms-tts-ory.wav" hidden>Download .wav</a>
+      </div>
+      <div class="wave-wrap"><canvas id="wave" class="wave" aria-label="Spoken Odia waveform"></canvas></div>
+      <div class="readout" id="readout" hidden>
+        <span>register <b id="rReg">–</b></span>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>gen time <b id="rMs">–</b></span>
+        <span>audio <b id="rDur">–</b></span>
+      </div>
+    </section>
+
+    <p class="muted" style="font-size:.85rem">
+      One Odia checkpoint covers every register — the model doesn't know or care whether it's reading a
+      weather report or a warning; it just turns Odia characters into a waveform. That makes it a practical
+      building block for an offline Odia voice in any app.
+    </p>
+
+    <p class="crumbs"><a href="../basics/">← Basics</a> · <a href="../">Back to MMS-TTS Odia</a> · Next: <a href="../wild/">Wild →</a></p>
+
+    <script type="module">
+      import { MmsOrEngine, wavUrl, drawWaveform, MMS_OR_CSS } from "../mmsttsor.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = MMS_OR_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new MmsOrEngine();
+      let pcm = null, curUrl = null;
+
+      const REGISTERS = [
+        { name: "ପୁଶ୍ ବିଜ୍ଞପ୍ତି (Push notification)", text: "ଆପଣଙ୍କ ପାର୍ସଲ ପହଞ୍ଚାଇ ଦିଆଯାଇ କବାଟ ପାଖରେ ରଖାଯାଇଛି। ଆପଣଙ୍କ ଦିନ ଆନନ୍ଦମୟ ହେଉ।" },
+        { name: "ପାଣିପାଗ ରିପୋର୍ଟ (Weather report)", text: "ଏହି ସପ୍ତାହ ଶେଷରେ ପାଣିପାଗ ଅଧିକାଂଶ ସମୟ ପରିଷ୍କାର ରହିବ, ସର୍ବାଧିକ ତାପମାତ୍ରା ବତିଶ ଡିଗ୍ରୀ, ରାତିରେ ଅଠର ଡିଗ୍ରୀକୁ କମିବ।" },
+        { name: "ଖବର ଅଂଶ (News snippet)", text: "ଗବେଷକମାନେ ଭାଷା ମଡେଲକୁ ସମ୍ପୂର୍ଣ୍ଣ ଭାବରେ ବ୍ରାଉଜରରେ ଚଲାଇବାର ଏକ ନୂଆ ଉପାୟ ଉପସ୍ଥାପନ କରିଛନ୍ତି।" },
+        { name: "ଷ୍ଟେସନ ଘୋଷଣା (Station announcement)", text: "ଦୟାକରି ଧ୍ୟାନ ଦିଅନ୍ତୁ: ଭୁବନେଶ୍ୱର ଯିବା ଟ୍ରେନ୍ ଆଜି ପାଞ୍ଚ ନମ୍ବର ପ୍ଲାଟଫର୍ମରୁ ଛାଡ଼ିବ। ଅସୁବିଧା ପାଇଁ କ୍ଷମା ପ୍ରାର୍ଥୀ।" },
+        { name: "ରୋଷେଇ ପାଦ (Recipe step)", text: "ବର୍ତ୍ତମାନ ଦୁଇ ବଡ଼ ଚାମଚ ମଇଦା ମିଶାନ୍ତୁ, ଗଣ୍ଠି ନ ରହିବା ଯାଏ ଭଲ ଭାବରେ ମିଶାନ୍ତୁ।" },
+      ];
+      const sel = $("register");
+      for (const r of REGISTERS) { const o = document.createElement("option"); o.value = r.name; o.textContent = r.name; sel.append(o); }
+      let current = REGISTERS[0];
+      function setRegister(r) { current = r; $("text").value = r.text; }
+      sel.addEventListener("change", () => setRegister(REGISTERS.find((r) => r.name === sel.value)));
+      setRegister(REGISTERS[0]);
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "naklitechie/mms-tts-or-ONNX", runtime: "transformers.js", dtype: "fp32", sizeMB: 114, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("text").disabled = false; $("run").disabled = false; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        const text = $("text").value.trim();
+        if (!text) return;
+        $("run").disabled = true; $("status").hidden = false; $("status").classList.remove("err","ok");
+        $("status").textContent = "Synthesising…";
+        try {
+          const r = await engine.speak(text);
+          pcm = r.audio;
+          if (curUrl) URL.revokeObjectURL(curUrl);
+          curUrl = wavUrl(pcm, r.rate);
+          $("player").src = curUrl; $("download").href = curUrl; $("download").hidden = false;
+          drawWaveform($("wave"), pcm, 0);
+          const durSec = pcm.length / r.rate;
+          $("readout").hidden = false;
+          $("rReg").textContent = current.name;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = (r.ms/1000).toFixed(2)+" s";
+          $("rDur").textContent = durSec.toFixed(2)+" s";
+          $("status").textContent = "Done — press play."; $("status").classList.add("ok");
+          $("player").play().catch(()=>{});
+        } catch (err) { $("status").textContent = "Synthesis failed: "+err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+      $("player").addEventListener("timeupdate", () => { if (pcm && $("player").duration) drawWaveform($("wave"), pcm, $("player").currentTime/$("player").duration); });
+      $("player").addEventListener("ended", () => pcm && drawWaveform($("wave"), pcm, 1));
+      addEventListener("resize", () => pcm && drawWaveform($("wave"), pcm, 0));
+    </script>
+  </body>
+</html>
