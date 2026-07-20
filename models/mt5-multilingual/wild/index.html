@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>mT5-small — Wild: the pure span-corruption objective · Web AI Showcase</title>
+    <meta name="description" content="Mask several spans at once and watch mT5 emit the sentinel-delimited reconstruction — the exact pretraining objective behind the whole T5 family, visualised in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🈳</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">mT5-small</a></p>
+
+    <header>
+      <p class="eyebrow">Wild · text2text-generation · WASM</p>
+      <h1>The pure objective: mask several spans at once</h1>
+      <p class="lede">
+        This is the exact task mT5 was pretrained on. During pretraining, ~15% of tokens are dropped in
+        contiguous spans, each replaced by a single sentinel (<code>&lt;extra_id_0&gt;</code>,
+        <code>&lt;extra_id_1&gt;</code>, …), and the model learns to emit those sentinels followed by the
+        missing text. Mask a few spans yourself and read the raw sentinel-delimited target it produces — the
+        format is the whole point. It works across languages from one shared vocabulary.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Try it</h3>
+      <div id="model-loader"></div>
+
+      <p class="muted" style="font-size:.82rem;margin:.6rem 0 .2rem">Load a multi-span example:</p>
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem" id="presets"></div>
+
+      <label style="display:flex;flex-direction:column;gap:.3rem;font-size:.82rem;margin-top:.8rem">
+        Masked input (use &lt;extra_id_0&gt;, &lt;extra_id_1&gt;, … in order)
+        <textarea id="prompt" rows="3" disabled>In the morning I drink <extra_id_0> and read the <extra_id_1> before I go to <extra_id_2>.</textarea>
+      </label>
+
+      <div style="margin:.6rem 0;display:flex;gap:.4rem;flex-wrap:wrap;align-items:center">
+        <button id="run" type="button" disabled>Reconstruct spans</button>
+        <span class="status" id="status" role="status" aria-live="polite"></span>
+      </div>
+
+      <div style="margin-top:.2rem"><span style="font-size:.82rem;color:var(--muted)">Raw sentinel-delimited output</span>
+        <div class="mt5-out" id="out" aria-live="polite"></div>
+        <span style="font-size:.82rem;color:var(--muted);display:block;margin-top:.5rem">Reconstructed sentence</span>
+        <div class="mt5-recon" id="recon" aria-live="polite"></div>
+      </div>
+      <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>time <b id="rMs">–</b></span><span>blanks <b id="rN">–</b></span><span>tokens in→out <b id="rTok">–</b></span></div>
+    </section>
+
+    <p class="muted" style="font-size:.85rem">Read the raw output as pairs: <code>&lt;extra_id_0&gt;</code> then its fill,
+      <code>&lt;extra_id_1&gt;</code> then its fill, and so on — usually ending with the next unused sentinel to
+      mark "done". A small q8 model reconstructs short, high-frequency spans best; longer or rarer spans get
+      rougher. That is the honest behaviour of the raw multilingual foundation.</p>
+
+    <p class="crumbs" style="margin-top:1rem"><a href="../practical/">← Practical</a> · <a href="../multi-model/">Next: Multi-model — detect language, then fill →</a></p>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via 🤗 Transformers.js.
+      <a href="../">← Back to mT5-small</a>
+    </footer>
+
+    <script type="module">
+      import { Mt5Engine, MT5_CSS } from "../t2t.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = MT5_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new Mt5Engine();
+      const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+      const PRESETS = [
+        { label: "English · 3 spans", p: "In the morning I drink <extra_id_0> and read the <extra_id_1> before I go to <extra_id_2>." },
+        { label: "Español · 2 spans", p: "Por la <extra_id_0> me gusta pasear por el <extra_id_1> con mi perro." },
+        { label: "Deutsch · 2 spans", p: "Am <extra_id_0> fahre ich mit dem <extra_id_1> zur Arbeit." },
+        { label: "中文 · 2 spans", p: "我每天早上喝<extra_id_0>，然后去<extra_id_1>。" },
+      ];
+      $("presets").replaceChildren(...PRESETS.map((v) => {
+        const b = document.createElement("button"); b.type = "button"; b.className = "chip"; b.textContent = v.label;
+        b.addEventListener("click", () => { $("prompt").value = v.p; });
+        return b;
+      }));
+
+      function renderRecon(el, recon) {
+        if (!recon) { el.textContent = "(no fills to slot back)"; return; }
+        el.innerHTML = esc(recon).replace(/⟦(.*?)⟧/g, (m, f) => `<mark>${f}</mark>`);
+      }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/mt5-small", runtime: "transformers.js", dtype: "q8", sizeMB: 430, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("prompt").disabled = false; $("run").disabled = false; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        const input = $("prompt").value.trim();
+        if (!input) { $("status").textContent = "Write a masked sentence."; return; }
+        $("run").disabled = true; $("status").classList.remove("err"); $("status").textContent = "Reconstructing…"; $("out").textContent = ""; $("recon").textContent = "";
+        try {
+          const r = await engine.run(input, { maxNewTokens: 64 }, (p) => { $("out").textContent = p; });
+          $("out").textContent = r.output || "(empty output)";
+          renderRecon($("recon"), r.reconstruction);
+          $("readout").hidden = false; $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = (r.ms / 1000).toFixed(2) + " s"; $("rN").textContent = r.sentinelCount;
+          $("rTok").textContent = `${r.inTokens} → ${r.outTokens}`;
+          $("status").textContent = "";
+        } catch (err) { $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>
