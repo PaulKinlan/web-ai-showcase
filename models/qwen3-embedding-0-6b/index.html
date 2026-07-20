@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Qwen3-Embedding 0.6B — an instruction-aware, multilingual retrieval embedder in the browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run Qwen3-Embedding-0.6B locally on the CPU via WebAssembly — a 2025 LLM-backbone embedder that pools the last token, takes a per-query instruction, and handles 100+ languages. See the similarity matrix, the 2D projection, and how the instruction and Matryoshka truncation change the vectors."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🧭</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">feature-extraction · text · WebAssembly (CPU) · ~585 MB</p>
+      <h1>Qwen3-Embedding 0.6B — instruction-aware, multilingual retrieval, on your CPU</h1>
+      <p class="lede">
+        Most embedders are BERT encoders that mean-pool their tokens. Qwen3-Embedding is different: it's
+        a <strong>0.6B Qwen3 decoder LLM</strong> turned into an embedder. It reads the sentence with
+        causal attention and takes the <strong>last token's</strong> hidden state as the vector, it
+        accepts a <strong>one-line instruction</strong> per query to steer the objective, and it embeds
+        <strong>100+ languages</strong> into one shared space. It sits at the top of the MTEB multilingual
+        board — and it runs here on the CPU in your browser. Nothing is uploaded; no key, no server.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="glance">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/onnx-community/Qwen3-Embedding-0.6B-ONNX" target="_blank" rel="noopener">onnx-community/Qwen3-Embedding-0.6B-ONNX</a> (base: <a href="https://huggingface.co/Qwen/Qwen3-Embedding-0.6B" target="_blank" rel="noopener">Qwen/Qwen3-Embedding-0.6B</a>)</td></tr>
+          <tr><th>Task</th><td><code>feature-extraction</code> → sentence embeddings</td></tr>
+          <tr><th>Architecture</th><td>Qwen3 decoder-only transformer (0.6B), <strong>last-token pooling</strong></td></tr>
+          <tr><th>Output</th><td>1024-d vector · L2-normalized for cosine · Matryoshka-truncatable (MRL)</td></tr>
+          <tr><th>Pooling</th><td><code>last_token</code> — the EOS position's hidden state (not mean pooling)</td></tr>
+          <tr><th>Query convention</th><td><code>Instruct: {task}\nQuery:{query}</code> — documents embedded raw</td></tr>
+          <tr><th>Params / dtype</th><td>0.6B · <code>q8</code> (8-bit weights, <code>onnx/model_quantized.onnx</code>)</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (CPU) — <strong>no WebGPU required</strong></td></tr>
+          <tr><th>Download</th><td>~585 MB, cached after first load</td></tr>
+          <tr><th>Languages</th><td>100+ (strong cross-lingual retrieval)</td></tr>
+          <tr><th>License</th><td>Apache-2.0</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Embed a set of sentences</h3>
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="chips" id="chips" aria-label="Example sentence sets" style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.5rem 0">
+        <button type="button" class="chip" data-set="paraphrase">paraphrase cluster</button>
+        <button type="button" class="chip" data-set="topics">mixed topics</button>
+        <button type="button" class="chip" data-set="multilingual">same idea, 5 languages</button>
+      </div>
+
+      <label for="sentences" style="display:block;font-size:.82rem;color:var(--muted);margin-bottom:.3rem">One sentence per line</label>
+      <textarea id="sentences" rows="7" disabled style="inline-size:100%;font-family:var(--font-mono);font-size:.82rem">A cat is sleeping on the warm windowsill.
+A kitten is napping in the sunshine.
+El gato duerme junto a la ventana.
+The quarterly earnings beat analyst expectations.
+Interest rates were held steady by the central bank.
+Photosynthesis converts sunlight into chemical energy.</textarea>
+
+      <div style="margin:.6rem 0;display:flex;gap:.5rem;flex-wrap:wrap;align-items:center">
+        <button id="run" type="button" disabled>Embed &amp; compare</button>
+        <span class="muted" style="font-size:.8rem">Vectors are last-token-pooled then L2-normalized; cells are cosine similarity.</span>
+      </div>
+
+      <div id="out" hidden>
+        <div class="grid-2">
+          <div>
+            <h4 style="font-family:var(--font-body);font-size:.9rem;margin:.4rem 0">Similarity matrix</h4>
+            <div class="matrix-scroll" id="matrix"></div>
+          </div>
+          <div>
+            <h4 style="font-family:var(--font-body);font-size:.9rem;margin:.4rem 0">2D projection (PCA)</h4>
+            <div id="proj"></div>
+            <p class="muted" id="projNote" style="font-size:.75rem"></p>
+          </div>
+        </div>
+        <div class="readout"><span>backend <b id="rBackend">–</b></span><span>sentences <b id="rN">–</b></span><span>dims <b id="rDim">–</b></span><span>latency <b id="rMs">–</b></span></div>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside — the instruction changes the vector</h3>
+      <p class="muted">
+        This is the model's signature move. A <strong>query</strong> is wrapped as
+        <code>Instruct: {task}\nQuery:{query}</code>; a <strong>document</strong> is embedded raw. The
+        same query text, embedded with vs. without the instruction, produces a <em>different</em> vector —
+        and for a genuine query→passage pair the instruction should <em>raise</em> the cosine to the right
+        passage. Below: pick a task, and compare plain vs. instructed scoring against two candidate passages.
+      </p>
+      <div class="grid-2">
+        <label style="display:flex;flex-direction:column;gap:.3rem;font-size:.82rem">Task instruction
+          <input id="task" type="text" disabled value="Given a web search query, retrieve relevant passages that answer the query" style="font-family:var(--font-mono);font-size:.78rem" />
+        </label>
+        <label style="display:flex;flex-direction:column;gap:.3rem;font-size:.82rem">Query
+          <input id="q" type="text" disabled value="How do I reset my password?" style="font-family:var(--font-mono);font-size:.8rem" />
+        </label>
+      </div>
+      <label style="display:flex;flex-direction:column;gap:.3rem;font-size:.82rem;margin-top:.5rem">Candidate passage A (the answer)
+        <input id="docA" type="text" disabled value="Click 'Forgot password' on the sign-in page and follow the emailed link to set a new one." style="font-family:var(--font-mono);font-size:.8rem" />
+      </label>
+      <label style="display:flex;flex-direction:column;gap:.3rem;font-size:.82rem;margin-top:.4rem">Candidate passage B (a distractor)
+        <input id="docB" type="text" disabled value="Our office is open Monday to Friday from 9am to 5pm." style="font-family:var(--font-mono);font-size:.8rem" />
+      </label>
+      <div style="margin:.6rem 0;display:flex;gap:.5rem;flex-wrap:wrap;align-items:center">
+        <button id="peek" type="button" class="secondary" disabled>Score plain vs. instructed</button>
+        <span class="status" id="peekStatus" role="status" aria-live="polite"></span>
+      </div>
+      <pre class="tmpl" id="tmpl" style="font-family:var(--font-mono);font-size:.78rem;white-space:pre-wrap;word-break:break-word;background:var(--bg-raised);border:1px solid var(--border);border-radius:var(--radius);padding:.6rem"><span class="muted">The exact instructed query string appears here.</span></pre>
+      <div id="peekWrap" hidden style="overflow-x:auto"></div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        Retrieval quality is the ceiling on every RAG system, semantic search box, and dedup pipeline. A
+        top-tier multilingual embedder that runs <strong>on the client</strong> means your search index,
+        your document clustering, and your "find similar" features can be private, offline-capable, and
+        free to run — with no embedding API bill and no data leaving the device.
+      </p>
+      <ul>
+        <li><strong>Instruction steering</strong> — one embedder, many objectives: search, classification, code, STS — just change the instruction.</li>
+        <li><strong>Cross-lingual by default</strong> — a query in one language finds passages in another, in the same vector space.</li>
+        <li><strong>Right-size the index</strong> — Matryoshka truncation trades dimensions for storage without re-embedding.</li>
+        <li><strong>On-device RAG</strong> — pair it with a local LLM (see the multi-model demo) for retrieval-augmented answers with zero server.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Two sentences in, one cosine number out — and watch the instruction move the score.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Instructed semantic search over a small corpus, with Matryoshka dimension trade-offs.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Cross-lingual search: query in English, retrieve passages in five languages.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">On-device RAG: Qwen3-Embedding retrieves, Qwen2.5 answers with citations.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>
+        It's the standard <code>feature-extraction</code> pipeline with two Qwen3-specific choices:
+        <code>pooling: "last_token"</code> and the instruction wrapper on queries only.
+      </p>
+      <pre><code>import { pipeline } from "@huggingface/transformers";
+
+const extractor = await pipeline(
+  "feature-extraction",
+  "onnx-community/Qwen3-Embedding-0.6B-ONNX",
+  { device: "wasm", dtype: "q8" },   // CPU / WebAssembly — no WebGPU
+);
+
+const task = "Given a web search query, retrieve relevant passages that answer the query";
+const detailed = (q) => `Instruct: ${task}\nQuery:${q}`;
+
+// Queries get the instruction; documents are embedded raw.
+const input = [ detailed("What is the capital of China?"), "The capital of China is Beijing." ];
+
+const out = await extractor(input, { pooling: "last_token", normalize: true });
+// out.data holds the 1024-d unit vectors → cosine = dot product.</code></pre>
+      <p class="muted">
+        Everything runs in a Web Worker so the CPU-bound embedding never blocks the page; the shared
+        loader auto-inits an already-cached copy and never silently re-downloads.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/onnx-community/Qwen3-Embedding-0.6B-ONNX" target="_blank" rel="noopener">Model card — Qwen3-Embedding-0.6B (ONNX for Transformers.js)</a></li>
+        <li><a href="https://huggingface.co/Qwen/Qwen3-Embedding-0.6B" target="_blank" rel="noopener">Base model — Qwen/Qwen3-Embedding-0.6B</a></li>
+        <li><a href="https://qwenlm.github.io/blog/qwen3-embedding/" target="_blank" rel="noopener">Qwen3-Embedding release blog</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a> on WebAssembly.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <style>
+      .glance { inline-size:100%; border-collapse:collapse; font-size:.85rem; }
+      .glance th, .glance td { text-align:left; padding:.3rem .5rem; border-bottom:1px solid var(--border); vertical-align:top; }
+      .glance th { color:var(--muted); font-weight:600; inline-size:11rem; }
+      .glance td { font-family:var(--font-mono); overflow-wrap:anywhere; }
+    </style>
+
+    <script type="module">
+      import { Qwen3EmbEngine, asQuery, l2normalize, cosine, simMatrix, pca2d, parseLines, escapeHTML, renderMatrix, renderProjection, QWEN3EMB_CSS } from "./qwen3emb.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = QWEN3EMB_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new Qwen3EmbEngine();
+      let loaded = false, backend = "WASM";
+
+      const SETS = {
+        paraphrase: `A cat is sleeping on the warm windowsill.
+A kitten is napping in the sunshine.
+The feline dozes by the sunny glass.
+A dog is barking loudly at the mail carrier.
+A puppy yaps at the postman by the gate.`,
+        topics: `The quarterly earnings beat analyst expectations.
+Interest rates were held steady by the central bank.
+Photosynthesis converts sunlight into chemical energy.
+The striker scored a hat-trick in the final.
+A new exoplanet was found orbiting a distant star.
+The recipe calls for two cups of flour and an egg.`,
+        multilingual: `A cat is sleeping on the warm windowsill.
+Un chat dort sur le rebord de la fenêtre.
+El gato duerme en el alféizar de la ventana.
+Die Katze schläft auf der Fensterbank.
+猫が窓辺で眠っている。`,
+      };
+      for (const c of document.querySelectorAll("#chips .chip")) c.addEventListener("click", () => { $("sentences").value = SETS[c.dataset.set]; });
+
+      async function embed(texts) { const r = await engine.embed(texts); return { ...r, unit: r.vectors.map(l2normalize) }; }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/Qwen3-Embedding-0.6B-ONNX", runtime: "transformers.js", dtype: "q8", sizeMB: 585, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: (device) => {
+          loaded = true; backend = String(device || "wasm").toUpperCase();
+          $("sentences").disabled = false; $("run").disabled = false;
+          for (const id of ["task", "q", "docA", "docB", "peek"]) $(id).disabled = false;
+        },
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!loaded) return;
+        const texts = parseLines($("sentences").value).slice(0, 12);
+        if (texts.length < 2) { $("status").textContent = "Add at least two sentences."; $("status").classList.add("err"); return; }
+        $("run").disabled = true; $("status").classList.remove("err"); $("status").textContent = "Embedding on the CPU…";
+        try {
+          const r = await embed(texts);
+          const M = simMatrix(r.unit);
+          renderMatrix($("matrix"), M, texts);
+          const { points, explained } = pca2d(r.unit);
+          renderProjection($("proj"), points, texts);
+          $("projNote").textContent = `First two principal components explain ${(explained * 100).toFixed(0)}% of the variance.`;
+          $("out").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase(); $("rN").textContent = texts.length;
+          $("rDim").textContent = r.dim; $("rMs").textContent = r.ms + " ms";
+          $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+
+      $("peek").addEventListener("click", async () => {
+        if (!loaded) return;
+        const task = $("task").value.trim(), q = $("q").value.trim(), a = $("docA").value.trim(), b = $("docB").value.trim();
+        if (!q || !a || !b) { $("peekStatus").textContent = "Fill in the query and both passages."; $("peekStatus").classList.add("err"); return; }
+        $("peek").disabled = true; $("peekStatus").classList.remove("err"); $("peekStatus").textContent = "Scoring…";
+        const instructed = asQuery(q, task);
+        $("tmpl").textContent = instructed;
+        try {
+          const [plain, instr, docs] = await Promise.all([embed([q]), embed([instructed]), embed([a, b])]);
+          const scores = (qv) => [cosine(qv, docs.unit[0]), cosine(qv, docs.unit[1])];
+          const [pa, pb] = scores(plain.unit[0]);
+          const [ia, ib] = scores(instr.unit[0]);
+          const up = ia > pa;
+          $("peekWrap").innerHTML = `<table class="ab-table"><thead><tr><th>Query embedding</th><th>cosine → A (answer)</th><th>cosine → B (distractor)</th><th>margin A−B</th></tr></thead>
+            <tbody>
+              <tr><td>plain</td><td>${pa.toFixed(3)}</td><td>${pb.toFixed(3)}</td><td>${(pa - pb >= 0 ? "+" : "") + (pa - pb).toFixed(3)}</td></tr>
+              <tr><td>+ instruction</td><td class="${up ? "win" : ""}">${ia.toFixed(3)} ${up ? "▲" : ""}</td><td>${ib.toFixed(3)}</td><td class="${(ia - ib) > (pa - pb) ? "win" : ""}">${(ia - ib >= 0 ? "+" : "") + (ia - ib).toFixed(3)}</td></tr>
+            </tbody></table>
+            <p class="muted" style="font-size:.76rem;margin-top:.4rem">The instruction is meant to sharpen the query→passage objective — it typically widens the margin between the true answer and a distractor.</p>`;
+          $("peekWrap").hidden = false; $("peekStatus").textContent = "";
+        } catch (err) { $("peekStatus").textContent = "Failed: " + err.message; $("peekStatus").classList.add("err"); }
+        finally { $("peek").disabled = false; }
+      });
+
+      if ("serviceWorker" in navigator) navigator.serviceWorker.register("/web-ai-showcase/sw.js").catch(() => {});
+    </script>
+  </body>
+</html>

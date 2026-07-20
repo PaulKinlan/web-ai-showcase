@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Practical — instructed semantic search &amp; dimension trade-offs · Qwen3-Embedding · Web AI Showcase</title>
+    <meta name="description" content="Rank a small corpus against a query with Qwen3-Embedding-0.6B using its query instruction, then trade vector dimensions for index size with Matryoshka truncation — all on the CPU in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🧭</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Qwen3-Embedding 0.6B</a></p>
+
+    <header>
+      <p class="eyebrow">Practical · feature-extraction · WASM</p>
+      <h1>Instructed semantic search, and right-sizing the index</h1>
+      <p class="lede">
+        The everyday job of an embedder: rank a corpus by relevance to a query. Here the query carries its
+        <strong>instruction</strong> and the documents are embedded raw — exactly how Qwen3-Embedding is
+        meant to be used for retrieval. Then cut the 1024-d vectors down with
+        <strong>Matryoshka truncation</strong> and watch how far you can shrink the index before the
+        ranking degrades.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Search a corpus</h3>
+      <div id="model-loader"></div>
+
+      <label for="query" style="display:block;font-size:.82rem;color:var(--muted);margin:.5rem 0 .3rem">Query</label>
+      <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center">
+        <input id="query" type="text" disabled value="How do I make my website load faster?" style="flex:1 1 18rem;min-inline-size:0" />
+        <button id="run" type="button" disabled>Search</button>
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.5rem 0">
+        <button class="chip" type="button" data-q="How do I make my website load faster?">web performance</button>
+        <button class="chip" type="button" data-q="Ways to reduce stress and sleep better">wellbeing</button>
+        <button class="chip" type="button" data-q="What should I cook with leftover rice?">cooking</button>
+      </div>
+
+      <label for="corpus" style="display:block;font-size:.82rem;color:var(--muted);margin:.4rem 0 .3rem">Corpus — one document per line</label>
+      <textarea id="corpus" rows="8" disabled style="inline-size:100%;font-family:var(--font-mono);font-size:.8rem">Lazy-load offscreen images and defer non-critical JavaScript to cut page load time.
+Compress images to WebP or AVIF and serve them from a CDN close to your users.
+Getting seven to nine hours of sleep improves memory and mood.
+A short daily walk and deep breathing lower cortisol and reduce stress.
+Fried rice: heat oil, add day-old rice, egg, peas, and soy sauce; stir-fry hot.
+Turn leftover rice into a creamy pudding with milk, sugar, and cinnamon.
+The Eiffel Tower was completed in 1889 for the World's Fair in Paris.
+Index only the columns you filter on to speed up database queries.</textarea>
+
+      <p class="status" id="status" role="status" aria-live="polite" style="margin-top:.5rem"></p>
+      <div id="results" class="sent-list"></div>
+      <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>docs <b id="rN">–</b></span><span>query latency <b id="rMs">–</b></span></div>
+    </section>
+
+    <section class="panel" aria-labelledby="mrl-h">
+      <h3 id="mrl-h">Matryoshka: how small can the vector get?</h3>
+      <p class="muted">
+        Qwen3-Embedding's vector is trained so a leading slice is still a good embedding. We re-rank the
+        same corpus at several truncated sizes and report how much the top result and ordering hold up —
+        smaller vectors mean a smaller, faster index.
+      </p>
+      <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin:.4rem 0">
+        <button id="mrlRun" type="button" class="secondary" disabled>Compare dimensions</button>
+        <span class="status" id="mrlStatus" role="status" aria-live="polite"></span>
+      </div>
+      <div id="mrlWrap" hidden style="overflow-x:auto"></div>
+    </section>
+
+    <p class="crumbs" style="margin-top:1.5rem"><a href="../wild/">Next: Wild — cross-lingual search →</a></p>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via 🤗 Transformers.js.
+      <a href="../">← Back to Qwen3-Embedding</a>
+    </footer>
+
+    <script type="module">
+      import { Qwen3EmbEngine, asQuery, l2normalize, truncate, cosine, parseLines, escapeHTML, renderRanked, QWEN3EMB_CSS } from "../qwen3emb.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = QWEN3EMB_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new Qwen3EmbEngine();
+      let docVecs = null, docTexts = null;
+
+      async function embedRaw(texts) { const r = await engine.embed(texts); return { ...r, raw: r.vectors }; }
+
+      for (const c of document.querySelectorAll(".chip")) c.addEventListener("click", () => { $("query").value = c.dataset.q; });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/Qwen3-Embedding-0.6B-ONNX", runtime: "transformers.js", dtype: "q8", sizeMB: 585, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { for (const id of ["query", "corpus", "run", "mrlRun"]) $(id).disabled = false; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        const query = $("query").value.trim();
+        const docs = parseLines($("corpus").value).slice(0, 20);
+        if (!query || docs.length === 0) { $("status").textContent = "Add a query and at least one document."; $("status").classList.add("err"); return; }
+        $("run").disabled = true; $("status").classList.remove("err"); $("status").textContent = "Embedding query + corpus…";
+        try {
+          const qres = await embedRaw([asQuery(query)]);
+          const dres = await embedRaw(docs);
+          docVecs = dres.raw; docTexts = docs;
+          const qu = l2normalize(qres.raw[0]);
+          const hits = docs.map((text, i) => ({ text, score: cosine(qu, l2normalize(dres.raw[i])) })).sort((a, b) => b.score - a.score);
+          renderRanked($("results"), hits);
+          $("readout").hidden = false; $("rBackend").textContent = qres.device.toUpperCase(); $("rN").textContent = docs.length; $("rMs").textContent = qres.ms + " ms";
+          $("status").textContent = "Ranked by cosine to the instructed query."; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+
+      $("mrlRun").addEventListener("click", async () => {
+        const query = $("query").value.trim();
+        const docs = parseLines($("corpus").value).slice(0, 20);
+        if (!query || docs.length === 0) { $("mrlStatus").textContent = "Run a search first (need a query + corpus)."; $("mrlStatus").classList.add("err"); return; }
+        $("mrlRun").disabled = true; $("mrlStatus").classList.remove("err"); $("mrlStatus").textContent = "Re-ranking at each dimension…";
+        try {
+          const qres = await embedRaw([asQuery(query)]);
+          const dres = await embedRaw(docs);
+          const full = qres.raw.length;
+          const dims = [1024, 512, 256, 128, 64, 32].filter((d) => d <= full);
+          const rankAt = (dim) => {
+            const qu = truncate(qres.raw[0], dim);
+            return docs.map((text, i) => ({ text, score: cosine(qu, truncate(dres.raw[i], dim)) })).sort((a, b) => b.score - a.score);
+          };
+          const baseline = rankAt(full).map((h) => h.text);
+          let html = `<table class="mat-table"><thead><tr><th>Dimensions</th><th>Top result</th><th>Top-3 same as full?</th><th>Index size vs 1024-d</th></tr></thead><tbody>`;
+          for (const d of dims) {
+            const r = rankAt(d);
+            const same3 = r.slice(0, 3).every((h, i) => h.text === baseline[i]);
+            const top = r[0].text.length > 40 ? r[0].text.slice(0, 39) + "…" : r[0].text;
+            html += `<tr><td>${d}${d === full ? " (full)" : ""}</td><td style="text-align:start">${escapeHTML(top)}</td><td class="${same3 ? "win" : ""}">${same3 ? "yes ✓" : "changed"}</td><td>${Math.round((d / 1024) * 100)}%</td></tr>`;
+          }
+          html += `</tbody></table><p class="muted" style="font-size:.76rem;margin-top:.4rem">A leading slice of the vector stays a good embedding — you can often cut to 256 or 128 dims and keep the top results, shrinking the index 4–8×.</p>`;
+          $("mrlWrap").innerHTML = html; $("mrlWrap").hidden = false; $("mrlStatus").textContent = "";
+        } catch (err) { $("mrlStatus").textContent = "Failed: " + err.message; $("mrlStatus").classList.add("err"); }
+        finally { $("mrlRun").disabled = false; }
+      });
+
+      if ("serviceWorker" in navigator) navigator.serviceWorker.register("/web-ai-showcase/sw.js").catch(() => {});
+    </script>
+  </body>
+</html>

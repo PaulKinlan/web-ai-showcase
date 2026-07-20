@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Wild — cross-lingual search: query in English, retrieve in five languages · Qwen3-Embedding · Web AI Showcase</title>
+    <meta name="description" content="Qwen3-Embedding-0.6B embeds 100+ languages into one shared space. Query in English and retrieve the matching passages written in French, Spanish, German, Japanese, and more — entirely on the CPU in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🧭</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Qwen3-Embedding 0.6B</a></p>
+
+    <header>
+      <p class="eyebrow">Wild · feature-extraction · WASM</p>
+      <h1>One query, many languages, one vector space</h1>
+      <p class="lede">
+        Qwen3-Embedding maps 100+ languages into a <strong>single shared embedding space</strong>. So a
+        query written in one language lands right next to the passages that answer it — no matter what
+        language <em>they</em> are written in. Ask in English and watch the model surface the matching
+        sentence in French, Spanish, German, or Japanese, ranked by meaning, not by words.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Cross-lingual retrieval</h3>
+      <div id="model-loader"></div>
+
+      <label for="query" style="display:block;font-size:.82rem;color:var(--muted);margin:.5rem 0 .3rem">Query (any language)</label>
+      <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center">
+        <input id="query" type="text" disabled value="Where can I exchange money?" style="flex:1 1 18rem;min-inline-size:0" />
+        <button id="run" type="button" disabled>Search</button>
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.5rem 0">
+        <button class="chip" type="button" data-q="Where can I exchange money?">exchange money (EN)</button>
+        <button class="chip" type="button" data-q="¿Dónde está la estación de tren?">train station (ES)</button>
+        <button class="chip" type="button" data-q="美味しいレストランを教えて">good restaurant (JA)</button>
+      </div>
+
+      <label for="corpus" style="display:block;font-size:.82rem;color:var(--muted);margin:.4rem 0 .3rem">Multilingual passages — one per line</label>
+      <textarea id="corpus" rows="9" disabled style="inline-size:100%;font-family:var(--font-mono);font-size:.8rem">Le bureau de change se trouve près de la sortie principale de la gare.
+La estación de tren está a diez minutos a pie del centro.
+Dieses Restaurant serviert die beste lokale Küche der Stadt.
+駅の近くに24時間営業のコンビニがあります。
+The pharmacy on the corner is open until midnight every day.
+Il museo è chiuso il lunedì ma gratuito la prima domenica del mese.
+버스 정류장은 호텔 바로 앞에 있습니다.
+O caixa eletrônico fica ao lado da entrada do supermercado.</textarea>
+
+      <p class="status" id="status" role="status" aria-live="polite" style="margin-top:.5rem"></p>
+      <div id="results" class="sent-list"></div>
+      <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>passages <b id="rN">–</b></span><span>latency <b id="rMs">–</b></span></div>
+    </section>
+
+    <section aria-labelledby="how-h">
+      <h2 id="how-h">Why this works</h2>
+      <p>
+        During training the model saw parallel and mixed-language data, so semantically equivalent
+        sentences — regardless of language — are pulled close together. Retrieval is just cosine
+        similarity in that shared space; the language barrier disappears because the vectors, not the
+        words, are what's compared. This is the backbone of multilingual search, deduplication across
+        locales, and "find this in any language" features — all running locally.
+      </p>
+    </section>
+
+    <p class="crumbs" style="margin-top:1.5rem"><a href="../multi-model/">Next: Multi-model — on-device RAG →</a></p>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via 🤗 Transformers.js.
+      <a href="../">← Back to Qwen3-Embedding</a>
+    </footer>
+
+    <script type="module">
+      import { Qwen3EmbEngine, asQuery, l2normalize, cosine, parseLines, renderRanked, QWEN3EMB_CSS } from "../qwen3emb.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = QWEN3EMB_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new Qwen3EmbEngine();
+      const TASK = "Given a traveller's question, retrieve the passage that answers it, in any language";
+
+      async function embed(texts) { const r = await engine.embed(texts); return { ...r, unit: r.vectors.map(l2normalize) }; }
+      for (const c of document.querySelectorAll(".chip")) c.addEventListener("click", () => { $("query").value = c.dataset.q; });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/Qwen3-Embedding-0.6B-ONNX", runtime: "transformers.js", dtype: "q8", sizeMB: 585, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { for (const id of ["query", "corpus", "run"]) $(id).disabled = false; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        const query = $("query").value.trim();
+        const docs = parseLines($("corpus").value).slice(0, 20);
+        if (!query || docs.length === 0) { $("status").textContent = "Add a query and passages."; $("status").classList.add("err"); return; }
+        $("run").disabled = true; $("status").classList.remove("err"); $("status").textContent = "Embedding across languages…";
+        try {
+          const qres = await embed([asQuery(query, TASK)]);
+          const dres = await embed(docs);
+          const hits = docs.map((text, i) => ({ text, score: cosine(qres.unit[0], dres.unit[i]) })).sort((a, b) => b.score - a.score);
+          renderRanked($("results"), hits);
+          $("readout").hidden = false; $("rBackend").textContent = qres.device.toUpperCase(); $("rN").textContent = docs.length; $("rMs").textContent = qres.ms + " ms";
+          $("status").textContent = "Ranked by cross-lingual meaning."; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+
+      if ("serviceWorker" in navigator) navigator.serviceWorker.register("/web-ai-showcase/sw.js").catch(() => {});
+    </script>
+  </body>
+</html>
