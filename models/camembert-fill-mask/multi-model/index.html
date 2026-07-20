@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CamemBERT Multi-model — fill then tag the grammar · Web AI Showcase</title>
+    <meta name="description" content="Two French CamemBERT models in a chain: one fills your <mask>, then a part-of-speech tagger labels every word of the completed sentence — noun, verb, adjective — colour-coded. All in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🧀</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">CamemBERT</a></p>
+
+    <header>
+      <p class="eyebrow">use case · multi-model</p>
+      <h1>Multi-model: fill the mask, then tag the grammar</h1>
+      <p class="lede">
+        A two-stage, all-French on-device pipeline. First CamemBERT fills your <code>&lt;mask&gt;</code>.
+        Then a second model — <em>also</em> a CamemBERT, fine-tuned for part-of-speech tagging — reads the
+        completed sentence and labels every word (noun, verb, adjective, preposition…). Same architecture,
+        two jobs, chained locally with nothing leaving the tab.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="load-h">
+      <h3 id="load-h" class="sr-only" style="position:absolute;left:-9999px">Models</h3>
+      <p class="muted" style="font-size:.85rem">This demo loads TWO ~110 MB CamemBERT models: the fill-mask
+        model (the one the other demos use, cached if you've run them) and the POS tagger.</p>
+      <div style="display:grid;gap:.6rem">
+        <div><p class="hint-mask">1 · Fill-mask model</p><div id="loader-fill"></div></div>
+        <div><p class="hint-mask">2 · Part-of-speech model</p><div id="loader-pos"></div></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.2rem 0 .5rem" id="chips" role="group" aria-label="Exemples">
+        <button class="mask-chip" type="button" data-set="Le petit chat <mask> tranquillement sur le canapé.">verbe</button>
+        <button class="mask-chip" type="button" data-set="Elle a acheté une <mask> voiture rouge.">adjectif</button>
+        <button class="mask-chip" type="button" data-set="Nous partons en <mask> demain matin.">nom</button>
+        <button class="mask-chip" type="button" data-set="Il parle très <mask> le français.">adverbe</button>
+      </div>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">
+        Phrase avec un <code>&lt;mask&gt;</code>
+        <input id="text" class="mask-input" disabled value="Le petit chat <mask> tranquillement sur le canapé." />
+      </label>
+      <div style="margin:.5rem 0"><button id="run" type="button" disabled>Fill &amp; tag</button></div>
+
+      <div id="filled" class="filled-sentence" hidden></div>
+      <div id="tagged" class="pos-out" hidden></div>
+      <div id="legend" class="pos-legend" hidden></div>
+      <div class="readout" id="readout" hidden><span>fill <b id="rFill">–</b></span><span>pos <b id="rPos">–</b></span><span>backend <b id="rBackend">–</b></span></div>
+
+      <p class="muted" style="font-size:.85rem">
+        The tagger runs on the <em>filled-in</em> sentence, so the chain is honest end-to-end: the first
+        model's output word is literally part of the second model's input.
+      </p>
+    </section>
+
+    <p class="crumbs"><a href="../wild/">← Wild</a> · <a href="../">Back to CamemBERT</a></p>
+
+    <script type="module">
+      import { CamembertFillMaskEngine, CAMEMBERT_CSS, MASK, escapeHTML } from "../fillmask.js";
+      import { PosEngine, POS_CSS, GROUPS, renderTagged, renderLegend } from "/web-ai-showcase/models/pos-tagging/pos.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = CAMEMBERT_CSS + POS_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+
+      const fill = new CamembertFillMaskEngine();
+      const pos = new PosEngine();
+      let fillReady = false, posReady = false;
+      const maybeEnable = () => { if (fillReady && posReady) { $("text").disabled = false; $("run").disabled = false; } };
+
+      createModelLoader({
+        mount: $("loader-fill"),
+        model: { modelId: "Xenova/camembert-base", runtime: "transformers.js", dtype: "q8", sizeMB: 110, requiresWebGPU: false },
+        load: async (onProgress) => { await fill.load(onProgress); return fill; },
+        onReady: () => { fillReady = true; maybeEnable(); },
+      });
+      createModelLoader({
+        mount: $("loader-pos"),
+        model: { modelId: "Xenova/french-camembert-postag-model", runtime: "transformers.js", dtype: "q8", sizeMB: 113, requiresWebGPU: false },
+        load: async (onProgress) => { await pos.load(onProgress); return pos; },
+        onReady: () => { posReady = true; maybeEnable(); },
+      });
+
+      for (const c of document.querySelectorAll(".mask-chip")) c.addEventListener("click", () => { $("text").value = c.dataset.set; });
+
+      $("run").addEventListener("click", async () => {
+        const text = $("text").value;
+        if (!text.includes(MASK)) { $("runStatus").hidden = false; $("runStatus").classList.add("err"); $("runStatus").textContent = "Add a <mask> token first."; return; }
+        $("run").disabled = true; $("runStatus").hidden = false; $("runStatus").classList.remove("err"); $("runStatus").textContent = "Filling the mask…";
+        try {
+          const r = await fill.fill(text, 5);
+          const top = r.masks[0].predictions[0].token;
+          const filledSentence = text.replaceAll(MASK, top);
+          $("filled").innerHTML = escapeHTML(text).replaceAll(escapeHTML(MASK), `<span class="slot">${escapeHTML(top)}</span>`);
+          $("filled").hidden = false;
+          $("runStatus").textContent = "Tagging every word…";
+          const t = await pos.tag(filledSentence);
+          renderTagged($("tagged"), t.words, { showTags: true });
+          $("tagged").hidden = false;
+          const groups = [...new Set(t.words.map((w) => w.group))].filter((g) => GROUPS[g]);
+          renderLegend($("legend"), groups);
+          $("legend").hidden = false;
+          $("readout").hidden = false; $("rFill").textContent = r.ms + " ms"; $("rPos").textContent = t.ms + " ms"; $("rBackend").textContent = r.device.toUpperCase();
+          $("runStatus").hidden = true;
+        } catch (err) {
+          $("runStatus").hidden = false; $("runStatus").classList.add("err"); $("runStatus").textContent = "Failed: " + err.message;
+        } finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>
