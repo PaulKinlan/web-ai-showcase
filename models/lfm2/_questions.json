@@ -1,0 +1,118 @@
+{
+  "schemaVersion": 1,
+  "id": "lfm2",
+  "revision": 1,
+  "reviewedAt": "2026-07-20T00:00:00Z",
+  "reviewer": "hand-reviewed (Opus) — isolated transformers.js 4.2.0 verify (real coherent greedy generation on fp32/WASM), conformance runner, responsive matrix, desktop screenshot read",
+  "frontend": true,
+  "rubric": [
+    {
+      "dimension": "real-inference",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Full page drive (headless Chrome, no GPU, fresh conformance profile): honest 'Download model (~1400 MB)' state (no silent transfer) -> ~1.4 GB fp32 build downloaded -> ready -> sent 'In one sentence, what is a lighthouse for?' and the assistant streamed a real, coherent reply: \"A lighthouse serves to guide ships safely into or out of foggy or dark waters.\" — backend WASM, dtype fp32, TTFT 344 ms, 1078 ms total, ~18.6 tok/s, 0 console errors, 0 network failures. 'See inside' showed the real ChatML prompt (<|im_start|>user … <|im_start|>assistant). Additionally, an isolated GREEDY verify (do_sample:false) on the same stack produced \"The sky appears blue because of a phenomenon called Rayleigh scattering, where shorter wavelengths of light, like blue, scatter more\" (20 words, 19 unique, ratio 0.95). Same worker path (models/lfm2/worker.js) as the page; the lfm2 model class is genuinely registered in 4.2.0 (no 'Unsupported model type').",
+      "notes": "DTYPE honesty is central: the q4/q8 exports block-quantize the token-embedding gather (GatherBlockQuantized) — a WebGPU-only ORT-Web kernel that ERROR_CODE 9's on the WASM EP — so the CPU path loads the fp32 export (plain gather), which is the path verified here. WebGPU users get q4f16 (fast); disclosed at-a-glance and in the code comments."
+    },
+    {
+      "dimension": "io-shape",
+      "score": 5,
+      "severity": "info",
+      "evidence": "text-generation output shape: a streamed assistant string (tokens via TextStreamer, skip_prompt+skip_special_tokens). The reply is coherent English answering the prompt; 'See inside' shows the exact chat-templated prompt string the model receives. Readout reports backend, dtype, TTFT, total ms and estimated tok/s from the real run.",
+      "notes": "Non-degenerate confirmed by the uniqueness ratio (0.95) — no repeated-token garbage that a bad quant would emit."
+    },
+    {
+      "dimension": "runtime-config",
+      "score": 5,
+      "severity": "info",
+      "evidence": "At-a-glance (screenshot read) states: model LiquidAI/LFM2-350M run via onnx-community/LFM2-350M-ONNX; hybrid gated-conv + GQA architecture (lfm2 class, ~354M); task text-generation; runtime Transformers.js 4.2.0 PINNED LOCALLY in the worker (the class isn't in the shared 3.7.5 pin — isolated escape hatch, same as SAM2); device-adaptive dtype (WebGPU q4f16 ~260 MB / CPU fp32 ~1.4 GB) with the GatherBlockQuantized reason spelled out; context 32768; LFM Open License v1.0.",
+      "notes": "The version pin is confirmed scoped to models/lfm2/worker.js only — lib/webai.js and all other pages stay on 3.7.5."
+    },
+    {
+      "dimension": "cache-init",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Driven on a fresh profile: the loader showed 'Download model (~1400 MB)' then downloaded to ready and generated — never a silent large download. A pre-load WebGPU adapter probe picks device+dtype AND sets the loader's sizeMB, so the Download label matches the actual per-device download (no-GPU shows the honest ~1.4 GB; a GPU machine shows ~260 MB). requiresWebGPU:false because the CPU path genuinely runs. Uses the shared createModelLoader.",
+      "notes": "Warm-cache auto-init is the shared loader behaviour (exercised on other built pages); a driven warm-reload capture is the remaining state to record, cheaper on a GPU runner via the ~260 MB q4f16 path."
+    },
+    {
+      "dimension": "states",
+      "score": 4,
+      "severity": "info",
+      "evidence": "role=status aria-live on the loader; a per-device devnote explains which build is loading and why; progress bar during download; generation failures set the assistant bubble to a system-styled error; a Stop button interrupts decoding (InterruptableStoppingCriteria).",
+      "notes": "Offline-cached / partial-eviction handled by the shared loader; not separately driven here."
+    },
+    {
+      "dimension": "controls",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Real, labelled, keyboard-operable controls across the ladder: message textarea + Send + Stop + Clear; temperature and max-new-tokens range sliders with live <b> readouts; a sample/greedy checkbox; system-prompt textarea (basics); format <select> (practical); setting <select> + Begin (wild); knowledge-base textarea + question + top-k + Retrieve→answer (multi-model). Example-prompt chips fill and submit.",
+      "notes": "Sliders drive genuine sampling params passed to the worker; the greedy toggle maps to do_sample:false (the verified deterministic mode)."
+    },
+    {
+      "dimension": "no-fake-output",
+      "score": 5,
+      "severity": "info",
+      "evidence": "On a fresh profile the chat log is empty and the loader shows the honest Download state — nothing canned. Every reply streams from the real worker; the multi-model RAG answer is generated from actually-retrieved MiniLM passages (both models local). No pre-baked text anywhere.",
+      "notes": "The 'See inside' prompt is the real templated string, not a mock."
+    },
+    {
+      "dimension": "accessibility",
+      "score": 5,
+      "severity": "info",
+      "evidence": "conformance a11y assertions pass: every button has a text name; no <img> without alt. Chat log is aria-live; composer textarea + sliders + selects are labelled; Send is min 44px; reduced-motion disables the caret blink + spinner. Desktop screenshot read: design-system tokens, legible in dark theme.",
+      "notes": "Streaming updates land in an aria-live=polite region so screen readers hear the reply progress without flooding."
+    },
+    {
+      "dimension": "responsive",
+      "score": 5,
+      "severity": "info",
+      "evidence": "responsive-check.mjs: desktop (1280×800) and mobile (360×740 DPR3) both automated-clean — scrollWidth ≤ innerWidth, no clipped controls, console clean, network clean. Composer uses field-sizing:content; controls wrap; the wide at-a-glance table and wire pre scroll inside their own containers.",
+      "notes": "support set to needs-review pending a driven interaction pass at mobile; layout parity itself is clean."
+    },
+    {
+      "dimension": "performance",
+      "score": 4,
+      "severity": "info",
+      "evidence": "All generation runs in a Web Worker; tokens stream to the main thread via postMessage and land in an aria-live region, so decoding never blocks input. fp32/WASM decode measured ~54 ms/token in the isolated verify (real, if modest); WebGPU q4f16 is the fast path.",
+      "notes": "Off-main-thread by construction; an explicit INP trace during streaming would confirm the per-token DOM updates stay under the frame budget."
+    }
+  ],
+  "guidanceConsulted": [
+    {
+      "id": "break-up-long-tasks",
+      "recommendation": "Run heavy synchronous work off the main thread (workers) and stream incremental updates so token generation doesn't spike INP.",
+      "appliedOrException": "applied — text generation runs entirely in models/lfm2/worker.js; tokens post to the main thread and update an aria-live region incrementally; the multi-model rung adds the built MiniLM worker for retrieval.",
+      "evidence": "conformance inference-off-main-thread=pass; isolated verify streamed tokens with the UI responsive"
+    },
+    {
+      "id": "css-layout",
+      "recommendation": "Use flex-wrap, grid auto-fit minmax, field-sizing and overflow-x:auto on wide content to avoid page-level horizontal overflow; logical properties + intrinsic sizing.",
+      "appliedOrException": "applied — the composer uses field-sizing:content; control rows wrap; the wide at-a-glance table and the wire/prompt pre scroll inside their own containers; grid-2 collapses to one column on mobile.",
+      "evidence": "responsive-mobile=clean at 360×740; reports/responsive/screens/lfm2/mobile.png"
+    },
+    {
+      "id": "accessible-error-announcement",
+      "recommendation": "Announce load/inference failures in a live region the user can read, not only the console.",
+      "appliedOrException": "applied — generation failures are shown in the assistant bubble (system-styled) within the aria-live chat log; the shared loader exposes a Retry path and an honest error state.",
+      "evidence": "chat log role/aria-live; loader error state; catch blocks surface err.message on the page"
+    }
+  ],
+  "openQuestions": [
+    "Capture a driven warm-cache reload (auto-init, no button) — currently inferred from the shared loader because the 1.4 GB fp32 CPU download makes repeated fresh runs slow; the WebGPU q4f16 path (~260 MB) would make this cheap on a GPU runner.",
+    "Verify the q4f16/WebGPU path on a real GPU: does GatherBlockQuantized execute and does q4f16 stay non-degenerate (it is verified only via fp32 on this no-GPU box)?",
+    "Measure INP during token streaming at mobile to confirm the per-token DOM writes stay within the frame budget under load."
+  ],
+  "followUpGoals": [
+    {
+      "goal": "Agent matrix pass for lfm2 on a WebGPU-capable runner: drive the q4f16 path, capture streaming + warm-cache auto-init on mobile+desktop, then flip support to ok (or unsupported+evidence).",
+      "kind": "targeted-fix",
+      "priority": "medium"
+    },
+    {
+      "goal": "Add a 'greedy vs sampled' side-by-side wild demo: run the same prompt at do_sample:false and a few temperatures at once to visualise how sampling changes LFM2's output.",
+      "kind": "additive-demo",
+      "priority": "low"
+    }
+  ],
+  "summary": "lfm2 is an honest demo of a genuinely distinct small LLM family: Liquid AI's LFM2-350M — a hybrid gated-convolution + grouped-query-attention architecture (not a shrunk transformer) — running locally via Transformers.js 4.2.0 (version-pinned in the worker only, the escape hatch), with real streaming text generation verified coherent and non-degenerate on this no-GPU box via the fp32/WASM path (greedy: 'The sky appears blue because of … Rayleigh scattering …', 20 words / 0.95 unique). DTYPE is handled honestly and device-adaptively: WebGPU users get the fast q4f16 build (~260 MB); with no GPU the fp32 build (~1.4 GB) loads because the quantized export's GatherBlockQuantized token-embedding gather is a WebGPU-only kernel — all disclosed at-a-glance and in code. A four-rung ladder (basics chat + system prompt → practical rough-notes rewriter → wild pocket text-adventure GM with persisted state → multi-model grounded RAG with the built MiniLM embedder) each a real runnable demo, all off the main thread with streaming, honest per-device download labels, and clean mobile+desktop layout. Remaining work is a WebGPU-runner pass to verify the q4f16 path and flip support from needs-review to ok. Revision 1."
+}

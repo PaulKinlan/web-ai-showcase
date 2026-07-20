@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LFM2 Multi-model — grounded RAG in your browser · Web AI Showcase</title>
+    <meta name="description" content="A two-model retrieval-augmented generation pipeline running fully on-device: MiniLM embeds and retrieves the most relevant passages, then LFM2 answers using ONLY those passages — grounded, private, no server." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>💧</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">LFM2</a></p>
+
+    <header>
+      <p class="eyebrow">use case · multi-model</p>
+      <h1>Multi-model: grounded RAG, fully on-device</h1>
+      <p class="lede">
+        The retrieval-augmented generation loop, with two models in the browser and no server.
+        <strong>MiniLM</strong> embeds your knowledge base and retrieves the passages closest to the question;
+        <strong>LFM2</strong> then answers using <em>only</em> those passages. You see the retrieved context and
+        the grounded answer — so you can check the model isn't making things up.
+      </p>
+    </header>
+
+    <section class="panel">
+      <h3>1 · MiniLM embedder (retrieval)</h3>
+      <div id="loaderEmbed"></div>
+      <h3 style="margin-top:1rem">2 · LFM2 (grounded answer)</h3>
+      <div id="devnote" class="devnote" hidden></div>
+      <div id="loaderGen"></div>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
+        Knowledge base (one fact per line)
+        <textarea id="kb" rows="8" disabled>The office is open Monday to Friday, 9am to 6pm, and closed on public holidays.
+Guest wifi network is "Acme-Guest" and the password is rotated every Monday morning.
+To claim expenses, submit receipts in the portal within 30 days; reimbursement takes two weeks.
+The nearest parking garage is on Elm Street, two blocks north, and validates for four hours.
+Fire drills happen on the first Tuesday of each quarter at 10am.
+The support desk is on the third floor and is staffed until 8pm on weekdays.
+Printer credentials are on the intranet under IT > Printing; colour printing needs a manager code.</textarea>
+      </label>
+      <div style="display:flex;flex-wrap:wrap;gap:.5rem;align-items:end;margin:.5rem 0">
+        <label style="display:flex;flex-direction:column;gap:.2rem;font-size:.82rem;flex:1;min-inline-size:14rem">
+          Question
+          <input id="q" type="text" value="how long do I have to file expenses?" disabled />
+        </label>
+        <label style="display:flex;flex-direction:column;gap:.2rem;font-size:.82rem">Top-k <input id="topk" type="number" min="1" max="5" value="3" style="inline-size:5rem" disabled /></label>
+        <button id="run" type="button" disabled>Retrieve → answer</button>
+        <button id="stop" type="button" class="secondary" hidden>Stop</button>
+      </div>
+
+      <div class="grid-2" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:1rem">
+        <div>
+          <h3 style="margin-top:.4rem">Retrieved context</h3>
+          <div class="sent-list" id="context" aria-live="polite"></div>
+        </div>
+        <div>
+          <h3 style="margin-top:.4rem">Grounded answer</h3>
+          <div class="chat-log" id="answer" aria-live="polite" style="min-block-size:6rem"></div>
+        </div>
+      </div>
+      <div class="readout" id="readout" hidden>
+        <span>embed backend <b id="rEmb">–</b></span>
+        <span>gen backend <b id="rGen">–</b></span>
+        <span>dtype <b id="rDtype">–</b></span>
+        <span>retrieve <b id="rEmbMs">–</b></span>
+        <span>answer <b id="rGenMs">–</b></span>
+      </div>
+    </section>
+
+    <p class="muted" style="font-size:.85rem">
+      Why ground the model? A small LLM asked a bare question may confidently invent an answer. By retrieving
+      real passages and instructing LFM2 to answer only from them (and to say when the answer isn't there),
+      you get responses you can trace back to a source — the core idea behind RAG, here with both models local.
+    </p>
+
+    <p class="crumbs"><a href="../wild/">← Wild</a> · <a href="../">Back to LFM2</a></p>
+
+    <script type="module">
+      import { LFM2Engine, pickDeviceDtype, estimateTokens, CHAT_CSS } from "../engine.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = CHAT_CSS + `
+        .sent-list { display:flex; flex-direction:column; gap:.5rem; margin-top:.5rem; }
+        .result-row { border:1px solid var(--border); border-radius:8px; background:var(--bg-raised); padding:.55rem .7rem; }
+        .result-head { display:flex; justify-content:space-between; gap:.5rem; align-items:baseline; }
+        .result-score { font-family:var(--font-mono); color:var(--muted); font-size:.8rem; }
+        .grid-2 { align-items:start; }`;
+      document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+
+      // Minimal client for the built MiniLM feature-extraction worker.
+      class EmbedClient {
+        constructor(url) { this.worker = new Worker(url, { type: "module" }); this.ready = false; this.device = "wasm"; this.onProgress = null;
+          this._lw = []; this._p = new Map(); this._id = 0;
+          this.worker.addEventListener("message", (e) => this._m(e.data));
+          this.worker.addEventListener("error", (e) => { const err = new Error(e.message || "worker error"); for (const w of this._lw) w.reject(err); this._lw = []; for (const [, p] of this._p) p.reject(err); this._p.clear(); }); }
+        _m(m) { if (m.type === "progress") this.onProgress?.(m.p); else if (m.type === "ready") { this.ready = true; this.device = m.device; for (const w of this._lw) w.resolve(m.device); this._lw = []; }
+          else if (m.type === "result") { const p = this._p.get(m.id); if (p) { this._p.delete(m.id); p.resolve(m); } }
+          else if (m.type === "error") { if (m.id != null && this._p.has(m.id)) { this._p.get(m.id).reject(new Error(m.message)); this._p.delete(m.id); } else { for (const w of this._lw) w.reject(new Error(m.message)); this._lw = []; } } }
+        load(onProgress) { if (onProgress) this.onProgress = onProgress; if (this.ready) return Promise.resolve(this.device); return new Promise((res, rej) => { this._lw.push({ resolve: res, reject: rej }); this.worker.postMessage({ type: "load" }); }); }
+        embed(texts) { const id = ++this._id; return new Promise((res, rej) => { this._p.set(id, { resolve: res, reject: rej }); this.worker.postMessage({ type: "run", id, texts }); }); }
+      }
+      const cosine = (a, b) => { let d = 0; for (let i = 0; i < a.length; i++) d += a[i] * b[i]; return d; };
+
+      const embedder = new EmbedClient("/web-ai-showcase/models/minilm-embeddings/worker.js");
+      const engine = new LFM2Engine();
+      let embReady = false, genReady = false, generating = false;
+
+      createModelLoader({
+        mount: $("loaderEmbed"),
+        model: { modelId: "Xenova/all-MiniLM-L6-v2", runtime: "transformers.js", dtype: "q8", sizeMB: 30, requiresWebGPU: false },
+        load: async (onProgress) => { await embedder.load(onProgress); embReady = true; maybeEnable(); return embedder; },
+      });
+      (async () => {
+        const cfg = await pickDeviceDtype();
+        engine.configure(cfg);
+        $("devnote").hidden = false;
+        $("devnote").innerHTML = cfg.device === "webgpu" ? `<b>WebGPU detected.</b> LFM2 loads the fast q4f16 build (~260 MB).` : `<b>No WebGPU adapter.</b> LFM2 loads the fp32 CPU build (~1.4 GB) — real, but larger and slower.`;
+        createModelLoader({
+          mount: $("loaderGen"),
+          model: { modelId: "onnx-community/LFM2-350M-ONNX", runtime: "transformers.js", dtype: cfg.dtype, sizeMB: cfg.sizeMB, requiresWebGPU: false },
+          load: async (onProgress) => { await engine.load(onProgress); genReady = true; maybeEnable(); return engine; },
+        });
+      })();
+      function maybeEnable() { if (embReady && genReady) { for (const id of ["kb", "q", "topk", "run"]) $(id).disabled = false; } }
+
+      $("run").addEventListener("click", run);
+      $("stop").addEventListener("click", () => engine.stop());
+
+      async function run() {
+        if (generating) return;
+        const kb = [...new Set($("kb").value.split(/\n/).map((s) => s.trim()).filter(Boolean))];
+        const q = $("q").value.trim();
+        const k = Math.max(1, Math.min(5, +$("topk").value || 3));
+        if (!q || kb.length < 1) return;
+        if (!embReady || !genReady) { $("status").hidden = false; $("status").textContent = "Load both models first."; return; }
+        $("status").hidden = false; $("status").classList.remove("err"); $("status").textContent = "Retrieving…";
+        generating = true; $("run").disabled = true; $("stop").hidden = false;
+        try {
+          const [dr, qr] = await Promise.all([embedder.embed(kb), embedder.embed([q])]);
+          const qv = qr.embeddings[0];
+          const hits = dr.texts.map((text, i) => ({ text, score: cosine(qv, dr.embeddings[i]) })).sort((a, b) => b.score - a.score).slice(0, k);
+          $("context").replaceChildren(...hits.map((h) => { const row = document.createElement("div"); row.className = "result-row";
+            const head = document.createElement("div"); head.className = "result-head";
+            const t = document.createElement("span"); t.textContent = h.text; const s = document.createElement("span"); s.className = "result-score"; s.textContent = h.score.toFixed(3);
+            head.append(t, s); row.append(head); return row; }));
+
+          $("status").textContent = "Answering from the retrieved context…";
+          const context = hits.map((h, i) => `[${i + 1}] ${h.text}`).join("\n");
+          const messages = [
+            { role: "system", content: "Answer the user's question using ONLY the numbered context passages. If the answer is not in the context, say you don't have that information. Be concise." },
+            { role: "user", content: `Context:\n${context}\n\nQuestion: ${q}` },
+          ];
+          $("answer").replaceChildren();
+          const wrap = document.createElement("div"); wrap.className = "msg assistant"; const bubble = document.createElement("div"); bubble.className = "bubble"; wrap.append(bubble); $("answer").append(wrap);
+          const caret = document.createElement("span"); caret.className = "caret"; bubble.append(caret);
+          let acc = "";
+          const res = await engine.chat(messages, {
+            temperature: 0.2, maxTokens: 200, doSample: true,
+            onToken: (delta) => { acc += delta; bubble.textContent = acc; bubble.append(caret); $("answer").scrollTop = $("answer").scrollHeight; },
+          });
+          caret.remove(); bubble.textContent = acc || res.text;
+          $("readout").hidden = false; $("rEmb").textContent = dr.device.toUpperCase(); $("rGen").textContent = res.device.toUpperCase(); $("rDtype").textContent = res.dtype;
+          $("rEmbMs").textContent = (dr.ms + qr.ms) + " ms"; $("rGenMs").textContent = res.ms + " ms";
+          $("status").hidden = true;
+        } catch (err) { $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { generating = false; $("run").disabled = false; $("stop").hidden = true; }
+      }
+    </script>
+  </body>
+</html>

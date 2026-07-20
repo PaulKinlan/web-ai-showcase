@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LFM2 Basics — local chat with a system prompt · Web AI Showcase</title>
+    <meta name="description" content="The fundamental capability: chat with Liquid AI's LFM2 locally, steer it with a system prompt, and compare greedy vs sampled decoding. Tokens stream in real time, in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>💧</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">LFM2</a></p>
+
+    <header>
+      <p class="eyebrow">use case · basics</p>
+      <h1>Basics: local chat, steered by a system prompt</h1>
+      <p class="lede">
+        The fundamental move: send a message, stream a reply — all on-device. A <strong>system prompt</strong>
+        sets the assistant's persona and rules; <strong>greedy</strong> decoding is deterministic while
+        <strong>sampling</strong> adds variety. Change the system prompt and watch the behaviour shift.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="devnote" class="devnote" hidden></div>
+      <div id="model-loader"></div>
+
+      <div class="sysbox" style="margin-top:.6rem">
+        <label for="system">System prompt</label>
+        <textarea id="system" disabled>You are a concise, friendly assistant. Answer in at most three sentences.</textarea>
+      </div>
+
+      <div class="controls">
+        <div class="control"><label for="temp">Temperature <b id="tempV">0.3</b></label><div class="row"><input id="temp" type="range" min="0" max="1.5" step="0.05" value="0.3" disabled /></div></div>
+        <div class="control"><label for="maxtok">Max new tokens <b id="maxtokV">200</b></label><div class="row"><input id="maxtok" type="range" min="16" max="512" step="16" value="200" disabled /></div></div>
+        <div class="control"><label style="min-block-size:2.2rem;display:flex;align-items:center;gap:.4rem"><input id="sample" type="checkbox" checked disabled /> Sample (off = greedy)</label></div>
+      </div>
+
+      <div class="chips" id="chips" role="group" aria-label="Example prompts"></div>
+      <div class="chat-log" id="log" aria-live="polite" aria-label="Conversation"></div>
+      <form class="composer" id="composer">
+        <textarea id="input" placeholder="Say something…" rows="2" disabled aria-label="Message"></textarea>
+        <button id="send" type="submit" disabled>Send</button>
+        <button id="stop" type="button" class="secondary" hidden>Stop</button>
+      </form>
+      <div style="display:flex;gap:.4rem;flex-wrap:wrap"><button id="clear" type="button" class="secondary" disabled>Clear chat</button></div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>dtype <b id="rDtype">–</b></span>
+        <span>first token <b id="rTtft">–</b></span>
+        <span>total <b id="rMs">–</b></span>
+        <span>tok/s (est) <b id="rTps">–</b></span>
+      </div>
+    </section>
+
+    <p class="muted" style="font-size:.85rem">
+      The system prompt is prepended once, before your first turn, and stays in force for the whole
+      conversation. Greedy decoding always picks the single most likely next token (repeatable); sampling
+      draws from the distribution, so higher temperature = more varied, occasionally less coherent.
+    </p>
+
+    <p class="crumbs"><a href="../">← Back to LFM2</a> · Next: <a href="../practical/">Practical →</a></p>
+
+    <script type="module">
+      import { LFM2Engine, pickDeviceDtype, estimateTokens, CHAT_CSS } from "../engine.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = CHAT_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new LFM2Engine();
+      const history = [];
+      let generating = false;
+
+      const EXAMPLES = ["What's a good way to learn to cook?", "Explain recursion simply.", "Suggest a name for a coffee shop.", "What should I pack for a rainy hike?"];
+      for (const ex of EXAMPLES) { const b = document.createElement("button"); b.type = "button"; b.className = "chip"; b.textContent = ex;
+        b.addEventListener("click", () => { if (!generating) { $("input").value = ex; $("composer").requestSubmit(); } }); $("chips").append(b); }
+
+      $("temp").addEventListener("input", (e) => $("tempV").textContent = (+e.target.value).toFixed(2));
+      $("maxtok").addEventListener("input", (e) => $("maxtokV").textContent = e.target.value);
+
+      (async () => {
+        const cfg = await pickDeviceDtype();
+        engine.configure(cfg);
+        $("devnote").hidden = false;
+        $("devnote").innerHTML = cfg.device === "webgpu" ? `<b>WebGPU detected.</b> Fast q4f16 build (~260 MB).` : `<b>No WebGPU adapter.</b> Running the fp32 CPU build (~1.4 GB) — real, but larger and slower.`;
+        createModelLoader({
+          mount: $("model-loader"),
+          model: { modelId: "onnx-community/LFM2-350M-ONNX", runtime: "transformers.js", dtype: cfg.dtype, sizeMB: cfg.sizeMB, requiresWebGPU: false },
+          load: async (onProgress) => { await engine.load(onProgress); return engine; },
+          onReady: () => { for (const id of ["input", "send", "clear", "temp", "maxtok", "sample", "system"]) $(id).disabled = false; },
+        });
+      })();
+
+      function addMsg(role, text) {
+        const wrap = document.createElement("div"); wrap.className = `msg ${role}`;
+        const who = document.createElement("div"); who.className = "who"; who.textContent = role === "user" ? "you" : "lfm2";
+        const bubble = document.createElement("div"); bubble.className = "bubble"; bubble.textContent = text;
+        wrap.append(who, bubble); $("log").append(wrap); $("log").scrollTop = $("log").scrollHeight; return bubble;
+      }
+
+      $("composer").addEventListener("submit", async (e) => {
+        e.preventDefault();
+        if (generating) return;
+        const text = $("input").value.trim(); if (!text) return;
+        $("input").value = ""; addMsg("user", text);
+        // Rebuild messages with the current system prompt at the front.
+        const messages = [];
+        const sys = $("system").value.trim(); if (sys) messages.push({ role: "system", content: sys });
+        history.push({ role: "user", content: text });
+        messages.push(...history);
+        const bubble = addMsg("assistant", "");
+        const caret = document.createElement("span"); caret.className = "caret"; bubble.append(caret);
+        generating = true; $("send").disabled = true; $("stop").hidden = false; $("input").disabled = true;
+        let acc = "";
+        try {
+          const res = await engine.chat(messages, {
+            temperature: +$("temp").value, maxTokens: +$("maxtok").value, doSample: $("sample").checked,
+            onFirstToken: (t) => { $("rTtft").textContent = t + " ms"; },
+            onToken: (delta) => { acc += delta; bubble.textContent = acc; bubble.append(caret); $("log").scrollTop = $("log").scrollHeight; },
+          });
+          caret.remove(); bubble.textContent = acc || res.text;
+          history.push({ role: "assistant", content: acc || res.text });
+          $("readout").hidden = false; $("rBackend").textContent = res.device.toUpperCase(); $("rDtype").textContent = res.dtype;
+          $("rMs").textContent = res.ms + " ms"; const toks = estimateTokens(acc || res.text);
+          $("rTps").textContent = res.ms > 0 ? "~" + (toks / (res.ms / 1000)).toFixed(1) : "–";
+        } catch (err) { caret.remove(); bubble.textContent = "Generation failed: " + err.message; bubble.parentElement.classList.add("system"); }
+        finally { generating = false; $("send").disabled = false; $("stop").hidden = true; $("input").disabled = false; $("input").focus(); }
+      });
+      $("stop").addEventListener("click", () => engine.stop());
+      $("clear").addEventListener("click", () => { if (generating) return; history.length = 0; $("log").replaceChildren(); $("readout").hidden = true; });
+    </script>
+  </body>
+</html>
