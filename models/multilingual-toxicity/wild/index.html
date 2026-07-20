@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Multilingual toxicity Wild — the cross-language parity probe · Web AI Showcase</title>
+    <meta name="description" content="Score the SAME sentence translated into eight languages and watch the toxic probability drift — exposing exactly where a multilingual moderation model is weaker. All real, all in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🛡️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Multilingual toxicity</a></p>
+
+    <header>
+      <p class="eyebrow">use case · wild</p>
+      <h1>Wild: the cross-language parity probe</h1>
+      <p class="lede">
+        A single multilingual model promises the same judgment in every language — but it never quite
+        delivers. Take one sentence, translate it into eight languages, and score all eight. The <em>meaning</em>
+        is identical, so the toxic probability <em>should</em> be too. Where it drifts — and where a clearly
+        hostile line slips under the threshold — is exactly where the model is weaker. The reported test F1 next
+        to each language tells you where to expect trouble (Arabic and German are the shakiest).
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+
+      <fieldset style="border:1px solid var(--border);border-radius:8px;padding:.6rem .8rem;margin-top:.6rem">
+        <legend style="font-size:.82rem;color:var(--muted)">Meaning to test (same sentence, eight translations)</legend>
+        <label style="display:inline-flex;gap:.4rem;align-items:center;margin-inline-end:1rem"><input type="radio" name="grp" value="hostile" checked /> Hostile line</label>
+        <label style="display:inline-flex;gap:.4rem;align-items:center"><input type="radio" name="grp" value="friendly" /> Friendly line</label>
+      </fieldset>
+      <div style="display:flex;flex-wrap:wrap;gap:.5rem;align-items:center;margin-top:.6rem">
+        <button id="run" type="button" disabled>Score all eight</button>
+      </div>
+
+      <div class="readout" id="summary" hidden>
+        <span>expected <b id="sExp">–</b></span>
+        <span>languages <b id="sN">8</b></span>
+        <span>agree <b id="sAgree">–</b></span>
+        <span>misses <b id="sMiss">–</b></span>
+        <span>mean toxic <b id="sMean">–</b></span>
+      </div>
+      <div class="queue-list" id="rows"></div>
+    </section>
+
+    <p class="muted" style="font-size:.85rem">
+      A "miss" is a line whose verdict (at threshold 0.50) disagrees with the meaning — a hostile sentence
+      scored below 0.50, or a friendly one above it. This is the honest reason a responsible multilingual
+      moderation pipeline routes low-confidence and weak-language cases to human review rather than trusting
+      one number.
+    </p>
+
+    <p class="crumbs"><a href="../practical/">← Practical</a> · <a href="../">Back to Multilingual toxicity</a> · Next: <a href="../multimodel/">Multi-model →</a></p>
+
+    <script type="module">
+      import { MultiToxEngine, escapeHTML, LANGUAGES, RTL_CODES, MULTITOX_CSS } from "../multitox.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = MULTITOX_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new MultiToxEngine();
+      const THRESH = 0.5;
+      const F1 = Object.fromEntries(LANGUAGES.map((l) => [l.code, l.f1]));
+      const NAME = Object.fromEntries(LANGUAGES.map((l) => [l.code, l.name]));
+
+      // The SAME meaning translated into eight languages. Mild, illustrative — an insult, not a slur.
+      const GROUPS = {
+        hostile: [
+          ["en", "You are completely useless and everyone here despises you."],
+          ["es", "Eres completamente inútil y todos aquí te desprecian."],
+          ["fr", "Tu es complètement inutile et tout le monde ici te méprise."],
+          ["de", "Du bist völlig nutzlos und alle hier verachten dich."],
+          ["ru", "Ты совершенно бесполезен, и все здесь тебя презирают."],
+          ["ar", "أنت عديم الفائدة تماما والجميع هنا يحتقرك."],
+          ["hi", "तुम बिलकुल बेकार हो और यहाँ हर कोई तुमसे नफरत करता है।"],
+          ["zh", "你完全没用，这里每个人都鄙视你。"],
+        ],
+        friendly: [
+          ["en", "You did a great job and everyone here really appreciates you."],
+          ["es", "Hiciste un gran trabajo y todos aquí te aprecian de verdad."],
+          ["fr", "Tu as fait un excellent travail et tout le monde ici t'apprécie vraiment."],
+          ["de", "Du hast großartige Arbeit geleistet und alle hier schätzen dich sehr."],
+          ["ru", "Ты отлично поработал, и все здесь тебя очень ценят."],
+          ["ar", "لقد قمت بعمل رائع والجميع هنا يقدرك حقا."],
+          ["hi", "तुमने बहुत बढ़िया काम किया और यहाँ हर कोई तुम्हारी सराहना करता है।"],
+          ["zh", "你做得很好，这里每个人都很欣赏你。"],
+        ],
+      };
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/bert-multilingual-toxicity-classifier-ONNX", runtime: "transformers.js", dtype: "q8", sizeMB: 170, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("run").disabled = false; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        const grp = document.querySelector("input[name=grp]:checked").value;
+        const expectedToxic = grp === "hostile";
+        const set = GROUPS[grp];
+        $("run").disabled = true; $("status").hidden = false; $("status").classList.remove("err","ok");
+        $("status").textContent = "Scoring eight translations…";
+        try {
+          const r = await engine.triage(set.map(([, t]) => t), THRESH);
+          const scored = set.map(([code], i) => ({ code, text: set[i][1], pToxic: r.items[i].pToxic }));
+          scored.sort((a, b) => b.pToxic - a.pToxic);
+          let misses = 0;
+          for (const s of scored) { const verdictToxic = s.pToxic >= THRESH; if (verdictToxic !== expectedToxic) misses++; }
+          const mean = scored.reduce((a, s) => a + s.pToxic, 0) / scored.length;
+          $("summary").hidden = false;
+          $("sExp").textContent = expectedToxic ? "toxic" : "neutral";
+          $("sAgree").textContent = scored.length - misses;
+          $("sMiss").textContent = misses;
+          $("sMean").textContent = (mean * 100).toFixed(1) + "%";
+          $("rows").replaceChildren(...scored.map((s) => {
+            const verdictToxic = s.pToxic >= THRESH;
+            const miss = verdictToxic !== expectedToxic;
+            const row = document.createElement("div");
+            row.className = "queue-row " + (verdictToxic ? "flag" : "allow");
+            const rtl = RTL_CODES.has(s.code);
+            row.innerHTML = `
+              <div class="queue-text">
+                <div${rtl ? ' dir="rtl"' : ""} lang="${s.code}">${escapeHTML(s.text)}</div>
+                <div style="font-family:var(--font-mono);font-size:.72rem;color:var(--muted)">${NAME[s.code]} · F1 ${F1[s.code].toFixed(2)}${miss ? ' · <span style="color:var(--bad)">MISS</span>' : ""}</div>
+              </div>
+              <div class="queue-meta">
+                <span class="badge ${verdictToxic ? "flag" : "allow"}">${verdictToxic ? "toxic" : "neutral"}</span><br>
+                ${(s.pToxic * 100).toFixed(1)}%
+              </div>`;
+            return row;
+          }));
+          $("status").hidden = true;
+        } catch (err) { $("status").textContent = "Scoring failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>

@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Multilingual toxicity Practical — a cross-language moderation queue · Web AI Showcase</title>
+    <meta name="description" content="Paste a mixed-language comment stream, set a threshold, and the multilingual classifier triages every line into flag / allow — sorted worst-first — all in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🛡️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Multilingual toxicity</a></p>
+
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Practical: a cross-language moderation queue</h1>
+      <p class="lede">
+        The shape of a real moderation feature. Paste a stream of comments — one per line, in any mix of the 15
+        languages — set a threshold, and the classifier scores every line and sorts them worst-first, so a
+        human reviews the most likely-toxic first and the benign majority is auto-approved. Nothing is
+        uploaded.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+
+      <label class="field" style="margin-top:.6rem">Comment stream (one per line, any language)
+        <textarea id="text" class="tox-in" dir="auto" style="min-block-size:8rem" rows="8" disabled></textarea>
+      </label>
+
+      <div class="thresh-wrap">
+        <label for="thresh">Flag threshold: <b id="threshVal">0.50</b></label>
+        <input type="range" id="thresh" min="0.05" max="0.95" step="0.05" value="0.5" disabled />
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:.5rem;align-items:center;margin-top:.5rem">
+        <button id="run" type="button" disabled>Triage queue</button>
+      </div>
+
+      <div class="readout" id="summary" hidden>
+        <span>total <b id="sTotal">–</b></span>
+        <span>flagged <b id="sFlag">–</b></span>
+        <span>allowed <b id="sAllow">–</b></span>
+        <span>time <b id="sMs">–</b></span>
+      </div>
+      <div class="queue-list" id="queue"></div>
+    </section>
+
+    <p class="muted" style="font-size:.85rem">
+      Sorted worst-first, a reviewer can stop reading the moment the scores drop below their comfort line. The
+      threshold is a policy dial, not a truth: raise it to reduce false positives, lower it to catch more.
+    </p>
+
+    <p class="crumbs"><a href="../basics/">← Basics</a> · <a href="../">Back to Multilingual toxicity</a> · Next: <a href="../wild/">Wild →</a></p>
+
+    <script type="module">
+      import { MultiToxEngine, escapeHTML, MULTITOX_CSS } from "../multitox.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = MULTITOX_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new MultiToxEngine();
+
+      const SEED = [
+        "Thanks for the detailed review, this really helped me improve the PR.",
+        "You are a worthless idiot and nobody wants you here.",
+        "شكرا جزيلا على مساعدتك، هذا عمل رائع حقا.",
+        "أنت شخص غبي وسخيف ولا أحد يطيقك.",
+        "Eres un inútil y todos te odian.",
+        "Merci beaucoup, c'est exactement ce qu'il me fallait.",
+        "Ты тупой придурок и всех раздражаешь.",
+        "この提案はとても分かりやすくて助かりました。",
+        "Vielen Dank für die schnelle Antwort!",
+        "आप बिल्कुल बेकार हैं और किसी को आपकी ज़रूरत नहीं।",
+      ];
+      $("text").value = SEED.join("\n");
+
+      const thresh = $("thresh");
+      thresh.addEventListener("input", () => { $("threshVal").textContent = Number(thresh.value).toFixed(2); if (lastItems) render(lastItems); });
+      let lastItems = null, lastMs = 0;
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/bert-multilingual-toxicity-classifier-ONNX", runtime: "transformers.js", dtype: "q8", sizeMB: 170, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { for (const id of ["text","run","thresh"]) $(id).disabled = false; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        const lines = $("text").value.split("\n").map((s) => s.trim()).filter(Boolean);
+        if (!lines.length) return;
+        $("run").disabled = true; $("status").hidden = false; $("status").classList.remove("err","ok");
+        $("status").textContent = `Scoring ${lines.length} comment(s)…`;
+        try {
+          const r = await engine.triage(lines, Number(thresh.value));
+          lastItems = r.items; lastMs = r.ms;
+          render(r.items);
+          $("status").textContent = "Done."; $("status").classList.add("ok"); $("status").hidden = true;
+        } catch (err) { $("status").textContent = "Triage failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+
+      function render(items) {
+        const t = Number(thresh.value);
+        const scored = items.map((it) => ({ ...it, flag: it.pToxic >= t })).sort((a, b) => b.pToxic - a.pToxic);
+        const flagged = scored.filter((s) => s.flag).length;
+        $("summary").hidden = false;
+        $("sTotal").textContent = scored.length;
+        $("sFlag").textContent = flagged;
+        $("sAllow").textContent = scored.length - flagged;
+        $("sMs").textContent = lastMs + " ms";
+        $("queue").replaceChildren(...scored.map((s) => {
+          const row = document.createElement("div");
+          row.className = "queue-row " + (s.flag ? "flag" : "allow");
+          const isRTL = /[֐-׿؀-ۿ]/.test(s.text);
+          row.innerHTML = `
+            <div class="queue-text"${isRTL ? ' dir="rtl"' : ""}>${escapeHTML(s.text)}</div>
+            <div class="queue-meta">
+              <span class="badge ${s.flag ? "flag" : "allow"}">${s.flag ? "FLAG ⚑" : "ALLOW"}</span><br>
+              toxic ${(s.pToxic * 100).toFixed(1)}%
+            </div>`;
+          return row;
+        }));
+      }
+    </script>
+  </body>
+</html>

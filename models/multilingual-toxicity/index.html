@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Multilingual toxicity classifier — moderate 15 languages in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Score text for toxicity in 15 languages — Arabic, Hindi, Chinese, Japanese, Russian, German, Spanish and more — locally in your browser. One mBERT checkpoint, a binary toxic/neutral softmax, a moderation threshold you control. Nothing leaves the device."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🛡️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">text-classification · text · multilingual · WASM · ~170 MB</p>
+      <h1>Multilingual toxicity — moderate 15 languages, privately</h1>
+      <p class="lede">
+        A <strong>multilingual BERT</strong> (mBERT) fine-tuned for the TextDetox 2025 shared task. It reads
+        text in <strong>15 languages</strong> — Arabic, Hindi, Chinese, Japanese, Hebrew, Russian, Ukrainian,
+        German, Spanish, Italian, French, English and more — and returns a single <strong>toxic vs.
+        neutral</strong> probability. This is defensive content-safety tooling: set a threshold, triage what to
+        review. Every score is computed on your device; no text is ever sent to a server. It is a probability,
+        not a judgment about a person — and, as the model card is candid about, accuracy varies a lot by
+        language.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table glance">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/onnx-community/bert-multilingual-toxicity-classifier-ONNX" target="_blank" rel="noopener">onnx-community/bert-multilingual-toxicity-classifier-ONNX</a> (ONNX of <a href="https://huggingface.co/textdetox/bert-multilingual-toxicity-classifier" target="_blank" rel="noopener">textdetox/bert-multilingual-toxicity-classifier</a>)</td></tr>
+          <tr><th>Task / pipeline</th><td><code>text-classification</code> · <strong>binary, single-label</strong> (softmax over two logits, not independent sigmoids)</td></tr>
+          <tr><th>Labels</th><td><code>neutral</code> (idx 0) · <code>toxic</code> (idx 1) — the two probabilities sum to 1</td></tr>
+          <tr><th>Languages</th><td>15 — <strong>ar, hi, zh, ja, he, ru, uk, de, es, it, fr, en, am, tt</strong> (+ Hinglish)</td></tr>
+          <tr><th>Architecture</th><td>bert-base-multilingual-cased (12-layer mBERT) fine-tuned on <a href="https://huggingface.co/datasets/textdetox/multilingual_toxicity_dataset" target="_blank" rel="noopener">textdetox/multilingual_toxicity_dataset</a></td></tr>
+          <tr><th>Quantization</th><td>q8 (8-bit) ONNX — verified non-degenerate (clean toxic/benign separation across en/ar/es/ru/de)</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (runs anywhere; no WebGPU needed)</td></tr>
+          <tr><th>Download</th><td>~170 MB, cached after first load</td></tr>
+          <tr><th>License</th><td>OpenRAIL++ (use-based restrictions — a responsible-AI license)</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+      <div class="lang-grid" id="langGrid" aria-label="Supported languages with reported test F1"></div>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Type or paste text in any of the 15 languages; it re-scores automatically a moment after
+        you stop typing. The <strong>moderation threshold</strong> decides the verdict: if the toxic
+        probability lands at or above it, the text is <span style="color:var(--bad)">flagged</span> for review —
+        otherwise it's <span style="color:var(--good)">allowed</span>. The samples pair a benign and a mild
+        hostile line per language so you can watch the classifier separate them.</p>
+
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <label class="field" style="margin-top:.6rem">Text to moderate (any of 15 languages)
+        <textarea id="text" class="tox-in" dir="auto" rows="3" disabled>Thank you so much for reviewing my work, this feedback is genuinely helpful.</textarea>
+      </label>
+      <div class="sample-row" id="samples"></div>
+
+      <div class="thresh-wrap">
+        <label for="thresh">Moderation threshold: <b id="threshVal">0.50</b> — flag when toxic probability ≥ this</label>
+        <input type="range" id="thresh" min="0.05" max="0.95" step="0.05" value="0.5" />
+      </div>
+
+      <div class="verdict-row" id="verdictRow" hidden>
+        <span class="verdict-label" id="vLabel">–</span>
+        <span class="verdict-sub" id="vSub"></span>
+      </div>
+      <div class="bars" id="bars" aria-live="polite"></div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+        <span>classes <b>2 (softmax)</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside — two logits, one softmax</h3>
+      <p class="muted">
+        The English <a href="../toxicity-detection/">toxic-bert</a> demo is <strong>multi-label</strong>: six
+        independent sigmoids that don't add up. This model is the other shape — <strong>binary,
+        single-label</strong>. The final layer produces <em>two</em> raw <strong>logits</strong> (neutral,
+        toxic); a single <strong>softmax</strong> turns them into two probabilities that <em>do</em> sum to
+        100%. The table shows both, so you can see exactly how the threshold turns numbers into a decision. The
+        multilingual trick is upstream: mBERT shares one WordPiece vocabulary and one embedding space across
+        104 languages, so the same two-logit head works whether the input is English or Arabic.
+      </p>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Score some text to see the raw numbers.</div>
+      <div id="insideWrap" hidden>
+        <table class="inside-table">
+          <thead><tr><th>Class</th><th>logit</th><th>softmax</th><th>vs threshold</th></tr></thead>
+          <tbody id="insideRows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        Communities are rarely monolingual. A moderation queue that only understands English is blind to abuse
+        in every other language its users actually write in. A single small multilingual model — running for
+        free, on-device, the instant someone hits submit — is a first line of defence that scales across
+        borders without a per-call bill and without the text ever leaving the tab.
+      </p>
+      <ul>
+        <li><strong>Cross-lingual pre-submit guardrails</strong> — warn a user their draft reads as toxic before they post, in whatever language they wrote it.</li>
+        <li><strong>Multilingual queue triage</strong> — sort a mixed-language comment stream so the most likely-toxic rises to the top for human review.</li>
+        <li><strong>Private-by-default safety</strong> — score sensitive text (support tickets, health forums) in many languages without a server round-trip or a third-party API.</li>
+        <li><strong>Honest about its limits</strong> — the model card reports test F1 from 0.95 (Ukrainian) down to 0.51 (Arabic); a responsible deployment routes low-confidence and weak-language cases to people.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Score one line in any language and read the two-class toxic/neutral probability.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">A multilingual moderation queue: paste many comments, set a threshold, auto-sort into flag / allow.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Translation-parity probe — the same sentence in several languages, side by side, exposing where the model is weaker.</p></a>
+        <a class="model-card" href="multimodel/"><h3>Multi-model</h3><p class="muted">A toxicity gate in front of a multilingual sentiment model: only clean comments pass through to analysis.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>The convenience path is one call — the model is single-label, so the pipeline returns the winning class:</p>
+      <pre><code>import { pipeline } from "@huggingface/transformers";
+
+const classify = await pipeline("text-classification",
+  "onnx-community/bert-multilingual-toxicity-classifier-ONNX");
+const out = await classify("أنت شخص غبي");   // Arabic
+// → [{ label: "toxic", score: 0.98 }]   (idx 0 = neutral, idx 1 = toxic)</code></pre>
+      <p class="muted">
+        This page goes one level deeper for "See inside": instead of the pipeline it runs the
+        <code>tokenizer</code> then <code>model()</code> in a single forward pass, reads the raw two-value
+        <code>logits</code> tensor, and applies the <strong>softmax</strong> itself — so it can show both the
+        logit and the probability, and apply <em>your</em> threshold. Same weights, same result. All of it runs
+        in a Web Worker so typing never janks.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/onnx-community/bert-multilingual-toxicity-classifier-ONNX" target="_blank" rel="noopener">Model card — onnx-community ONNX export</a></li>
+        <li><a href="https://huggingface.co/textdetox/bert-multilingual-toxicity-classifier" target="_blank" rel="noopener">Original weights — textdetox/bert-multilingual-toxicity-classifier</a></li>
+        <li><a href="https://pan.webis.de/clef25/pan25-web/text-detoxification.html" target="_blank" rel="noopener">TextDetox 2025 shared task (PAN @ CLEF)</a></li>
+        <li><a href="../toxicity-detection/">Contrast — English toxic-bert (multi-label, six sigmoids)</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      Weights are OpenRAIL++ (use-based restrictions).
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { MultiToxEngine, renderProbBars, verdict, escapeHTML, debounce, LANGUAGES, RTL_CODES, MULTITOX_CSS }
+        from "./multitox.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = MULTITOX_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new MultiToxEngine();
+      let loaded = false;
+      let lastScore = null;
+
+      // Language pill list with reported test F1 (honest about weak languages).
+      $("langGrid").replaceChildren(...LANGUAGES.map((l) => {
+        const s = document.createElement("span");
+        s.className = "lang-pill";
+        s.textContent = `${l.name} · F1 ${l.f1.toFixed(2)}`;
+        return s;
+      }));
+
+      // Multilingual sample pairs — a benign and a MILD hostile line per language. RTL scripts get dir="rtl".
+      const SAMPLES = [
+        { lang: "en", tone: "benign", text: "Thank you so much for reviewing my work, this feedback is genuinely helpful." },
+        { lang: "en", tone: "toxic", text: "You are a worthless idiot and nobody wants you here." },
+        { lang: "ar", tone: "benign", text: "شكرا جزيلا على مساعدتك، هذا عمل رائع حقا." },
+        { lang: "ar", tone: "toxic", text: "أنت شخص غبي وسخيف ولا أحد يطيقك." },
+        { lang: "es", tone: "toxic", text: "Eres un inútil y todos te odian." },
+        { lang: "ru", tone: "toxic", text: "Ты тупой придурок и всех раздражаешь." },
+        { lang: "de", tone: "benign", text: "Vielen Dank für deine Hilfe, das ist wirklich gute Arbeit." },
+        { lang: "hi", tone: "benign", text: "आपकी मदद के लिए बहुत बहुत धन्यवाद, यह वाकई शानदार काम है।" },
+        { lang: "fr", tone: "toxic", text: "Tu es complètement idiot et tout le monde te déteste." },
+      ];
+      const samplesEl = $("samples");
+      for (const s of SAMPLES) {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "chip";
+        b.dataset.tone = s.tone;
+        const rtl = RTL_CODES.has(s.lang);
+        b.innerHTML = `<span class="chip-lang">${s.lang} · ${s.tone}</span>`;
+        const txt = document.createElement("span");
+        txt.textContent = s.text.length > 34 ? s.text.slice(0, 32) + "…" : s.text;
+        if (rtl) txt.dir = "rtl";
+        txt.lang = s.lang;
+        b.append(txt);
+        b.addEventListener("click", () => {
+          $("text").value = s.text;
+          $("text").lang = s.lang;
+          scheduleScore();
+        });
+        samplesEl.append(b);
+      }
+
+      const thresh = $("thresh");
+      thresh.addEventListener("input", () => {
+        $("threshVal").textContent = Number(thresh.value).toFixed(2);
+        if (lastScore) render(lastScore);
+      });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: {
+          modelId: "onnx-community/bert-multilingual-toxicity-classifier-ONNX",
+          runtime: "transformers.js",
+          dtype: "q8",
+          sizeMB: 170,
+          requiresWebGPU: false,
+        },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("text").disabled = false; loaded = true; score(); },
+      });
+
+      const scheduleScore = debounce(score, 350);
+      $("text").addEventListener("input", scheduleScore);
+
+      async function score() {
+        if (!loaded) return;
+        const text = $("text").value.trim();
+        if (!text) { $("verdictRow").hidden = true; $("bars").replaceChildren(); $("insideWrap").hidden = true; $("insideEmpty").hidden = false; return; }
+        try {
+          const r = await engine.classify(text);
+          lastScore = r;
+          render(r);
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = r.ms + " ms";
+        } catch (err) {
+          $("runStatus").hidden = false;
+          $("runStatus").textContent = "Scoring failed: " + err.message;
+          $("runStatus").classList.add("err");
+        }
+      }
+
+      function render(r) {
+        const t = Number(thresh.value);
+        renderProbBars($("bars"), r.pToxic, t);
+        const v = verdict(r.pToxic, t);
+        $("verdictRow").hidden = false;
+        $("vLabel").textContent = v.flag ? "FLAG" : "ALLOW";
+        $("vLabel").className = "verdict-label " + (v.flag ? "flag" : "allow");
+        $("vSub").textContent = v.flag
+          ? `toxic ${(r.pToxic * 100).toFixed(1)}% ≥ ${t.toFixed(2)}`
+          : `toxic ${(r.pToxic * 100).toFixed(1)}%, below ${t.toFixed(2)}`;
+        renderInside(r, t);
+      }
+
+      function renderInside(r, t) {
+        $("insideEmpty").hidden = true;
+        $("insideWrap").hidden = false;
+        const rows = [
+          { label: "neutral", logit: r.logits[0], p: r.pNeutral },
+          { label: "toxic", logit: r.logits[1], p: r.pToxic },
+        ];
+        $("insideRows").replaceChildren(...rows.map((row) => {
+          const tr = document.createElement("tr");
+          const isToxic = row.label === "toxic";
+          const over = isToxic && r.pToxic >= t;
+          tr.innerHTML = `<td>${escapeHTML(row.label)}</td>
+            <td>${row.logit.toFixed(3)}</td>
+            <td>${(row.p * 100).toFixed(2)}%</td>
+            <td style="color:${over ? "var(--bad)" : "var(--muted)"}">${isToxic ? (over ? "≥ flag ⚑" : "below") : "—"}</td>`;
+          return tr;
+        }));
+      }
+    </script>
+  </body>
+</html>
