@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Metric3D — absolute-scale metric depth (metres) from one photo · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run Metric3D locally: absolute-scale monocular depth in METRES from a single photo — real distances, not a relative map. Colourised depth with a metric legend, the raw metre range, and a distance readout, all on-device via WebGPU or WASM."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>📐</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">depth-estimation · vision · WebGPU (fp16) / WASM (fp32) · ~72–143 MB</p>
+      <h1>Metric3D — depth in metres from one photo</h1>
+      <p class="lede">
+        Most monocular depth models give you a <em>relative</em> map — a nearer/farther ordering in
+        arbitrary units. <strong>Metric3D</strong> is different: it predicts <strong>absolute depth in
+        metres</strong> against a canonical camera, so the numbers are real distances you can compare
+        across the scene. Give it one photo and read how far every pixel is. It's small enough to run on
+        <strong>WebGPU or plain WASM</strong>, and the photo never leaves the tab.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/onnx-community/metric3d-vit-small" target="_blank" rel="noopener">onnx-community/metric3d-vit-small</a></td></tr>
+          <tr><th>Task / pipeline</th><td><code>depth-estimation</code> — monocular, <strong>metric-scale</strong> (model_type <code>metric3d</code>)</td></tr>
+          <tr><th>Architecture</th><td>Metric3D: a ViT-Small depth backbone trained with a canonical-camera transform so a single feed-forward pass predicts absolute metric depth across datasets</td></tr>
+          <tr><th>Output</th><td><code>predicted_depth</code> — a per-pixel tensor of depth in <strong>metres</strong>; plus a 0–255 normalized image for display</td></tr>
+          <tr><th>Quantization</th><td>fp16 (WebGPU, ~72 MB) or fp32 (WASM, ~143 MB)</td></tr>
+          <tr><th>Backend</th><td>WebGPU when a GPU adapter exists, else WebAssembly — it runs either way</td></tr>
+          <tr><th>Download</th><td>~72 MB (fp16) / ~143 MB (fp32), cached after first load</td></tr>
+          <tr><th>License</th><td>cc0-1.0 (onnx-community ONNX export)</td></tr>
+          <tr><th>Metric caveat</th><td>Absolute metres assume the model's <strong>canonical camera intrinsics</strong> — exact at the reference focal length, a calibrated estimate for an arbitrary photo. The relative metric structure across the scene is the robust signal.</td></tr>
+          <tr><th>Web APIs</th><td>WebGPU (optional), Web Workers, OffscreenCanvas, Canvas 2D, FileReader</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Pick or drop a photo, then estimate depth. The colour maps distance: the legend
+        shows the real metre range. Darker/cooler is <em>nearer</em>, brighter/warmer is <em>farther</em>.
+        Runs on WebGPU if you have it, otherwise on WASM.</p>
+
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="controls-row">
+        <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image" style="flex:1 1 240px">
+          <span id="dropText">Drop a photo, or click to choose</span>
+          <input type="file" id="file" accept="image/*" hidden />
+        </div>
+      </div>
+      <div class="sample-strip" id="samples" aria-label="Sample images">
+        <img class="sample-thumb active" src="sample-room.jpg" data-src="sample-room.jpg" alt="A sunlit bedroom" tabindex="0" role="button" />
+        <img class="sample-thumb" src="sample-portrait.jpg" data-src="sample-portrait.jpg" alt="Two cats on a couch" tabindex="0" role="button" />
+        <img class="sample-thumb" src="sample-street.jpg" data-src="sample-street.jpg" alt="A riverside at golden hour" tabindex="0" role="button" />
+      </div>
+
+      <div class="controls-row">
+        <label style="font-size:.82rem">Colour map
+          <select id="cmap" style="min-block-size:44px">
+            <option value="turbo">turbo</option>
+            <option value="viridis">viridis</option>
+            <option value="magma">magma</option>
+            <option value="gray">grayscale</option>
+          </select>
+        </label>
+        <button id="run" type="button" disabled>Estimate metric depth</button>
+      </div>
+
+      <div class="canvas-grid">
+        <div class="canvas-card">
+          <h4>Input</h4>
+          <img class="preview-img" id="preview" src="sample-room.jpg" alt="Selected photo" />
+        </div>
+        <div class="canvas-card">
+          <h4>Metric depth (metres)</h4>
+          <canvas class="viz-canvas" id="depthCanvas" width="480" height="360" aria-label="Colourised metric depth map"></canvas>
+          <div class="legend-row"><span id="legNear">near</span><canvas class="legend-canvas" id="legend" width="220" height="14"></canvas><span id="legFar">far</span></div>
+        </div>
+      </div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+        <span>output <b id="rDims">–</b></span>
+        <span>metric range <b id="rRange">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside</h3>
+      <p class="muted">
+        Metric3D outputs a <strong>tensor of real numbers in metres</strong>, one per pixel. That's what
+        makes it <em>metric</em> rather than relative: the values are absolute distances against a
+        canonical camera, not arbitrary units re-normalized per image. Below is the honest view — the raw
+        metre range straight from the model, the mean depth, and the distribution — plus the
+        camera-intrinsics caveat that keeps the claim honest.
+      </p>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Estimate a depth map to see the raw metric numbers.</div>
+      <div id="insideWrap" hidden>
+        <table class="inside-table">
+          <tbody>
+            <tr><th>predicted_depth shape</th><td id="iDims">–</td></tr>
+            <tr><th>raw depth range</th><td id="iRange">–</td></tr>
+            <tr><th>mean depth</th><td id="iMean">–</td></tr>
+            <tr><th>near / far plane</th><td id="iPlanes">–</td></tr>
+            <tr><th>pixels estimated</th><td id="iPix">–</td></tr>
+          </tbody>
+        </table>
+        <h4 style="font-family:var(--font-body);font-size:.8rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:.9rem 0 0">Depth distribution (near → far)</h4>
+        <div class="histo" id="histo" role="img" aria-label="Histogram of estimated depth, near on the left to far on the right"></div>
+        <p class="muted" style="font-size:.76rem;margin-top:.6rem">
+          <strong>Camera intrinsics.</strong> Metric3D calibrates to a canonical focal length, so absolute
+          metres are exact for that reference and an estimate for a photo with different intrinsics. Ratios
+          and relative distances across the scene are the robust part — which is exactly what the
+          "measure distances" demo relies on.
+        </p>
+      </div>
+
+      <hr style="border:0;border-top:1px solid var(--border);margin:1.2rem 0" />
+      <h4 style="margin:.2rem 0">Metric vs relative depth</h4>
+      <p class="muted">
+        <a href="/web-ai-showcase/models/depth-anything/">Depth Anything</a> and
+        <a href="/web-ai-showcase/models/dpt-depth/">DPT</a> give a <em>relative</em> map — great for
+        parallax and background blur, but the range is arbitrary and re-normalized per image, so "3" in one
+        photo isn't "3" in another. Metric3D commits to <strong>metres</strong>: the same scene reads the
+        same absolute distances, which is what lets you measure. (Apple's
+        <a href="/web-ai-showcase/models/depth-pro-metric/">DepthPro</a> is also metric but a much larger,
+        WebGPU-only model tuned for razor-sharp boundaries — Metric3D is the small, WASM-friendly metric
+        option.)
+      </p>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        Absolute depth in metres from a single frame — no stereo rig, no LiDAR — turns a photo into
+        measurable geometry:
+      </p>
+      <ul>
+        <li><strong>Real distances</strong> — read how far a point is, and compare two points' distances in metres, from one image.</li>
+        <li><strong>Consistent scale</strong> — the same scene gives the same numbers, so measurements are comparable across photos.</li>
+        <li><strong>Robotics & AR scale</strong> — metric depth gives virtual objects the right real-world size and placement.</li>
+        <li><strong>Scene reconstruction</strong> — a metric depth field per pixel is the starting point for a 3D point cloud.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">One photo in, a colourised metric depth map out — read distance as colour, with a metre legend.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Tap any point to read its distance in metres, and tap two to get the depth gap.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">3D parallax — tilt a flat photo with your pointer, driven by real metric depth.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">Metric depth + segmentation → the mean distance in metres of each labelled region.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>Depth is a one-liner with Transformers.js. The pipeline returns both a ready-to-display image and the raw metric tensor:</p>
+      <pre><code>import { pipeline } from "@huggingface/transformers";
+
+const estimator = await pipeline(
+  "depth-estimation",
+  "onnx-community/metric3d-vit-small",
+  { device: "webgpu", dtype: "fp16" },   // or device:"wasm", dtype:"fp32"
+);
+
+const { depth, predicted_depth } = await estimator(imageURL);
+// depth          → RawImage: grayscale, min–max normalized to 0–255 (for display)
+// predicted_depth → Tensor:  the raw per-pixel depth in METRES (dims = [H, W])</code></pre>
+      <p class="muted">
+        This page colourises <code>depth</code> and reads <code>predicted_depth</code> for the real metre
+        range + distribution, in "See inside". Both the inference AND the per-pixel colour composite run in
+        a Web Worker (the worker transfers a ready ImageBitmap), so estimating a large photo never freezes
+        the page. Metric3D runs on WebGPU when available and falls back to WASM otherwise.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/onnx-community/metric3d-vit-small" target="_blank" rel="noopener">Model card — onnx-community/metric3d-vit-small</a></li>
+        <li><a href="https://arxiv.org/abs/2307.10984" target="_blank" rel="noopener">Paper — Metric3D: Towards Zero-shot Metric 3D Prediction from a Single Image (Yin et al., 2023)</a></li>
+        <li><a href="https://arxiv.org/abs/2404.15506" target="_blank" rel="noopener">Paper — Metric3D v2: A Versatile Monocular Geometric Foundation Model</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/api/pipelines#module_pipelines.DepthEstimationPipeline" target="_blank" rel="noopener">Transformers.js — DepthEstimationPipeline</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { Metric3DEngine, fileToDataURL, urlToDataURL, drawDepthBitmap, paintDepth, renderColorLegend, DEPTH_CSS }
+        from "./depth.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = DEPTH_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new Metric3DEngine();
+      let currentImageURL = null;
+      let lastResult = null;
+
+      renderColorLegend($("legend"), $("cmap").value);
+
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        currentImageURL = await urlToDataURL(el.dataset.src);
+        $("preview").src = el.dataset.src;
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => {
+          if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); }
+        });
+      }
+      pickSample($("samples").firstElementChild);
+
+      const file = $("file"), drop = $("drop");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) {
+        for (const t of $("samples").children) t.classList.remove("active");
+        currentImageURL = await fileToDataURL(f);
+        $("preview").src = currentImageURL;
+        $("dropText").textContent = f.name;
+      }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
+
+      $("cmap").addEventListener("change", async () => {
+        renderColorLegend($("legend"), $("cmap").value);
+        if (lastResult) {
+          // Re-colourise off the main thread and blit the returned bitmap.
+          const r = await engine.recolor($("cmap").value);
+          drawDepthBitmap($("depthCanvas"), r.bitmap);
+        }
+      });
+
+      // Metric3D is small (fp16 ~72 MB / fp32 ~143 MB) and runs on WASM too → requiresWebGPU:false so it
+      // works on every device; the worker picks WebGPU only when a real adapter exists.
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/metric3d-vit-small", runtime: "transformers.js", dtype: "fp16", sizeMB: 72, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress),
+        onReady: () => { $("run").disabled = false; },
+        onError: () => { $("run").disabled = true; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!currentImageURL) { $("status").textContent = "Pick a photo first."; return; }
+        $("run").disabled = true; $("status").classList.remove("err"); $("status").textContent = "Estimating metric depth…";
+        try {
+          const r = await engine.estimate(currentImageURL, $("cmap").value);
+          lastResult = r;
+          drawDepthBitmap($("depthCanvas"), r.bitmap);
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase() + (r.dtype ? " · " + r.dtype : "");
+          $("rMs").textContent = r.ms + " ms";
+          $("rDims").textContent = `${r.width} × ${r.height}`;
+          $("rRange").textContent = r.metricMin != null ? `${r.metricMin.toFixed(2)} – ${r.metricMax.toFixed(2)} m` : "–";
+          $("legNear").textContent = r.metricMin != null ? `near ${r.metricMin.toFixed(1)} m` : "near";
+          $("legFar").textContent = r.metricMax != null ? `far ${r.metricMax.toFixed(1)} m` : "far";
+          renderInside(r);
+          $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (err) {
+          $("status").textContent = "Depth estimation failed: " + err.message; $("status").classList.add("err");
+        } finally { $("run").disabled = false; }
+      });
+
+      function renderInside(r) {
+        $("insideEmpty").hidden = true;
+        $("insideWrap").hidden = false;
+        $("iDims").textContent = r.rawDims?.length ? `[${r.rawDims.join(" × ")}]` : `[${r.height} × ${r.width}]`;
+        $("iRange").textContent = r.metricMin != null ? `${r.metricMin.toFixed(3)} … ${r.metricMax.toFixed(3)} metres` : "–";
+        $("iMean").textContent = r.metricMean != null ? r.metricMean.toFixed(3) + " m" : "–";
+        $("iPlanes").textContent = r.metricMin != null ? `nearest ${r.metricMin.toFixed(2)} m · farthest ${r.metricMax.toFixed(2)} m` : "–";
+        $("iPix").textContent = (r.width * r.height).toLocaleString();
+        const max = Math.max(...r.hist, 1);
+        $("histo").replaceChildren(...r.hist.map((c) => {
+          const s = document.createElement("span");
+          s.style.blockSize = (c / max * 100).toFixed(1) + "%";
+          s.title = c.toLocaleString() + " px";
+          return s;
+        }));
+      }
+    </script>
+  </body>
+</html>

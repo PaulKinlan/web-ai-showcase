@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Metric3D × Segformer — how many metres to each thing? · Web AI Showcase</title>
+    <meta name="description" content="Two models, one pipeline: Segformer labels every pixel (sky, road, person, building…) and Metric3D gives each pixel a distance in metres — combine them to read the mean metric distance of each labelled region. Both on-device." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🔗</text></svg>" />
+    <style>
+      .two-up { display:flex; flex-wrap:wrap; gap:1rem; align-items:flex-start; }
+      .region-list { display:flex; flex-direction:column; gap:.35rem; margin:.5rem 0; }
+      .region-row { display:flex; align-items:center; gap:.5rem; border:1px solid var(--border); border-radius:8px; padding:.35rem .55rem; background:var(--bg-raised); font-size:.86rem; }
+      .region-row .sw { inline-size:.85rem; block-size:.85rem; border-radius:3px; flex:none; }
+      .region-row .lbl { overflow-wrap:anywhere; }
+      .region-row .dist { margin-inline-start:auto; font-family:var(--font-mono); font-size:.8rem; color:var(--muted); white-space:nowrap; }
+      .viz-canvas { inline-size:100%; block-size:auto; max-block-size:60vh; object-fit:contain; border-radius:8px; border:1px solid var(--border); background:var(--bg-raised); display:block; }
+      .cardh { font-family:var(--font-body); font-size:.8rem; color:var(--muted); margin:0 0 .3rem; text-transform:uppercase; letter-spacing:.05em; }
+    </style>
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Metric3D</a> · <a href="/web-ai-showcase/models/segformer-semantic/">Segformer</a></p>
+
+    <header>
+      <p class="eyebrow">use case · multi-model</p>
+      <h1>Metric3D × Segformer: how many metres to each thing?</h1>
+      <p class="lede">
+        Compose two models into one flow. <strong>Segformer</strong> answers "what is each pixel" — sky,
+        road, person, building — across 150 semantic classes; <strong>Metric3D</strong> answers "how far is
+        each pixel", in metres. Combine them and you get the mean distance of every labelled region, ranked
+        near → far. Semantics meet metric geometry, entirely on your device.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="depth-loader"></div>
+      <div id="seg-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="sample-strip" id="samples">
+        <img class="sample-thumb active" src="../sample-street.jpg" data-src="../sample-street.jpg" alt="A riverside at golden hour" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-room.jpg" data-src="../sample-room.jpg" alt="A sunlit bedroom" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-portrait.jpg" data-src="../sample-portrait.jpg" alt="Two cats on a couch" tabindex="0" role="button" />
+      </div>
+      <div class="controls-row">
+        <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image" style="flex:1 1 240px">
+          <span id="dropText">Drop a photo, or click to choose</span>
+          <input type="file" id="file" accept="image/*" hidden />
+        </div>
+        <button id="run" type="button" disabled>Segment &amp; rank by distance</button>
+      </div>
+
+      <div class="two-up" style="margin-top:.6rem">
+        <div style="flex:2 1 320px;min-inline-size:0">
+          <p class="cardh">Segmentation overlay</p>
+          <canvas id="segCanvas" class="viz-canvas" width="480" height="360" aria-label="Semantic segmentation overlay"></canvas>
+        </div>
+        <div style="flex:1 1 240px;min-inline-size:0">
+          <p class="cardh">Regions, nearest first (metres)</p>
+          <div class="region-list" id="regionList"><span class="muted" style="font-size:.82rem">Run to label the scene and rank each region by distance.</span></div>
+        </div>
+      </div>
+      <div class="readout" id="readout" hidden><span>Metric3D <b id="rDepth">–</b></span><span>Segformer <b id="rSeg">–</b></span><span>regions <b id="rN">–</b></span></div>
+      <p class="muted" style="font-size:.85rem">
+        Segformer runs in a WASM Web Worker; Metric3D runs in its own worker (WebGPU or WASM). Each labelled
+        region's mean distance is read from Metric3D's metric field — the nearest region floats to the top,
+        with its distance in metres.
+      </p>
+    </section>
+
+    <section aria-labelledby="how-h">
+      <h2 id="how-h">How the two connect</h2>
+      <p>
+        Segformer gives a class per pixel; Metric3D gives a distance in metres per pixel. Overlay them and
+        every pixel has both a label and a distance. Group by label, average the metres, and you know how
+        far away "road", "building", or "person" is — a scene graph with real geometry. No shared weights,
+        no retraining: one model's per-pixel output indexes into the other's.
+      </p>
+    </section>
+
+    <p class="crumbs"><a href="../wild/">← Wild</a> · <a href="../">Metric3D</a> · <a href="/web-ai-showcase/models/segformer-semantic/">Segformer →</a></p>
+
+    <script type="module">
+      import { Metric3DEngine, fileToDataURL, urlToDataURL, escapeHTML, DEPTH_CSS } from "../depth.js";
+      import { SegformerEngine, paintSemanticMap, loadImage } from "/web-ai-showcase/models/segformer-semantic/segformer.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = DEPTH_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const depth = new Metric3DEngine();
+      const seg = new SegformerEngine();
+      let currentURL = null, currentImg = null;
+
+      async function useURL(url) {
+        currentURL = url; currentImg = await loadImage(url);
+        const c = $("segCanvas"); c.width = currentImg.naturalWidth; c.height = currentImg.naturalHeight; c.getContext("2d").drawImage(currentImg, 0, 0);
+        $("regionList").replaceChildren(Object.assign(document.createElement("span"), { className: "muted", textContent: "Run to label the scene and rank each region by distance.", style: "font-size:.82rem" }));
+        $("readout").hidden = true;
+      }
+      async function pickSample(el) { for (const t of $("samples").children) t.classList.toggle("active", t === el); await useURL(await urlToDataURL(el.dataset.src)); }
+      for (const thumb of $("samples").children) { thumb.addEventListener("click", () => pickSample(thumb)); thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } }); }
+      pickSample($("samples").firstElementChild);
+
+      const file = $("file"), drop = $("drop");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) { for (const t of $("samples").children) t.classList.remove("active"); await useURL(await fileToDataURL(f)); $("dropText").textContent = f.name; }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
+
+      let depthReady = false, segReady = false;
+      function maybeEnable() { if (depthReady && segReady) { $("run").disabled = false; $("status").textContent = "Both models ready — pick an image and run."; $("status").classList.add("ok"); } }
+      createModelLoader({
+        mount: $("depth-loader"),
+        model: { modelId: "onnx-community/metric3d-vit-small", runtime: "transformers.js", dtype: "fp16", sizeMB: 72, requiresWebGPU: false },
+        load: (onProgress) => depth.load(onProgress),
+        onReady: (dev) => { depthReady = true; $("rDepth").textContent = dev.toUpperCase(); maybeEnable(); },
+        onError: () => { $("run").disabled = true; },
+      });
+      createModelLoader({
+        mount: $("seg-loader"),
+        model: { modelId: "Xenova/segformer-b0-finetuned-ade-512-512", runtime: "transformers.js", dtype: "q8", sizeMB: 15, requiresWebGPU: false },
+        load: (onProgress) => seg.load(onProgress),
+        onReady: () => { segReady = true; maybeEnable(); },
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!currentURL) { $("status").textContent = "Pick an image first."; return; }
+        $("run").disabled = true; $("status").classList.remove("err"); $("status").textContent = "Running Metric3D + Segformer…";
+        try {
+          const [dep, sg] = await Promise.all([depth.estimate(currentURL, "turbo"), seg.segment(currentURL)]);
+          $("rDepth").textContent = dep.device.toUpperCase(); $("rSeg").textContent = sg.ms + " ms";
+          paintSemanticMap($("segCanvas"), currentImg, sg.overlay, sg.width, sg.height, 0.55);
+
+          // For each labelled class, average Metric3D's depth (metres) over that class's pixels.
+          const mw = dep.metricW || dep.width, mh = dep.metricH || dep.height;
+          const hasMetres = !!dep.metricField;
+          const byColor = new Map(sg.classes.map((c) => [`${c.r},${c.g},${c.b}`, { label: c.label, r: c.r, g: c.g, b: c.b, sum: 0, n: 0 }]));
+          const ov = sg.overlay, sw = sg.width, sh = sg.height;
+          for (let y = 0; y < sh; y++) {
+            for (let x = 0; x < sw; x++) {
+              const o = (y * sw + x) * 4;
+              if (ov[o + 3] < 128) continue;
+              const key = `${ov[o]},${ov[o + 1]},${ov[o + 2]}`;
+              const cls = byColor.get(key); if (!cls) continue;
+              if (hasMetres) {
+                const dx = Math.min(mw - 1, (x / sw * mw) | 0);
+                const dy = Math.min(mh - 1, (y / sh * mh) | 0);
+                cls.sum += dep.metricField[dy * mw + dx]; cls.n++;
+              } else {
+                const dx = Math.min(dep.width - 1, (x / sw * dep.width) | 0);
+                const dy = Math.min(dep.height - 1, (y / sh * dep.height) | 0);
+                cls.sum += dep.depth[dy * dep.width + dx]; cls.n++;
+              }
+            }
+          }
+          // Nearest first: lowest mean metres (or, in the fallback, highest brightness).
+          const ranked = [...byColor.values()].filter((c) => c.n > 0).map((c) => ({ ...c, mean: c.sum / c.n }))
+            .sort((a, b) => hasMetres ? a.mean - b.mean : b.mean - a.mean);
+          const fmt = hasMetres ? (v) => v.toFixed(2) + " m" : (v) => (v / 255 * 100).toFixed(0) + "% near";
+          $("rN").textContent = ranked.length; $("readout").hidden = false;
+          $("regionList").replaceChildren(...ranked.map((c) => {
+            const row = document.createElement("div"); row.className = "region-row";
+            row.innerHTML = `<span class="sw" style="background:rgb(${c.r},${c.g},${c.b})"></span><span class="lbl">${escapeHTML(c.label)}</span><span class="dist">${fmt(c.mean)}</span>`;
+            return row;
+          }));
+          $("status").textContent = `Ranked ${ranked.length} region(s) by distance.`; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>
