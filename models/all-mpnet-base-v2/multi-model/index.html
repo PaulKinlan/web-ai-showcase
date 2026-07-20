@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>all-mpnet-base-v2 Multi-model — retrieve-then-rerank, the classic search pipeline · Web AI Showcase</title>
+    <meta name="description" content="The two-stage pipeline behind serious search engines, entirely in your browser: the MPNet bi-encoder retrieves a shortlist by cosine, then the MS MARCO cross-encoder rereads each (query, passage) pair together and reranks it. Watch results move between the stages." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🧭</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">all-mpnet-base-v2</a></p>
+
+    <header>
+      <p class="eyebrow">use case · multi-model · MPNet bi-encoder + MS MARCO cross-encoder</p>
+      <h1>Multi-model: retrieve, then rerank</h1>
+      <p class="lede">
+        This is how real search pipelines are built. Stage 1: <strong>all-mpnet-base-v2</strong> (a
+        <em>bi-encoder</em>) embeds every passage once and finds a shortlist by cosine — fast, scales to
+        millions of documents. Stage 2: <strong>MS MARCO MiniLM</strong> (a <em>cross-encoder</em>) rereads
+        the query and each shortlisted passage <em>together</em>, letting attention flow across both, and
+        rescores them — slow per pair, but far more precise. Two models, two workers, both local.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="setup-h">
+      <h3 id="setup-h">The two models</h3>
+      <div class="grid-2">
+        <div>
+          <p class="muted" style="margin:0 0 .3rem;font-size:.8rem"><strong>Stage 1 — retriever</strong> · Xenova/all-mpnet-base-v2 (~110 MB)</p>
+          <div id="model-loader"></div>
+        </div>
+        <div>
+          <p class="muted" style="margin:0 0 .3rem;font-size:.8rem"><strong>Stage 2 — reranker</strong> · Xenova/ms-marco-MiniLM-L-6-v2 (~23 MB)</p>
+          <div id="rerank-loader"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run the pipeline</h3>
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">
+        Document collection (one passage per line)
+        <textarea id="docs" rows="9" disabled>The battery lasts about ten hours of continuous video playback on a full charge.
+Charging the battery from empty takes ninety minutes with the bundled adapter.
+Battery replacements are available at any service centre for a small fee.
+Our headquarters moved to a new building with better bike parking.
+The warranty covers manufacturing defects for two years from purchase.
+To pair the headphones, hold the power button for five seconds until the light flashes.
+Streaming quality automatically adjusts to your connection speed.
+The keyboard backlight turns off after thirty seconds of inactivity to save power.</textarea>
+      </label>
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem;max-inline-size:38rem">
+        Query
+        <span style="display:flex;gap:.4rem;flex-wrap:wrap">
+          <input id="q" type="text" value="how many hours does the battery run for" style="flex:1;min-inline-size:12rem" disabled />
+          <button id="go" type="button" disabled>Search</button>
+        </span>
+      </label>
+      <div style="display:flex;gap:.4rem;flex-wrap:wrap;margin:.4rem 0">
+        <button class="chip" type="button" data-q="how long does a full charge take">"how long does a full charge take"</button>
+        <button class="chip" type="button" data-q="how many hours does the battery run for">"how many hours does the battery run for"</button>
+        <button class="chip" type="button" data-q="is a broken unit repaired for free">"is a broken unit repaired for free"</button>
+      </div>
+      <label style="display:flex;gap:.5rem;align-items:center;font-size:.82rem;flex-wrap:wrap">
+        Shortlist size (top-k from stage 1)
+        <input id="k" type="range" min="2" max="6" step="1" value="4" style="flex:1;min-inline-size:8rem;max-inline-size:14rem" />
+        <span style="font-family:var(--font-mono)">k = <b id="kVal">4</b></span>
+      </label>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+
+      <div class="grid-2" style="margin-top:.8rem">
+        <div>
+          <h3 style="margin-top:0">Stage 1 — bi-encoder shortlist <span class="tone">cosine</span></h3>
+          <div class="sent-list" id="stage1" aria-live="polite"></div>
+        </div>
+        <div>
+          <h3 style="margin-top:0">Stage 2 — cross-encoder rerank <span class="tone">relevance logit</span></h3>
+          <div class="sent-list" id="stage2" aria-live="polite"></div>
+        </div>
+      </div>
+      <div class="readout" id="readout" hidden>
+        <span>retrieve <b id="rMs1">–</b></span>
+        <span>rerank <b id="rMs2">–</b></span>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>order changed <b id="rMoved">–</b></span>
+      </div>
+      <p class="muted" style="font-size:.85rem;margin-top:.6rem">
+        Why two stages? The bi-encoder never sees the query and passage together, so near-misses ("battery
+        lasts ten hours" vs "charging takes ninety minutes") stay uncomfortably close in cosine. The
+        cross-encoder reads each pair jointly and separates them by a wide logit margin — but it must run
+        once per pair, so you only feed it the shortlist. ↑/↓ badges show what the rerank changed. And try
+        the third chip for honesty's sake: MS MARCO was trained on web search, and on a niche corpus the
+        reranker can be confidently wrong too — stage 2 is a precision tool, not an oracle.
+      </p>
+    </section>
+
+    <p class="crumbs"><a href="../wild/">← Wild</a> · <a href="../">all-mpnet-base-v2</a></p>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via 🤗 Transformers.js.
+      <a href="../">← Back to all-mpnet-base-v2</a>
+    </footer>
+
+    <script type="module">
+      import { cosine, EmbedClient, MPNET_CSS, MpnetEngine, parseLines } from "../mpnet.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style");
+      style.textContent = MPNET_CSS;
+      document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+
+      const embedder = new MpnetEngine();
+
+      // Second worker, second model: the MS MARCO cross-encoder. Same protocol, different payload.
+      class RerankClient extends EmbedClient {
+        constructor() {
+          super("/web-ai-showcase/models/all-mpnet-base-v2/rerank-worker.js");
+        }
+        rerank(query, passages) {
+          const id = ++this._id;
+          return new Promise((resolve, reject) => {
+            this._pending.set(id, { resolve, reject });
+            this.worker.postMessage({ type: "run", id, query, passages });
+          });
+        }
+      }
+      const reranker = new RerankClient();
+
+      let embedReady = false, rerankReady = false;
+      function maybeEnable() {
+        if (embedReady && rerankReady) {
+          for (const id of ["docs", "q", "go"]) $(id).disabled = false;
+          go();
+        }
+      }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/all-mpnet-base-v2", runtime: "transformers.js", dtype: "q8", sizeMB: 110, requiresWebGPU: false },
+        load: async (onProgress) => { await embedder.load(onProgress); return embedder; },
+        onReady: () => { embedReady = true; maybeEnable(); },
+      });
+      createModelLoader({
+        mount: $("rerank-loader"),
+        model: { modelId: "Xenova/ms-marco-MiniLM-L-6-v2", runtime: "transformers.js", dtype: "q8", sizeMB: 23, requiresWebGPU: false },
+        load: async (onProgress) => { await reranker.load(onProgress); return reranker; },
+        onReady: () => { rerankReady = true; maybeEnable(); },
+      });
+
+      for (const c of document.querySelectorAll(".chip")) {
+        c.addEventListener("click", () => {
+          $("q").value = c.dataset.q;
+          if (embedReady && rerankReady) go();
+        });
+      }
+      $("k").addEventListener("input", () => {
+        $("kVal").textContent = $("k").value;
+        if (embedReady && rerankReady) go();
+      });
+
+      function row(text, scoreText, { top = false, badge = null } = {}) {
+        const r = document.createElement("div");
+        r.className = "result-row" + (top ? " top" : "");
+        const head = document.createElement("div");
+        head.className = "result-head";
+        const t = document.createElement("span");
+        t.textContent = text.length > 140 ? text.slice(0, 139) + "…" : text;
+        if (badge) {
+          const b = document.createElement("span");
+          b.className = "tone";
+          b.textContent = badge;
+          t.append(" ");
+          t.append(b);
+        }
+        const sc = document.createElement("span");
+        sc.className = "result-score";
+        sc.textContent = scoreText;
+        head.append(t, sc);
+        r.append(head);
+        return r;
+      }
+
+      $("go").addEventListener("click", go);
+      $("q").addEventListener("keydown", (e) => { if (e.key === "Enter") go(); });
+      async function go() {
+        const q = $("q").value.trim();
+        const docs = parseLines($("docs").value);
+        if (!q || docs.length < 2) {
+          $("status").hidden = false;
+          $("status").textContent = "Give a query and at least two passages.";
+          $("status").classList.add("err");
+          return;
+        }
+        $("go").disabled = true;
+        $("status").hidden = false;
+        $("status").classList.remove("err");
+        $("status").textContent = "Stage 1 — embedding and retrieving…";
+        try {
+          const [qr, dr] = await Promise.all([embedder.embed([q]), embedder.embed(docs)]);
+          const qv = qr.embeddings[0];
+          const scored = dr.texts.map((text, i) => ({ text, cos: cosine(qv, dr.embeddings[i]) }))
+            .sort((a, b) => b.cos - a.cos);
+          const k = Math.min(+$("k").value, scored.length);
+          const shortlist = scored.slice(0, k);
+          $("stage1").replaceChildren(...shortlist.map((h, i) => row(h.text, h.cos.toFixed(3), { top: i === 0 })));
+
+          $("status").textContent = `Stage 2 — cross-encoder rereads ${k} (query, passage) pairs…`;
+          const rr = await reranker.rerank(q, shortlist.map((h) => h.text));
+          const reranked = shortlist.map((h, i) => ({ ...h, logit: rr.scores[i], was: i }))
+            .sort((a, b) => b.logit - a.logit);
+          let moved = 0;
+          $("stage2").replaceChildren(...reranked.map((h, i) => {
+            const delta = h.was - i;
+            if (delta !== 0) moved++;
+            const badge = delta > 0 ? `↑${delta}` : delta < 0 ? `↓${-delta}` : "=";
+            return row(h.text, h.logit.toFixed(2), { top: i === 0, badge });
+          }));
+          $("readout").hidden = false;
+          $("rMs1").textContent = dr.ms + " ms";
+          $("rMs2").textContent = rr.ms + " ms";
+          $("rBackend").textContent = dr.device.toUpperCase();
+          $("rMoved").textContent = moved > 0 ? `${moved} of ${k}` : "no";
+          $("status").textContent = "Done — compare the two columns.";
+          $("status").classList.add("ok");
+        } catch (err) {
+          $("status").textContent = "Pipeline failed: " + err.message;
+          $("status").classList.add("err");
+        } finally {
+          $("go").disabled = false;
+        }
+      }
+    </script>
+  </body>
+</html>

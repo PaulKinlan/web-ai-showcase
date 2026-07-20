@@ -1,0 +1,368 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>all-mpnet-base-v2 — the default sentence embedder, running in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="The canonical sentence-transformers model: all-mpnet-base-v2 maps sentences and short paragraphs to 768-dimensional vectors for semantic search, clustering and paraphrase detection. Around 250 million downloads a month, MPNet architecture, mean pooling, no prefixes, Apache-2.0 — and it runs entirely in your browser."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🧭</text></svg>" />
+    <style>
+      .inside-table { width: 100%; }
+      .inside-table td, .inside-table th { overflow-wrap: anywhere; }
+      .inside-table a, .inside-table code { overflow-wrap: anywhere; word-break: break-word; }
+    </style>
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">sentence-similarity · text (English) · WASM · ~110 MB · Apache-2.0</p>
+      <h1>all-mpnet-base-v2 — the default sentence embedder</h1>
+      <p class="lede">
+        If you've ever read a semantic-search tutorial, it probably used this model.
+        <strong>all-mpnet-base-v2</strong> is the canonical
+        <a href="https://www.sbert.net" target="_blank" rel="noopener">sentence-transformers</a> workhorse —
+        roughly <strong>250 million downloads a month</strong> — an <strong>MPNet</strong> encoder fine-tuned
+        on <strong>1.17 billion sentence pairs</strong> that maps sentences and short paragraphs to
+        <strong>768-dimensional</strong> vectors. <strong>Mean pooling</strong>, <strong>no query/document
+        prefixes</strong>, one symmetric meaning space. It is the baseline every newer embedder on this site
+        is compared against — and it runs entirely in your browser. Nothing leaves your device.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/Xenova/all-mpnet-base-v2" target="_blank" rel="noopener">Xenova/all-mpnet-base-v2</a> (ONNX export of <a href="https://huggingface.co/sentence-transformers/all-mpnet-base-v2" target="_blank" rel="noopener">sentence-transformers/all-mpnet-base-v2</a>)</td></tr>
+          <tr><th>Task / pipeline</th><td><code>feature-extraction</code> (dense sentence embedding)</td></tr>
+          <tr><th>Architecture</th><td><strong>MPNet</strong> (109M params, 12 layers) — pre-trained with <em>masked and permuted</em> language modelling, then contrastively fine-tuned on 1.17B sentence pairs</td></tr>
+          <tr><th>Output</th><td>one <strong>768-dimensional</strong> vector per input; cosine similarity compares meanings</td></tr>
+          <tr><th>Pooling</th><td><strong>mean pooling</strong> over every token's vector, then <strong>L2-normalize</strong> — the sentence vector is literally the average of the token vectors (see inside, below)</td></tr>
+          <tr><th>Prefixes</th><td><strong>none</strong> — the space is symmetric: queries and documents are embedded identically (unlike arctic-embed's <code>"query: "</code> or e5's <code>query:/passage:</code>)</td></tr>
+          <tr><th>Context</th><td>inputs truncate at <strong>384 word pieces</strong> — a sentence-and-short-paragraph encoder, not a long-document one</td></tr>
+          <tr><th>Language</th><td>English (for multilingual, see the <a href="/web-ai-showcase/models/multilingual-embeddings/">multilingual MiniLM</a> or <a href="/web-ai-showcase/models/arctic-embed-v2/">arctic-embed-m-v2.0</a>)</td></tr>
+          <tr><th>Quantization</th><td>q8 (8-bit) ONNX</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (runs anywhere; no WebGPU needed)</td></tr>
+          <tr><th>Download</th><td>~110 MB (q8), cached after first load</td></tr>
+          <tr><th>License</th><td><strong>Apache-2.0</strong></td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Put one sentence per line. The matrix shows the cosine similarity between every pair
+        (1.00 = identical direction); the 2D map is a PCA projection of the 768-d vectors — sentences that
+        mean similar things sit together, whatever words they use.</p>
+
+      <div id="model-loader"></div>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
+        Sentences (one per line)
+        <textarea id="sentences" rows="8">The new battery lasts all day and recharges in under an hour.
+Battery life is excellent — a full day of use on one charge.
+Our refund policy allows returns within thirty days of purchase.
+You can send an item back for a refund up to 30 days after buying it.
+The central bank raised interest rates to curb inflation.
+I planted tomatoes and basil in the garden this weekend.</textarea>
+      </label>
+      <div style="margin:.5rem 0;display:flex;gap:.4rem;flex-wrap:wrap">
+        <button id="run" type="button" disabled>Embed &amp; compare</button>
+        <button id="reset" type="button" class="secondary">Reset examples</button>
+      </div>
+      <p class="status" id="rowStatus" role="status" aria-live="polite" hidden></p>
+
+      <div class="grid-2">
+        <div>
+          <h3 style="margin-top:.4rem">Pairwise cosine matrix</h3>
+          <div class="matrix-scroll" id="matrix" aria-live="polite"></div>
+          <p class="muted" id="matrixNote" style="font-size:.76rem"></p>
+        </div>
+        <div>
+          <h3 style="margin-top:.4rem">2D map (PCA)</h3>
+          <div id="projection" aria-live="polite"></div>
+          <p class="muted" id="explained" style="font-size:.78rem;font-family:var(--font-mono)"></p>
+        </div>
+      </div>
+
+      <div style="margin-top:1rem">
+        <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;max-inline-size:34rem">
+          Semantic search — rank the sentences above by meaning
+          <span style="display:flex;gap:.4rem;flex-wrap:wrap">
+            <input id="query" type="text" value="How long does the battery last?" style="flex:1;min-inline-size:12rem" disabled />
+            <button id="search" type="button" disabled>Search</button>
+          </span>
+        </label>
+        <p class="muted" style="font-size:.76rem;margin:.3rem 0">No prefixes, no special tokens — the query is
+          embedded exactly like the sentences (the space is symmetric), and ranking is a plain dot product of
+          unit vectors.</p>
+        <div class="sent-list" id="ranked" aria-live="polite"></div>
+      </div>
+
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+        <span>sentences <b id="rN">–</b></span>
+        <span>dims <b id="rDim">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside — mean pooling, token by token</h3>
+      <p class="muted">
+        all-mpnet-base-v2's sentence vector is the <strong>average of every token's contextual vector</strong>
+        (then L2-normalized). That makes the pooling itself inspectable: pick a sentence and see its real
+        word-piece tokens, coloured by each token's <em>share</em> of the final sentence vector — its
+        projection onto the sentence direction, a decomposition that sums exactly to 100%. Hover a chip for
+        the raw numbers (share, cosine, magnitude). The bar shows how much of the
+        <strong>384-word-piece</strong> truncation window the sentence used.
+      </p>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Embed some sentences above to inspect the pooling.</div>
+      <div id="insideWrap" hidden>
+        <label style="font-size:.82rem;display:flex;gap:.4rem;align-items:center;flex-wrap:wrap">
+          Inspect sentence
+          <select id="pick"></select>
+        </label>
+        <div class="readout">
+          <span>dimensions <b>768</b></span>
+          <span>pre-norm ‖v‖ <b id="iNorm">–</b></span>
+          <span>post-norm ‖v‖ <b>1.000</b></span>
+          <span>tokens used <b id="iTok">–</b> / 384 <span class="tokbar"><span id="tokFill"></span></span></span>
+        </div>
+        <p class="muted" style="font-size:.78rem;margin:.5rem 0 0">Word-piece tokens, coloured by their share
+          of the sentence vector — brighter = pulls the average harder toward the final meaning:</p>
+        <div class="tok-strip" id="tokStrip" aria-live="polite"></div>
+        <p class="muted" id="tokNote" style="font-size:.78rem;font-family:var(--font-mono);margin-top:.5rem"></p>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        This is the embedding model an entire generation of semantic search was built on. It's the default in
+        the sentence-transformers docs, the baseline row in embedding benchmarks, and the vector behind
+        countless FAQ bots, dedup pipelines and RAG prototypes. Because it needs no prefixes and no special
+        tokens, it drops into any pipeline: embed everything once, compare with cosine, done. In the browser
+        that means private, serverless semantic features — search, clustering, dedup, recommendations — with
+        zero per-query cost.
+      </p>
+      <ul>
+        <li><strong>Semantic FAQ / help-centre search</strong> — match a user's question to answers by meaning, not keywords, fully client-side.</li>
+        <li><strong>Duplicate detection</strong> — find near-duplicate tickets, reviews or forum posts with a cosine threshold instead of brittle string matching.</li>
+        <li><strong>Clustering &amp; triage</strong> — group free-text feedback into themes locally, before anything is sent anywhere.</li>
+        <li><strong>The recall stage of retrieve-then-rerank</strong> — pair it with a cross-encoder for the classic two-stage search pipeline (see the multi-model demo).</li>
+        <li><strong>Ship it commercially</strong> — Apache-2.0, so it can go straight into a product.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">One cosine number for "do these two sentences mean the same thing?" — plus odd-one-out.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">A client-side FAQ answerer and a near-duplicate detector for tickets and reviews.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Semantic Hot &amp; Cold — a guessing game played entirely in embedding space — and sentence algebra.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">Retrieve-then-rerank: MPNet recall + MS MARCO cross-encoder precision, the classic two-stage pipeline.</p></a>
+      </div>
+      <p class="muted" style="font-size:.85rem;margin-top:.6rem">Contrast with the built
+        <a href="/web-ai-showcase/models/minilm-embeddings/">all-MiniLM-L6-v2</a> (same family, 5× smaller and
+        faster, 384-d, a little less accurate), the
+        <a href="/web-ai-showcase/models/gte-embeddings/">GTE</a> /
+        <a href="/web-ai-showcase/models/bge-sentence-similarity/">BGE</a> generation (newer training recipes)
+        and <a href="/web-ai-showcase/models/arctic-embed-v2/">arctic-embed-m-v2.0</a> (multilingual,
+        long-context): this page is the reference point they're all measured against.</p>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>The model-card recipe is mean pooling + L2-normalize — in Transformers.js that's two options on the
+        <code>feature-extraction</code> pipeline. No prefixes, no special tokens:</p>
+      <pre><code>import { pipeline } from "@huggingface/transformers";
+
+const extract = await pipeline(
+  "feature-extraction",
+  "Xenova/all-mpnet-base-v2",
+  { dtype: "q8" },
+); // downloads + caches ~110 MB once
+
+const sentences = [
+  "How long does the battery last?",
+  "Battery life is excellent — a full day on one charge.",
+  "I planted tomatoes in the garden.",
+];
+const emb = await extract(sentences, { pooling: "mean", normalize: true });
+// emb.dims === [3, 768] — one unit-length vector per sentence
+
+// unit vectors → cosine similarity is just the dot product:
+const [a, b, c] = emb.tolist();
+const sim = (u, v) =&gt; u.reduce((s, x, i) =&gt; s + x * v[i], 0);
+sim(a, b); // high — same meaning, different words
+sim(a, c); // low — unrelated</code></pre>
+      <p class="muted">
+        This page asks the worker for the <em>un</em>-normalized mean-pooled vectors so "See inside" can show
+        the real pre-normalization magnitude — and the per-token vectors so it can show the average being
+        taken — then normalizes in JS. Inference runs in a Web Worker so the matrix, projection and search
+        never jank the page.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/sentence-transformers/all-mpnet-base-v2" target="_blank" rel="noopener">Model card — sentence-transformers/all-mpnet-base-v2</a></li>
+        <li><a href="https://huggingface.co/Xenova/all-mpnet-base-v2" target="_blank" rel="noopener">ONNX export — Xenova/all-mpnet-base-v2</a></li>
+        <li><a href="https://arxiv.org/abs/2004.09297" target="_blank" rel="noopener">Paper — MPNet: Masked and Permuted Pre-training for Language Understanding</a></li>
+        <li><a href="https://www.sbert.net" target="_blank" rel="noopener">Sentence-Transformers (SBERT) documentation</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import {
+        cosine, MPNET_CSS, MpnetEngine, parseLines, pca2d, renderMatrix, renderProjection,
+        renderRanked, simMatrix,
+      } from "./mpnet.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = MPNET_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new MpnetEngine();
+      const DEFAULT = $("sentences").value;
+      let last = null; // { texts, embeddings, norms, dim, tokens }
+
+      $("reset").addEventListener("click", () => { $("sentences").value = DEFAULT; });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/all-mpnet-base-v2", runtime: "transformers.js", dtype: "q8", sizeMB: 110, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => {
+          $("run").disabled = false;
+          $("query").disabled = false;
+          $("search").disabled = false;
+          run();
+        },
+      });
+
+      $("run").addEventListener("click", run);
+      async function run() {
+        const texts = parseLines($("sentences").value);
+        if (texts.length < 2) {
+          $("rowStatus").hidden = false;
+          $("rowStatus").textContent = "Give at least two distinct sentences.";
+          $("rowStatus").classList.add("err");
+          return;
+        }
+        $("rowStatus").hidden = false;
+        $("rowStatus").classList.remove("err");
+        $("rowStatus").textContent = "Embedding…";
+        $("run").disabled = true;
+        try {
+          const r = await engine.embed(texts);
+          last = r;
+          renderMatrix($("matrix"), simMatrix(r.embeddings), r.texts);
+          $("matrixNote").textContent = "Bright cells = same meaning. The two battery sentences and the two refund sentences pair up; the garden line matches nothing.";
+          const { explained, points } = pca2d(r.embeddings);
+          renderProjection($("projection"), points, r.texts);
+          $("explained").textContent = `PC1+PC2 explain ${(explained * 100).toFixed(0)}% of the variance`;
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = r.ms + " ms";
+          $("rN").textContent = r.texts.length;
+          $("rDim").textContent = r.dim;
+          fillInside(r);
+          $("rowStatus").textContent = "Done.";
+          $("rowStatus").classList.add("ok");
+        } catch (err) {
+          $("rowStatus").textContent = "Embedding failed: " + err.message;
+          $("rowStatus").classList.add("err");
+        } finally {
+          $("run").disabled = false;
+        }
+      }
+
+      $("search").addEventListener("click", search);
+      $("query").addEventListener("keydown", (e) => { if (e.key === "Enter") search(); });
+      async function search() {
+        const q = $("query").value.trim();
+        const texts = parseLines($("sentences").value);
+        if (!q || texts.length < 1) return;
+        $("search").disabled = true;
+        try {
+          // Symmetric space: the query is embedded exactly like the documents — no prefix.
+          const [qr, dr] = await Promise.all([engine.embed([q]), engine.embed(texts)]);
+          const qv = qr.embeddings[0];
+          const hits = dr.texts
+            .map((text, i) => ({ text, score: cosine(qv, dr.embeddings[i]) }))
+            .sort((a, b) => b.score - a.score);
+          renderRanked($("ranked"), hits);
+        } catch (err) {
+          $("ranked").textContent = "Search failed: " + err.message;
+        } finally {
+          $("search").disabled = false;
+        }
+      }
+
+      function fillInside(r) {
+        $("insideEmpty").hidden = true;
+        $("insideWrap").hidden = false;
+        $("pick").replaceChildren(...r.texts.map((t, i) => {
+          const o = document.createElement("option");
+          o.value = String(i);
+          o.textContent = `S${i + 1} — ${t.length > 40 ? t.slice(0, 39) + "…" : t}`;
+          return o;
+        }));
+        showPooling(0);
+      }
+      $("pick").addEventListener("change", (e) => showPooling(+e.target.value));
+
+      async function showPooling(i) {
+        if (!last) return;
+        $("iNorm").textContent = last.norms[i].toFixed(3);
+        $("tokStrip").textContent = "Inspecting…";
+        try {
+          const r = await engine.inspect(last.texts[i]);
+          $("iTok").textContent = r.count;
+          $("tokFill").style.inlineSize = Math.max(1, Math.min(100, (r.count / 384) * 100)).toFixed(1) + "%";
+          // Each token's true share of the sentence vector: mean·ŝ decomposes exactly into
+          // Σ (v_t·ŝ)/T, so share_t = (‖v_t‖·cos_t) / (T·‖mean‖) — these fractions sum to 1.
+          const shares = r.tokenCos.map((c, k) => (r.tokenNorm[k] * c) / (r.count * r.meanNorm));
+          const min = Math.min(...shares), max = Math.max(...shares);
+          const span = (max - min) || 1;
+          $("tokStrip").replaceChildren(...r.tokens.map((tok, k) => {
+            const chip = document.createElement("span");
+            chip.className = "tok-chip" + (tok === "<s>" || tok === "</s>" ? " special" : "");
+            chip.textContent = tok;
+            const t = (shares[k] - min) / span;
+            chip.style.background = `color-mix(in srgb, var(--accent) ${(t * 85).toFixed(0)}%, var(--bg-raised))`;
+            chip.style.color = t > 0.65 ? "var(--accent-ink)" : "var(--color)";
+            chip.title = `share of the sentence vector: ${(shares[k] * 100).toFixed(1)}% · cosine ${r.tokenCos[k].toFixed(3)} · ‖token‖ ${r.tokenNorm[k].toFixed(2)}`;
+            return chip;
+          }));
+          const top = r.tokens
+            .map((tok, k) => ({ tok, s: shares[k] }))
+            .filter((x) => x.tok !== "<s>" && x.tok !== "</s>")
+            .sort((a, b) => b.s - a.s)
+            .slice(0, 3);
+          $("tokNote").textContent = `${r.count} tokens averaged in ${r.ms} ms · biggest pull on the sentence vector: ${top.map((x) => `"${x.tok}" (${(x.s * 100).toFixed(1)}%)`).join(", ")}`;
+        } catch (err) {
+          $("tokStrip").textContent = "Inspection failed: " + err.message;
+        }
+      }
+    </script>
+  </body>
+</html>

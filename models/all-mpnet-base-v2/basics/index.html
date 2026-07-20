@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>all-mpnet-base-v2 Basics — do two sentences mean the same thing? · Web AI Showcase</title>
+    <meta name="description" content="The fundamental move: embed two sentences and get one cosine number for how close their meaning is — plus odd-one-out, finding the sentence that doesn't belong. Runs entirely in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🧭</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">all-mpnet-base-v2</a></p>
+
+    <header>
+      <p class="eyebrow">use case · basics</p>
+      <h1>Basics: one number for "same meaning?"</h1>
+      <p class="lede">
+        The simplest thing all-mpnet-base-v2 does: turn two sentences into 768-number vectors and measure the
+        cosine between them. A faithful paraphrase scores high even with zero shared words; unrelated text
+        scores low even when words overlap. Below that, the same trick answers a different question:
+        which sentence <em>doesn't belong</em>?
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="pair-h">
+      <h3 id="pair-h">Compare two sentences</h3>
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <div class="grid-2" style="margin-top:.6rem">
+        <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">
+          Sentence A
+          <textarea id="a" rows="3" disabled>The flight was delayed by three hours because of fog.</textarea>
+        </label>
+        <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">
+          Sentence B
+          <textarea id="b" rows="3" disabled>Heavy mist kept the plane on the ground until midday.</textarea>
+        </label>
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.5rem 0">
+        <button id="run" type="button" disabled>Compare</button>
+        <button class="chip" type="button" data-a="The flight was delayed by three hours because of fog." data-b="Heavy mist kept the plane on the ground until midday.">paraphrase, no shared words</button>
+        <button class="chip" type="button" data-a="Apple released a new phone today." data-b="I ate an apple with my lunch today.">same word, different meaning</button>
+        <button class="chip" type="button" data-a="The central bank raised interest rates." data-b="I planted tomatoes in the garden this weekend.">unrelated</button>
+      </div>
+
+      <div class="readout" id="out" hidden>
+        <span>cosine <b id="cos">–</b></span>
+        <span>verdict <b id="verdict">–</b></span>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+      </div>
+      <div class="result-bar" id="bar" hidden style="max-inline-size:520px;margin-top:.5rem"><div class="result-fill" id="fill" style="inline-size:0%"></div></div>
+      <p class="muted" style="font-size:.85rem;margin-top:.6rem">
+        Cosine runs from −1 to 1; for all-mpnet-base-v2, paraphrases typically land around 0.55–0.9 and
+        unrelated pairs below 0.25. There's no hard threshold — it's a smooth similarity, and you pick the
+        cut-off that fits your task. Note the "same word, different meaning" chip: keyword search would call
+        those a match; the embedding doesn't.
+      </p>
+    </section>
+
+    <section class="panel" aria-labelledby="odd-h">
+      <h3 id="odd-h">Odd one out</h3>
+      <p class="muted">Embed every line, average all the vectors, and the line <em>furthest from the average</em>
+        is the odd one out. Edit the list — the model finds the intruder by meaning, not by vocabulary.</p>
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">
+        Sentences (one per line)
+        <textarea id="oddList" rows="5" disabled>The goalkeeper saved a penalty in the final minute.
+The striker scored twice before half time.
+The referee showed a yellow card for the late tackle.
+Preheat the oven to 180 degrees and butter the tin.</textarea>
+      </label>
+      <div style="display:flex;gap:.4rem;flex-wrap:wrap;margin:.5rem 0">
+        <button id="oddRun" type="button" disabled>Find the odd one out</button>
+      </div>
+      <p class="status" id="oddStatus" role="status" aria-live="polite" hidden></p>
+      <div class="sent-list" id="oddOut" aria-live="polite"></div>
+    </section>
+
+    <p class="crumbs"><a href="../">← Back to all-mpnet-base-v2</a> · Next: <a href="../practical/">Practical →</a></p>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via 🤗 Transformers.js.
+      <a href="../">← Back to all-mpnet-base-v2</a>
+    </footer>
+
+    <script type="module">
+      import { cosine, MPNET_CSS, MpnetEngine, parseLines } from "../mpnet.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style");
+      style.textContent = MPNET_CSS;
+      document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new MpnetEngine();
+      let loaded = false;
+
+      for (const c of document.querySelectorAll(".chip")) {
+        c.addEventListener("click", () => {
+          $("a").value = c.dataset.a;
+          $("b").value = c.dataset.b;
+          if (loaded) run();
+        });
+      }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/all-mpnet-base-v2", runtime: "transformers.js", dtype: "q8", sizeMB: 110, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => {
+          for (const id of ["a", "b", "run", "oddList", "oddRun"]) $(id).disabled = false;
+          loaded = true;
+          run();
+          odd();
+        },
+      });
+
+      $("run").addEventListener("click", run);
+      async function run() {
+        if (!loaded) return;
+        const a = $("a").value.trim(), b = $("b").value.trim();
+        if (!a || !b) {
+          $("runStatus").hidden = false;
+          $("runStatus").textContent = "Fill in both sentences.";
+          $("runStatus").classList.add("err");
+          return;
+        }
+        $("run").disabled = true;
+        $("runStatus").hidden = false;
+        $("runStatus").classList.remove("err");
+        $("runStatus").textContent = "Embedding…";
+        try {
+          const r = await engine.embed([a, b]);
+          const c = cosine(r.embeddings[0], r.embeddings[1]);
+          $("out").hidden = false;
+          $("bar").hidden = false;
+          $("cos").textContent = c.toFixed(4);
+          $("verdict").textContent = c > 0.6 ? "same meaning" : c > 0.35 ? "related" : "different";
+          $("fill").style.inlineSize = (Math.max(0, Math.min(1, c)) * 100).toFixed(1) + "%";
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = r.ms + " ms";
+          $("runStatus").hidden = true;
+        } catch (err) {
+          $("runStatus").textContent = "Failed: " + err.message;
+          $("runStatus").classList.add("err");
+        } finally {
+          $("run").disabled = false;
+        }
+      }
+
+      $("oddRun").addEventListener("click", odd);
+      async function odd() {
+        if (!loaded) return;
+        const texts = parseLines($("oddList").value);
+        if (texts.length < 3) {
+          $("oddStatus").hidden = false;
+          $("oddStatus").textContent = "Give at least three sentences.";
+          $("oddStatus").classList.add("err");
+          return;
+        }
+        $("oddRun").disabled = true;
+        $("oddStatus").hidden = false;
+        $("oddStatus").classList.remove("err");
+        $("oddStatus").textContent = "Embedding…";
+        try {
+          const r = await engine.embed(texts);
+          const d = r.dim;
+          const centroid = new Array(d).fill(0);
+          for (const v of r.embeddings) for (let k = 0; k < d; k++) centroid[k] += v[k] / r.embeddings.length;
+          const cn = Math.sqrt(centroid.reduce((s, x) => s + x * x, 0)) || 1;
+          for (let k = 0; k < d; k++) centroid[k] /= cn;
+          const scored = texts.map((text, i) => ({ text, score: cosine(centroid, r.embeddings[i]) }))
+            .sort((a, b) => a.score - b.score);
+          $("oddOut").replaceChildren(...scored.map((h, i) => {
+            const row = document.createElement("div");
+            row.className = "result-row" + (i === 0 ? " top" : "");
+            const head = document.createElement("div");
+            head.className = "result-head";
+            const t = document.createElement("span");
+            t.textContent = (i === 0 ? "🚨 odd one out — " : "") + h.text;
+            const sc = document.createElement("span");
+            sc.className = "result-score";
+            sc.textContent = "centroid cos " + h.score.toFixed(3);
+            head.append(t, sc);
+            row.append(head);
+            return row;
+          }));
+          $("oddStatus").textContent = `Done in ${r.ms} ms (${r.device.toUpperCase()}).`;
+          $("oddStatus").classList.add("ok");
+        } catch (err) {
+          $("oddStatus").textContent = "Failed: " + err.message;
+          $("oddStatus").classList.add("err");
+        } finally {
+          $("oddRun").disabled = false;
+        }
+      }
+    </script>
+  </body>
+</html>

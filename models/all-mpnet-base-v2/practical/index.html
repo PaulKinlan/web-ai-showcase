@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>all-mpnet-base-v2 Practical — client-side FAQ search &amp; duplicate detection · Web AI Showcase</title>
+    <meta name="description" content="Two things teams actually ship with all-mpnet-base-v2: a semantic FAQ answerer that matches user questions to help articles by meaning, and a near-duplicate detector for tickets and reviews — both running entirely in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🧭</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">all-mpnet-base-v2</a></p>
+
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Practical: FAQ search &amp; duplicate detection</h1>
+      <p class="lede">
+        The two deployments this model has powered a thousand times over. First: match a user's question to
+        the right help answer <em>by meaning</em> — "my parcel never arrived" finds the shipping FAQ even
+        though it shares no keywords. Second: catch near-duplicate tickets before a human triages them twice.
+        Both run entirely client-side — embed once, compare with cosine.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="faq-h">
+      <h3 id="faq-h">Semantic FAQ answerer</h3>
+      <div id="model-loader"></div>
+      <p class="muted">The "knowledge base" is the list below (edit it!). Ask in your own words — the match is
+        cosine similarity between your question's vector and each FAQ's vector. If nothing clears the
+        threshold, the demo says so honestly instead of bluffing an answer.</p>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.4rem">
+        FAQ entries (one per line)
+        <textarea id="faq" rows="7" disabled>Orders ship within two business days and arrive in three to five.
+If your package hasn't arrived after ten days, contact support for a trace.
+You can return any item within thirty days for a full refund.
+Reset your password from the account settings page.
+We accept credit cards, PayPal and bank transfer.
+Premium subscribers get priority email support with a 24-hour response time.</textarea>
+      </label>
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem;max-inline-size:34rem">
+        Ask a question
+        <span style="display:flex;gap:.4rem;flex-wrap:wrap">
+          <input id="q" type="text" value="my parcel never showed up" style="flex:1;min-inline-size:12rem" disabled />
+          <button id="ask" type="button" disabled>Find the answer</button>
+        </span>
+      </label>
+      <div style="display:flex;gap:.4rem;flex-wrap:wrap;margin:.4rem 0">
+        <button class="chip" type="button" data-q="my parcel never showed up">"my parcel never showed up"</button>
+        <button class="chip" type="button" data-q="how do I get my money back">"how do I get my money back"</button>
+        <button class="chip" type="button" data-q="can I pay with paypal">"can I pay with paypal"</button>
+        <button class="chip" type="button" data-q="what's the weather like on Mars">"weather on Mars" (no match)</button>
+      </div>
+      <label style="display:flex;gap:.5rem;align-items:center;font-size:.82rem;flex-wrap:wrap">
+        Answer threshold
+        <input id="thresh" type="range" min="0.2" max="0.7" step="0.05" value="0.4" style="flex:1;min-inline-size:8rem;max-inline-size:16rem" />
+        <span style="font-family:var(--font-mono)">cosine ≥ <b id="threshVal">0.40</b></span>
+      </label>
+      <p class="status" id="faqStatus" role="status" aria-live="polite" hidden></p>
+      <div class="sent-list" id="faqOut" aria-live="polite"></div>
+    </section>
+
+    <section class="panel" aria-labelledby="dup-h">
+      <h3 id="dup-h">Near-duplicate detector</h3>
+      <p class="muted">Paste incoming tickets/reviews — every pair above the slider's cosine threshold is
+        flagged as a likely duplicate. This is the string-matching killer: the flagged pairs below share
+        almost no vocabulary.</p>
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">
+        Tickets (one per line)
+        <textarea id="tickets" rows="7" disabled>App crashes when I tap the export button.
+Cannot log in since the last update.
+The application quits immediately whenever I try to export my data.
+Sign-in stopped working after updating yesterday.
+Dark mode does not apply to the settings screen.
+I'd love an option to change the font size.</textarea>
+      </label>
+      <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;margin:.5rem 0">
+        <button id="dupRun" type="button" disabled>Find duplicates</button>
+        <label style="display:flex;gap:.5rem;align-items:center;font-size:.82rem;flex:1;min-inline-size:12rem">
+          Duplicate threshold
+          <input id="dupThresh" type="range" min="0.4" max="0.9" step="0.05" value="0.6" style="flex:1" />
+          <span style="font-family:var(--font-mono)">≥ <b id="dupThreshVal">0.60</b></span>
+        </label>
+      </div>
+      <p class="status" id="dupStatus" role="status" aria-live="polite" hidden></p>
+      <div class="sent-list" id="dupOut" aria-live="polite"></div>
+    </section>
+
+    <p class="crumbs"><a href="../basics/">← Basics</a> · <a href="../">all-mpnet-base-v2</a> · Next: <a href="../wild/">Wild →</a></p>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via 🤗 Transformers.js.
+      <a href="../">← Back to all-mpnet-base-v2</a>
+    </footer>
+
+    <script type="module">
+      import { cosine, MPNET_CSS, MpnetEngine, parseLines, renderRanked } from "../mpnet.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style");
+      style.textContent = MPNET_CSS;
+      document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new MpnetEngine();
+      let loaded = false;
+
+      for (const c of document.querySelectorAll(".chip")) {
+        c.addEventListener("click", () => {
+          $("q").value = c.dataset.q;
+          if (loaded) ask();
+        });
+      }
+      $("thresh").addEventListener("input", () => {
+        $("threshVal").textContent = (+$("thresh").value).toFixed(2);
+        if (loaded) ask();
+      });
+      $("dupThresh").addEventListener("input", () => {
+        $("dupThreshVal").textContent = (+$("dupThresh").value).toFixed(2);
+        if (loaded) dups();
+      });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/all-mpnet-base-v2", runtime: "transformers.js", dtype: "q8", sizeMB: 110, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => {
+          for (const id of ["faq", "q", "ask", "tickets", "dupRun"]) $(id).disabled = false;
+          loaded = true;
+          ask();
+          dups();
+        },
+      });
+
+      $("ask").addEventListener("click", ask);
+      $("q").addEventListener("keydown", (e) => { if (e.key === "Enter") ask(); });
+      async function ask() {
+        if (!loaded) return;
+        const q = $("q").value.trim();
+        const faqs = parseLines($("faq").value);
+        if (!q || faqs.length === 0) return;
+        $("ask").disabled = true;
+        $("faqStatus").hidden = false;
+        $("faqStatus").classList.remove("err");
+        $("faqStatus").textContent = "Matching…";
+        try {
+          const [qr, fr] = await Promise.all([engine.embed([q]), engine.embed(faqs)]);
+          const qv = qr.embeddings[0];
+          const threshold = +$("thresh").value;
+          const hits = fr.texts.map((text, i) => ({ text, score: cosine(qv, fr.embeddings[i]) }))
+            .sort((a, b) => b.score - a.score);
+          const good = hits.filter((h) => h.score >= threshold);
+          if (good.length === 0) {
+            $("faqOut").innerHTML = "";
+            const row = document.createElement("div");
+            row.className = "result-row";
+            row.textContent = `No FAQ clears cosine ${threshold.toFixed(2)} for this question (best was ${hits[0].score.toFixed(3)}) — honest "no answer" beats a wrong answer. Route to a human.`;
+            $("faqOut").append(row);
+          } else {
+            renderRanked($("faqOut"), good.map((h, i) => i === 0 ? { ...h, tag: "best answer" } : h));
+          }
+          $("faqStatus").textContent = `Matched in ${fr.ms} ms (${fr.device.toUpperCase()}).`;
+          $("faqStatus").classList.add("ok");
+        } catch (err) {
+          $("faqStatus").textContent = "Failed: " + err.message;
+          $("faqStatus").classList.add("err");
+        } finally {
+          $("ask").disabled = false;
+        }
+      }
+
+      $("dupRun").addEventListener("click", dups);
+      async function dups() {
+        if (!loaded) return;
+        const texts = parseLines($("tickets").value);
+        if (texts.length < 2) {
+          $("dupStatus").hidden = false;
+          $("dupStatus").textContent = "Give at least two tickets.";
+          $("dupStatus").classList.add("err");
+          return;
+        }
+        $("dupRun").disabled = true;
+        $("dupStatus").hidden = false;
+        $("dupStatus").classList.remove("err");
+        $("dupStatus").textContent = "Comparing every pair…";
+        try {
+          const r = await engine.embed(texts);
+          const threshold = +$("dupThresh").value;
+          const pairs = [];
+          for (let i = 0; i < texts.length; i++) {
+            for (let j = i + 1; j < texts.length; j++) {
+              const s = cosine(r.embeddings[i], r.embeddings[j]);
+              if (s >= threshold) pairs.push({ i, j, s });
+            }
+          }
+          pairs.sort((a, b) => b.s - a.s);
+          if (pairs.length === 0) {
+            $("dupOut").innerHTML = "";
+            const row = document.createElement("div");
+            row.className = "result-row";
+            row.textContent = `No pair clears cosine ${threshold.toFixed(2)} — every ticket looks distinct. Lower the threshold to see weaker matches.`;
+            $("dupOut").append(row);
+          } else {
+            $("dupOut").replaceChildren(...pairs.map((p, idx) => {
+              const row = document.createElement("div");
+              row.className = "result-row" + (idx === 0 ? " top" : "");
+              const head = document.createElement("div");
+              head.className = "result-head";
+              const t = document.createElement("span");
+              t.textContent = `likely duplicates — #${p.i + 1} & #${p.j + 1}`;
+              const sc = document.createElement("span");
+              sc.className = "result-score";
+              sc.textContent = p.s.toFixed(3);
+              head.append(t, sc);
+              const l1 = document.createElement("p");
+              l1.className = "muted";
+              l1.style.margin = ".3rem 0 0";
+              l1.style.fontSize = ".82rem";
+              l1.textContent = "“" + texts[p.i] + "”";
+              const l2 = document.createElement("p");
+              l2.className = "muted";
+              l2.style.margin = ".15rem 0 0";
+              l2.style.fontSize = ".82rem";
+              l2.textContent = "“" + texts[p.j] + "”";
+              row.append(head, l1, l2);
+              return row;
+            }));
+          }
+          $("dupStatus").textContent = `${pairs.length} duplicate pair${pairs.length === 1 ? "" : "s"} at ≥ ${threshold.toFixed(2)} · ${r.ms} ms (${r.device.toUpperCase()}).`;
+          $("dupStatus").classList.add("ok");
+        } catch (err) {
+          $("dupStatus").textContent = "Failed: " + err.message;
+          $("dupStatus").classList.add("err");
+        } finally {
+          $("dupRun").disabled = false;
+        }
+      }
+    </script>
+  </body>
+</html>
