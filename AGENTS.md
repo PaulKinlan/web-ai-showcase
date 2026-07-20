@@ -235,9 +235,15 @@ short version for tools that look for `AGENTS.md`.
   and FAILS if any built route is missing, orphaned, `unknown`, or drifts from the committed inventory — so
   a new downloading demo can't land un-classified. Regenerate with
   `node scripts/route-download-inventory.mjs` after adding/retooling a demo. This is the coverage
-  denominator for the site-wide `<model-download-status>` component (subsequent phases: reducer/adapters →
-  component → central adoption via `createModelLoader` → crawler + CI adoption gate). **Never ship an
-  ad-hoc last-callback-wins progress UI**; route progress through the shared loader/adapter.
+  denominator for the site-wide `<model-download-status>` component. **Never ship an ad-hoc
+  last-callback-wins progress UI**; route progress through the shared loader/adapter.
+  - **Phase 2 (done): runtime→reducer adapters** in `lib/download-adapters.mjs` translate each family's
+    native progress into the reducer's one runtime-neutral event vocabulary: `transformersAdapter` (real
+    per-file bytes), `webllmAdapter` (WebLLM overall fraction → runtime-owned aggregate), `mediapipeAdapter`
+    (no progress → honest indeterminate). The reducer (`lib/download-tracker.mjs`) gained an `aggregate`
+    event so runtime-owned downloads surface an overall fraction **without fabricating per-file byte
+    counts** (`snapshot().aggregate.runtimeOwned`). Next: the `<model-download-status>` component → central
+    adoption via `createModelLoader` → crawler + CI adoption gate.
 - **Off-main-thread reference architecture (measure, don't infer).** All inference AND any pre/post
   that could exceed an 8ms frame slice runs off-main-thread; verify by measuring long tasks/INP +
   code paths. Use `lib/worker-protocol.js` (typed/versioned protocol, request ids, transfer not
