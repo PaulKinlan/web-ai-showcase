@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Stance detection — does this text support or refute the claim? · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Decide whether a piece of text SUPPORTS or REFUTES a specific claim — target-conditioned stance — with a real XLM-RoBERTa fact-checking classifier, on-device, nothing uploaded."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>⚖️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">text-classification · text · WASM · ~1.27 GB</p>
+      <h1>Stance detection — for or against the claim?</h1>
+      <p class="lede">
+        Sentiment asks "is this positive?"; stance asks "positive <em>toward what?</em>". Given a
+        <strong>claim</strong> and a piece of <strong>text</strong>, this <strong>XLM-RoBERTa</strong> fact-checking
+        classifier decides whether the text <strong>supports</strong> or <strong>refutes</strong> that specific
+        claim — the same sentence flips stance when you change the claim. It's a dedicated stance head (not sentiment,
+        not zero-shot NLI). Set a claim, type some text, and watch the stance meter, all on-device.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/Factiverse/factiverse_stance_detection_ort_quantized" target="_blank" rel="noopener">Factiverse/factiverse_stance_detection_ort_quantized</a></td></tr>
+          <tr><th>Task / pipeline</th><td><code>text-classification</code> (single-label, target-conditioned)</td></tr>
+          <tr><th>Labels</th><td><code>SUPPORTS</code> vs <code>REFUTES</code>; <strong>softmax</strong> (the two scores sum to 1). Near-50/50 = no clear stance.</td></tr>
+          <tr><th>Architecture</th><td>XLM-RoBERTa (multilingual) fine-tuned for fact-checking stance (Factiverse)</td></tr>
+          <tr><th>Input format</th><td><code>claim &lt;/s&gt;&lt;/s&gt; text</code> — claim and text joined by the XLM-R separator</td></tr>
+          <tr><th>Quantization</th><td>q8 (8-bit) ONNX (ONNX at repo root — loaded with <code>subfolder: ""</code>)</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (runs anywhere; no WebGPU needed)</td></tr>
+          <tr><th>Download</th><td><strong>~1.27 GB</strong>, cached after first load — a heavy one-time download; desktop recommended</td></tr>
+          <tr><th>License</th><td>Unspecified upstream — research/demo use; base XLM-RoBERTa is MIT</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Set a claim, then type or paste a piece of text. The stance re-computes automatically (debounced)
+        a moment after you stop typing. The meter slides toward <b>supports</b> (right) or <b>refutes</b> (left).</p>
+
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
+        The claim / target
+        <input id="claim" type="text" class="claim-box" disabled value="Remote work improves productivity." />
+      </label>
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.5rem 0">
+        <button class="chip" type="button" data-claim="Remote work improves productivity.">claim: remote work</button>
+        <button class="chip" type="button" data-claim="Nuclear power is safe.">claim: nuclear safe</button>
+        <button class="chip" type="button" data-claim="The new policy will lower prices.">claim: policy lowers prices</button>
+      </div>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.4rem">
+        The text (evidence / argument)
+        <textarea id="text" rows="3" disabled>Studies show remote employees finish more tasks with fewer office distractions.</textarea>
+      </label>
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.5rem 0">
+        <button class="chip" type="button" data-set="Studies show remote employees finish more tasks with fewer office distractions.">supporting</button>
+        <button class="chip" type="button" data-set="Managers report output collapsed once staff started working from home.">refuting</button>
+        <button class="chip" type="button" data-set="The office has a new coffee machine on the third floor.">off-topic</button>
+      </div>
+
+      <div class="verdict-row" id="verdictRow" hidden>
+        <span class="verdict-label" id="vLabel">–</span>
+        <span class="verdict-conf">confidence <b id="vConf">–</b></span>
+      </div>
+      <div class="st-meter" id="meter" hidden><span class="st-fill" id="fill" style="inline-size:50%"></span><span class="st-mid"></span></div>
+      <div class="meter-labels" id="meterLabels" hidden><span>refutes</span><span>50% (no clear stance)</span><span>supports</span></div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+        <span>supports <b id="rSup">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside — target-conditioning + two probabilities</h3>
+      <p class="muted">
+        Two numbers, <code>SUPPORTS</code> and <code>REFUTES</code>, that sum to 1 — the model's raw softmax. The
+        interesting part is the <strong>conditioning on the claim</strong>: the model reads
+        <code>claim &lt;/s&gt;&lt;/s&gt; text</code> as one sequence, so the <em>same</em> text can support one claim
+        and refute another. The button below runs the current text against <strong>both</strong> the current claim and
+        its negation, so you can watch the stance flip. When the two bars sit near 50/50, the text doesn't take a clear
+        side toward that claim — we label that <em>unclear</em> (the model has no separate neutral class).
+      </p>
+      <div class="controls-grid"><button id="flipRun" type="button" disabled>Test the text against the claim and its opposite</button></div>
+      <div class="pair-grid" id="flip"></div>
+      <div class="prob-list" id="probs"></div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        Stance is the missing axis in text analytics: it's not "is this positive" but "which side of <em>this</em>
+        question is it on". Running it on-device means you can map an argument, triage evidence, or check a source
+        privately, with no round-trip.
+      </p>
+      <ul>
+        <li><strong>Argument mapping</strong> — sort a pile of comments into for / against a motion automatically.</li>
+        <li><strong>Fact-check triage</strong> — line up retrieved passages as supporting or refuting a claim before a human verifies.</li>
+        <li><strong>Debate prep</strong> — cluster sources by the side they take on your thesis.</li>
+        <li><strong>Survey / review analysis</strong> — measure agreement with a specific statement, not just overall tone.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Set a claim, score a text live for supports/refutes, and watch the same text flip stance when the claim changes.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Map a debate: drop a claim and a pile of arguments, and auto-sort them into a for / against / unclear board.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Probe the hard cases — sarcasm, implicit stance, off-topic text — and see where a stance model gets fooled.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">Contrast stance with sentiment: show how "supports a claim" and "positive tone" are genuinely different axes.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>Join the claim and the text with the XLM-R separator and classify the single sequence:</p>
+      <pre><code>import { pipeline } from "@huggingface/transformers";
+
+const classify = await pipeline(
+  "text-classification",
+  "Factiverse/factiverse_stance_detection_ort_quantized",
+  { dtype: "q8", subfolder: "" }, // ONNX lives at the repo root
+); // downloads + caches ~1.27 GB once
+
+const claim = "Remote work improves productivity.";
+const text = "Studies show remote employees finish more tasks.";
+const out = await classify(claim + " &lt;/s&gt;&lt;/s&gt; " + text, { top_k: 2 });
+// → [{ label: "SUPPORTS", score: 0.99 }, { label: "REFUTES", score: 0.01 }]</code></pre>
+      <p class="muted">
+        Note: this checkpoint's <code>text_pair</code> path returns a degenerate constant, so we build the
+        <code>claim &lt;/s&gt;&lt;/s&gt; text</code> string ourselves — the verified formulation. It runs in a Web
+        Worker so the UI never janks.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/Factiverse/factiverse_stance_detection_ort_quantized" target="_blank" rel="noopener">Model card — Factiverse stance detection (ONNX)</a></li>
+        <li><a href="https://arxiv.org/abs/1911.02116" target="_blank" rel="noopener">Paper — XLM-RoBERTa / Unsupervised Cross-lingual Representation Learning (Conneau et al., 2019)</a></li>
+        <li><a href="https://aclanthology.org/W18-5501/" target="_blank" rel="noopener">Background — The FEVER shared task (fact extraction and verification / stance)</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { StanceEngine, renderVerdict, labelText, escapeHTML, debounce, STANCE_CSS } from "./stance.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = STANCE_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new StanceEngine();
+      let loaded = false;
+
+      for (const c of document.querySelectorAll(".chip")) {
+        c.addEventListener("click", () => {
+          if (c.dataset.claim != null) $("claim").value = c.dataset.claim;
+          if (c.dataset.set != null) $("text").value = c.dataset.set;
+          scheduleScore();
+        });
+      }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: {
+          modelId: "Factiverse/factiverse_stance_detection_ort_quantized",
+          runtime: "transformers.js",
+          dtype: "q8",
+          sizeMB: 1272,
+          requiresWebGPU: false,
+        },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("claim").disabled = false; $("text").disabled = false; $("flipRun").disabled = false; loaded = true; score(); },
+      });
+
+      const scheduleScore = debounce(score, 400);
+      $("text").addEventListener("input", scheduleScore);
+      $("claim").addEventListener("input", scheduleScore);
+
+      function classOf(label) {
+        return label === "SUPPORTS" ? "sup" : label === "REFUTES" ? "ref" : "unc";
+      }
+
+      function renderProbs(supports) {
+        const rows = [
+          { name: "SUPPORTS", v: supports, color: "var(--good)" },
+          { name: "REFUTES", v: 1 - supports, color: "var(--bad)" },
+        ];
+        $("probs").innerHTML = rows.map((r) =>
+          `<div class="prob-row">
+            <span class="prob-name">${r.name}</span>
+            <span class="prob-bar"><span class="prob-fill" style="inline-size:${(r.v * 100).toFixed(1)}%;background:${r.color}"></span></span>
+            <span class="prob-score">${(r.v * 100).toFixed(1)}%</span>
+          </div>`).join("");
+      }
+
+      async function score() {
+        if (!loaded) return;
+        const claim = $("claim").value.trim();
+        const text = $("text").value.trim();
+        if (!claim || !text) { $("verdictRow").hidden = true; $("meter").hidden = true; $("meterLabels").hidden = true; $("probs").innerHTML = ""; return; }
+        try {
+          const r = await engine.classify(claim, text);
+          $("verdictRow").hidden = false; $("meter").hidden = false; $("meterLabels").hidden = false;
+          renderVerdict({ label: $("vLabel"), conf: $("vConf"), fill: $("fill") }, r);
+          renderProbs(r.supports);
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = r.ms + " ms";
+          $("rSup").textContent = (r.supports * 100).toFixed(0) + "%";
+        } catch (err) {
+          $("runStatus").hidden = false;
+          $("runStatus").textContent = "Scoring failed: " + err.message;
+          $("runStatus").classList.add("err");
+        }
+      }
+
+      $("flipRun").addEventListener("click", async () => {
+        if (!loaded) return;
+        const claim = $("claim").value.trim();
+        const text = $("text").value.trim();
+        if (!claim || !text) return;
+        $("flipRun").disabled = true;
+        try {
+          const opposite = /^not\b/i.test(claim) ? claim.replace(/^not\s+/i, "") : "Not true that " + claim.charAt(0).toLowerCase() + claim.slice(1);
+          const r = await engine.classifyBatch(claim, [text]); // baseline (claim)
+          const r2 = await engine.classifyBatch(opposite, [text]); // negated claim
+          const cards = [
+            { c: claim, res: r.results[0] },
+            { c: opposite, res: r2.results[0] },
+          ];
+          $("flip").innerHTML = cards.map(({ c, res }) =>
+            `<div class="pair ${classOf(res.label)}">
+              <div class="t">claim: “${escapeHTML(c)}”</div>
+              <div class="v">${labelText(res.label)} · supports ${(res.supports * 100).toFixed(0)}%</div>
+            </div>`).join("");
+        } catch (err) { $("runStatus").hidden = false; $("runStatus").textContent = "Failed: " + err.message; $("runStatus").classList.add("err"); }
+        finally { $("flipRun").disabled = false; }
+      });
+    </script>
+  </body>
+</html>

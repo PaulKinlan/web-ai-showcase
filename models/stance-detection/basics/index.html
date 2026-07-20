@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Stance Basics — supports or refutes, as you type · Web AI Showcase</title>
+    <meta name="description" content="The fundamental move: set a claim, type a text, and get a live supports/refutes verdict with confidence — then watch the same text flip stance when the claim changes. Runs in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>⚖️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Stance detection</a></p>
+
+    <header>
+      <p class="eyebrow">use case · basics</p>
+      <h1>Basics: supports or refutes, live</h1>
+      <p class="lede">
+        The simplest thing the model does: read a <strong>claim</strong> and a <strong>text</strong> and decide which
+        side the text takes, with a confidence. Type and the verdict updates a moment after you pause. Then hit
+        "Score against both claims" to see the defining move of stance — the same words support one claim and refute
+        its opposite.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
+        The claim
+        <input id="claim" type="text" class="claim-box" disabled value="This restaurant is worth visiting." />
+      </label>
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.4rem">
+        The text
+        <textarea id="text" rows="2" disabled>The food was fresh, the staff were friendly, and we'll definitely be back.</textarea>
+      </label>
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.5rem 0">
+        <button class="chip" type="button" data-set="The food was fresh, the staff were friendly, and we'll definitely be back.">supporting</button>
+        <button class="chip" type="button" data-set="Cold food, rude service, and we waited an hour — avoid this place.">refuting</button>
+        <button class="chip" type="button" data-set="The restaurant is on the corner of Fifth and Main.">off-topic</button>
+      </div>
+
+      <div class="verdict-row" id="verdictRow" hidden>
+        <span class="verdict-label" id="vLabel">–</span>
+        <span class="verdict-conf">confidence <b id="vConf">–</b></span>
+      </div>
+      <div class="st-meter" id="meter" hidden><span class="st-fill" id="fill" style="inline-size:50%"></span><span class="st-mid"></span></div>
+      <div class="meter-labels" id="meterLabels" hidden><span>refutes</span><span>50%</span><span>supports</span></div>
+      <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>latency <b id="rMs">–</b></span></div>
+    </section>
+
+    <section class="panel" aria-labelledby="flip-h">
+      <h3 id="flip-h">Same text, opposite claims — stance flips</h3>
+      <p class="muted">Stance is defined relative to the claim. Score the current text against a claim and its negation:
+        a genuinely supporting text should support one and refute the other.</p>
+      <div class="controls-grid"><button id="flipRun" type="button" disabled>Score against both claims</button></div>
+      <div class="pair-grid" id="flip"></div>
+    </section>
+
+    <p class="crumbs"><a href="../">← Back to Stance detection</a> · Next: <a href="../practical/">Practical →</a></p>
+
+    <script type="module">
+      import { StanceEngine, renderVerdict, labelText, escapeHTML, debounce, STANCE_CSS } from "../stance.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = STANCE_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new StanceEngine();
+      let loaded = false;
+      const classOf = (l) => l === "SUPPORTS" ? "sup" : l === "REFUTES" ? "ref" : "unc";
+
+      for (const c of document.querySelectorAll(".chip")) c.addEventListener("click", () => { $("text").value = c.dataset.set; sched(); });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Factiverse/factiverse_stance_detection_ort_quantized", runtime: "transformers.js", dtype: "q8", sizeMB: 1272, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("claim").disabled = false; $("text").disabled = false; $("flipRun").disabled = false; loaded = true; score(); },
+      });
+
+      const sched = debounce(score, 400);
+      $("text").addEventListener("input", sched);
+      $("claim").addEventListener("input", sched);
+      async function score() {
+        if (!loaded) return;
+        const claim = $("claim").value.trim(), text = $("text").value.trim();
+        if (!claim || !text) { $("verdictRow").hidden = true; $("meter").hidden = true; $("meterLabels").hidden = true; return; }
+        try {
+          const r = await engine.classify(claim, text);
+          $("verdictRow").hidden = false; $("meter").hidden = false; $("meterLabels").hidden = false;
+          renderVerdict({ label: $("vLabel"), conf: $("vConf"), fill: $("fill") }, r);
+          $("readout").hidden = false; $("rBackend").textContent = r.device.toUpperCase(); $("rMs").textContent = r.ms + " ms";
+        } catch (err) { $("runStatus").hidden = false; $("runStatus").textContent = "Scoring failed: " + err.message; $("runStatus").classList.add("err"); }
+      }
+
+      $("flipRun").addEventListener("click", async () => {
+        if (!loaded) return;
+        const claim = $("claim").value.trim(), text = $("text").value.trim();
+        if (!claim || !text) return;
+        $("flipRun").disabled = true;
+        try {
+          const opposite = "Not true that " + claim.charAt(0).toLowerCase() + claim.slice(1);
+          const a = await engine.classify(claim, text);
+          const b = await engine.classify(opposite, text);
+          $("flip").innerHTML = [[claim, a], [opposite, b]].map(([c, res]) =>
+            `<div class="pair ${classOf(res.label)}"><div class="t">claim: “${escapeHTML(c)}”</div>
+              <div class="v">${labelText(res.label)} · supports ${(res.supports * 100).toFixed(0)}%</div></div>`).join("");
+        } catch (err) { $("runStatus").hidden = false; $("runStatus").textContent = "Failed: " + err.message; $("runStatus").classList.add("err"); }
+        finally { $("flipRun").disabled = false; }
+      });
+    </script>
+  </body>
+</html>
