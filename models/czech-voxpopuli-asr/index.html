@@ -1,0 +1,345 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>wav2vec2 — Czech speech-to-text in the browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run a Czech wav2vec2 CTC recogniser (wav2vec2-base-10k-voxpopuli fine-tuned on Czech) locally in your browser via ONNX Runtime Web. It labels every ~20 ms frame with a Latin-Czech character (á č ď é ě í ň ó ř š ť ú ů ý ž and all), then collapses the frames into text. Nothing uploaded."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='13'>🇨🇿</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">automatic-speech-recognition · audio · ONNX Runtime Web (WASM) · ~360 MB</p>
+      <h1>wav2vec2 — Czech speech, one letter per frame</h1>
+      <p class="lede">
+        The English <a href="/web-ai-showcase/models/wav2vec2-asr/">wav2vec2</a> demo speaks one language,
+        the <a href="/web-ai-showcase/models/xlsr-multilingual-asr/">Russian XLSR</a> demo another, and the
+        <a href="/web-ai-showcase/models/polish-voxpopuli-asr/">Polish</a> and
+        <a href="/web-ai-showcase/models/finnish-voxpopuli-asr/">Finnish</a> VoxPopuli demos two more. This one
+        recognises <strong>Czech</strong>. It is <strong>wav2vec2-base</strong> pre-trained self-supervised on
+        10,000 hours of unlabelled European-Parliament audio (VoxPopuli) and then fine-tuned on Czech — a
+        compact ~95M-param CTC recogniser whose output alphabet carries the <strong>Czech diacritics
+        (á č ď é ě í ň ó ř š ť ú ů ý ž)</strong>. Same CTC mechanics as the other ASR demos: label every
+        ~20 ms frame, then collapse the frames into text. Pick a clip and watch the frames collapse into Czech.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="glance">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/OpenVoiceOS/wav2vec2-base-10k-voxpopuli-ft-cs-onnx" target="_blank" rel="noopener">OpenVoiceOS/wav2vec2-base-10k-voxpopuli-ft-cs-onnx</a> <span class="muted">(ONNX export of facebook/wav2vec2-base-10k-voxpopuli-ft-cs)</span></td></tr>
+          <tr><th>Task / pipeline</th><td><code>automatic-speech-recognition</code> — a wav2vec2 CTC model; we run the raw ONNX graph so we can see the frames</td></tr>
+          <tr><th>Architecture</th><td><strong>wav2vec2-base</strong>: a ~95M-param wav2vec2 encoder (12 transformer layers) pre-trained on 10k h of unlabelled VoxPopuli audio, fine-tuned for Czech. CTC head over a <strong>46-symbol Latin-Czech vocab</strong> (blank + "▁" boundary + 26 letters + á č ď é ě í ň ó ř š ť ú ů ý ž). No decoder.</td></tr>
+          <tr><th>Language</th><td><strong>Czech (cs)</strong> — this is a language-specialised recogniser; other languages produce Czech-phonetic gibberish</td></tr>
+          <tr><th>Not XLSR-53</th><td>the canonical <a href="https://huggingface.co/jonatasgrosman/wav2vec2-large-xlsr-53-czech" target="_blank" rel="noopener">large wav2vec2-XLSR-53 Czech</a> checkpoints are <strong>PyTorch/Flax only — no browser ONNX export</strong>, so they can't run in a browser today. This demo honestly uses the smaller wav2vec2-base VoxPopuli Czech model that <em>does</em> ship a real, runnable CTC ONNX, rather than relabel a different language's model.</td></tr>
+          <tr><th>Runtime</th><td><strong>ONNX Runtime Web (WASM)</strong> — <em>not</em> transformers.js. The OpenVoiceOS export is an onnx-asr graph: its <code>config.json</code> declares <code>model_type: "wav2vec2-ctc"</code> (which transformers.js doesn't register), the graph takes <code>input_values</code> + <code>input_lengths</code> and emits <code>logprobs</code>, and feature normalisation is baked in. So we drive the raw graph directly on ORT Web — the same engine transformers.js uses underneath.</td></tr>
+          <tr><th>Quantization</th><td><strong>fp32</strong> (<code>model.onnx</code> + <code>model.onnx.data</code>, ~360 MB) — the export ships no int8/q4 variant (onnxruntime's quantizer can't process this dynamo-exported graph, per the model card), so we honestly run and disclose the full-precision weights</td></tr>
+          <tr><th>Layout</th><td>onnx-asr export: a small <code>model.onnx</code> graph + external <code>model.onnx.data</code> weights + <code>vocab.txt</code> (token-id format, word delimiter <code>▁</code>, blank <code>&lt;blk&gt;</code>). We fetch both, register the external data with ORT Web, and CTC-decode the log-probs ourselves.</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (single-thread — GitHub Pages can't set COOP/COEP for threads). No GPU required.</td></tr>
+          <tr><th>Download</th><td>~360 MB (fp32 encoder), cached in Cache Storage after first load — heavy, so it's a one-off on Wi-Fi</td></tr>
+          <tr><th>License</th><td><strong>CC BY-NC 4.0</strong> (non-commercial) — inherited from the Meta-AI base model facebook/wav2vec2-base-10k-voxpopuli-ft-cs</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers, Web Audio (decode + resample), Cache Storage, MediaRecorder (mic)</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">
+        Choose Czech audio — record from your mic, upload a file, or pick the bundled sample. The page
+        decodes it to 16 kHz mono, draws the waveform, and runs the CTC model in a Web Worker. It does best
+        on <strong>clear Czech speech</strong>. First load is a <strong>~360 MB</strong> fp32 download (no
+        smaller export exists yet), then it's cached for offline reuse.
+      </p>
+
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+
+      <div class="audio-row">
+        <button id="rec" type="button" class="secondary" disabled>● Record</button>
+        <button id="upload" type="button" class="secondary" disabled>Upload audio</button>
+        <input type="file" id="file" accept="audio/*" hidden />
+        <span class="muted" style="font-size:.82rem">or a sample:</span>
+        <span class="sample-row" id="samples">
+          <button class="chip" type="button" data-src="sample-ces.wav" data-label="Czech — spoken Wikipedia ‘Břetislav I.’ (Public Domain, 13s)">Czech sample</button>
+        </span>
+      </div>
+
+      <div id="micFallback" class="fallback" hidden>
+        <strong>No microphone available here.</strong>
+        <p class="muted" style="margin:.3rem 0">
+          This context didn't grant mic access (common in headless / embedded views). The model still
+          works — use the <em>sample</em> above or <em>Upload audio</em>. For live recording, open this in a
+          normal browser tab and allow the microphone when prompted, then speak Czech.
+        </p>
+      </div>
+
+      <div class="audio-row">
+        <audio id="player" controls preload="metadata"></audio>
+        <span class="muted" id="clipLabel" style="font-size:.82rem">Czech — spoken Wikipedia ‘Břetislav I.’ (Public Domain, 13s)</span>
+      </div>
+      <div class="wave-wrap"><canvas id="wave" class="wave" aria-label="Audio waveform"></canvas></div>
+
+      <button id="run" type="button" disabled>Transcribe</button>
+
+      <h3>Transcript (Czech)</h3>
+      <div class="transcript" id="transcript" aria-live="polite" lang="cs">Transcribe a clip to see the Czech text here.</div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>audio <b id="rDur">–</b></span>
+        <span>process <b id="rMs">–</b></span>
+        <span>speed <b id="rSpeed">–</b></span>
+        <span>frames <b id="rFrames">–</b></span>
+        <span>emitted chars <b id="rChars">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside — the CTC collapse over Czech letters</h3>
+      <p class="muted">
+        Below is the model's <strong>raw per-frame argmax</strong>: one cell per ~20 ms frame, showing the
+        single character it thinks is most likely there. Most frames are <em>blank</em> (·) — the model
+        saying "nothing new here". Where a sound lands you get a run of the same letter. The transcript is
+        produced by two mechanical rules, no decoder involved:
+        <strong>(1) merge consecutive duplicates, (2) drop the blanks</strong>. A run like
+        <code>·· dd ·· oo o ·· mm ·· ·</code> collapses to <code>dom</code>.
+      </p>
+      <div class="ctc-legend">
+        <span><span class="ctc-swatch" style="background:var(--accent)"></span> emitted character</span>
+        <span><span class="ctc-swatch" style="background:color-mix(in srgb,var(--accent) 18%,transparent)"></span> ␣ word boundary</span>
+        <span><span class="ctc-swatch" style="background:var(--border)"></span> · blank frame</span>
+      </div>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Transcribe a clip to see its per-frame argmax and the collapse.</div>
+      <div id="insideWrap" hidden>
+        <p class="muted" style="font-size:.8rem;margin:.6rem 0 .2rem">Raw per-frame argmax (<span id="frameCount">–</span> frames · ~<span id="frameDur">–</span> ms each):</p>
+        <div class="ctc-strip" id="strip" role="img" aria-label="Per-frame Czech character predictions" lang="cs"></div>
+        <p class="muted" style="font-size:.8rem;margin:.8rem 0 .2rem">↓ merge duplicates, drop blanks ↓</p>
+        <div class="ctc-collapsed" id="collapsed" aria-live="polite" lang="cs"></div>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        Self-supervised pre-training on huge piles of <em>unlabelled</em> speech — here 10,000 hours of
+        European-Parliament audio — is how you get a good recogniser for a language like Czech from a
+        modest amount of labelled data. The model learned what human speech <em>sounds like</em> before it
+        ever saw a Czech transcript. That is what puts a usable Czech recogniser inside a browser tab —
+        <strong>private, offline once cached, no server, no key</strong>. And because it's CTC (frames, not
+        generated tokens) it can't hallucinate an unspoken sentence, and every character is pinned to a
+        moment in time.
+      </p>
+      <ul>
+        <li><strong>On-device Czech dictation and captions</strong> — for apps that must keep audio on the device (health, legal, journalism) in the Czech market.</li>
+        <li><strong>Runs anywhere WASM does</strong> — no GPU required; the model runs on ONNX Runtime Web's WebAssembly backend, the same engine transformers.js uses underneath.</li>
+        <li><strong>Czech forced alignment</strong> — real per-word timings for karaoke, subtitles, and pronunciation feedback, straight from the frames.</li>
+        <li><strong>Privacy-first field work</strong> — transcribe sensitive Czech audio with nothing leaving the device.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">One Czech clip in, Czech text out — and the per-frame strip that produced it.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Forced alignment: real per-word Czech timings, straight from the CTC frames.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Feed it English and watch a Czech-only model transliterate the sounds.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">Transcribe Czech → OPUS-MT translates it to English, all on-device.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>
+        The Czech ONNX export is packaged for the <a href="https://github.com/istupakov/onnx-asr" target="_blank" rel="noopener">onnx-asr</a> toolkit, not transformers.js — its <code>config.json</code> declares
+        <code>model_type: "wav2vec2-ctc"</code>, so transformers.js's <code>AutoModelForCTC</code> refuses it
+        (<code>Unsupported model type</code>). Instead we drive the raw graph directly on
+        <strong>ONNX Runtime Web</strong> — feature normalisation is baked in, so we feed the raw 16 kHz
+        waveform and CTC-decode the log-probs ourselves:
+      </p>
+      <pre><code>import * as ort from "onnxruntime-web";
+
+const base = "https://huggingface.co/OpenVoiceOS/wav2vec2-base-10k-voxpopuli-ft-cs-onnx/resolve/main/";
+const graph = new Uint8Array(await (await fetch(base + "model.onnx")).arrayBuffer());
+const data  = new Uint8Array(await (await fetch(base + "model.onnx.data")).arrayBuffer()); // ~360 MB fp32
+
+const session = await ort.InferenceSession.create(graph, {
+  executionProviders: ["wasm"],
+  externalData: [{ path: "model.onnx.data", data }],   // register the external weights
+});
+
+// audio = raw 16 kHz mono Float32Array (normalisation is inside the graph)
+const { logprobs } = await session.run({
+  input_values:  new ort.Tensor("float32", audio, [1, audio.length]),
+  input_lengths: new ort.Tensor("int64", BigInt64Array.from([BigInt(audio.length)]), [1]),
+});
+// logprobs shape [1, frames, 46]  ← 46 Latin-Czech symbols, log-softmax
+
+// greedy CTC decode: argmax per frame, merge duplicates, drop the blank (id 0), '▁' → space
+const ids  = argmaxPerFrame(logprobs);
+const text = collapse(ids);            // Czech text — no decoder involved</code></pre>
+      <p class="muted">
+        Inference runs in a Web Worker so the UI never janks. The worker returns the raw per-frame argmax
+        and real per-word timings (from the frame each character was emitted at) — nothing is faked or
+        pre-computed.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/OpenVoiceOS/wav2vec2-base-10k-voxpopuli-ft-cs-onnx" target="_blank" rel="noopener">Model card — OpenVoiceOS/wav2vec2-base-10k-voxpopuli-ft-cs-onnx (ONNX export)</a></li>
+        <li><a href="https://huggingface.co/facebook/wav2vec2-base-10k-voxpopuli-ft-cs" target="_blank" rel="noopener">Base fine-tune — facebook/wav2vec2-base-10k-voxpopuli-ft-cs</a></li>
+        <li><a href="https://github.com/istupakov/onnx-asr" target="_blank" rel="noopener">onnx-asr — the toolkit this export targets</a></li>
+        <li><a href="https://arxiv.org/abs/2101.00390" target="_blank" rel="noopener">Paper — "VoxPopuli: A Large-Scale Multilingual Speech Corpus" (2021)</a></li>
+        <li><a href="https://arxiv.org/abs/2006.11477" target="_blank" rel="noopener">Paper — "wav2vec 2.0" (Baevski et al., 2020)</a></li>
+        <li><a href="https://www.cs.toronto.edu/~graves/icml_2006.pdf" target="_blank" rel="noopener">CTC — Graves et al., 2006</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/microsoft/onnxruntime" target="_blank" rel="noopener">ONNX Runtime Web</a>.
+      Sample: "Břetislav I." — a Public-Domain spoken-Wikipedia recording (speaker: Luděk). <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <style>
+      .glance { inline-size:100%; border-collapse:collapse; font-size:.85rem; }
+      .glance th, .glance td { text-align:left; padding:.3rem .5rem; border-bottom:1px solid var(--border); vertical-align:top; }
+      .glance th { color:var(--muted); font-weight:600; inline-size:11rem; }
+      .glance td { overflow-wrap:anywhere; }
+    </style>
+
+    <script type="module">
+      import {
+        CzechAsrEngine, urlToMono16k, MicRecorder, blobToMono16k,
+        drawWaveform, fmtTime, renderStrip, CS_ASR_CSS,
+      } from "./czech.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = CS_ASR_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new CzechAsrEngine();
+      let pcm = null, audioDur = 0;
+
+      async function useAudio(url, label, { revoke = false } = {}) {
+        $("player").src = url;
+        $("clipLabel").textContent = label;
+        $("transcript").textContent = "Transcribe a clip to see the Czech text here.";
+        $("readout").hidden = true; $("insideWrap").hidden = true; $("insideEmpty").hidden = false;
+        try {
+          const decoded = await urlToMono16k(url);
+          pcm = decoded.pcm; audioDur = decoded.duration;
+          drawWaveform($("wave"), pcm, 0);
+          $("run").disabled = !engine.ready;
+        } catch (err) {
+          $("status").hidden = false;
+          $("status").textContent = "Couldn't decode that audio: " + err.message;
+          $("status").classList.add("err");
+          pcm = null;
+        }
+        if (revoke) $("player").addEventListener("emptied", () => URL.revokeObjectURL(url), { once: true });
+      }
+
+      for (const chip of $("samples").children) {
+        chip.addEventListener("click", () => useAudio(chip.dataset.src, chip.dataset.label));
+      }
+      useAudio("sample-ces.wav", "Czech — spoken Wikipedia ‘Břetislav I.’ (Public Domain, 13s)");
+
+      $("upload").addEventListener("click", () => $("file").click());
+      $("file").addEventListener("change", async () => {
+        const f = $("file").files[0];
+        if (f) await useAudio(URL.createObjectURL(f), f.name, { revoke: true });
+      });
+
+      const mic = new MicRecorder();
+      let recording = false;
+      if (!MicRecorder.supported()) $("micFallback").hidden = false;
+      $("rec").addEventListener("click", async () => {
+        if (!recording) {
+          try {
+            await mic.start();
+          } catch {
+            $("micFallback").hidden = false;
+            $("status").hidden = false;
+            $("status").textContent = "Microphone unavailable — use the sample or upload.";
+            $("status").classList.add("err");
+            return;
+          }
+          recording = true;
+          $("rec").innerHTML = '<span class="rec-dot"></span>Stop';
+          $("rec").classList.remove("secondary");
+          $("status").hidden = false; $("status").classList.remove("err");
+          $("status").textContent = "Recording… speak Czech, then click Stop.";
+        } else {
+          recording = false;
+          $("rec").textContent = "● Record";
+          $("rec").classList.add("secondary");
+          const { url } = await mic.stop();
+          await useAudio(url, "Your recording", { revoke: true });
+          $("status").textContent = "Recorded. Hit Transcribe.";
+        }
+      });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: {
+          modelId: "OpenVoiceOS/wav2vec2-base-10k-voxpopuli-ft-cs-onnx",
+          runtime: "onnxruntime-web",
+          dtype: "fp32",
+          sizeMB: 360,
+          requiresWebGPU: false,
+        },
+        load: async (onProgress) => {
+          const device = await engine.load((p) => onProgress(p));
+          return { device };
+        },
+        onReady: () => {
+          $("rec").disabled = false; $("upload").disabled = false;
+          $("run").disabled = !pcm;
+        },
+      });
+
+      $("run").addEventListener("click", async () => {
+        if (!pcm) { $("status").hidden = false; $("status").textContent = "Pick or record some audio first."; return; }
+        $("run").disabled = true; $("status").hidden = false; $("status").classList.remove("err", "ok");
+        $("status").textContent = "Running the CTC model…";
+        try {
+          const r = await engine.transcribe(pcm, audioDur);
+          $("transcript").textContent = r.text || "(no speech detected)";
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rDur").textContent = fmtTime(r.audioSec);
+          $("rMs").textContent = (r.ms / 1000).toFixed(2) + " s";
+          $("rSpeed").textContent = r.speedup ? r.speedup.toFixed(1) + "× real-time" : "–";
+          $("rFrames").textContent = r.frames;
+          $("rChars").textContent = r.emitted;
+          $("insideEmpty").hidden = true; $("insideWrap").hidden = false;
+          $("frameCount").textContent = r.frames;
+          $("frameDur").textContent = r.frameMs ? r.frameMs.toFixed(0) : "20";
+          renderStrip($("strip"), r.strip);
+          $("collapsed").textContent = r.text || "(no speech detected)";
+          $("status").textContent = "Done."; $("status").classList.add("ok");
+        } catch (err) {
+          $("status").textContent = "Transcription failed: " + err.message;
+          $("status").classList.add("err");
+        } finally {
+          $("run").disabled = false;
+        }
+      });
+
+      addEventListener("resize", () => pcm && drawWaveform($("wave"), pcm, 0));
+
+      if ("serviceWorker" in navigator) navigator.serviceWorker.register("/web-ai-showcase/sw.js").catch(() => {});
+    </script>
+  </body>
+</html>
