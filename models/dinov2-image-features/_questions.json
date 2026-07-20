@@ -1,0 +1,122 @@
+{
+  "schemaVersion": 1,
+  "id": "dinov2-image-features",
+  "revision": 1,
+  "reviewedAt": "2026-07-20T00:00:00Z",
+  "reviewer": "retrospective critique backfill (code-grounded + existing conformance suite), revision 1",
+  "frontend": true,
+  "rubric": [
+    {
+      "dimension": "real-inference",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Grounded in code: models/dinov2-image-features/worker.js loads the REAL transformers.js image-feature-extraction pipeline (Xenova/dinov2-small, WASM, q8) through the shared loadPipeline() and reads the image with RawImage.read(), drives the pipeline's OWN pipe.processor + pipe.model, and reads the raw last_hidden_state — token 0 ([CLS]) is the global descriptor and the patch tokens give the heatmap — a genuine on-device forward pass, never a canned result. The immutable conformance suite tests this seam: calls-real-inference (source must match pipeline(|createModelLoader|extractor|classifier|reranker — pass) and loads-clean (console-clean, no uncaught errors on load — pass). A self-SUPERVISED vision transformer (no labels/text). The worker returns BOTH the L2-normalised 384-d [CLS] global descriptor AND a patch-feature grid (each patch token's cosine to [CLS]) — computed from the real tensors, no second download, no invented API.",
+      "notes": "Retrospective backfill: mechanism verified from source + the existing conformance suite; no fresh latency/output numbers were re-measured in this pass (none fabricated)."
+    },
+    {
+      "dimension": "io-shape",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Expected output = a 384-d [CLS] image descriptor (L2-normalised) + a square patch-similarity grid; the page renders an image-to-image cosine similarity matrix across uploaded images and a patch-feature heatmap overlay. Conformance io-shape-semantic is manual-evidenced.",
+      "notes": "gridSideFor() trims to the largest clean square so the heatmap is robust to register/extra tokens."
+    },
+    {
+      "dimension": "runtime-config",
+      "score": 5,
+      "severity": "info",
+      "evidence": "At-a-glance declares the exact model id (Xenova/dinov2-small), the real pipeline task (image-feature-extraction), backend (WASM — no WebGPU required), quantisation (q8), download size (~24 MB) and license (Apache-2.0). Conformance declares-model-id / declares-task / declares-backend / declares-quantisation all pass against these strings.",
+      "notes": "At-a-glance names image-feature-extraction on a self-supervised ViT and the [CLS] + patch-token mechanism — no invented API."
+    },
+    {
+      "dimension": "cache-init",
+      "score": 5,
+      "severity": "info",
+      "evidence": "The page loads through the shared createModelLoader auto-init architecture (model {modelId:'Xenova/dinov2-small', dtype:'q8', sizeMB:24, requiresWebGPU:false}); a valid current on-device cache auto-initialises with no Load click, and only Download/Re-download/Update surface otherwise. Conformance shared-auto-init-loader (source createModelLoader) passes; auto-init-on-cached is manual-evidenced.",
+      "notes": "modelId keyed on Xenova/dinov2-small so the ~24 MB cache is tracked for the never-silently-re-download guarantee."
+    },
+    {
+      "dimension": "states",
+      "score": 4,
+      "severity": "minor",
+      "evidence": "Loading/running/done state is announced in a role=status aria-live=polite region; failures surface ON THE PAGE as an .err status ('…failed: …'), not only the console; the shared loader exposes a Retry recovery path. Runs on the WASM path everywhere, so runs-without-webgpu-fallback holds (no GPU gate). Conformance errors-on-the-page + live-status-region pass; honest-progress-retry-offline is manual-evidenced.",
+      "notes": "Scored 4 (not 5): progress/retry/offline are honestly wired but were not re-exercised offline in this retrospective backfill."
+    },
+    {
+      "dimension": "controls",
+      "score": 4,
+      "severity": "minor",
+      "evidence": "Real keyboard-operable controls: image upload (file input), sample images, per-image remove buttons (aria-label='Remove …'), and the inspect <select>; results are an image-image cosine matrix + heatmap overlay. No dead controls.",
+      "notes": "Scored 4: controls read as real and keyboard-operable from source, but tap-target sizing has an open automated flag (see accessibility)."
+    },
+    {
+      "dimension": "no-fake-output",
+      "score": 5,
+      "severity": "info",
+      "evidence": "No canned output — the [CLS] descriptors, the image-image cosines and the patch heatmap all derive from the real DINOv2 forward pass in the worker. Conformance no-fake-output is manual-evidenced.",
+      "notes": ""
+    },
+    {
+      "dimension": "accessibility",
+      "score": 4,
+      "severity": "minor",
+      "evidence": "Every button exposes an accessible name (conformance buttons-have-names pass) and status uses role=status aria-live. Uploaded thumbnails carry alt=filename, the heatmap overlay carries alt='Selected image with patch-feature heatmap overlay', and the image list is labelled 'Images to compare'. HOWEVER models.json records an automated pre-scan flag for this demo: desktop 16 + mobile 14 sub-24px target(s) — the highest in this batch — sub-24px tap targets an agent still has to verify, and support is 'needs-review' on both classes. Honest weakness, not yet cleared.",
+      "notes": "Light+dark use the WCAG-AA shared design system. The sub-24px tap-target flag is the reason this is 4/minor, not 5."
+    },
+    {
+      "dimension": "responsive",
+      "score": 4,
+      "severity": "minor",
+      "evidence": "The immutable suite carries responsive-desktop and responsive-mobile (no-horizontal-overflow) assertions and the shared design system collapses panels to one column on narrow viewports. BUT support.desktop and support.mobile are both 'needs-review' (not yet confirmed 'ok' by an agent matrix pass) and the automated scan flagged desktop 16 + mobile 14 sub-24px target(s) — the highest in this batch. The image-comparison grid + heatmap must stay usable on narrow screens; the elevated sub-24px count (mobile 14) makes an agent tap-target check especially warranted here.",
+      "notes": "Scored 4: parity is plausibly fine but UNVERIFIED in this backfill; parity-both-classes remains manual-evidenced/awaiting an agent verdict."
+    },
+    {
+      "dimension": "performance",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Inference runs off the main thread in a dedicated Web Worker; the page renders only bounded reductions (an image-image cosine matrix + a bounded per-patch heatmap over a small grid) — no main-thread inference and no unbounded per-token loop. Conformance inp-stays-low is manual-evidenced; inference-off-main-thread (source) passes.",
+      "notes": "INP kept low — the model forward pass never blocks the interface."
+    }
+  ],
+  "guidanceConsulted": [
+    {
+      "query": "keep INP low move heavy work to web worker; break up long tasks so the UI stays responsive",
+      "id": "performance",
+      "recommendation": "Keep interactions responsive (INP): move heavy work off the main thread and avoid long blocking tasks.",
+      "appliedOrException": "applied — every inference call runs in a dedicated module Web Worker (worker.js) via loadPipeline(); the page only posts messages and renders results, so tokenisation + the model forward pass never block the main thread.",
+      "evidence": "worker.js off-thread pipeline; conformance inference-off-main-thread (source new Worker|worker.js) pass + inp-stays-low"
+    },
+    {
+      "query": "break up long synchronous loops and DOM updates to keep the main thread free",
+      "id": "break-up-long-tasks",
+      "recommendation": "Break heavy synchronous processing / DOM updates so the browser can handle input and repaint.",
+      "appliedOrException": "applied — the heavy work (model forward pass) is already off-thread in the worker; the on-page reductions (similarity matrix / projection / score rendering) are bounded over a small number of items, not unbounded per-token loops on the main thread.",
+      "evidence": "bounded on-main-thread rendering; worker owns the model pass"
+    },
+    {
+      "query": "responsive layout flexible grid no horizontal overflow intrinsic sizing for a control panel and results",
+      "id": "css-layout",
+      "recommendation": "Use fluid flex/grid with intrinsic sizing and logical properties; avoid fixed widths that force horizontal overflow.",
+      "appliedOrException": "applied — the shared design system (public/styles.css) lays the panels out with flexible grids that collapse to one column on narrow viewports; results scroll inside their own overflow-x container rather than pushing the page wide.",
+      "evidence": "conformance responsive-desktop + responsive-mobile (no-horizontal-overflow) are in the immutable suite"
+    },
+    {
+      "query": "expose canvas-rendered heatmap content accessible name to assistive technology; image alt text",
+      "id": "expose-canvas-content-to-browser-features",
+      "recommendation": "Give canvas-rendered content a meaningful accessible name so assistive tech can perceive it.",
+      "appliedOrException": "applied — the patch-feature heatmap canvas overlay carries alt/aria text ('Selected image with patch-feature heatmap overlay'); uploaded thumbnails and their remove buttons carry accessible names (aria-label='Remove …', alt=filename).",
+      "evidence": "index.html alt='Selected image with patch-feature heatmap overlay' + aria-label='Remove ${it.name}'"
+    }
+  ],
+  "openQuestions": [
+    "support.desktop/mobile are 'needs-review' and this demo has the HIGHEST sub-24px tap-target count in the batch (desktop 16 / mobile 14) — a tap-target pass is the priority weakness to clear.",
+    "The patch heatmap is drawn to a canvas — is its alt/aria text sufficient, or should the per-patch values also be exposed as a text/table alternative?"
+  ],
+  "followUpGoals": [
+    {
+      "goal": "Agent matrix pass to verify + fix tap targets (this demo has the most sub-24px flags in the batch); consider a text alternative for the canvas heatmap values.",
+      "kind": "targeted-fix",
+      "priority": "high"
+    }
+  ],
+  "summary": "Retrospective, code-grounded critique for dinov2-image-features (Xenova/dinov2-small, image-feature-extraction, WASM q8, ~24 MB, Apache-2.0). Real off-thread inference drives the pipeline's own processor+model, returning the genuine 384-d [CLS] descriptor and a real patch-feature heatmap (patch↔CLS cosine) — verified from source + the immutable conformance suite; image-image cosine matrix + heatmap overlay UI with alt/aria text. Genuine weakness flagged HIGHER here: this demo has the most sub-24px tap-target flags in the batch (desktop 16 / mobile 14) and support is 'needs-review' (accessibility/responsive 4/minor, follow-up priority high). No fabricated numbers."
+}

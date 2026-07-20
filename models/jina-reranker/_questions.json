@@ -1,0 +1,122 @@
+{
+  "schemaVersion": 1,
+  "id": "jina-reranker",
+  "revision": 1,
+  "reviewedAt": "2026-07-20T00:00:00Z",
+  "reviewer": "retrospective critique backfill (code-grounded + existing conformance suite), revision 1",
+  "frontend": true,
+  "rubric": [
+    {
+      "dimension": "real-inference",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Grounded in code: models/jina-reranker/worker.js loads the REAL transformers.js text-classification pipeline (jinaai/jina-reranker-v1-tiny-en, WASM, q8) through the shared loadPipeline() and tokenises every (query, passage) pair TOGETHER via text_pair, counts the tokens actually processed, and calls model(enc) reading the RAW single relevance logit (num_labels=1) — a genuine on-device forward pass, never a canned result. The immutable conformance suite tests this seam: calls-real-inference (source must match pipeline(|createModelLoader|extractor|classifier|reranker — pass) and loads-clean (console-clean, no uncaught errors on load — pass). A genuine TINY 4-layer JinaBERT cross-encoder (~33 MB) whose whole pitch is speed; the worker reports REAL per-pair latency (ms/pairs) and total tokens processed — measured at run time, never claimed. The multi-model page adds a real STAGE-1 bi-encoder (embed-worker.js, Xenova/all-MiniLM-L6-v2) that retrieves a shortlist which the cross-encoder then reranks.",
+      "notes": "Retrospective backfill: mechanism verified from source + the existing conformance suite; no fresh latency/output numbers were re-measured in this pass (none fabricated)."
+    },
+    {
+      "dimension": "io-shape",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Expected output = one relevance logit per pair (num_labels=1) plus a measured perPair/totalTokens readout; the page shows before/after reordering with arrows and a word-overlap contrast. Conformance io-shape-semantic is manual-evidenced.",
+      "notes": "perPair latency is computed from performance.now() at run time — the speed story is measured live, not asserted."
+    },
+    {
+      "dimension": "runtime-config",
+      "score": 5,
+      "severity": "info",
+      "evidence": "At-a-glance declares the exact model id (jinaai/jina-reranker-v1-tiny-en), the real pipeline task (text-classification), backend (WASM — no WebGPU required), quantisation (q8), download size (~33 MB) and license (Apache-2.0). Conformance declares-model-id / declares-task / declares-backend / declares-quantisation all pass against these strings.",
+      "notes": "At-a-glance names the 4-layer tiny cross-encoder and num_labels=1 usage — one of the smallest rerankers in the catalogue."
+    },
+    {
+      "dimension": "cache-init",
+      "score": 5,
+      "severity": "info",
+      "evidence": "The page loads through the shared createModelLoader auto-init architecture (model {modelId:'jinaai/jina-reranker-v1-tiny-en', dtype:'q8', sizeMB:33, requiresWebGPU:false}); a valid current on-device cache auto-initialises with no Load click, and only Download/Re-download/Update surface otherwise. Conformance shared-auto-init-loader (source createModelLoader) passes; auto-init-on-cached is manual-evidenced.",
+      "notes": "modelId keyed on jinaai/jina-reranker-v1-tiny-en so the ~33 MB cache is tracked for the never-silently-re-download guarantee."
+    },
+    {
+      "dimension": "states",
+      "score": 4,
+      "severity": "minor",
+      "evidence": "Loading/running/done state is announced in a role=status aria-live=polite region; failures surface ON THE PAGE as an .err status ('Rerank failed: …'), not only the console; the shared loader exposes a Retry recovery path. Runs on the WASM path everywhere, so runs-without-webgpu-fallback holds (no GPU gate). Conformance errors-on-the-page + live-status-region pass; honest-progress-retry-offline is manual-evidenced.",
+      "notes": "Scored 4 (not 5): progress/retry/offline are honestly wired but were not re-exercised offline in this retrospective backfill."
+    },
+    {
+      "dimension": "controls",
+      "score": 4,
+      "severity": "minor",
+      "evidence": "Real keyboard-operable controls: the query <input>, the passages textarea, and the Rerank passages button; results render as a before/after ranked list with a live latency readout. No dead controls.",
+      "notes": "Scored 4: controls read as real and keyboard-operable from source, but tap-target sizing has an open automated flag (see accessibility)."
+    },
+    {
+      "dimension": "no-fake-output",
+      "score": 5,
+      "severity": "info",
+      "evidence": "No canned output — the ranking, logits, per-pair timing and token counts all derive from real inference in the worker (and, on the multi-model page, from a real MiniLM retrieval stage). Conformance no-fake-output is manual-evidenced.",
+      "notes": ""
+    },
+    {
+      "dimension": "accessibility",
+      "score": 4,
+      "severity": "minor",
+      "evidence": "Every button exposes an accessible name (conformance buttons-have-names pass) and status uses role=status aria-live. The run status is a role=status aria-live line. HOWEVER models.json records an automated pre-scan flag for this demo: desktop 11 + mobile 6 sub-24px target(s) — sub-24px tap targets an agent still has to verify, and support is 'needs-review' on both classes. Honest weakness, not yet cleared.",
+      "notes": "Light+dark use the WCAG-AA shared design system. The sub-24px tap-target flag is the reason this is 4/minor, not 5."
+    },
+    {
+      "dimension": "responsive",
+      "score": 4,
+      "severity": "minor",
+      "evidence": "The immutable suite carries responsive-desktop and responsive-mobile (no-horizontal-overflow) assertions and the shared design system collapses panels to one column on narrow viewports. BUT support.desktop and support.mobile are both 'needs-review' (not yet confirmed 'ok' by an agent matrix pass) and the automated scan flagged desktop 11 + mobile 6 sub-24px target(s). ",
+      "notes": "Scored 4: parity is plausibly fine but UNVERIFIED in this backfill; parity-both-classes remains manual-evidenced/awaiting an agent verdict."
+    },
+    {
+      "dimension": "performance",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Inference runs off the main thread in a dedicated Web Worker; the page renders only bounded reductions (a per-pair logit ranking + before/after list + a live ms/pair readout over a handful of passages) — no main-thread inference and no unbounded per-token loop. Conformance inp-stays-low is manual-evidenced; inference-off-main-thread (source) passes.",
+      "notes": "INP kept low — the model forward pass never blocks the interface."
+    }
+  ],
+  "guidanceConsulted": [
+    {
+      "query": "keep INP low move heavy work to web worker; break up long tasks so the UI stays responsive",
+      "id": "performance",
+      "recommendation": "Keep interactions responsive (INP): move heavy work off the main thread and avoid long blocking tasks.",
+      "appliedOrException": "applied — every inference call runs in a dedicated module Web Worker (worker.js) via loadPipeline(); the page only posts messages and renders results, so tokenisation + the model forward pass never block the main thread.",
+      "evidence": "worker.js off-thread pipeline; conformance inference-off-main-thread (source new Worker|worker.js) pass + inp-stays-low"
+    },
+    {
+      "query": "break up long synchronous loops and DOM updates to keep the main thread free",
+      "id": "break-up-long-tasks",
+      "recommendation": "Break heavy synchronous processing / DOM updates so the browser can handle input and repaint.",
+      "appliedOrException": "applied — the heavy work (model forward pass) is already off-thread in the worker; the on-page reductions (similarity matrix / projection / score rendering) are bounded over a small number of items, not unbounded per-token loops on the main thread.",
+      "evidence": "bounded on-main-thread rendering; worker owns the model pass"
+    },
+    {
+      "query": "responsive layout flexible grid no horizontal overflow intrinsic sizing for a control panel and results",
+      "id": "css-layout",
+      "recommendation": "Use fluid flex/grid with intrinsic sizing and logical properties; avoid fixed widths that force horizontal overflow.",
+      "appliedOrException": "applied — the shared design system (public/styles.css) lays the panels out with flexible grids that collapse to one column on narrow viewports; results scroll inside their own overflow-x container rather than pushing the page wide.",
+      "evidence": "conformance responsive-desktop + responsive-mobile (no-horizontal-overflow) are in the immutable suite"
+    },
+    {
+      "query": "accessible live region status announce loading ready error with role=status aria-live; every control has an accessible name",
+      "id": "accessibility",
+      "recommendation": "Announce loading/ready/error via role=status aria-live; give every control an accessible name; use semantic HTML.",
+      "appliedOrException": "applied — the run status uses role=status aria-live=polite, the shared model-loader announces checking/initialising/ready/error, and every button carries a text label.",
+      "evidence": "conformance live-status-region ([role=status][aria-live] present) + buttons-have-names pass"
+    }
+  ],
+  "openQuestions": [
+    "support.desktop/mobile are 'needs-review' — confirm tap targets and flip support to ok.",
+    "The reported per-pair latency is device-dependent — should the page frame the number with the hardware it was measured on?"
+  ],
+  "followUpGoals": [
+    {
+      "goal": "Agent matrix pass to verify tap targets and clear the sub-24px flag on both classes.",
+      "kind": "targeted-fix",
+      "priority": "medium"
+    }
+  ],
+  "summary": "Retrospective, code-grounded critique for jina-reranker (jinaai/jina-reranker-v1-tiny-en, text-classification num_labels=1 tiny 4-layer cross-encoder, WASM q8, ~33 MB, Apache-2.0). Real off-thread inference reads the raw relevance logit per pair, measures REAL per-pair latency + token counts, and the multi-model page runs a genuine two-stage retrieve-then-rerank (MiniLM bi-encoder → Jina cross-encoder) — verified from source + the immutable conformance suite. Open weakness: support 'needs-review' + sub-24px tap-target flag (accessibility/responsive 4/minor). No fabricated numbers."
+}
