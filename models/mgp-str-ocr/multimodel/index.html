@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MGP-STR Multi-model — detect → recognise (full scene OCR) · Web AI Showcase</title>
+    <meta name="description" content="Compose two on-device models: a DBNet detector finds every word box in a photo, then MGP-STR reads each one — full scene OCR that never leaves your device. No server, no upload." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🔡</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">MGP-STR</a></p>
+
+    <header>
+      <p class="eyebrow">use case · multi-model</p>
+      <h1>Multi-model: detect → recognise</h1>
+      <p class="lede">
+        A recogniser reads <em>one word</em>. To read a whole scene you first need to know <em>where</em>
+        the words are — so this chains two on-device models: a
+        <a href="/web-ai-showcase/models/scene-text-detection/">DBNet detector</a> finds every word box,
+        then MGP-STR reads each one. Full scene OCR, and the image never leaves the tab.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="detStatus" role="status" aria-live="polite" style="font-size:.8rem"></p>
+
+      <div class="field-row" style="align-items:stretch">
+        <div style="flex:1 1 320px;min-inline-size:0">
+          <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image">
+            <span id="dropText">Drop a photo with words, or click to choose</span>
+            <input type="file" id="file" accept="image/*" hidden />
+          </div>
+          <div class="sample-strip" id="samples" aria-label="Scene samples">
+            <img class="sample-thumb active" src="../sample-storefront.png" data-src="../sample-storefront.png" alt="A storefront sign reading CORNER BOOKS, OPEN DAILY, COFFEE INSIDE" tabindex="0" role="button" />
+            <img class="sample-thumb" src="/web-ai-showcase/models/scene-text-detection/sample-sign.jpg" data-src="/web-ai-showcase/models/scene-text-detection/sample-sign.jpg" alt="A café sign" tabindex="0" role="button" />
+            <img class="sample-thumb" src="/web-ai-showcase/models/scene-text-detection/sample-street.jpg" data-src="/web-ai-showcase/models/scene-text-detection/sample-street.jpg" alt="A street scene with signage" tabindex="0" role="button" />
+          </div>
+          <div class="crop-wrap"><canvas id="canvas" role="img" aria-label="Image with detected word boxes"></canvas></div>
+        </div>
+        <div style="flex:1 1 260px;min-inline-size:0">
+          <button id="run" type="button" disabled>Detect &amp; read all words</button>
+          <p class="status" id="status" role="status" aria-live="polite"></p>
+          <div class="readout" id="readout" hidden><span>regions <b id="rCount">–</b></span><span>detect <b id="rDet">–</b></span><span>read <b id="rRead">–</b></span></div>
+          <h4 style="font-family:var(--font-body);font-size:.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:1rem 0 .3rem">Recognised words</h4>
+          <ol class="words-out" id="list" aria-label="Recognised words per region"></ol>
+        </div>
+      </div>
+      <p class="muted" style="font-size:.78rem">DBNet (~2.4 MB) loads on first Detect; MGP-STR (~155 MB) is the page's model and auto-initialises when cached. Both run on-device via Web Workers.</p>
+    </section>
+
+    <p class="crumbs"><a href="../wild/">← Wild</a> · <a href="../">Back to MGP-STR</a></p>
+
+    <script type="module">
+      import { drawImageFit, drawRegions, TextDetEngine, toBitmap, urlToBitmap } from "/web-ai-showcase/models/scene-text-detection/textdet.js";
+      import { MgpEngine, cropRegion, escapeHTML, MGP_CSS } from "../recog.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = MGP_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const mgp = new MgpEngine();
+      let det = null, detReady = null;
+      const state = { bmp: null, imgEl: null };
+
+      async function setImage(b, src) {
+        state.bmp = b;
+        drawImageFit($("canvas"), await createImageBitmap(b), 460);
+        $("readout").hidden = true; $("list").replaceChildren();
+        const img = new Image(); img.decoding = "async"; img.src = src;
+        state.imgEl = img;
+      }
+      async function pick(el) { for (const t of $("samples").children) t.classList.toggle("active", t === el); const src = el.dataset.src; await setImage(await urlToBitmap(src), src); }
+      for (const th of $("samples").children) { th.addEventListener("click", () => pick(th)); th.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(th); } }); }
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function fileToImg(f) { const url = URL.createObjectURL(f); await setImage(await toBitmap(f), url); }
+      file.addEventListener("change", async () => { if (!file.files[0]) return; for (const t of $("samples").children) t.classList.remove("active"); await fileToImg(file.files[0]); $("dropText").textContent = file.files[0].name; });
+      drop.addEventListener("drop", async (e) => { const f = e.dataTransfer?.files?.[0]; if (!f?.type.startsWith("image/")) return; await fileToImg(f); });
+      pick($("samples").firstElementChild);
+
+      const autoRun = new URLSearchParams(location.search).has("auto");
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/mgp-str-base", runtime: "transformers.js", dtype: "q8", sizeMB: 155, requiresWebGPU: false },
+        load: async (onProgress) => { await mgp.load(onProgress); return mgp; },
+        onReady: () => { $("run").disabled = false; if (autoRun) $("run").click(); },
+      });
+
+      function ensureDet() {
+        if (detReady) return detReady;
+        det = new TextDetEngine();
+        $("detStatus").textContent = "Loading DBNet detector (~2.4 MB)…";
+        detReady = det.load((p) => { if (p.status === "progress" && p.progress != null) $("detStatus").textContent = `Loading DBNet… ${p.progress.toFixed(0)}%`; })
+          .then((d) => { $("detStatus").textContent = "DBNet ready (" + d.toUpperCase() + ")."; return d; });
+        return detReady;
+      }
+      function waitImg(img) { return img.complete && img.naturalWidth ? Promise.resolve() : new Promise((r) => img.addEventListener("load", r, { once: true })); }
+
+      $("run").addEventListener("click", async () => {
+        if (!state.bmp) return;
+        $("run").disabled = true; $("status").classList.remove("err", "ok"); $("status").textContent = "Loading detector…";
+        try {
+          await ensureDet();
+          $("status").textContent = "Detecting word regions…";
+          const res = await det.detect(await createImageBitmap(state.bmp), { boxThresh: 0.4 });
+          const regions = res.regions.slice().sort((a, b) => (a.box.y0 - b.box.y0) || (a.box.x0 - b.box.x0)).slice(0, 10);
+          const fit = drawImageFit($("canvas"), await createImageBitmap(state.bmp), 460);
+          drawRegions($("canvas"), regions, fit.scale);
+          $("canvas").setAttribute("aria-label", `Image with ${regions.length} detected word boxes`);
+          $("readout").hidden = false; $("rCount").textContent = res.regions.length; $("rDet").textContent = res.ms + " ms";
+          $("list").replaceChildren(...regions.map((_, i) => { const li = document.createElement("li"); li.className = "word-line"; li.innerHTML = `<b id="w-${i}">…</b><small id="m-${i}"></small>`; return li; }));
+          $("status").textContent = "Reading each region with MGP-STR…";
+          await waitImg(state.imgEl);
+          const t0 = performance.now();
+          for (let i = 0; i < regions.length; i++) {
+            const r = regions[i];
+            const pad = 0.02;
+            const region = {
+              x: r.box.x0 / res.imgW - pad, y: r.box.y0 / res.imgH - pad,
+              w: (r.box.x1 - r.box.x0) / res.imgW + pad * 2, h: (r.box.y1 - r.box.y0) / res.imgH + pad * 2,
+            };
+            const crop = cropRegion(state.imgEl, region);
+            try { const out = await mgp.recognise(crop); document.getElementById("w-" + i).textContent = out.text || "(no read)"; document.getElementById("m-" + i).textContent = (out.fusedScore * 100).toFixed(0) + "%"; }
+            catch (e) { document.getElementById("w-" + i).textContent = "(read failed)"; }
+          }
+          $("rRead").textContent = Math.round(performance.now() - t0) + " ms";
+          $("status").textContent = `Done — ${res.regions.length} region(s), read ${regions.length}.`; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Pipeline failed: " + err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>

@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MGP-STR — read a single word from a photo, three ways at once · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run MGP-STR (scene-text recognition) locally in your browser: crop a single word from a photo — a sign, a label, a shopfront — and watch one Vision Transformer read it three ways at once (character, BPE subword, WordPiece) and fuse them into one answer. No server, nothing leaves your device."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🔡</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">image-to-text · vision → text (scene-text recognition) · WASM · ~155 MB</p>
+      <h1>MGP-STR — read one word, three ways at once</h1>
+      <p class="lede">
+        MGP-STR is a scene-text <em>recogniser</em>: give it a cropped <strong>single word</strong> —
+        <code>COFFEE</code>, <code>STOP</code>, a serial number — and it reads it back. The twist: a
+        single Vision Transformer predicts the word <strong>three ways in parallel</strong> —
+        character by character, as BPE subwords, and as WordPieces — then <strong>fuses</strong> the
+        three into one answer. All on your device.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/onnx-community/mgp-str-base" target="_blank" rel="noopener">onnx-community/mgp-str-base</a> — MGP-STR base (ONNX)</td></tr>
+          <tr><th>Task / pipeline</th><td><code>image-to-text</code> (scene-text recognition), via <code>MgpstrForSceneTextRecognition</code> + <code>MgpstrProcessor</code></td></tr>
+          <tr><th>Architecture</th><td>ViT encoder → three parallel prediction heads (character / BPE / WordPiece) → A³ multi-granularity fusion. Single forward pass, <strong>not</strong> autoregressive.</td></tr>
+          <tr><th>Input</th><td>One cropped <strong>word</strong> (crop tight — MGP-STR reads a single word, not a line or paragraph)</td></tr>
+          <tr><th>Output</th><td>The recognised word + a fusion confidence, plus each head's own reading</td></tr>
+          <tr><th>Quantization</th><td>q8 (8-bit) ONNX</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (runs anywhere; no WebGPU needed)</td></tr>
+          <tr><th>Download</th><td>~155 MB, cached after first load</td></tr>
+          <tr><th>License</th><td>MIT (alibaba-damo/mgp-str-base)</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers, Canvas, FileReader — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+      <p class="muted">
+        How is this different from <a href="/web-ai-showcase/models/trocr-ocr/">TrOCR</a>? TrOCR reads a
+        whole <em>line</em> autoregressively (a decoder emits one token at a time). MGP-STR reads a
+        single <em>word</em> in one shot, and its answer is a <em>vote</em> across three granularities —
+        which is exactly what makes its "see inside" interesting.
+      </p>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">
+        Pick or drop an image, then <strong>drag a tight box around one word</strong> and hit Read.
+        MGP-STR is a single-word recogniser, so the crop is the point.
+      </p>
+
+      <div id="model-loader"></div>
+
+      <div class="field-row" style="align-items:stretch">
+        <div style="flex:1 1 300px">
+          <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image">
+            <span id="dropText">Drop an image here, or click to choose</span>
+            <input type="file" id="file" accept="image/*" hidden />
+          </div>
+          <div class="sample-strip" id="samples" aria-label="Sample word images">
+            <img class="sample-thumb active" src="sample-coffee.png" data-src="sample-coffee.png" alt="The word COFFEE in bold sans-serif" tabindex="0" role="button" />
+            <img class="sample-thumb" src="sample-stop.png" data-src="sample-stop.png" alt="The word STOP in red" tabindex="0" role="button" />
+            <img class="sample-thumb" src="sample-ticket.png" data-src="sample-ticket.png" alt="The word Ticket in a serif face" tabindex="0" role="button" />
+            <img class="sample-thumb" src="sample-parking.png" data-src="sample-parking.png" alt="The word PARKING" tabindex="0" role="button" />
+            <img class="sample-thumb" src="sample-serial.png" data-src="sample-serial.png" alt="A serial code A7X9K2 in a monospace face" tabindex="0" role="button" />
+          </div>
+          <p class="crop-hint">Drag on the image to box a single word. <button id="resetCrop" class="chip" type="button">Reset selection</button></p>
+          <div class="crop-wrap"><canvas id="canvas" aria-label="Selected image — drag to box one word to read"></canvas></div>
+        </div>
+        <div style="flex:1 1 260px;min-inline-size:0">
+          <div style="margin:.2rem 0 .6rem">
+            <button id="run" type="button" disabled>Read word</button>
+          </div>
+          <p class="status" id="runStatus" role="status" aria-live="polite"></p>
+          <div class="word-out empty" id="wordOut" aria-live="polite">The recognised word appears here.</div>
+          <button id="copyBtn" class="chip" type="button" hidden>Copy word</button>
+          <div class="readout" id="readout" hidden>
+            <span>backend <b id="rBackend">–</b></span>
+            <span>fusion conf <b id="rConf">–</b></span>
+            <span>latency <b id="rMs">–</b></span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside — three granularities, one vote</h3>
+      <p class="muted">
+        This is what makes MGP-STR distinctive. The same image features feed <strong>three heads</strong>
+        that spell the word out at different resolutions: a <em>character</em> head (one glyph at a
+        time), a <em>BPE</em> head (subword chunks), and a <em>WordPiece</em> head. When the word is
+        clean, all three agree. When it's stylised or partly hidden, they diverge — and the fusion picks
+        the most confident consensus. The ✓ marks the head the fused answer matched.
+      </p>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Read a word to see the three granularities and the per-character trace.</div>
+      <div id="insideWrap" hidden>
+        <h4 style="font-family:var(--font-body);font-size:.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:.6rem 0 .3rem">Three predictions</h4>
+        <div class="gran-table" id="granTable"></div>
+        <h4 style="font-family:var(--font-body);font-size:.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:1rem 0 .3rem">Character head, glyph by glyph</h4>
+        <p class="muted" style="font-size:.75rem;margin:0 0 .3rem">Each cell is the character head's top pick at that position; the bar under it and the % are its confidence. Low-confidence glyphs are where a stylised font trips the reader.</p>
+        <div class="char-trace" id="charTrace" role="img" aria-label="Per-character confidence trace"></div>
+        <p class="muted" id="charTraceText" style="font-size:.72rem;margin-top:.4rem"></p>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        A text <em>detector</em> tells you <em>where</em> words are; a <em>recogniser</em> tells you
+        <em>what they say</em>. MGP-STR is the "read one word" half of on-device OCR — small, fast, and
+        robust to the messiness of real signage because it cross-checks three readings instead of
+        trusting one.
+      </p>
+      <ul>
+        <li><strong>Read the physical world</strong> — a sign, a shopfront, a jersey number, a bib, a boat name — straight from the camera, no OCR API and no upload.</li>
+        <li><strong>Codes and identifiers</strong> — serial numbers, SKUs, licence-plate characters, container IDs: short single "words" are exactly MGP-STR's wheelhouse.</li>
+        <li><strong>Pair with a detector</strong> — a detector finds every word box; MGP-STR reads each one. That's full scene OCR that never leaves the device (see the multi-model demo).</li>
+        <li><strong>Legible confidence</strong> — the three-way vote is a built-in reliability signal: agreement means trust it, divergence means flag it for a human.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Crop one word and read it — with the three-granularity vote and per-character confidence.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">A code &amp; label reader: box several words and read them all into a copyable list.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Stylised, rotated and slanted words — watch the three heads disagree and the fusion arbitrate.</p></a>
+        <a class="model-card" href="multimodel/"><h3>Multi-model</h3><p class="muted">Detect → recognise: DBNet finds every word box, MGP-STR reads each one — full scene OCR.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>MGP-STR isn't the plain <code>image-to-text</code> pipeline — it uses its own processor + model, three lines with Transformers.js:</p>
+      <pre><code>import { MgpstrForSceneTextRecognition, MgpstrProcessor, RawImage }
+  from "@huggingface/transformers";
+
+const model = await MgpstrForSceneTextRecognition.from_pretrained(
+  "onnx-community/mgp-str-base", { dtype: "q8" });      // ~155 MB, cached once
+const processor = await MgpstrProcessor.from_pretrained("onnx-community/mgp-str-base");
+
+const image  = await RawImage.read(wordCropURL);        // ONE word, cropped tight
+const inputs = await processor(image);
+const { logits } = await model(inputs);                  // [char, bpe, wp] logits
+const out = processor.batch_decode(logits);
+// out.generated_text → ["coffee"]  (the FUSED answer)
+// out.char_preds / out.bpe_preds / out.wp_preds → each head's own reading
+// out.scores → [0.9999]  (fusion confidence)</code></pre>
+      <p class="muted">
+        For "See inside", this page reads the <code>char_logits</code> tensor directly — a softmax per
+        position gives the per-character confidence trace — and computes a comparable confidence for the
+        BPE and WordPiece heads, all off the main thread in a Web Worker. <em>Note:</em> MGP-STR
+        normalises to lowercase and its charset is <code>a–z</code> + <code>0–9</code>; it reads a single
+        word, so crop tight and box words one at a time.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/onnx-community/mgp-str-base" target="_blank" rel="noopener">Model card — onnx-community/mgp-str-base (ONNX)</a></li>
+        <li><a href="https://huggingface.co/alibaba-damo/mgp-str-base" target="_blank" rel="noopener">Original weights — alibaba-damo/mgp-str-base</a></li>
+        <li><a href="https://arxiv.org/abs/2209.03592" target="_blank" rel="noopener">MGP-STR paper — "Multi-Granularity Prediction for Scene Text Recognition" (arXiv 2209.03592)</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { MgpEngine, WordCrop, fileToDataURL, renderGranularities, renderCharTrace, MGP_CSS } from "./recog.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = MGP_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new MgpEngine();
+      const crop = new WordCrop($("canvas"));
+
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        const blob = await (await fetch(el.dataset.src)).blob();
+        crop.setSrc(await fileToDataURL(new File([blob], "sample", { type: blob.type })));
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } });
+      }
+      pickSample($("samples").firstElementChild);
+
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      file.addEventListener("change", async () => { if (file.files[0]) await loadFile(file.files[0]); });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      drop.addEventListener("drop", async (e) => { const f = e.dataTransfer?.files?.[0]; if (f && f.type.startsWith("image/")) await loadFile(f); });
+      async function loadFile(f) { for (const t of $("samples").children) t.classList.remove("active"); crop.setSrc(await fileToDataURL(f)); $("dropText").textContent = f.name; }
+
+      $("resetCrop").addEventListener("click", () => crop.reset());
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/mgp-str-base", runtime: "transformers.js", dtype: "q8", sizeMB: 155, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("run").disabled = false; },
+      });
+
+      let lastWord = "";
+      $("copyBtn").addEventListener("click", async () => {
+        try { await navigator.clipboard.writeText(lastWord); $("copyBtn").textContent = "Copied!"; setTimeout(() => $("copyBtn").textContent = "Copy word", 1200); }
+        catch { $("copyBtn").textContent = "Copy failed"; }
+      });
+
+      $("run").addEventListener("click", read);
+      async function read() {
+        $("runStatus").classList.remove("err", "ok"); $("run").disabled = true;
+        $("runStatus").textContent = "Reading…"; $("copyBtn").hidden = true;
+        try {
+          const r = await engine.recognise(crop.crop());
+          lastWord = r.text;
+          $("wordOut").textContent = r.text || "(no word found)";
+          $("wordOut").classList.toggle("empty", !r.text);
+          $("copyBtn").hidden = !r.text;
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rConf").textContent = (r.fusedScore * 100).toFixed(1) + "%";
+          $("rMs").textContent = r.ms + " ms";
+          $("insideEmpty").hidden = true; $("insideWrap").hidden = false;
+          renderGranularities($("granTable"), r);
+          renderCharTrace($("charTrace"), r.steps);
+          $("charTraceText").textContent = "Reads: " + r.steps.map((s) => `${s.ch} (${(s.p * 100).toFixed(0)}%)`).join(", ");
+          $("runStatus").textContent = "Done."; $("runStatus").classList.add("ok");
+        } catch (err) {
+          $("runStatus").textContent = "Reading failed: " + err.message; $("runStatus").classList.add("err");
+        } finally { $("run").disabled = false; }
+      }
+
+      if ("serviceWorker" in navigator) navigator.serviceWorker.register("/web-ai-showcase/sw.js").catch(() => {});
+    </script>
+  </body>
+</html>
