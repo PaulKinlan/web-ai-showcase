@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MMS-TTS Marathi Multi-model — translate, then speak Marathi · Web AI Showcase</title>
+    <meta name="description" content="Chain two on-device models: M2M100 translates English to Marathi, then MMS-TTS speaks the Marathi aloud — a private, offline English-to-spoken-Marathi pipeline in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🗣️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">MMS-TTS Marathi (VITS)</a></p>
+
+    <header>
+      <p class="eyebrow">use case · multi-model</p>
+      <h1>Multi-model: translate, then speak Marathi</h1>
+      <p class="lede">
+        Two models, one pipeline, zero servers. <a href="../../m2m100-translation/">M2M100</a> (multilingual,
+        English→Marathi) translates what you type into native Devanagari, then MMS-TTS Marathi reads the
+        translation aloud. Type English, get spoken Marathi — entirely on your device.
+      </p>
+    </header>
+
+    <section class="panel">
+      <h3 style="margin-top:0">1 · Translator (M2M100 · English → Marathi)</h3>
+      <div id="tr-loader"></div>
+      <h3>2 · Marathi voice (MMS-TTS)</h3>
+      <div id="tts-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+
+      <label class="field" style="margin-top:.6rem">English text
+        <textarea id="text" class="tts" disabled>This voice is generated entirely inside your browser, with no server involved.</textarea>
+      </label>
+      <div style="display:flex;flex-wrap:wrap;gap:.5rem;align-items:center;margin-top:.5rem">
+        <button id="run" type="button" disabled>Translate &amp; speak</button>
+      </div>
+
+      <div id="outWrap" hidden style="margin-top:.8rem">
+        <p class="eyebrow">Marathi translation</p>
+        <p id="translation" lang="mr" style="font-size:1.05rem"></p>
+        <div class="audio-row">
+          <audio id="player" controls preload="none"></audio>
+          <a id="download" class="button secondary" download="mms-tts-mar.wav" hidden>Download .wav</a>
+        </div>
+        <div class="wave-wrap"><canvas id="wave" class="wave" aria-label="Spoken Marathi translation waveform"></canvas></div>
+        <div class="readout" id="readout" hidden>
+          <span>translate <b id="rTrMs">–</b></span>
+          <span>speak <b id="rTtsMs">–</b></span>
+          <span>audio <b id="rDur">–</b></span>
+          <span>backend <b id="rBackend">–</b></span>
+        </div>
+      </div>
+    </section>
+
+    <p class="muted" style="font-size:.85rem">
+      This is a common shape for localisation features — English source in, spoken Marathi out — but done
+      locally, so the source text never leaves the tab and there's no per-request bill. M2M100 translates
+      directly between any pair of 100 languages, so you can swap in another target and pair it with that
+      language's MMS checkpoint.
+    </p>
+
+    <p class="crumbs"><a href="../wild/">← Wild</a> · <a href="../">Back to MMS-TTS Marathi</a></p>
+
+    <script type="module">
+      import { MmsMrEngine, wavUrl, drawWaveform, MMS_MR_CSS } from "../mmsttsmr.js";
+      import { TranslateEngine } from "../../m2m100-translation/translate.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = MMS_MR_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+
+      const tts = new MmsMrEngine();
+      const tr = new TranslateEngine();
+      let ttsReady = false, trReady = false, pcm = null, curUrl = null;
+      function maybeEnable() { if (ttsReady && trReady) { $("run").disabled = false; $("text").disabled = false; } }
+
+      createModelLoader({
+        mount: $("tr-loader"),
+        model: { modelId: "Xenova/m2m100_418M", runtime: "transformers.js", dtype: "q8", sizeMB: 470, requiresWebGPU: false },
+        load: async (onProgress) => { await tr.load(onProgress); return tr; },
+        onReady: () => { trReady = true; maybeEnable(); },
+      });
+      createModelLoader({
+        mount: $("tts-loader"),
+        model: { modelId: "naklitechie/mms-tts-mr-ONNX", runtime: "transformers.js", dtype: "fp32", sizeMB: 109, requiresWebGPU: false },
+        load: async (onProgress) => { await tts.load(onProgress); return tts; },
+        onReady: () => { ttsReady = true; maybeEnable(); },
+      });
+
+      $("run").addEventListener("click", async () => {
+        const text = $("text").value.trim();
+        if (!text) return;
+        $("run").disabled = true; $("status").hidden = false; $("status").classList.remove("err","ok");
+        $("outWrap").hidden = false; $("translation").textContent = "";
+        try {
+          $("status").textContent = "Translating to Marathi…";
+          const t0 = performance.now();
+          const t = await tr.translate(text, "en", "mr", { numBeams: 1 }, (partial) => { $("translation").textContent = partial; });
+          const trMs = Math.round(performance.now() - t0);
+          const mar = (t.translation || $("translation").textContent).trim();
+          $("translation").textContent = mar;
+
+          $("status").textContent = "Speaking the Marathi…";
+          const r = await tts.speak(mar);
+          pcm = r.audio;
+          if (curUrl) URL.revokeObjectURL(curUrl);
+          curUrl = wavUrl(pcm, r.rate);
+          $("player").src = curUrl; $("download").href = curUrl; $("download").hidden = false;
+          drawWaveform($("wave"), pcm, 0);
+          const durSec = pcm.length / r.rate;
+          $("readout").hidden = false;
+          $("rTrMs").textContent = (trMs/1000).toFixed(2)+" s";
+          $("rTtsMs").textContent = (r.ms/1000).toFixed(2)+" s";
+          $("rDur").textContent = durSec.toFixed(2)+" s";
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("status").textContent = "Done — press play to hear the Marathi."; $("status").classList.add("ok");
+          $("player").play().catch(()=>{});
+        } catch (err) { $("status").textContent = "Pipeline failed: "+err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+      $("player").addEventListener("timeupdate", () => { if (pcm && $("player").duration) drawWaveform($("wave"), pcm, $("player").currentTime/$("player").duration); });
+      $("player").addEventListener("ended", () => pcm && drawWaveform($("wave"), pcm, 1));
+      addEventListener("resize", () => pcm && drawWaveform($("wave"), pcm, 0));
+    </script>
+  </body>
+</html>
