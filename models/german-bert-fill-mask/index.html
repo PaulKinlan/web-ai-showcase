@@ -1,0 +1,327 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>German DistilBERT fill-mask — predict the missing German word in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Put a [MASK] anywhere in a German sentence and watch a DistilBERT trained only on German predict the missing word locally, with the exact logits it produced. See how it splits German compound words into subwords, and compare it head-to-head with multilingual mBERT. Nothing leaves the tab."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🇩🇪</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">fill-mask · text · WASM · ~92 MB</p>
+      <h1>German DistilBERT — predict the missing German word</h1>
+      <p class="lede">
+        This is a <strong>DistilBERT trained only on German text</strong>. Its one job here is
+        <strong>masked language modelling</strong>: hide a word behind <code>[MASK]</code> and it ranks
+        what belongs there — with a German-native vocabulary, German casing and German
+        <em>compound words</em> baked in. Type a sentence with a mask and see its guesses, the exact
+        <em>logits</em> it computed, and how it chops German words into subword pieces. Everything runs on
+        your device.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/onnx-community/distilbert-base-german-cased-ONNX" target="_blank" rel="noopener">onnx-community/distilbert-base-german-cased-ONNX</a> (ONNX build of distilbert-base-german-cased)</td></tr>
+          <tr><th>Task / pipeline</th><td><code>fill-mask</code> — masked language modelling, loaded via <code>AutoModelForMaskedLM</code> for raw logits</td></tr>
+          <tr><th>Output</th><td>A probability over the whole 31,102-token German vocabulary at each <code>[MASK]</code></td></tr>
+          <tr><th>Architecture</th><td>DistilBERT (6 layers, ~66M params), German-cased WordPiece tokenizer (splits compounds into <code>##</code> pieces)</td></tr>
+          <tr><th>Language</th><td>German only — mask token is <code>[MASK]</code> (BERT/WordPiece style), not <code>&lt;mask&gt;</code></td></tr>
+          <tr><th>Quantization</th><td>q8 (8-bit) ONNX</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (runs anywhere; no WebGPU needed)</td></tr>
+          <tr><th>Download</th><td>~92 MB, cached after first load</td></tr>
+          <tr><th>License</th><td>Apache-2.0</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Write a German sentence containing <code>[MASK]</code> (use a sample if you're not
+        sure). The model predicts the missing word. You can use more than one mask.</p>
+
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.5rem 0" id="chips" role="group" aria-label="Beispielsätze">
+        <button class="mask-chip" type="button" data-set="Die Hauptstadt von Deutschland ist [MASK].">Hauptstadt</button>
+        <button class="mask-chip" type="button" data-set="Ich trinke jeden Morgen eine Tasse [MASK].">Getränk</button>
+        <button class="mask-chip" type="button" data-set="Der [MASK] ist der beste Freund des Menschen.">Tier</button>
+        <button class="mask-chip" type="button" data-set="Heute ist das Wetter sehr [MASK].">Wetter</button>
+        <button class="mask-chip" type="button" data-set="Am Wochenende gehe ich gern ins [MASK].">Freizeit</button>
+        <button class="mask-chip" type="button" data-set="Der [MASK] fährt jeden Morgen zur [MASK].">zwei Masken</button>
+      </div>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
+        Dein Satz (mit <code>[MASK]</code>)
+        <input id="text" class="mask-input" disabled value="Die Hauptstadt von Deutschland ist [MASK]." />
+      </label>
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;align-items:center;margin:.2rem 0 .4rem">
+        <button id="insertMask" type="button" class="secondary" disabled>Insert [MASK] at cursor</button>
+        <label style="font-size:.78rem;font-family:var(--font-mono);color:var(--muted);display:flex;align-items:center;gap:.4rem">
+          top-k
+          <input id="topk" type="range" min="3" max="15" value="8" disabled />
+          <span id="topkVal">8</span>
+        </label>
+      </div>
+
+      <div id="filled" class="filled-sentence" hidden></div>
+      <div id="preds"></div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+        <span>masks <b id="rMasks">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="vs-h">
+      <h3 id="vs-h">German-native vs multilingual — on the same sentence</h3>
+      <p class="muted">
+        The German DistilBERT spent its whole 31k-token budget on German. mBERT
+        (bert-base-multilingual-cased) spread a 119k-token vocabulary across ~104 languages. Load the
+        multilingual model (an extra ~180 MB, on demand) and compare what each one predicts for the
+        <em>same</em> German <code>[MASK]</code> — the specialist usually offers cleaner, more idiomatic
+        German words, and you can see it in the logits. Both use <code>[MASK]</code>, so the comparison is
+        apples-to-apples.
+      </p>
+      <div id="vs-loader"></div>
+      <p class="status" id="vsStatus" role="status" aria-live="polite" hidden></p>
+      <div class="probe-grid two" id="vsGrid" hidden>
+        <div class="probe-card"><h4>🇩🇪 German DistilBERT <span class="lang-tag">German-only</span></h4><div id="vsDe" class="pred-list"></div></div>
+        <div class="probe-card"><h4>🌍 mBERT <span class="lang-tag">multilingual</span></h4><div id="vsMl" class="pred-list"></div></div>
+      </div>
+      <p class="muted" style="font-size:.85rem">The comparison uses whatever sentence is in the box above.
+        Both runs are real, off-thread forward passes — nothing is cached or faked.</p>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside — logits + how German splits into subwords</h3>
+      <p class="muted">
+        A language model doesn't output words — it outputs a <strong>logit</strong> (a raw, unbounded
+        score) for every one of its 31,102 German vocabulary tokens at the masked position. We
+        <em>softmax</em> those into probabilities. The bars above show the probability; the
+        <code>logit</code> beside each is the actual number the network produced. The
+        <b id="entVal">–</b> below is the entropy of the top-k — low means the model is sure, high means
+        it's hedging.
+      </p>
+      <p class="hint-mask" id="entLine" hidden>top-k entropy: <b id="entVal2">–</b> bits · top-1 carries
+        <b id="massVal">–</b> of the shown mass</p>
+      <h4 style="font-family:var(--font-body);font-size:.8rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:.9rem 0 .1rem">WordPiece tokenisation — dashed = a <code>##</code> continuation of a split German word</h4>
+      <div id="tokStrip" class="tok-strip" aria-label="WordPiece token strip"></div>
+      <p class="muted" style="font-size:.82rem;margin-top:.4rem">German loves long compound nouns
+        (<em>Geschwindigkeitsbegrenzung</em>, <em>Krankenversicherung</em>). Watch a German-only vocabulary
+        break them into a handful of German subwords instead of spelling them out letter by letter.</p>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        A model trained only on German reads German the way a multilingual model can't afford to — every
+        token in its vocabulary is a German subword, so umlauts, the ß, capitalised nouns and famously long
+        compound words come out cleaner. Because it scores <em>every</em> word in context, you can ask it
+        what fits, how strongly, and compare alternatives — all locally, with no prompt engineering and no
+        API bill.
+      </p>
+      <ul>
+        <li><strong>German autocomplete</strong> — suggest the next or missing word in a compose box, offline, with German-native suggestions.</li>
+        <li><strong>Cloze &amp; language drills</strong> — generate fill-in-the-blank German exercises with graded difficulty from the entropy.</li>
+        <li><strong>Register &amp; word-choice checks</strong> — compare candidate words at a slot (formal vs colloquial, Sie vs du) using the logits.</li>
+        <li><strong>Compound-word insight</strong> — see how German words decompose, useful for spell-assist, hyphenation, and learner tools.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">One German mask, ranked predictions with probabilities and the raw logits behind them.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">A German writing aid — word-by-word completion and formal-vs-colloquial register comparison.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">German compound words &amp; idioms — does it know "die Katze im [MASK] kaufen"?</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">German-native vs multilingual — run the same mask through both models and measure where they disagree.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>The one-liner uses the <code>fill-mask</code> pipeline:</p>
+      <pre><code>import { pipeline } from "@huggingface/transformers";
+
+const unmask = await pipeline("fill-mask", "onnx-community/distilbert-base-german-cased-ONNX");
+const out = await unmask("Die Hauptstadt von Deutschland ist [MASK].");
+// → [{ token_str: "Berlin", score: 0.61, sequence: "…" }, { token_str: "Deutschland", … }]</code></pre>
+      <p class="muted">
+        For the "see inside" surface we go one level lower — <code>AutoModelForMaskedLM</code> — so we can
+        read the exact <code>logits</code> tensor (<code>[1, sequence, 31102]</code>), slice the row at the
+        <code>[MASK]</code> position, and softmax it ourselves. That's the only way to show the real logit
+        values, not just the pipeline's rounded scores. All of it runs in a Web Worker so the page never
+        janks.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/onnx-community/distilbert-base-german-cased-ONNX" target="_blank" rel="noopener">Model card — distilbert-base-german-cased (onnx-community ONNX)</a></li>
+        <li><a href="https://huggingface.co/distilbert/distilbert-base-german-cased" target="_blank" rel="noopener">Original model card — distilbert-base-german-cased</a></li>
+        <li><a href="https://arxiv.org/abs/1910.01108" target="_blank" rel="noopener">Paper — DistilBERT, a distilled version of BERT (Sanh et al., 2019, arXiv:1910.01108)</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { GermanFillMaskEngine, MbertFillMaskEngine, GERMAN_CSS, MASK, renderPredictions, renderTokenStrip, topkEntropy, debounce, escapeHTML }
+        from "./fillmask.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = GERMAN_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new GermanFillMaskEngine();
+      let loaded = false;
+
+      for (const c of document.querySelectorAll("#chips .mask-chip")) {
+        c.addEventListener("click", () => { $("text").value = c.dataset.set; schedule(); });
+      }
+      $("topk").addEventListener("input", () => { $("topkVal").textContent = $("topk").value; schedule(); });
+      $("insertMask").addEventListener("click", () => {
+        const el = $("text");
+        const s = el.selectionStart ?? el.value.length;
+        el.value = el.value.slice(0, s) + " " + MASK + " " + el.value.slice(el.selectionEnd ?? s);
+        el.focus();
+        schedule();
+      });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: {
+          modelId: "onnx-community/distilbert-base-german-cased-ONNX",
+          runtime: "transformers.js",
+          dtype: "q8",
+          sizeMB: 92,
+          requiresWebGPU: false,
+        },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => {
+          $("text").disabled = false;
+          $("insertMask").disabled = false;
+          $("topk").disabled = false;
+          loaded = true;
+          run();
+        },
+      });
+
+      const schedule = debounce(run, 350);
+      $("text").addEventListener("input", schedule);
+
+      async function run() {
+        if (!loaded) return;
+        const text = $("text").value;
+        if (!text.includes(MASK)) {
+          $("runStatus").hidden = false;
+          $("runStatus").classList.remove("err");
+          $("runStatus").textContent = "Add a [MASK] token to your sentence.";
+          $("preds").replaceChildren(); $("filled").hidden = true; $("readout").hidden = true;
+          $("entLine").hidden = true; $("tokStrip").replaceChildren();
+          return;
+        }
+        $("runStatus").hidden = true;
+        try {
+          const r = await engine.fill(text, Number($("topk").value));
+          renderResult(r);
+          if (mlReady) runCompare();
+        } catch (err) {
+          $("runStatus").hidden = false;
+          $("runStatus").textContent = "Prediction failed: " + err.message;
+          $("runStatus").classList.add("err");
+        }
+      }
+
+      function renderResult(r) {
+        $("preds").replaceChildren();
+        let filledHTML = escapeHTML(r.text);
+        for (const m of r.masks) {
+          const top = m.predictions[0];
+          filledHTML = filledHTML.replace(escapeHTML(MASK), `<span class="slot">${escapeHTML(top.token)}</span>`);
+        }
+        $("filled").innerHTML = filledHTML;
+        $("filled").hidden = false;
+
+        r.masks.forEach((m, i) => {
+          const head = document.createElement("p");
+          head.className = "pred-head";
+          head.textContent = r.masks.length > 1 ? `Mask ${i + 1}` : "Predictions";
+          const list = document.createElement("div");
+          list.className = "pred-list";
+          renderPredictions(list, m.predictions, (token) => {
+            $("text").value = $("text").value.replace(MASK, token);
+            schedule();
+          });
+          $("preds").append(head, list);
+        });
+
+        const first = r.masks[0].predictions;
+        const ent = topkEntropy(first);
+        const mass = first.reduce((a, p) => a + p.prob, 0);
+        $("entVal").textContent = ent.toFixed(2) + " bits";
+        $("entVal2").textContent = ent.toFixed(2);
+        $("massVal").textContent = (first[0].prob / mass * 100).toFixed(0) + "%";
+        $("entLine").hidden = false;
+        renderTokenStrip($("tokStrip"), r.tokens || []);
+        $("readout").hidden = false;
+        $("rBackend").textContent = r.device.toUpperCase();
+        $("rMs").textContent = r.ms + " ms";
+        $("rMasks").textContent = r.maskCount;
+      }
+
+      // --- German-native vs multilingual comparison (mBERT loaded on demand) ---
+      const mbert = new MbertFillMaskEngine();
+      let mlReady = false;
+      createModelLoader({
+        mount: $("vs-loader"),
+        model: {
+          modelId: "Xenova/bert-base-multilingual-cased",
+          runtime: "transformers.js",
+          dtype: "q8",
+          sizeMB: 180,
+          requiresWebGPU: false,
+        },
+        load: async (onProgress) => { await mbert.load(onProgress); return mbert; },
+        onReady: () => { mlReady = true; runCompare(); },
+      });
+
+      async function runCompare() {
+        if (!loaded || !mlReady) return;
+        const text = $("text").value;
+        if (!text.includes(MASK)) { $("vsGrid").hidden = true; return; }
+        $("vsStatus").hidden = false; $("vsStatus").classList.remove("err");
+        $("vsStatus").textContent = "Comparing both models on this sentence…";
+        try {
+          const [de, ml] = await Promise.all([engine.fill(text, 6), mbert.fill(text, 6)]);
+          $("vsStatus").hidden = true; $("vsGrid").hidden = false;
+          renderPredictions($("vsDe"), de.masks[0].predictions, null);
+          renderPredictions($("vsMl"), ml.masks[0].predictions, null);
+        } catch (err) {
+          $("vsStatus").hidden = false; $("vsStatus").classList.add("err");
+          $("vsStatus").textContent = "Comparison failed: " + err.message;
+        }
+      }
+    </script>
+  </body>
+</html>
