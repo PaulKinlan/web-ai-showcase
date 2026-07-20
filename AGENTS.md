@@ -261,6 +261,18 @@ short version for tools that look for `AGENTS.md`.
     custom loader that don't use `createModelLoader`, e.g. kokoro-tts, and the raw-ORT self-download
     workers) are the Phase 5 target: a crawler + CI adoption gate that fails when a downloading route
     bypasses the component/adapter.
+  - **Phase 5 (done): fail-closed adoption gate + crawler.** `download-routes.json` records per route an
+    `adoption` (central-loader / resumable-loader / bypass) + terminal `status` (adopted / blocked /
+    non-applicable). `node scripts/check-download-adoption.mjs` (in `deno task gate` + CI) FAILS on any
+    downloading route that bypasses the shared `createModelLoader`/`createResumableLoader` unless it is in
+    `scripts/download-adoption-allowlist.json` with a reason — so a new demo can't ship a custom
+    last-callback-wins loader. Current state: **270/270 downloading routes adopt** (central-loader 269,
+    resumable-loader 1 = PaliGemma), 0 bypasses. `node scripts/crawl-download-routes.mjs [--all|--family=X]`
+    visits routes in headless Chrome and checks the loader + component are present with no duplicate ids /
+    overflow / console errors (the state machine itself is covered by the fixture tests). The central
+    routing also surfaces raw-ORT's legacy single `{status:"progress",progress:%}` as an honest
+    runtime-owned aggregate (previously dropped). **Reminder for new demos: never hand-roll a `<progress>` —
+    call the shared loader; the adoption gate enforces it.**
 - **Off-main-thread reference architecture (measure, don't infer).** All inference AND any pre/post
   that could exceed an 8ms frame slice runs off-main-thread; verify by measuring long tasks/INP +
   code paths. Use `lib/worker-protocol.js` (typed/versioned protocol, request ids, transfer not

@@ -77,6 +77,12 @@ const DRIVER = `
     (e)=>{ e({status:"initiate",file:"blaze_face_short_range.tflite"}); },
     (e)=>{ e({status:"ready"}); });
 
+  // raw-ORT self-download: legacy single overall PERCENT {status:"progress", progress:0..100} → honest
+  // runtime-owned aggregate (the old last-callback-wins percentage, surfaced calmly — not dropped).
+  report.rawort = await run("transformers.js",
+    (e)=>{ e({status:"progress",progress:0}); e({status:"progress",progress:45}); },
+    (e)=>{ e({status:"progress",progress:100}); });
+
   return report;
 })()
 `;
@@ -129,6 +135,17 @@ try {
     JSON.stringify(r.mediapipe.after),
   );
   rec("MediaPipe: Clear cached model offered after ready", r.mediapipe.after.clearBtn);
+
+  // raw-ORT legacy percentage
+  rec(
+    "raw-ORT: legacy {status:progress,progress:%} → runtime-owned aggregate (~45%, not dropped)",
+    r.rawort.during.runtimeOwned === true && /45%/.test(r.rawort.during.agg),
+    `runtimeOwned=${r.rawort.during.runtimeOwned} agg=${r.rawort.during.agg.slice(0, 40)}`,
+  );
+  rec(
+    "raw-ORT: reaches ready + Clear",
+    r.rawort.after.phase === "ready" && r.rawort.after.clearBtn,
+  );
 
   rec(
     "no console errors across all three families",

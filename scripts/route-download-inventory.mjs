@@ -121,6 +121,13 @@ for (const slug of readdirSync(MODELS).sort()) {
     }
   }
 
+  // Does the route ADOPT the shared, component-rendering loader? createModelLoader (lib/model-loader.js)
+  // and createResumableLoader (lib/resumable-loader.mjs, PaliGemma) both render <model-download-status>
+  // and route progress through the adapters (Phase 3/4). Calling one of them IS the adoption.
+  const usesResumable = /createResumableLoader\s*\(|resumable-loader/.test(text);
+  const usesCentral = /createModelLoader\s*\(/.test(text);
+  const adoption = usesResumable ? "resumable-loader" : (usesCentral ? "central-loader" : "bypass");
+
   // does it download at all? a route with NO loader signal AND no worker is non-applicable.
   const hasWorker = existsSync(join(dir, "worker.js"));
   let byteControl, resume, note, status;
@@ -145,7 +152,9 @@ for (const slug of readdirSync(MODELS).sort()) {
       note =
         "page fetches the .onnx via lib/model-download.js (Range/206/sha256) — genuinely resumable";
     }
-    status = "pending-adoption"; // no route is 'adopted' until the component ships (Phase 3+)
+    // Terminal adoption status: adopted (routes progress through the shared component-rendering loader) vs
+    // blocked (downloads but bypasses it with a custom loader — a coverage gap the adoption gate fails on).
+    status = adoption === "bypass" ? "blocked" : "adopted";
   }
 
   routes.push({
@@ -156,6 +165,7 @@ for (const slug of readdirSync(MODELS).sort()) {
     resume,
     multiModel,
     hasWorker,
+    adoption,
     status,
     note,
   });
@@ -182,6 +192,7 @@ const inventory = {
     downloadingRoutes: routes.filter((r) => r.status !== "non-applicable").length,
     byFamily: tally("family"),
     byResume: tally("resume"),
+    byAdoption: tally("adoption"),
     byByteControl: tally("byteControl"),
     byStatus: tally("status"),
     multiModel: routes.filter((r) => r.multiModel).length,

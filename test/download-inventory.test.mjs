@@ -95,3 +95,43 @@ test("the fail-closed inventory gate passes on the current tree", () => {
   });
   assert.ok(true);
 });
+
+test("every route has a valid adoption field consistent with its status", () => {
+  const ADOPT = new Set(["central-loader", "resumable-loader", "bypass"]);
+  for (const r of inv.routes) {
+    assert.ok(ADOPT.has(r.adoption), `${r.slug} adoption=${r.adoption}`);
+    if (r.status === "adopted") {
+      assert.notEqual(r.adoption, "bypass", `${r.slug} adopted but bypass`);
+    }
+    if (r.status === "blocked") {
+      assert.equal(r.adoption, "bypass", `${r.slug} blocked but adoption=${r.adoption}`);
+    }
+    if (r.status === "non-applicable") continue;
+  }
+});
+
+test("no downloading route bypasses the shared component-rendering loader (adoption gate)", () => {
+  const bypasses = inv.routes.filter((r) =>
+    r.status !== "non-applicable" && r.adoption === "bypass"
+  );
+  // any bypass must be in the allowlist
+  let allow = [];
+  try {
+    allow = JSON.parse(readFileSync("scripts/download-adoption-allowlist.json", "utf8"));
+  } catch {}
+  const allowed = new Set(allow.map((a) => a.slug));
+  const unlisted = bypasses.filter((r) => !allowed.has(r.slug));
+  assert.deepEqual(
+    unlisted.map((r) => r.slug),
+    [],
+    `un-allowlisted bypasses: ${unlisted.map((r) => r.slug).join(", ")}`,
+  );
+});
+
+test("the fail-closed download-adoption gate passes on the current tree", () => {
+  execSync("node scripts/check-download-adoption.mjs", {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  assert.ok(true);
+});

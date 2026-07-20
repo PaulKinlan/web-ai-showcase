@@ -108,7 +108,7 @@ try {
   for (const r of committed.routes) {
     const f = freshBySlug.get(r.slug);
     if (!f) continue; // covered by the orphan check
-    for (const k of ["family", "byteControl", "resume", "multiModel", "status"]) {
+    for (const k of ["family", "byteControl", "resume", "multiModel", "adoption", "status"]) {
       if (String(r[k]) !== String(f[k])) {
         problems.push(
           `STALE CLASSIFICATION: ${r.slug}.${k} committed='${
