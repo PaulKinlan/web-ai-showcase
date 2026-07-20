@@ -250,8 +250,17 @@ short version for tools that look for `AGENTS.md`.
     `CustomEvent("mds-action",{detail:{action}})` (`download`/`pause`/`resume`/`discard`/`retry`/`clear`).
     Deliberate **light DOM** (documented in the file) for shared-style/theme reuse + testability; declarative
     fallback (no blank UI pre-upgrade); multi-instance safe; disconnect suppresses stale snapshots. Adopted
-    on all 5 PaliGemma routes via `lib/resumable-loader.mjs` (0 console errors). Next: central adoption via
-    `createModelLoader` for the other families (using `lib/download-adapters.mjs`) → crawler + CI adoption gate.
+    on all 5 PaliGemma routes via `lib/resumable-loader.mjs` (0 console errors).
+  - **Phase 4 (done): central adoption via `createModelLoader`.** The shared loader (`lib/model-loader.js`
+    — the single point ~250 demos already use) now routes each family's raw `onProgress` through the
+    adapters → `download-tracker` → `<model-download-status>` (shape-discriminated: `{status,…}` = TJS /
+    MediaPipe file vocabulary; `{progress:0..1}` = WebLLM fraction), replacing the old last-callback-wins
+    single `<progress>`. **Automatic initialization is preserved** (inspect cache → auto-init a current
+    on-device copy; Download only when absent; Update/Re-download/Clear/Retry unchanged); one live region
+    at a time. No per-demo edit needed — using the shared loader IS the adoption. Bypasses (demos with a
+    custom loader that don't use `createModelLoader`, e.g. kokoro-tts, and the raw-ORT self-download
+    workers) are the Phase 5 target: a crawler + CI adoption gate that fails when a downloading route
+    bypasses the component/adapter.
 - **Off-main-thread reference architecture (measure, don't infer).** All inference AND any pre/post
   that could exceed an 8ms frame slice runs off-main-thread; verify by measuring long tasks/INP +
   code paths. Use `lib/worker-protocol.js` (typed/versioned protocol, request ids, transfer not
