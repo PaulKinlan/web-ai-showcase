@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Music source separation — split a song into stems in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Split a song into four stems — vocals, drums, bass and other — with Demucs running entirely in your browser. Mute the vocals for instant karaoke, solo the vocals for an acapella, and download each stem. Nothing leaves the tab."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='13'>🎛️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">audio-to-audio · music → stems · WASM · ~303 MB</p>
+      <h1>Music source separation — split a song into stems</h1>
+      <p class="lede">
+        Upload a song and <strong>Demucs</strong> pulls it apart into four <strong>stems</strong> — vocals,
+        drums, bass and everything else — right on your device. Mute the vocals for instant
+        <strong>karaoke</strong>, solo them for an <strong>acapella</strong>, mix and match, and download each
+        stem. The audio never leaves the tab.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/MrCitron/demucs-v4-onnx" target="_blank" rel="noopener">MrCitron/demucs-v4-onnx</a> — Hybrid Transformer Demucs (htdemucs)</td></tr>
+          <tr><th>Task</th><td>audio source separation (audio-to-audio)</td></tr>
+          <tr><th>Stems</th><td>4: drums, bass, other, vocals</td></tr>
+          <tr><th>Input</th><td>44.1 kHz stereo; the first ~7.8 s segment is separated per run</td></tr>
+          <tr><th>Architecture</th><td>Hybrid Transformer Demucs (waveform + spectrogram branches; STFT inside the graph)</td></tr>
+          <tr><th>Quantization</th><td>fp32 ONNX (run directly via onnxruntime-web)</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (runs anywhere; no WebGPU needed)</td></tr>
+          <tr><th>Download</th><td>~303 MB, cached after first load</td></tr>
+          <tr><th>License</th><td>cc-by-nc-4.0</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Drop or choose an audio file (or try the sample). The first ~7.8 seconds are separated
+        into four stems in about ten seconds; then mix, mute and download them.</p>
+
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <div class="ms-drop" id="drop">
+        <p class="ms-hint" style="margin:.2rem 0 .5rem">Drop a song, or:</p>
+        <div class="ms-tools">
+          <button class="ms-btn" id="pickBtn" type="button" disabled>Choose audio</button>
+          <button class="ms-btn" id="sampleBtn" type="button" disabled>Try the sample</button>
+          <input type="file" id="file" accept="audio/*" hidden />
+        </div>
+        <p class="ms-hint">Sample = a spoken-word voice over a beat (public-domain speech + a synth backing).</p>
+      </div>
+
+      <div id="result" hidden>
+        <div class="ms-transport">
+          <button class="ms-btn primary" id="playBtn" type="button">▶ Play</button>
+          <button class="ms-btn" id="stopBtn" type="button">■ Stop</button>
+          <span class="ms-preset">
+            <button class="ms-btn" id="presetFull" type="button">Full mix</button>
+            <button class="ms-btn" id="presetKaraoke" type="button">Karaoke (no vocals)</button>
+            <button class="ms-btn" id="presetAcapella" type="button">Acapella</button>
+          </span>
+        </div>
+        <div class="ms-stems" id="stems"></div>
+        <div class="readout" id="readout" hidden>
+          <span>backend <b id="rBackend">–</b></span>
+          <span>separated <b id="rMs">–</b></span>
+          <span>segment <b id="rDur">–</b></span>
+        </div>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        Source separation is the magic behind karaoke tracks, remixes and sample-flipping. Doing it in the
+        browser means you can pull the vocals out of a track — or isolate the drums — without uploading your
+        music to anyone's server.
+      </p>
+      <ul>
+        <li><strong>Instant karaoke</strong> — mute the vocals stem and sing along to the backing.</li>
+        <li><strong>Acapellas &amp; remixing</strong> — solo the vocals, or grab just the drum stem for a sample.</li>
+        <li><strong>Practice &amp; transcription</strong> — isolate the bass or the "other" (keys/guitar) to learn a part.</li>
+        <li><strong>Music education &amp; accessibility</strong> — hear one instrument at a time from any recording.</li>
+      </ul>
+      <p class="muted">
+        It separates the first ~7.8-second segment per run (Demucs works on fixed-length windows; a full song
+        would be many segments). The vocals stem is trained on <em>sung</em> vocals, so in the built-in sample
+        the spoken voice lands mostly in "other" — <strong>upload a song with singing to hear the vocals
+        isolated</strong>. Quality on WASM matches the model; it's just slower than on a GPU.
+      </p>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>htdemucs takes a stereo waveform segment and returns four stems — the STFT lives inside the graph:</p>
+      <pre><code>// onnxruntime-web, fp32
+const input = new ort.Tensor("float32", stereo, [1, 2, 343980]); // 7.8 s @ 44.1 kHz
+const { output } = await session.run({ input });
+// output: [1, 4, 2, 343980] → [drums, bass, other, vocals]</code></pre>
+      <p class="muted">
+        We feed raw waveform and get waveform stems back (no manual spectrograms), decode/resample the file to
+        44.1 kHz stereo in the browser, and run the model in a Web Worker so the page stays responsive during
+        the ~10 s separation.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/MrCitron/demucs-v4-onnx" target="_blank" rel="noopener">Model — demucs-v4-onnx (htdemucs, cc-by-nc-4.0)</a></li>
+        <li><a href="https://github.com/facebookresearch/demucs" target="_blank" rel="noopener">Demucs — project &amp; papers (Défossez et al.)</a></li>
+        <li><a href="https://arxiv.org/abs/2211.08553" target="_blank" rel="noopener">Paper — Hybrid Transformers for Music Source Separation (2022)</a></li>
+        <li><a href="https://onnxruntime.ai/docs/tutorials/web/" target="_blank" rel="noopener">onnxruntime-web documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://onnxruntime.ai/docs/tutorials/web/" target="_blank" rel="noopener">onnxruntime-web</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import {
+        SepEngine, SEP_CSS, STEMS, STEM_META, SR,
+        decodeToSegment, makeSampleMix, StemPlayer, encodeWav, drawWaveform,
+      } from "./sep.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = SEP_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new SepEngine();
+      const player = new StemPlayer();
+      let ready = false;
+      let lastStems = null;
+
+      function setStatus(msg, err) {
+        $("runStatus").hidden = !msg;
+        $("runStatus").textContent = msg || "";
+        $("runStatus").classList.toggle("err", !!err);
+      }
+      const prettyName = (n) => n === "other" ? "Other (keys/guitar)" : n.charAt(0).toUpperCase() + n.slice(1);
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: {
+          modelId: "MrCitron/demucs-v4-onnx",
+          runtime: "onnxruntime-web",
+          dtype: "fp32",
+          sizeMB: 303,
+          requiresWebGPU: false,
+        },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { ready = true; $("pickBtn").disabled = false; $("sampleBtn").disabled = false; },
+      });
+
+      function renderStems(stems, len) {
+        lastStems = stems;
+        player.setStems(stems, len);
+        $("stems").replaceChildren(...stems.map((s) => {
+          const row = document.createElement("div");
+          row.className = "ms-stem";
+          row.dataset.name = s.name;
+          const cb = document.createElement("input");
+          cb.type = "checkbox";
+          cb.checked = true;
+          cb.setAttribute("aria-label", "Include " + prettyName(s.name) + " in playback");
+          cb.addEventListener("change", () => { row.classList.toggle("off", !cb.checked); });
+          const name = document.createElement("span");
+          name.className = "ms-name";
+          name.innerHTML = `<span class="em" aria-hidden="true">${STEM_META[s.name].emoji}</span>${prettyName(s.name)}`;
+          const cvs = document.createElement("canvas");
+          cvs.className = "ms-wave";
+          const dl = document.createElement("a");
+          dl.className = "ms-dl";
+          dl.textContent = "Download";
+          dl.href = URL.createObjectURL(encodeWav(s.l, s.r, SR));
+          dl.download = s.name + ".wav";
+          row.append(cb, name, cvs, dl);
+          $("stems").append(row);
+          drawWaveform(cvs, s.l);
+          return row;
+        }));
+        $("result").hidden = false;
+      }
+      function enabledStems() {
+        return [...$("stems").querySelectorAll(".ms-stem")]
+          .filter((r) => r.querySelector("input").checked).map((r) => r.dataset.name);
+      }
+      function setPreset(names) {
+        for (const r of $("stems").querySelectorAll(".ms-stem")) {
+          const on = names.includes(r.dataset.name);
+          r.querySelector("input").checked = on;
+          r.classList.toggle("off", !on);
+        }
+      }
+
+      async function separate(seg, label) {
+        if (!ready) return;
+        setStatus(`Separating ${label} — this takes about ten seconds…`);
+        $("result").hidden = true;
+        player.stop();
+        try {
+          const r = await engine.separate(seg);
+          renderStems(r.stems, r.len);
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = (r.ms / 1000).toFixed(1) + " s";
+          $("rDur").textContent = (r.len / SR).toFixed(1) + " s";
+          setStatus("");
+        } catch (err) {
+          setStatus("Separation failed: " + err.message, true);
+        }
+      }
+
+      $("sampleBtn").addEventListener("click", async () => {
+        try { await separate(await makeSampleMix(), "the sample"); }
+        catch (err) { setStatus("Could not build sample: " + err.message, true); }
+      });
+      $("pickBtn").addEventListener("click", () => $("file").click());
+      $("file").addEventListener("change", async () => {
+        const f = $("file").files[0];
+        if (!f) return;
+        try { await separate(await decodeToSegment(await f.arrayBuffer()), f.name); }
+        catch (err) { setStatus("Could not decode audio: " + err.message, true); }
+      });
+      // drag & drop
+      const drop = $("drop");
+      for (const ev of ["dragenter", "dragover"]) {
+        drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); });
+      }
+      for (const ev of ["dragleave", "drop"]) {
+        drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); });
+      }
+      drop.addEventListener("drop", async (e) => {
+        if (!ready) return;
+        const f = e.dataTransfer.files[0];
+        if (f && f.type.startsWith("audio")) {
+          try { await separate(await decodeToSegment(await f.arrayBuffer()), f.name); }
+          catch (err) { setStatus("Could not decode audio: " + err.message, true); }
+        } else setStatus("Please drop an audio file.", true);
+      });
+      // transport
+      $("playBtn").addEventListener("click", () => { if (lastStems) player.play(enabledStems()); });
+      $("stopBtn").addEventListener("click", () => player.stop());
+      $("presetFull").addEventListener("click", () => setPreset(STEMS));
+      $("presetKaraoke").addEventListener("click", () => setPreset(["drums", "bass", "other"]));
+      $("presetAcapella").addEventListener("click", () => setPreset(["vocals"]));
+    </script>
+  </body>
+</html>
