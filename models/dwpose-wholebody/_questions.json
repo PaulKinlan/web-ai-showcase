@@ -1,0 +1,113 @@
+{
+  "schemaVersion": 1,
+  "id": "dwpose-wholebody",
+  "revision": 1,
+  "reviewedAt": "2026-07-21T00:00:00Z",
+  "reviewer": "solo new-family build 2026-07-21 — DWPose runnability + correctness proven FIRST in headless Chrome (decoded keypoints anatomically ordered nose->shoulders->hips->ankles, 130/133 confident on a real runner crop), then the deployed page driven end-to-end (four runner crops each estimated to a 133-keypoint skeleton; toggling face off removes the 68 face landmarks). Person crops are taken client-side from the ledgered media/assets/people-marathon.jpg.",
+  "frontend": true,
+  "rubric": [
+    {
+      "dimension": "real-inference",
+      "score": 5,
+      "severity": "info",
+      "evidence": "RUNNABILITY + CORRECTNESS verified in headless Chrome (onnxruntime-web 1.21.0, WASM EP, no GPU) BEFORE building. dw-ll_ucoco_384 (fp32, ~134 MB) decodes SimCC to 133 keypoints; on a ledgered runner crop the keypoints are anatomically ordered top-to-bottom (nose y~21, shoulders y~53, hips y~155, ankles y~340 in the 384-tall input) with 130/133 above 0.3 confidence. Deployed page (scripts/validate-dwpose.mjs 8/8): four runner crops estimated to 133 keypoints each (confident counts 130,130,87,133), skeletons drawn from the model's own coordinates.",
+      "notes": "Inference runs off the main thread in a module Worker. RTMPose-l is a large single-thread WASM model (~134 MB), so it's a few seconds per person — bounded by processing a small gallery, with per-person progress."
+    },
+    {
+      "dimension": "io-shape",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Top-down person crop [1,3,384,288] f32 (ImageNet-normalized, W/H 0.75) -> SimCC heads simcc_x [1,133,576] + simcc_y [1,133,768] (per-axis 1-D coordinate classification, split ratio 2), argmax-decoded to 133 (x,y). A DISTINCT capability: 133 WHOLE-BODY keypoints (17 body + 6 feet + 68 face + 42 hands) in one pass, vs the built 17-keypoint COCO body pose.",
+      "notes": "The face (68) and hand (21x2) point groups are exactly what separates this from body-only pose, so the demo toggles them."
+    },
+    {
+      "dimension": "runtime-config",
+      "score": 5,
+      "severity": "info",
+      "evidence": "At-a-glance declares the model (DWPose dw-ll_ucoco_384, linked to IDEA-Research/DWPose + mmpose), task (whole-body-pose), runtime (onnxruntime-web 1.21 — noting transformers.js has no RTMPose/DWPose class), the real I/O shapes, keypoint breakdown, quantisation (fp32), download (~134 MB) and license (Apache-2.0, mmpose). No invented API.",
+      "notes": "onnxruntime-web is pinned in THIS worker only (isolated per-worker escape hatch, like raft/reid/face-iqa/basic-pitch); shared libs untouched."
+    },
+    {
+      "dimension": "cache-init",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Loads through the shared createModelLoader auto-init architecture (model {modelId:'yzd-v/DWPose', runtime:'onnxruntime-web', dtype:'fp32', sizeMB:134}). Weights are fetched THROUGH Cache Storage under a key carrying the model-id path (huggingface.co/yzd-v/DWPose/resolve/main/dw-ll_ucoco_384.onnx) so lib/model-cache.js scans '/yzd-v/DWPose' -> a returning visit auto-initialises with NO Download click; first visit shows an explicit Download (~134 MB). Verified: fresh profile showed Download, clicking it flipped to ready and estimated the gallery.",
+      "notes": "134 MB is a real download, so the never-silently-download guarantee matters here; auto-init on return + a per-model clear-cache control both hold via the shared loader."
+    },
+    {
+      "dimension": "states",
+      "score": 4,
+      "severity": "minor",
+      "evidence": "checking -> Download (absent) -> ready (estimates the four runner crops sequentially with per-person status) -> live redraw on the face/hands/confidence controls (no re-inference); error path via the shared loader + per-run try/catch. Verified download -> ready -> four skeletons -> toggle sequence end-to-end.",
+      "notes": "PENDING (recorded): a person-detector stage so arbitrary photos (not pre-boxed) work, a webcam path, and a basics/practical/wild subpage ladder."
+    },
+    {
+      "dimension": "controls",
+      "score": 4,
+      "severity": "info",
+      "evidence": "Face (68) and Hands (42) toggles plus a min-confidence range slider; all redraw the stored keypoints instantly. The gallery is read-only skeleton canvases with a confident-count caption per runner.",
+      "notes": "The toggles are the teaching control — they make the whole-body-vs-body-only difference visible. An upload / webcam path is a recorded follow-up."
+    },
+    {
+      "dimension": "no-fake-output",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Every point drawn is the model's decoded keypoint at its real confidence; the min-confidence slider filters on the model's own scores, and the per-runner 'N/133' caption reports how many cleared the bar (including the honest 87/133 on a crowded, partly-occluded crop). No canned skeletons; crops come from a ledgered licensed photo, taken client-side (no new committed images).",
+      "notes": "Honest about limits: it's top-down (needs a person box — here pre-boxed), and crowded/occluded crops legitimately drop some keypoints."
+    },
+    {
+      "dimension": "accessibility",
+      "score": 4,
+      "severity": "info",
+      "evidence": "Status is role=status aria-live=polite; each skeleton canvas sits in a figure with a text caption (label + confident-count); controls are native checkboxes + a labelled range with a live value; a colour legend names each keypoint group.",
+      "notes": "The skeleton is inherently visual; the per-runner confident-count caption + legend give a non-visual read of what was detected."
+    },
+    {
+      "dimension": "responsive",
+      "score": 4,
+      "severity": "info",
+      "evidence": "The gallery is flex-wrap; skeleton canvases are fixed small (150x200) thumbnails that wrap; controls + legend wrap. Verified 0 horizontal overflow at desktop AND mobile 360px (validate-dwpose.mjs), 0 console errors.",
+      "notes": "Index verified desktop+mobile; subpage ladder + a larger matrix are recorded follow-ups."
+    },
+    {
+      "dimension": "performance",
+      "score": 4,
+      "severity": "minor",
+      "evidence": "All inference runs in a dedicated module Worker; RTMPose-l is heavy for single-thread WASM (a few seconds per person) so the gallery estimates sequentially with per-person progress, and control changes only redraw the stored keypoints (no re-inference). Keypoint arrays are small and posted plainly.",
+      "notes": "The ~134 MB download + heavy WASM inference are the cost of whole-body accuracy; a smaller RTMPose-m/s wholebody export (if a clearly-licensed ONNX surfaces) would speed this up — recorded as a follow-up."
+    }
+  ],
+  "guidanceConsulted": [
+    {
+      "query": "run a large ONNX pose model off the main thread; keep the UI responsive while estimating a gallery",
+      "id": "performance",
+      "recommendation": "Move inference off the main thread; keep interactions responsive (INP); don't block the UI on heavy model work.",
+      "appliedOrException": "applied — estimation runs in a module Worker, the gallery is processed sequentially with per-person progress, and face/hands/confidence changes redraw stored keypoints instead of re-running the model.",
+      "evidence": "page responsive during estimation; controls update instantly with no re-inference"
+    },
+    {
+      "query": "responsive thumbnail gallery + control row that wraps without horizontal overflow",
+      "id": "css-layout",
+      "recommendation": "Prefer flex-wrap + intrinsic sizing over fixed page widths; let control rows and galleries wrap.",
+      "appliedOrException": "applied — .dw-gallery + .dw-controls + .dw-legend are flex-wrap; skeleton canvases are small fixed thumbnails.",
+      "evidence": "0 horizontal overflow at desktop + mobile 360px"
+    },
+    {
+      "query": "announce a changing estimation status via aria-live; label canvas content and toggle controls",
+      "id": "html",
+      "recommendation": "Announce progress/results via role=status aria-live; label canvas figures; use native, labelled controls.",
+      "appliedOrException": "applied — status is role=status aria-live=polite; each canvas has a figcaption; toggles are native checkboxes and the slider has a live value + legend.",
+      "evidence": "status announces per-person progress and the final count; legend names each keypoint group"
+    }
+  ],
+  "openQuestions": [
+    "Is a smaller RTMPose-m/s whole-body ONNX available under a clear license, to cut the ~134 MB download and the per-person WASM latency?",
+    "Would chaining a lightweight person detector (so arbitrary photos work) be better done as a second model here, or by reusing the built detection demos' outputs?"
+  ],
+  "followUpGoals": [
+    "Chain a person detector so arbitrary uploads / webcam frames (not pre-boxed crops) can be posed.",
+    "Add a webcam path for live whole-body capture (body + hands + face together).",
+    "Build a basics/practical/wild subpage ladder (single clean pose; occluded/crowded; extreme poses / dance where hands+face matter most)."
+  ],
+  "summary": "Whole-body pose estimation (DWPose) — a genuinely richer vision family (133 keypoints: body + feet + 68 face + 42 hands in one pass), distinct from the built 17-keypoint body pose, proven correct in the browser on ORT-web WASM (anatomically-ordered keypoints, 130/133 confident on a real crop). ~134 MB, a few seconds/person. Index demo complete + verified 8/8; a person-detector chain + webcam + subpage ladder are recorded follow-ups."
+}
