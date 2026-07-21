@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Grapheme-to-phoneme — spelling to sound (IPA) in the browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run CharsiuG2P (multilingual byT5) locally via transformers.js: turn spelling into IPA phonemes — how a word is pronounced — across many languages and scripts. On-device, nothing uploaded."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='13'>🔤</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">grapheme-to-phoneme · text · WASM · ~84 MB</p>
+      <h1>Grapheme-to-phoneme (spelling → sound)</h1>
+      <p class="lede">
+        The built text models read and rewrite <em>words</em>. This one predicts how a word is
+        <strong>pronounced</strong> — turning spelling into <strong>IPA phonemes</strong>, the front-end step
+        every text-to-speech system needs. It's <strong>CharsiuG2P</strong>, a multilingual byT5 that works on
+        raw bytes, so it phonemizes any script — Latin, Cyrillic, kana, Greek. Type a word, pick a language,
+        and see its sounds. Runs entirely on your device.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://github.com/lingjzhu/CharsiuG2P" target="_blank" rel="noopener">CharsiuG2P</a> — multilingual byT5 (tiny, 16 layers, 100 languages)</td></tr>
+          <tr><th>Task / pipeline</th><td><code>text2text-generation</code> (grapheme → phoneme) — via transformers.js</td></tr>
+          <tr><th>Input</th><td>a query <code>&lt;lang-code&gt;: word</code> (e.g. <code>&lt;eng-us&gt;: hello</code>) as raw UTF-8 bytes</td></tr>
+          <tr><th>Output</th><td>the word's IPA transcription (e.g. <span class="g2p-ipa">ˈhɛɫoʊ</span>)</td></tr>
+          <tr><th>Tokenizer</th><td>byte-level (byT5): id = byte + 3, no vocabulary file — so <em>any</em> script encodes losslessly</td></tr>
+          <tr><th>Quantization</th><td>fp32 ONNX — runs on the plain WASM backend, no WebGPU needed</td></tr>
+          <tr><th>Download</th><td>~84 MB (encoder + decoder), cached after first load (auto-inits on return)</td></tr>
+          <tr><th>License</th><td>MIT (CharsiuG2P) — the weights stay MIT wherever converted to ONNX</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Phonemize</h3>
+      <div id="model-loader"></div>
+
+      <div class="g2p-row">
+        <input type="text" id="word" placeholder="Type a word or short phrase…" autocomplete="off" spellcheck="false" aria-label="Word to phonemize" />
+        <label>Language: <select id="lang" aria-label="Language"></select></label>
+      </div>
+      <div class="g2p-chips" id="chips" role="group" aria-label="Examples"></div>
+
+      <div class="g2p-out g2p-ipa" id="out" role="status" aria-live="polite"></div>
+      <div class="g2p-words" id="words"></div>
+      <p class="g2p-status" id="status"></p>
+    </section>
+
+    <section class="panel">
+      <h3>Why byte-level?</h3>
+      <p class="muted">
+        CharsiuG2P is a byT5 — it has no learned word vocabulary. Text is just UTF-8 bytes (each byte → id =
+        byte + 3), so a Cyrillic, Japanese, or Greek word is as encodable as an English one, and the model
+        can phonemize all of them. It's a <strong>small (tiny) model</strong> decoding one word at a time, so
+        the odd rare word may get a trailing artifact — the output is the model's real prediction, not a
+        dictionary lookup. Everything runs locally.
+      </p>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Model runs
+      locally via <a href="https://huggingface.co/docs/transformers.js" target="_blank" rel="noopener">transformers.js</a>.
+      Model: <a href="https://github.com/lingjzhu/CharsiuG2P" target="_blank" rel="noopener">CharsiuG2P</a> (MIT).
+      Source on <a href="https://github.com/PaulKinlan/web-ai-showcase/tree/main/models/grapheme-to-phoneme" target="_blank" rel="noopener">GitHub</a>.
+    </footer>
+
+    <script type="module">
+      import { escapeHTML, G2P_CSS, G2pEngine, LANGUAGES } from "./g2p.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style");
+      style.textContent = G2P_CSS;
+      document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+
+      const engine = new G2pEngine();
+      let ready = false, busy = false;
+
+      // language dropdown
+      $("lang").innerHTML = LANGUAGES.map((l) => `<option value="${l.code}">${l.name}</option>`).join("");
+
+      // examples: tricky spellings + non-Latin scripts
+      const EXAMPLES = [
+        ["eng-us", "colonel"],
+        ["eng-us", "thorough"],
+        ["fra", "bonjour"],
+        ["ger", "Straße"],
+        ["spa", "gracias"],
+        ["rus", "спасибо"],
+        ["gre", "ευχαριστώ"],
+        ["jpn", "ありがとう"],
+      ];
+      $("chips").innerHTML = EXAMPLES.map(([c, w], i) => `<button class="chip" type="button" data-i="${i}">${escapeHTML(w)}</button>`).join("");
+      for (const b of $("chips").querySelectorAll(".chip")) {
+        b.addEventListener("click", () => {
+          const [code, w] = EXAMPLES[+b.dataset.i];
+          $("lang").value = code;
+          $("word").value = w;
+          phonemize();
+        });
+      }
+
+      let timer = null;
+      async function phonemize() {
+        if (!ready || busy) return;
+        const text = $("word").value.trim();
+        if (!text) { $("out").textContent = ""; $("words").innerHTML = ""; $("status").textContent = ""; return; }
+        busy = true;
+        $("status").textContent = "Phonemizing…";
+        try {
+          const res = await engine.phonemize($("lang").value, text);
+          $("out").textContent = res.ipa;
+          $("words").innerHTML = res.words.length > 1
+            ? res.words.map((w) => `<span class="g2p-word"><span>${escapeHTML(w.word)}</span> → <b>${escapeHTML(w.ipa)}</b></span>`).join("")
+            : "";
+          $("status").textContent = `${res.words.length} word${res.words.length === 1 ? "" : "s"} · ${res.ms} ms`;
+        } catch (e) {
+          $("status").textContent = "Error: " + e.message;
+        } finally {
+          busy = false;
+        }
+      }
+      $("word").addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(phonemize, 450); });
+      $("lang").addEventListener("change", phonemize);
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Santyyy/g2p_multilingual_byT5_tiny_16_layers_100-onnx", runtime: "transformers.js", dtype: "fp32", sizeMB: 84, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: async () => { ready = true; $("word").value = "hello"; await phonemize(); },
+      });
+    </script>
+  </body>
+</html>
