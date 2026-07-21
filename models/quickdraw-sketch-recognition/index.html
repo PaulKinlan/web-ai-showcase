@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sketch recognition (QuickDraw) — guess my doodle in the browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run a QuickDraw sketch recognizer locally via ONNX Runtime Web: draw a doodle and a MobileViT guesses what it is, from 345 categories — the 'Quick, Draw!' game, on-device. Nothing uploaded; you draw it."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='13'>✏️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">sketch recognition · vision · WASM · ~21 MB</p>
+      <h1>Sketch recognition (QuickDraw)</h1>
+      <p class="lede">
+        The built image classifiers read <em>photos</em>. This one reads <strong>doodles</strong>. Draw
+        something in the box and a <strong>MobileViT</strong> — trained on Google's QuickDraw — guesses what
+        it is, live, from <strong>345 categories</strong>. It's the "Quick, Draw!" game running entirely on
+        your device: no photo, no upload, just your sketch. Try a cat, a house, a star, a ladder…
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/VinayHajare/quickdraw-mobilevit-small-onnx" target="_blank" rel="noopener">quickdraw-mobilevit-small</a> — MobileViT fine-tuned on QuickDraw</td></tr>
+          <tr><th>Task</th><td><code>image-classification</code> over sketches — run via raw ONNX Runtime Web (see note below)</td></tr>
+          <tr><th>Runtime</th><td>onnxruntime-web 1.21 (the pipeline can't feed its 1-channel grayscale stem)</td></tr>
+          <tr><th>Input</th><td><code>[1, 1, 28, 28]</code> float32 — a grayscale sketch, white strokes on black, tight-cropped &amp; centred</td></tr>
+          <tr><th>Output</th><td>a probability over <b>345</b> QuickDraw categories</td></tr>
+          <tr><th>Quantization</th><td>fp32 ONNX — runs on the plain WASM backend, no WebGPU needed</td></tr>
+          <tr><th>Download</th><td>~21 MB, cached after first load (auto-inits on return)</td></tr>
+          <tr><th>License</th><td>MIT (base apple/mobilevit-small)</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers, Canvas + Pointer Events — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Draw something</h3>
+      <div id="model-loader"></div>
+
+      <div class="qd-wrap">
+        <div class="qd-pad">
+          <canvas id="pad" width="280" height="280" role="img" aria-label="Drawing area — draw a doodle with the mouse or a finger"></canvas>
+          <div class="qd-tools">
+            <button class="chip" type="button" id="clear">Clear</button>
+            <span class="qd-hint">draw a cat · house · star · tree · ladder · fish…</span>
+          </div>
+        </div>
+        <div class="qd-preds">
+          <p class="qd-guess" id="guess" role="status" aria-live="polite">Draw something to start…</p>
+          <div class="qd-bars" id="bars"></div>
+          <p class="qd-status" id="status"></p>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h3>Why raw ONNX Runtime Web?</h3>
+      <p class="muted">
+        QuickDraw sketches are <strong>grayscale</strong> — one channel — so the model's first convolution
+        expects a single-channel image, which the transformers.js image pipeline (built for 3-channel photos)
+        can't feed. We run the ONNX directly: tight-crop your drawing to its ink, centre it, shrink it to
+        28×28, and pass white-on-black pixels straight to the model. It classifies as you draw, and every
+        stroke stays on your device.
+      </p>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Model runs
+      locally via <a href="https://onnxruntime.ai/docs/tutorials/web/" target="_blank" rel="noopener">ONNX Runtime Web</a>.
+      Model: <a href="https://huggingface.co/VinayHajare/quickdraw-mobilevit-small-onnx" target="_blank" rel="noopener">quickdraw-mobilevit-small</a> (MIT).
+      Source on <a href="https://github.com/PaulKinlan/web-ai-showcase/tree/main/models/quickdraw-sketch-recognition" target="_blank" rel="noopener">GitHub</a>.
+    </footer>
+
+    <script type="module">
+      import { canvasToGray28, DRAW_CSS, renderPredictions, SketchEngine } from "./draw.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style");
+      style.textContent = DRAW_CSS;
+      document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+
+      const engine = new SketchEngine();
+      let ready = false, busy = false, dirty = false;
+      const pad = $("pad");
+      const ctx = pad.getContext("2d");
+      function clear() {
+        ctx.fillStyle = "#0b0f14";
+        ctx.fillRect(0, 0, pad.width, pad.height);
+        ctx.strokeStyle = "#eaf6f2";
+        ctx.lineWidth = 12;
+        ctx.lineCap = "round";
+        ctx.lineJoin = "round";
+        $("guess").textContent = "Draw something to start…";
+        $("bars").innerHTML = "";
+      }
+      clear();
+
+      // pointer drawing
+      let drawing = false, last = null;
+      const pos = (e) => {
+        const r = pad.getBoundingClientRect();
+        return { x: (e.clientX - r.left) * (pad.width / r.width), y: (e.clientY - r.top) * (pad.height / r.height) };
+      };
+      pad.addEventListener("pointerdown", (e) => { drawing = true; last = pos(e); pad.setPointerCapture(e.pointerId); });
+      pad.addEventListener("pointermove", (e) => {
+        if (!drawing) return;
+        const p = pos(e);
+        ctx.beginPath();
+        ctx.moveTo(last.x, last.y);
+        ctx.lineTo(p.x, p.y);
+        ctx.stroke();
+        last = p;
+        dirty = true;
+        schedule();
+      });
+      const stop = () => { if (drawing) { drawing = false; recognize(); } };
+      pad.addEventListener("pointerup", stop);
+      pad.addEventListener("pointerleave", stop);
+      pad.addEventListener("pointercancel", stop);
+
+      let timer = null;
+      function schedule() { clearTimeout(timer); timer = setTimeout(recognize, 350); }
+
+      async function recognize() {
+        if (!ready || busy || !dirty) return;
+        const gray = canvasToGray28(pad);
+        if (!gray) return;
+        busy = true;
+        try {
+          const { top, ms } = await engine.classify(gray, 5);
+          $("guess").textContent = `I think it's a ${top[0].label} (${Math.round(top[0].prob * 100)}%)`;
+          renderPredictions($("bars"), top);
+          $("status").textContent = `${ms} ms · 345 categories`;
+        } catch (e) {
+          $("status").textContent = "Error: " + e.message;
+        } finally {
+          busy = false;
+        }
+      }
+
+      $("clear").addEventListener("click", () => { clear(); dirty = false; $("status").textContent = ""; });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "VinayHajare/quickdraw-mobilevit-small-onnx", runtime: "onnxruntime-web", dtype: "fp32", sizeMB: 21, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress).then(() => engine),
+        onReady: () => { ready = true; $("guess").textContent = "Ready — draw something!"; },
+      });
+    </script>
+  </body>
+</html>

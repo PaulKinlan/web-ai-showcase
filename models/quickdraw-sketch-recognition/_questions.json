@@ -1,0 +1,113 @@
+{
+  "schemaVersion": 1,
+  "id": "quickdraw-sketch-recognition",
+  "revision": 1,
+  "reviewedAt": "2026-07-21T00:00:00Z",
+  "reviewer": "solo new-family build 2026-07-21: sketch-recognition correctness proven FIRST in headless Chrome (drawn shapes classify to the right QuickDraw category - line/square/star/ladder top-1, zigzag top-2), then the deployed page driven end-to-end (a drawn ladder -> ladder, a drawn square -> square; drawing on the pad with pointer events updates the live guess + bars). No licensed media - the user draws.",
+  "frontend": true,
+  "rubric": [
+    {
+      "dimension": "real-inference",
+      "score": 5,
+      "severity": "info",
+      "evidence": "RUNNABILITY + CORRECTNESS verified in headless Chrome (onnxruntime-web 1.21.0 WASM) BEFORE building. Programmatically drawn shapes classify correctly: line -> line 0.67, square -> square 0.89, star -> star 0.80, ladder -> ladder 0.99, zigzag -> zigzag (top-2). Deployed page (scripts/validate-quickdraw.mjs 8/8): a drawn ladder -> 'ladder' and a drawn square -> 'square' via the real preprocessing + model, and drawing a stroke on the pad updates the live top-5. The guesses are the model's real softmax over 345 categories, not canned.",
+      "notes": "Inference runs off the main thread in a module Worker; a 28x28 MobileViT forward pass is fast, so it classifies live while you draw (350 ms debounce + on pointer-up)."
+    },
+    {
+      "dimension": "io-shape",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Input pixel_values [1,1,28,28] float32 in 0-1 - a GRAYSCALE sketch, white strokes on black (QuickDraw's native polarity) -> softmax over 345 categories. A DISTINCT capability + input: it reads a LINE DRAWING, not a photograph, vs the built photo image-classifiers (ImageNet ViT/ResNet, food, human-action). The model's conv stem takes 1 channel.",
+      "notes": "The 1-channel input is exactly why the transformers.js image pipeline (3-channel) can't run it - it fails with a Conv channel mismatch - so the ONNX is run directly."
+    },
+    {
+      "dimension": "runtime-config",
+      "score": 5,
+      "severity": "info",
+      "evidence": "At-a-glance declares the model (quickdraw-mobilevit-small, linked), task (image-classification over sketches), runtime (onnxruntime-web 1.21 - noting the pipeline can't feed the 1-channel stem), the [1,1,28,28] white-on-black input, output (345 categories), quantisation (fp32), download (~21 MB) and license (MIT). No invented API.",
+      "notes": "onnxruntime-web is pinned in THIS worker only; the 345 labels come from the model's config.json fetched at load."
+    },
+    {
+      "dimension": "cache-init",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Loads through the shared createModelLoader auto-init architecture (model {modelId:'VinayHajare/quickdraw-mobilevit-small-onnx', runtime:'onnxruntime-web', dtype:'fp32', sizeMB:21}). The ONNX is fetched THROUGH Cache Storage under a key carrying the model-id path -> lib/model-cache.js auto-initialises on a returning visit with NO Download click; first visit shows an explicit Download (~21 MB). Verified: fresh profile showed Download, clicking it flipped to ready.",
+      "notes": "Small model, so re-download is cheap, but the never-silently-download guarantee + auto-init on return still hold via the shared loader; the config.json (labels) is fetched alongside."
+    },
+    {
+      "dimension": "states",
+      "score": 4,
+      "severity": "minor",
+      "evidence": "checking -> Download (absent) -> ready ('draw something!') -> live recognition as you draw (debounced during strokes + on pointer-up) -> Clear resets the pad; a busy guard prevents overlapping runs; error path via the shared loader + a per-run try/catch surfaced in the status line. Verified download -> ready -> draw -> guess sequence end-to-end.",
+      "notes": "An empty pad is a no-op (the preprocessing returns null when there is no ink). Clearing resets the guess."
+    },
+    {
+      "dimension": "controls",
+      "score": 5,
+      "severity": "info",
+      "evidence": "A pointer-driven drawing canvas (mouse AND touch, via Pointer Events + touch-action:none) plus a Clear button and a hint listing example doodles. Drawing is the whole interaction - immediate, tactile, and it needs no upload or sample assets.",
+      "notes": "Pointer capture + round line caps make drawing feel natural; the canvas scales on small screens (max-width 78vw) so touch drawing works on mobile."
+    },
+    {
+      "dimension": "no-fake-output",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Every guess is the model's real softmax over the 345 categories; the top-5 bars show the full distribution, and the copy honestly frames it as a guess (with the confidence shown). No media is used or stored - the sketch is the user's own drawing, preprocessed and classified locally.",
+      "notes": "Honest about ambiguity: similar doodles (star vs snowflake, circle vs octagon) genuinely confuse a 28x28 model, and the bars make that visible rather than hiding it."
+    },
+    {
+      "dimension": "accessibility",
+      "score": 3,
+      "severity": "minor",
+      "evidence": "The guess is role=status aria-live=polite; the top-5 are text bars (label + %); the canvas has role=img + an aria-label describing it as a drawing area; the Clear button is native.",
+      "notes": "Freehand drawing is inherently pointer/touch-based and hard to do without a pointer; the recognition RESULT is fully accessible (announced text + bars), but the drawing input itself has no keyboard equivalent - a set of pre-made example sketches would be a reasonable accessibility follow-up."
+    },
+    {
+      "dimension": "responsive",
+      "score": 4,
+      "severity": "info",
+      "evidence": "The canvas is capped at max-width 78vw so it fits and stays touch-drawable on phones; the pad + predictions wrap (flex) side-by-side on wide screens and stack on narrow ones. Verified 0 horizontal overflow at desktop AND mobile 360px (validate-quickdraw.mjs), 0 console errors.",
+      "notes": "touch-action:none on the canvas keeps drawing from scrolling the page on mobile."
+    },
+    {
+      "dimension": "performance",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Inference runs in a dedicated module Worker; a 28x28 MobileViT forward pass is a few milliseconds to tens of ms, so recognition keeps up with drawing (debounced at 350 ms during strokes, plus an immediate run on pointer-up). The ~21 MB download is small.",
+      "notes": "The grayscale array (784 floats) is transferred to the worker; the tight-crop + downscale is a trivial canvas op on the main thread."
+    }
+  ],
+  "guidanceConsulted": [
+    {
+      "query": "run a small ONNX classifier off the main thread; classify a drawing live without blocking the canvas",
+      "id": "performance",
+      "recommendation": "Move inference off the main thread; keep interactions responsive (INP); debounce rapid updates.",
+      "appliedOrException": "applied — classification runs in a module Worker; recognition is debounced during drawing and runs immediately on pointer-up, with a busy guard.",
+      "evidence": "recognition keeps up with live drawing; canvas stays smooth"
+    },
+    {
+      "query": "a pointer-drawn canvas that works with mouse and touch and does not scroll the page on mobile",
+      "id": "html",
+      "recommendation": "Use Pointer Events (unify mouse/touch), setPointerCapture, and touch-action:none so drawing doesn't scroll; announce results via aria-live.",
+      "appliedOrException": "applied — the pad uses Pointer Events + setPointerCapture + touch-action:none; the guess is role=status aria-live.",
+      "evidence": "drawing works with mouse + touch; the page doesn't scroll while drawing on mobile"
+    },
+    {
+      "query": "responsive side-by-side canvas + results that stacks on small screens without overflow",
+      "id": "css-layout",
+      "recommendation": "Use flex-wrap; cap the canvas with max-width in viewport units so it fits narrow screens.",
+      "appliedOrException": "applied — .qd-wrap is flex-wrap; the pad is max-width 78vw; the predictions column has a min-width and wraps below on narrow screens.",
+      "evidence": "0 horizontal overflow at desktop + mobile 360px"
+    }
+  ],
+  "openQuestions": [
+    "Would a stroke-vector (recurrent) QuickDraw model recognise sketches earlier / more robustly than the 28x28 bitmap CNN, and is a clean ONNX available?",
+    "Should the demo add a 'you have 20 seconds to draw X' game mode to make the 345-category breadth tangible?"
+  ],
+  "followUpGoals": [
+    "Add a drawing-game mode (prompt a category, time the user, celebrate a correct guess) to showcase the breadth of 345 classes.",
+    "Offer a keyboard-accessible fallback: a set of pre-made example sketches to classify without drawing.",
+    "Explore a stroke-sequence model variant for earlier/partial-sketch recognition."
+  ],
+  "summary": "Sketch recognition (QuickDraw MobileViT) — a distinct vision family (recognise a hand-drawn DOODLE across 345 categories, not a photo), interactive and needing NO licensed media because the user draws it. Proven correct in the browser on ORT-web WASM (line/square/star/ladder recognised; a drawn ladder -> ladder, square -> square on the page). Runs raw (1-channel grayscale stem the pipeline can't feed). ~21 MB, MIT. Index demo complete + verified 8/8; a drawing-game mode + a keyboard fallback + a stroke-sequence variant are recorded follow-ups."
+}
