@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Wild — big motion &amp; the textureless trap · RAFT optical flow</title>
+    <meta name="description" content="Push optical flow to its edges: large displacements RAFT still tracks, and the classic failure — flat, textureless regions (blank sky/walls) where motion is genuinely ambiguous. On-device RAFT." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🌊</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">RAFT optical flow</a></p>
+    <header>
+      <p class="eyebrow">Wild · optical-flow · vision · WASM</p>
+      <h1>Big motion &amp; the textureless trap</h1>
+      <p class="lede">
+        <strong>Large motion:</strong> RAFT's all-pairs correlation is built to track big displacements that
+        break simpler (small-motion) methods — crank the shift right up and watch the recovered flow keep
+        matching it. An honest note on the classic <strong>aperture problem</strong> (flat, textureless
+        regions where motion is ambiguous): a <em>uniform</em> pan like this one moves the whole frame the
+        same way, so RAFT propagates a confident answer even into low-texture areas — the aperture failure
+        really shows up with <em>differential</em> motion (an object moving against a still background), which
+        needs a real video pair, not a synthetic pan. The band readout below reports what actually happens.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <div id="model-loader"></div>
+      <div class="flow-samples" id="samples" aria-label="Sample photos (mountain / night city have big flat sky regions)"></div>
+      <div class="flow-controls">
+        <label>Shift: <input type="range" id="amt" min="6" max="40" step="2" value="28" /> <span id="amtv" class="flow-readout">28 px</span> (try large)</label>
+        <button id="run" type="button" disabled>Compute optical flow</button>
+        <span class="flow-legend"><canvas id="wheel" width="72" height="72" aria-hidden="true"></canvas> direction → colour</span>
+      </div>
+      <p class="flow-readout" id="readout" role="status" aria-live="polite"></p>
+      <div class="flow-grid">
+        <figure class="flow-cell"><canvas id="c1" role="img" aria-label="Frame 1"></canvas><figcaption>Frame 1</figcaption></figure>
+        <figure class="flow-cell"><canvas id="c2" role="img" aria-label="Frame 2, shifted"></canvas><figcaption>Frame 2 (shifted →)</figcaption></figure>
+        <figure class="flow-cell"><canvas id="cf" role="img" aria-label="RAFT flow field, colour-coded"></canvas><figcaption>RAFT flow</figcaption></figure>
+      </div>
+      <p class="muted">The readout measures the recovered flow at your (large) shift and compares an upper
+        band (often sky) to a lower band (ground/buildings). For a uniform pan they're usually close — RAFT
+        holds the big displacement across the frame; a real aperture-problem gap needs differential motion.</p>
+    </section>
+
+    <script type="module">
+      import { buildFrames, drawColorWheel, FLOW_CSS, FlowEngine, flowToImageData, putImageDataFit, urlToBitmap } from "../flow.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style");
+      style.textContent = FLOW_CSS;
+      document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+
+      const SAMPLES = [
+        ["../../../media/assets/mountain-landscape.jpg", "Mountains (sky)"],
+        ["../../../media/assets/night-city.jpg", "Night city (sky)"],
+        ["../../../media/assets/city-street.jpg", "Street"],
+      ];
+      const samplesEl = $("samples");
+      let bmp = null;
+      for (const [src, alt] of SAMPLES) {
+        const img = new Image();
+        img.src = src;
+        img.alt = alt;
+        img.loading = "lazy";
+        img.addEventListener("click", () => pick(img, src));
+        samplesEl.append(img);
+      }
+      async function pick(img, src) {
+        for (const c of samplesEl.children) c.classList.toggle("active", c === img);
+        bmp = await urlToBitmap(src);
+        putImageDataFit($("c1"), buildFrames(bmp, { dx: Number($("amt").value) }).frame1);
+      }
+      drawColorWheel($("wheel"), 36);
+      $("amt").addEventListener("input", () => ($("amtv").textContent = $("amt").value + " px"));
+      const bandMean = (u, v, w, h, y0, y1) => {
+        let su = 0, n = 0;
+        for (let y = (h * y0) | 0; y < h * y1; y++) for (let x = (w * 0.25) | 0; x < w * 0.75; x++) { su += Math.hypot(u[y * w + x], v[y * w + x]); n++; }
+        return su / n;
+      };
+
+      const engine = new FlowEngine();
+      let ready = false;
+      $("run").addEventListener("click", async () => {
+        if (!ready || !bmp) return;
+        $("run").disabled = true;
+        $("readout").textContent = "Computing dense flow (RAFT)…";
+        const shift = Number($("amt").value);
+        const { frame1, frame2 } = buildFrames(bmp, { dx: shift, dy: 0 });
+        putImageDataFit($("c1"), frame1);
+        putImageDataFit($("c2"), frame2);
+        try {
+          const r = await engine.computeFlow(frame1, frame2);
+          putImageDataFit($("cf"), flowToImageData(r.u, r.v, r.w, r.h, r.maxMag));
+          const upper = bandMean(r.u, r.v, r.w, r.h, 0.02, 0.28); // upper band (often sky)
+          const lower = bandMean(r.u, r.v, r.w, r.h, 0.7, 0.98); // lower band (ground/buildings)
+          $("readout").textContent = `Shift ${shift} px · recovered |flow|: lower band ${lower.toFixed(1)} px, upper band ${upper.toFixed(1)} px — RAFT holds the large displacement across the frame (a uniform pan recovers everywhere) · ${r.ms} ms`;
+        } catch (e) {
+          $("readout").textContent = "Flow failed: " + (e?.message || e);
+        } finally {
+          $("run").disabled = false;
+        }
+      });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "opencv/optical_flow_estimation_raft", runtime: "onnxruntime-web", dtype: "fp32", sizeMB: 64, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress).then(() => engine),
+        onReady: () => { ready = true; $("run").disabled = false; if (!bmp) pick(samplesEl.children[0], SAMPLES[0][0]); },
+      });
+    </script>
+    <script type="module" src="/web-ai-showcase/public/image-credit.js"></script>
+  </body>
+</html>

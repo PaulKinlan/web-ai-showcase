@@ -52,24 +52,33 @@ export class FlowEngine {
  * cover-crop so the moved frame shows real content (no black borders) for small pans — the recovered flow
  * should then match (dx,dy). Returns { frame1, frame2, appliedDx, appliedDy } as IN_W×IN_H ImageData.
  */
-export function buildFrames(bitmap, { dx = 12, dy = 0 } = {}) {
+export function buildFrames(bitmap, { dx = 12, dy = 0, zoom = 0 } = {}) {
   const sw = bitmap.width, sh = bitmap.height;
   // Zoom in ~18% past the cover scale so the crop is smaller than the source on BOTH axes — this leaves
   // real content in the margins to pan into (otherwise a portrait source cover-cropped to landscape has
-  // no horizontal room and frame 2 would clamp to frame 1 → a false zero flow).
-  const scale = Math.max(IN_W / sw, IN_H / sh) / 0.85;
+  // no horizontal room and frame 2 would clamp to frame 1 → a false zero flow). The extra headroom also
+  // lets a `zoom` motion sample a smaller (magnified) source window for frame 2 → radial outward flow.
+  const scale = Math.max(IN_W / sw, IN_H / sh) / 0.8;
   const cropW = IN_W / scale, cropH = IN_H / scale;
   const cx = (sw - cropW) / 2, cy = (sh - cropH) / 2;
-  const grab = (offx, offy) => {
+  // grab a source window: offset by (offx,offy) dest px (pan) and shrunk by `z` fraction (zoom-in).
+  const grab = (offx, offy, z) => {
     const c = new OffscreenCanvas(IN_W, IN_H);
     const ctx = c.getContext("2d", { willReadFrequently: true });
     ctx.imageSmoothingQuality = "high";
-    const sx = Math.max(0, Math.min(sw - cropW, cx - offx / scale));
-    const sy = Math.max(0, Math.min(sh - cropH, cy - offy / scale));
-    ctx.drawImage(bitmap, sx, sy, cropW, cropH, 0, 0, IN_W, IN_H);
+    const zw = cropW * (1 - z), zh = cropH * (1 - z); // magnified window
+    const sx = Math.max(0, Math.min(sw - zw, cx + (cropW - zw) / 2 - offx / scale));
+    const sy = Math.max(0, Math.min(sh - zh, cy + (cropH - zh) / 2 - offy / scale));
+    ctx.drawImage(bitmap, sx, sy, zw, zh, 0, 0, IN_W, IN_H);
     return ctx.getImageData(0, 0, IN_W, IN_H);
   };
-  return { frame1: grab(0, 0), frame2: grab(dx, dy), appliedDx: dx, appliedDy: dy };
+  return {
+    frame1: grab(0, 0, 0),
+    frame2: grab(dx, dy, zoom),
+    appliedDx: dx,
+    appliedDy: dy,
+    appliedZoom: zoom,
+  };
 }
 
 /** HSV→RGB (h in [0,360), s,v in [0,1]). */

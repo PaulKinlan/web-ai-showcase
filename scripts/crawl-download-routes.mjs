@@ -124,8 +124,10 @@ for (const row of rows) {
     introspected++;
     const overflowD = p.overflow > 2;
     const overflowM = row.mobileOverflow != null && row.mobileOverflow > 2;
-    const bad = !p.loaderPresent || !p.componentPresent || p.dupIds.length > 0 || overflowD ||
-      overflowM || !cErr;
+    // The <model-download-status> component IS the adoption signal. createModelLoader wraps it in a
+    // .model-loader; resumable-loader (PaliGemma) renders it directly — so accept either as "adopted".
+    const adopted = p.componentPresent || p.loaderPresent;
+    const bad = !adopted || p.dupIds.length > 0 || overflowD || overflowM || !cErr;
     if (bad) {
       fails++;
       verdict = "FAIL " + JSON.stringify({

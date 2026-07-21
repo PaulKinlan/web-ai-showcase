@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Basics — recover a known motion · RAFT optical flow</title>
+    <meta name="description" content="The core capability: pan a photo by a known number of pixels, then watch RAFT recover the exact motion — a per-pixel flow field, on-device." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🌊</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">RAFT optical flow</a></p>
+    <header>
+      <p class="eyebrow">Basics · optical-flow · vision · WASM</p>
+      <h1>Recover a known motion</h1>
+      <p class="lede">
+        The plainest way to see what optical flow does: take a photo, shift it by a <em>known</em> number of
+        pixels, and ask RAFT to measure the motion. If it works, the recovered vector should match the shift
+        you applied — for every pixel. Colour shows direction; brightness of colour shows speed.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <div id="model-loader"></div>
+      <div class="flow-samples" id="samples" aria-label="Sample photos"></div>
+      <div class="flow-controls">
+        <label>Shift right: <input type="range" id="amt" min="4" max="28" step="2" value="16" /> <span id="amtv" class="flow-readout">16 px</span></label>
+        <button id="run" type="button" disabled>Compute optical flow</button>
+        <span class="flow-legend"><canvas id="wheel" width="72" height="72" aria-hidden="true"></canvas> direction → colour</span>
+      </div>
+      <p class="flow-readout" id="readout" role="status" aria-live="polite"></p>
+      <div class="flow-grid">
+        <figure class="flow-cell"><canvas id="c1" role="img" aria-label="Frame 1"></canvas><figcaption>Frame 1</figcaption></figure>
+        <figure class="flow-cell"><canvas id="c2" role="img" aria-label="Frame 2, shifted right by a known amount"></canvas><figcaption>Frame 2 (shifted →)</figcaption></figure>
+        <figure class="flow-cell"><canvas id="cf" role="img" aria-label="RAFT flow field, colour-coded"></canvas><figcaption>RAFT flow</figcaption></figure>
+      </div>
+      <p class="muted">A pure rightward pan should make the whole flow field one colour (one direction) with a
+        recovered <code>u</code> ≈ your shift and <code>v</code> ≈ 0 — that's the honesty check.</p>
+    </section>
+
+    <script type="module">
+      import { buildFrames, drawColorWheel, FLOW_CSS, FlowEngine, flowToImageData, putImageDataFit, urlToBitmap } from "../flow.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style");
+      style.textContent = FLOW_CSS;
+      document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+
+      const SAMPLES = [
+        ["../../../media/assets/city-street.jpg", "Street"],
+        ["../../../media/assets/market-crowd.jpg", "Market"],
+        ["../../../media/assets/mountain-landscape.jpg", "Mountains"],
+      ];
+      const samplesEl = $("samples");
+      let bmp = null;
+      for (const [src, alt] of SAMPLES) {
+        const img = new Image();
+        img.src = src;
+        img.alt = alt;
+        img.loading = "lazy";
+        img.addEventListener("click", () => pick(img, src));
+        samplesEl.append(img);
+      }
+      async function pick(img, src) {
+        for (const c of samplesEl.children) c.classList.toggle("active", c === img);
+        bmp = await urlToBitmap(src);
+        putImageDataFit($("c1"), buildFrames(bmp, { dx: Number($("amt").value) }).frame1);
+      }
+      drawColorWheel($("wheel"), 36);
+      $("amt").addEventListener("input", () => ($("amtv").textContent = $("amt").value + " px"));
+
+      const engine = new FlowEngine();
+      let ready = false;
+      $("run").addEventListener("click", async () => {
+        if (!ready || !bmp) return;
+        $("run").disabled = true;
+        $("readout").textContent = "Computing dense flow (RAFT)…";
+        const { frame1, frame2, appliedDx } = buildFrames(bmp, { dx: Number($("amt").value), dy: 0 });
+        putImageDataFit($("c1"), frame1);
+        putImageDataFit($("c2"), frame2);
+        try {
+          const r = await engine.computeFlow(frame1, frame2);
+          putImageDataFit($("cf"), flowToImageData(r.u, r.v, r.w, r.h, r.maxMag));
+          let su = 0, sv = 0, n = 0;
+          for (let y = (r.h * 0.3) | 0; y < r.h * 0.7; y++) for (let x = (r.w * 0.3) | 0; x < r.w * 0.7; x++) { su += r.u[y * r.w + x]; sv += r.v[y * r.w + x]; n++; }
+          $("readout").textContent = `Applied: u=${appliedDx}, v=0 px · RAFT recovered: u=${(su / n).toFixed(1)}, v=${(sv / n).toFixed(1)} px · ${r.ms} ms`;
+        } catch (e) {
+          $("readout").textContent = "Flow failed: " + (e?.message || e);
+        } finally {
+          $("run").disabled = false;
+        }
+      });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "opencv/optical_flow_estimation_raft", runtime: "onnxruntime-web", dtype: "fp32", sizeMB: 64, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress).then(() => engine),
+        onReady: () => { ready = true; $("run").disabled = false; if (!bmp) pick(samplesEl.children[0], SAMPLES[0][0]); },
+      });
+    </script>
+    <script type="module" src="/web-ai-showcase/public/image-credit.js"></script>
+  </body>
+</html>
