@@ -1,0 +1,113 @@
+{
+  "schemaVersion": 1,
+  "id": "esm-protein",
+  "revision": 1,
+  "reviewedAt": "2026-07-21T00:00:00Z",
+  "reviewer": "solo new-family build 2026-07-21 (new PROTEIN modality): ESM-2 correctness proven FIRST in headless Chrome (on ubiquitin, masked conserved residues recovered: C-terminal di-glycine -> G, a conserved lysine -> K; chemically-similar substitutions elsewhere), then the deployed page driven end-to-end (conservation scan colours the residue track; clicking a residue masks it and predicts amino acids). Text-only (protein sequences).",
+  "frontend": true,
+  "rubric": [
+    {
+      "dimension": "real-inference",
+      "score": 5,
+      "severity": "info",
+      "evidence": "RUNNABILITY + CORRECTNESS verified in headless Chrome (transformers.js 3.7.5, WASM, q8 ~8 MB) BEFORE building. Under masking, ESM-2 recovers conserved residues on ubiquitin (100%-conserved C-terminal di-glycine -> G top-1; a conserved lysine -> K top-1) and predicts chemically similar amino acids elsewhere (e.g. I for V). Deployed page (scripts/validate-esm.mjs 9/9): a 76-residue conservation scan (masked-marginal fit per position) completed in ~1.7 s and both conserved-residue recoveries reproduced in-page. The predictions are the model's real softmax over the 20 amino acids, not canned.",
+      "notes": "Inference runs off the main thread; ESM-2 t6 is tiny (8M params), so a full masked scan of a short protein is ~1-2 s and a single click-to-predict is near-instant."
+    },
+    {
+      "dimension": "io-shape",
+      "score": 5,
+      "severity": "info",
+      "evidence": "A protein sequence (amino-acid letters) -> masked-LM logits -> softmax over the 20 amino acids at the masked position. A DISTINCT MODALITY: this is a protein language model (biology), vs the built natural-language fill-mask demos (BERT etc.) whose vocabulary is words. Two views: mask one residue (prediction) and mask each in turn (a conservation map).",
+      "notes": "The alphabet is the 20 standard amino acids; the demo restricts input to them. Special/rare tokens are excluded from the predicted set."
+    },
+    {
+      "dimension": "runtime-config",
+      "score": 5,
+      "severity": "info",
+      "evidence": "At-a-glance declares the model (ESM-2 t6 8M, linked), task (fill-mask over amino acids), runtime (transformers.js, run low-level because the ESM tokenizer doesn't expose mask_token to the FillMask pipeline), the alphabet, both modes (predict / conserve), quantisation (q8 ~8 MB) and license (MIT). No invented API.",
+      "notes": "The 'why low-level' note is honest: the convenience FillMask pipeline throws 'Mask token (null) not found', so the worker places the <mask> (id 32) itself."
+    },
+    {
+      "dimension": "cache-init",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Loads through the shared createModelLoader auto-init architecture (model {modelId:'Xenova/esm2_t6_8M_UR50D', runtime:'transformers.js', dtype:'q8', sizeMB:8}). transformers.js caches the model files, so lib/model-cache.js sees the cached model-id path -> a returning visit auto-initialises with NO Download click; first visit shows an explicit Download (~8 MB). Verified: fresh profile showed Download, clicking it flipped to ready and scanned the default protein.",
+      "notes": "Tiny model so re-download is cheap, but the never-silently-download guarantee + auto-init on return still hold via the shared loader."
+    },
+    {
+      "dimension": "states",
+      "score": 4,
+      "severity": "minor",
+      "evidence": "checking -> Download (absent) -> ready (auto-scans the default protein into a conservation map) -> click any residue to mask+predict, edit the sequence, pick an example, or re-scan; a busy guard prevents overlapping runs; error path via the shared loader + a per-run try/catch surfaced in the status line. Verified download -> ready -> scan -> click-predict end-to-end.",
+      "notes": "Sequence input is length-capped (120 residues) so a full masked scan stays a couple of seconds; editing resets the conservation colouring until re-scanned."
+    },
+    {
+      "dimension": "controls",
+      "score": 5,
+      "severity": "info",
+      "evidence": "An editable sequence textarea, four real example proteins (ubiquitin, insulin A+B, melittin, cytochrome c), a 'Scan conservation' button, and a clickable residue grid where each cell masks that position on click. Two natural interactions: read the conservation map, and probe any single residue.",
+      "notes": "Real, recognisable proteins make the conservation map meaningful (e.g. ubiquitin's conserved C-terminus)."
+    },
+    {
+      "dimension": "no-fake-output",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Every prediction bar is the model's real softmax probability; the status line honestly says whether the top prediction RECOVERED the true residue or is a substitution. The conservation colour is the true masked-marginal probability of each real residue. No media, so no image/audio provenance concerns.",
+      "notes": "Honest about the tiny model's limits: it recovers conserved positions but predicts plausible substitutions at variable ones (the mean fit is low precisely because most positions are variable) - the colour map shows exactly that."
+    },
+    {
+      "dimension": "accessibility",
+      "score": 4,
+      "severity": "info",
+      "evidence": "Status is role=status aria-live=polite; each residue is a native <button> with a title (position, residue, fit%); the sequence grid is a labelled group; the conservation legend is text (variable/conserved) beside the gradient.",
+      "notes": "Colour encodes conservation for scannability, but each residue's title carries the exact fit%, and the prediction panel is text — so the information isn't colour-only."
+    },
+    {
+      "dimension": "responsive",
+      "score": 4,
+      "severity": "info",
+      "evidence": "The residue grid is flex-wrap (fixed small cells that wrap to any width); the textarea + chips + prediction bars wrap. Verified 0 horizontal overflow at desktop AND mobile 360px (validate-esm.mjs), 0 console errors.",
+      "notes": "Long sequences wrap across multiple rows of residue cells; verified desktop+mobile. Subpage ladder is a recorded follow-up."
+    },
+    {
+      "dimension": "performance",
+      "score": 4,
+      "severity": "minor",
+      "evidence": "Inference runs in a dedicated module Worker; a single click-to-predict is one fast forward pass, and the conservation scan is N passes (one per residue) reporting progress — ~1.7 s for 76 residues on the 8M model. The ~8 MB q8 download is negligible.",
+      "notes": "The scan is O(length) forward passes, hence the 120-residue cap; batching the masked positions or a sliding window for long proteins is a recorded follow-up."
+    }
+  ],
+  "guidanceConsulted": [
+    {
+      "query": "run a transformers.js masked-LM off the main thread; loop many masked forward passes without freezing the UI",
+      "id": "performance",
+      "recommendation": "Move inference off the main thread; keep interactions responsive (INP); report progress on long loops.",
+      "appliedOrException": "applied — prediction + the per-residue conservation scan run in a module Worker; the scan posts progress and the sequence length is capped so it stays interactive.",
+      "evidence": "~1.7 s for a 76-residue scan; single predictions near-instant; page responsive"
+    },
+    {
+      "query": "wrapping grid of small interactive cells that never overflows horizontally",
+      "id": "css-layout",
+      "recommendation": "Use flex-wrap + fixed intrinsic cell sizes so a long row wraps instead of overflowing.",
+      "appliedOrException": "applied — .esm-seq is flex-wrap with fixed 1.4rem residue buttons; chips + prediction bars also wrap.",
+      "evidence": "0 horizontal overflow at desktop + mobile 360px for a 100+ residue protein"
+    },
+    {
+      "query": "announce a changing result to assistive tech; make residue cells keyboard-focusable and labelled; avoid colour-only meaning",
+      "id": "html",
+      "recommendation": "Announce results via role=status aria-live; use native buttons for interactive cells; carry meaning in text/titles, not colour alone.",
+      "appliedOrException": "applied — status is aria-live; residues are native <button>s with per-cell titles (position/residue/fit%); the prediction panel is text.",
+      "evidence": "clicking a residue announces the true residue + whether it was recovered"
+    }
+  ],
+  "openQuestions": [
+    "Would a dedicated variant-effect mode (wild-type vs mutant masked log-likelihood ratio) be a clearer 'is this mutation damaging?' story than the general conservation map?",
+    "Is the 8M model's accuracy honest enough to showcase, or should a larger ESM-2 (35M/150M) be offered for users who want better predictions?"
+  ],
+  "followUpGoals": [
+    "Add a variant-effect scorer: pick a position + a substitution and show the masked log-likelihood change (a proxy for how damaging the mutation is).",
+    "Offer a larger ESM-2 variant (35M/150M) as an accuracy option (bigger download).",
+    "Build a basics/practical/wild subpage ladder (a conserved motif; a real disease variant; a designed/synthetic sequence where the model is rightly uncertain)."
+  ],
+  "summary": "Protein language model (ESM-2 t6 8M) — a new MODALITY for the catalogue (biology): a masked LM over the 20 amino acids that predicts residues and maps conservation, distinct from the built natural-language fill-mask demos. Proven correct in the browser on transformers.js WASM (recovers ubiquitin's conserved G and K under masking; chemically-similar substitutions elsewhere). Tiny (~8 MB q8), fast. Index demo complete + verified 9/9; a variant-effect mode + a larger variant + subpage ladder are recorded follow-ups."
+}

@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Protein language model (ESM-2) — amino-acid prediction in the browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run Meta's ESM-2 protein language model locally via transformers.js: predict which amino acid belongs at a position, and map which residues are conserved — the AI behind protein structure and variant-effect prediction. On-device, nothing uploaded."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='13'>🧬</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">protein language model · biology · WASM · ~8 MB</p>
+      <h1>Protein language model (ESM-2)</h1>
+      <p class="lede">
+        The built <a href="/web-ai-showcase/models/bert-fill-mask/">fill-mask</a> demos predict the missing
+        <em>word</em> in a sentence. <strong>ESM-2</strong> does the same for a different language entirely —
+        <strong>proteins</strong>. Trained on millions of sequences, it predicts which
+        <strong>amino acid</strong> belongs at a position, having learned the grammar of real proteins. It's
+        the family behind structure prediction (ESMFold) and variant-effect scoring. Click a residue to see
+        what it predicts, or scan a whole protein to map which positions are <strong>conserved</strong>. Runs
+        entirely on your device.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/facebook/esm2_t6_8M_UR50D" target="_blank" rel="noopener">ESM-2</a> (t6, 8M params) — Meta's protein language model</td></tr>
+          <tr><th>Task</th><td><code>fill-mask</code> over amino acids (a protein language model, not natural language)</td></tr>
+          <tr><th>Runtime</th><td>transformers.js — run low-level (AutoModelForMaskedLM), placing the mask ourselves</td></tr>
+          <tr><th>Alphabet</th><td>the 20 standard amino acids (A C D E F G H I K L M N P Q R S T V W Y)</td></tr>
+          <tr><th>Predict</th><td>mask a residue → probability over the 20 amino acids at that position</td></tr>
+          <tr><th>Conserve</th><td>mask each position → the model's confidence in the true residue (a conservation map)</td></tr>
+          <tr><th>Quantization</th><td>q8 (<code>model_quantized.onnx</code>) — ~8 MB, runs on the plain WASM backend</td></tr>
+          <tr><th>License</th><td>MIT (facebook/esm2_t6_8M_UR50D) — the weights stay MIT wherever converted</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Read a protein</h3>
+      <div id="model-loader"></div>
+
+      <div class="esm-chips" id="chips" role="group" aria-label="Example proteins"></div>
+      <div class="esm-field">
+        <label for="seq">Protein sequence (amino-acid letters)</label>
+        <textarea id="seq" spellcheck="false"></textarea>
+      </div>
+      <div class="esm-controls">
+        <button class="chip" type="button" id="scanBtn">Scan conservation</button>
+        <span class="esm-legend"><span>variable</span> <i></i> <span>conserved</span></span>
+      </div>
+
+      <p class="muted" style="margin:.3rem 0">Click any residue to mask it and see the model's prediction.</p>
+      <div class="esm-seq" id="seqView" role="group" aria-label="Protein residues (click to predict)"></div>
+      <div class="esm-pred" id="pred"></div>
+      <p class="esm-status" id="status" role="status" aria-live="polite"></p>
+    </section>
+
+    <section class="panel">
+      <h3>A different language</h3>
+      <p class="muted">
+        ESM-2 is a masked language model like BERT, but its vocabulary is the 20 amino acids instead of
+        words. By learning to fill in masked residues across millions of natural proteins, it internalises
+        which substitutions proteins tolerate — so a masked <strong>conserved</strong> position (structurally
+        or functionally critical) is predicted confidently, while a flexible one is uncertain. That signal is
+        what larger ESM models turn into structure and mutation-effect predictions. Everything runs locally.
+      </p>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Model runs
+      locally via <a href="https://huggingface.co/docs/transformers.js" target="_blank" rel="noopener">transformers.js</a>.
+      Model: <a href="https://huggingface.co/facebook/esm2_t6_8M_UR50D" target="_blank" rel="noopener">ESM-2</a> (MIT).
+      Source on <a href="https://github.com/PaulKinlan/web-ai-showcase/tree/main/models/esm-protein" target="_blank" rel="noopener">GitHub</a>.
+    </footer>
+
+    <script type="module">
+      import { cleanSeq, ESM_CSS, EsmEngine, escapeHTML, renderSequence } from "./esm.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style");
+      style.textContent = ESM_CSS;
+      document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+
+      const engine = new EsmEngine();
+      let ready = false, busy = false;
+      let seq = "", conf = null, selected = -1;
+
+      // Real proteins (short, so the conservation scan is quick).
+      const EXAMPLES = [
+        { name: "Ubiquitin", seq: "MQIFVKTLTGKTITLEVEPSDTIENVKAKIQDKEGIPPDQQRLIFAGKQLEDGRTLSDYNIQKESTLHLVLRLRGG" },
+        { name: "Insulin (A+B)", seq: "GIVEQCCTSICSLYQLENYCNFVNQHLCGSHLVEALYLVCGERGFFYTPKT" },
+        { name: "Melittin", seq: "GIGAVLKVLTTGLPALISWIKRKRQQ" },
+        { name: "Cytochrome c (N-term)", seq: "GDVEKGKKIFIMKCSQCHTVEKGGKHKTGPNLHGLFGRKTGQAPGYSYTAANKNKGIIWGEDTLMEYLENPKKYIPGTKMIFVGIKKKEERADLIAYLKKATNE" },
+      ];
+      $("chips").innerHTML = EXAMPLES.map((e, i) => `<button class="chip" type="button" data-i="${i}">${escapeHTML(e.name)}</button>`).join("");
+      for (const b of $("chips").querySelectorAll(".chip")) {
+        b.addEventListener("click", () => { setSeq(EXAMPLES[+b.dataset.i].seq); });
+      }
+
+      function draw() {
+        renderSequence($("seqView"), seq, conf, selected);
+        for (const b of $("seqView").querySelectorAll(".esm-res")) {
+          b.addEventListener("click", () => onResidue(+b.dataset.i));
+        }
+      }
+      function setSeq(s) {
+        seq = cleanSeq(s).slice(0, 120);
+        $("seq").value = seq;
+        conf = null;
+        selected = -1;
+        $("pred").innerHTML = "";
+        draw();
+      }
+
+      async function onResidue(i) {
+        if (!ready || busy) return;
+        busy = true;
+        selected = i;
+        draw();
+        $("status").textContent = `Masking position ${i + 1} (${seq[i]})…`;
+        try {
+          const { truth, top, ms } = await engine.predict(seq, i);
+          $("pred").innerHTML = top.map((t) =>
+            `<span class="esm-pbar${t.aa === truth ? " hit" : ""}">${t.aa} ${(t.prob * 100) | 0}%</span>`
+          ).join("");
+          const hit = top[0].aa === truth;
+          $("status").innerHTML = `Position ${i + 1}: true residue <b>${truth}</b> · top prediction <b>${top[0].aa}</b> ${hit ? "✓ recovered" : "(a substitution)"} · ${ms} ms`;
+        } catch (e) {
+          $("status").textContent = "Error: " + e.message;
+        } finally {
+          busy = false;
+        }
+      }
+
+      async function scan() {
+        if (!ready || busy || !seq) return;
+        busy = true;
+        $("status").textContent = `Scanning ${seq.length} positions…`;
+        try {
+          const res = await engine.scan(seq);
+          conf = res.conf;
+          draw();
+          const avg = conf.reduce((a, b) => a + b, 0) / conf.length;
+          $("status").textContent = `Conservation map: ${seq.length} positions · mean fit ${(avg * 100) | 0}% · ${res.ms} ms`;
+        } catch (e) {
+          $("status").textContent = "Error: " + e.message;
+        } finally {
+          busy = false;
+        }
+      }
+
+      $("scanBtn").addEventListener("click", scan);
+      $("seq").addEventListener("input", () => setSeq($("seq").value));
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/esm2_t6_8M_UR50D", runtime: "transformers.js", dtype: "q8", sizeMB: 8, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: async () => { ready = true; setSeq(EXAMPLES[0].seq); await scan(); },
+      });
+    </script>
+  </body>
+</html>
