@@ -1,0 +1,113 @@
+{
+  "schemaVersion": 1,
+  "id": "raft-optical-flow",
+  "revision": 1,
+  "reviewedAt": "2026-07-21T00:00:00Z",
+  "reviewer": "solo new-family build 2026-07-21 — RAFT runnability + correctness proven FIRST in headless Chrome (real ONNX graph on ORT-web WASM recovered a known synthetic motion), then the deployed index driven end-to-end (Download 64 MB -> auto-init -> a known 14 px pan recovered u=14.0, v=0.0). A real site-wide bug (the image-credit annotator's MutationObserver infinite-looping on its own writes) was found via this page and fixed. The subpage ladder + full mobile/desktop matrix are pending (recorded honestly).",
+  "frontend": true,
+  "rubric": [
+    {
+      "dimension": "real-inference",
+      "score": 5,
+      "severity": "info",
+      "evidence": "RUNNABILITY + CORRECTNESS verified in headless Chrome (onnxruntime-web 1.21.0, WASM EP, no GPU) BEFORE building. The real RAFT fp32 ONNX (opencv/optical_flow_estimation_raft, 64 MB) builds a session (inputNames=['0','1'], a flow output [1,2,360,480]) and runs in ~6 s @360x480. On a synthetic pair with content shifted RIGHT 16 px, the recovered flow central-region mean is u=16.04, v=-0.11 px. On the deployed page a KNOWN 14 px pan of a licensed photo recovered u=14.0, v=0.0 px in 5985 ms. Not faked, not identity: the recovered vector matches the applied motion.",
+      "notes": "The int8bq export builds a session but ABORTS at run on WASM, so we ship fp32 (documented in the at-a-glance + worker header). Inference runs off the main thread in a module Worker; the u/v flow planes are transferred (not cloned) back."
+    },
+    {
+      "dimension": "io-shape",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Two frames [1,3,360,480] float32 in 0-255 (plain RGB, the Sintel export's FIXED size) -> flow field [1,2,360,480] (channel 0 = horizontal u, channel 1 = vertical v, in pixels). The demo colour-codes it Middlebury-style (hue = direction, saturation = speed/maxMag) and prints a recovered-vs-applied readout. A DISTINCT capability: dense two-frame motion — no built demo computes optical flow (feature-matching/keypoints are sparse; this is per-pixel).",
+      "notes": "The worker selects the output whose dims are exactly [1,2,360,480] (there is also a 1/8-res [1,2,45,60] intermediate). Fixed the u/v extraction to use typed-array .slice (not buffer.slice) so a view with a non-zero byteOffset reads correctly."
+    },
+    {
+      "dimension": "runtime-config",
+      "score": 5,
+      "severity": "info",
+      "evidence": "At-a-glance declares the exact model id (opencv/optical_flow_estimation_raft, linked), task (optical-flow), runtime (onnxruntime-web 1.21 — noting transformers.js has no optical-flow class/task), the real I/O shapes, quantisation (fp32; int8 aborts on WASM), backend (WASM single-thread), download (~64 MB) and license (BSD-3-Clause RAFT / MIT ONNX conversion). No invented API surface.",
+      "notes": "onnxruntime-web is pinned in THIS worker only (the isolated per-worker ORT-web escape hatch, like microdehaze/nafnet/lama) — shared lib/webai.js is untouched."
+    },
+    {
+      "dimension": "cache-init",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Loads through the shared createModelLoader auto-init architecture (model {modelId:'opencv/optical_flow_estimation_raft', runtime:'onnxruntime-web', dtype:'fp32', sizeMB:64}). The weights are fetched THROUGH Cache Storage (raft-optical-flow-onnx-cache) so lib/model-cache.js scans '/opencv/optical_flow_estimation_raft/' → a returning visit auto-initialises with NO Download click; a first visit shows an explicit Download (~64 MB). Verified in headless Chrome: fresh profile showed 'Download model (~64 MB)', clicking it downloaded + flipped the loader to ready.",
+      "notes": "64 MB is a real cost, so honest first-visit consent + auto-init on return matter here; a per-model clear-cache control is offered once ready. Download progress surfaces via the shared <model-download-status> as a runtime-owned aggregate %."
+    },
+    {
+      "dimension": "states",
+      "score": 4,
+      "severity": "minor",
+      "evidence": "checking → Download (absent) → downloading (aggregate %) → ready → 'Computing dense flow…' → result/readout; error path surfaces 'Flow failed: <msg>' + Retry via the shared loader. Verified the download → ready → compute → readout sequence end-to-end.",
+      "notes": "PENDING: the basics/practical/wild/multi-model ladder is not yet built (index only). Recorded in followUpGoals; support.mobile=untested until the matrix runs."
+    },
+    {
+      "dimension": "controls",
+      "score": 4,
+      "severity": "info",
+      "evidence": "Native, keyboard-operable controls: a direction <select> (pan right/left/down/up/diagonal), an amount <input type=range> (4-28 px, live label), and a 'Compute optical flow' <button>. A colour-wheel legend explains the encoding. Sample photos are focusable/clickable thumbnails.",
+      "notes": "A file/two-frame upload path would broaden it beyond synthetic pans; noted as a follow-up."
+    },
+    {
+      "dimension": "no-fake-output",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Every flow pixel comes from the model — the demo's built-in recovered-vs-applied readout is exactly the honesty check: it shows the APPLIED motion next to RAFT's RECOVERED mean, so a faked/zero field is immediately visible. A prior draft that read the flow via buffer.slice (wrong for an offset view) showed u=0.0 and was caught + fixed by this readout before shipping.",
+      "notes": "The synthetic frame 2 is an honest, labelled construction (a known pan of the source), not a claim of a real video pair; users see both frames."
+    },
+    {
+      "dimension": "accessibility",
+      "score": 4,
+      "severity": "info",
+      "evidence": "The three output canvases carry role=img + descriptive aria-label (Frame 1 / Frame 2 (moved) / RAFT flow field); the readout is role=status aria-live=polite; the shared loader announces load state; all controls are native + labelled; the colour wheel is aria-hidden (decorative legend).",
+      "notes": "Colour encodes direction, so the readout gives the numeric recovered u/v as a non-colour channel of the same information."
+    },
+    {
+      "dimension": "responsive",
+      "score": 3,
+      "severity": "minor",
+      "evidence": "Flexible layout: .flow-grid is grid auto-fit minmax(220px,1fr); canvases are inline-size:100% max 480px with aspect-ratio 4/3; controls flex-wrap. Desktop index verified with no console errors.",
+      "notes": "PENDING (HONEST): the full mobile 360-wide + desktop overflow/console MATRIX across all pages is not yet run (index only, desktop). support.mobile=untested; followUpGoals covers the matrix + ladder."
+    },
+    {
+      "dimension": "performance",
+      "score": 5,
+      "severity": "info",
+      "evidence": "ALL inference runs in a dedicated module Worker (new Worker(worker.js,{type:'module'})); the u/v planes are transferred (zero-copy) back. The main thread stays responsive — confirmed after fixing an unrelated site-wide bug (the image-credit annotator's MutationObserver re-fired on its own DOM writes → an infinite microtask loop that pegged the main thread on ANY licensed-image page; fixed by disconnecting the observer around each annotate pass + guarding redundant writes).",
+      "notes": "A 64 MB one-time download + ~6 s WASM inference is inherent to RAFT at 360x480; both happen off the main thread with honest progress + a 'Computing…' status."
+    }
+  ],
+  "guidanceConsulted": [
+    {
+      "query": "run heavy ONNX model inference off the main thread in a web worker; transfer typed arrays zero-copy to keep INP low",
+      "id": "performance",
+      "recommendation": "Move heavy work off the main thread and keep interactions responsive (INP); avoid long blocking tasks; transfer (don't clone) large buffers.",
+      "appliedOrException": "applied — RAFT inference runs in a module Worker; the flow u/v Float32Array planes are postMessage-transferred back; the main thread does only bounded canvas draws. A real main-thread-pegging bug (an unrelated MutationObserver loop) was found via this page and fixed.",
+      "evidence": "page stays responsive during the ~6 s inference; the download+run happen off-thread; headless page-driver could introspect the main thread while inference ran"
+    },
+    {
+      "query": "responsive image/canvas grid without horizontal overflow using intrinsic sizing and flexible tracks",
+      "id": "css-layout",
+      "recommendation": "Prefer intrinsic sizing, logical properties and flexible tracks (fr/minmax, auto-fit) over fixed widths; images/canvases inline-size:100% block-size:auto.",
+      "appliedOrException": "applied — .flow-grid is grid auto-fit minmax(220px,1fr); canvases inline-size:100% max 480px aspect-ratio 4/3; .flow-controls flex-wrap.",
+      "evidence": "desktop index rendered with no overflow/console errors; the full mobile matrix is a recorded follow-up"
+    },
+    {
+      "query": "announce model loading + result state via aria-live status region; name canvas-rendered content for assistive tech",
+      "id": "html",
+      "recommendation": "Announce load/ready/error + results via role=status aria-live; give canvas content a meaningful accessible name; label every control.",
+      "appliedOrException": "applied — the readout is role=status aria-live=polite; each output canvas has role=img + aria-label; the shared loader announces state; controls are native + labelled.",
+      "evidence": "aria-labels present on all three canvases; the recovered u/v is announced as text (a non-colour channel for the direction encoding)"
+    }
+  ],
+  "openQuestions": [
+    "Does a WebGPU ORT-web path (when the showcase adds one) run RAFT faster than the ~6 s WASM pass, and can it be verified without a GPU in the harness?",
+    "Would a genuine two-frame upload (real video frames) be worth the UX weight over the current honest synthetic-pan pairs?"
+  ],
+  "followUpGoals": [
+    "Build the basics/practical/wild/multi-model ladder (e.g. practical: pan-vs-zoom flow patterns; wild: large motion + the textureless/aperture case; multi-model: flow magnitude gating a detector or matting).",
+    "Run the full mobile 360-wide + desktop overflow/console MATRIX across all pages and flip support.mobile from untested to ok/unsupported with evidence.",
+    "Add an int8/WebGPU path if one runs end-to-end, to cut the 64 MB download / ~6 s latency."
+  ],
+  "summary": "RAFT dense optical flow — a genuinely new vision family (per-pixel two-frame motion) proven to run + recover a known motion in the browser on ORT-web WASM. Index demo complete + verified; the subpage ladder and mobile matrix are honestly pending. Building it surfaced + fixed a real site-wide main-thread-pegging bug in the image-credit annotator."
+}

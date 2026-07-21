@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>RAFT — dense optical flow between two frames, on-device · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run RAFT locally via ONNX Runtime Web: give it two frames and it estimates a dense per-pixel motion field — the direction and speed every pixel moved. Move a licensed photo by a known amount and watch RAFT recover it. Runs entirely on your device; nothing leaves the tab."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🌊</text></svg>"
+    />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">optical-flow · vision · WASM · ~64 MB</p>
+      <h1>RAFT — dense optical flow between two frames</h1>
+      <p class="lede">
+        Optical flow answers a deceptively hard question: <strong>where did every pixel go</strong> between
+        two frames? RAFT (Recurrent All-Pairs Field Transforms) builds a 4D volume of all-pairs pixel
+        correlations and iteratively refines a <strong>dense per-pixel motion field</strong> — a vector for
+        every pixel giving the direction and speed it moved. It's the engine under video stabilisation,
+        frame interpolation, motion segmentation, and tracking. Here it runs <strong>entirely on your
+        device</strong> via ONNX Runtime Web: move a photo by a <em>known</em> amount and watch RAFT recover
+        it, pixel by pixel. Nothing leaves the tab.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/opencv/optical_flow_estimation_raft" target="_blank" rel="noopener">opencv/optical_flow_estimation_raft</a> — RAFT (Teed &amp; Deng, ECCV 2020), Sintel-trained</td></tr>
+          <tr><th>Task</th><td><code>optical-flow</code> (dense two-frame motion estimation) — run via raw ONNX Runtime Web (see note below)</td></tr>
+          <tr><th>Runtime</th><td>onnxruntime-web 1.21 (transformers.js has no optical-flow class / no optical-flow task)</td></tr>
+          <tr><th>Input</th><td>two frames <code>[1, 3, 360, 480]</code> float32 in 0–255 (plain RGB, fixed size) — frame 1 and frame 2</td></tr>
+          <tr><th>Output</th><td>flow field <code>[1, 2, 360, 480]</code> float32 — channel 0 = horizontal motion <code>u</code>, channel 1 = vertical motion <code>v</code>, in pixels</td></tr>
+          <tr><th>Quantization</th><td>fp32 ONNX — runs on the plain WASM execution provider, no WebGPU needed (the int8 export aborts on WASM)</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (single-threaded on GitHub Pages) — a 360×480 pass runs in ~6 s</td></tr>
+          <tr><th>Download</th><td>~64 MB, cached after first load (auto-inits on return)</td></tr>
+          <tr><th>License</th><td>BSD-3-Clause (RAFT, princeton-vl) · MIT (ONNX conversion by PINTO0309, via OpenCV Zoo)</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers, OffscreenCanvas, ImageBitmap — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">
+        Pick a photo and a motion. We build frame 2 by shifting the scene by a <em>known</em> number of
+        pixels, so you can check RAFT's answer against the truth. Colour shows direction (see the wheel);
+        brightness of colour shows speed. Grey = no motion.
+      </p>
+
+      <div id="model-loader"></div>
+
+      <div class="flow-samples" id="samples" aria-label="Sample photos"></div>
+
+      <div class="flow-controls">
+        <label>Direction:
+          <select id="dir">
+            <option value="1,0">→ pan right</option>
+            <option value="-1,0">← pan left</option>
+            <option value="0,1">↓ pan down</option>
+            <option value="0,-1">↑ pan up</option>
+            <option value="1,1">↘ diagonal</option>
+          </select>
+        </label>
+        <label>Amount: <input type="range" id="amt" min="4" max="28" step="2" value="14" /> <span id="amtv" class="flow-readout">14 px</span></label>
+        <button id="run" type="button" disabled>Compute optical flow</button>
+        <span class="flow-legend"><canvas id="wheel" width="72" height="72" aria-hidden="true"></canvas> direction → colour</span>
+      </div>
+
+      <p class="flow-readout" id="readout" role="status" aria-live="polite"></p>
+
+      <div class="flow-grid">
+        <figure class="flow-cell"><canvas id="c1" role="img" aria-label="Frame 1"></canvas><figcaption>Frame 1</figcaption></figure>
+        <figure class="flow-cell"><canvas id="c2" role="img" aria-label="Frame 2 (moved by a known amount)"></canvas><figcaption>Frame 2 (moved)</figcaption></figure>
+        <figure class="flow-cell"><canvas id="cf" role="img" aria-label="RAFT dense optical-flow field, colour-coded"></canvas><figcaption>RAFT flow (colour = direction, brightness = speed)</figcaption></figure>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h3>Why raw ONNX Runtime Web?</h3>
+      <p class="muted">
+        Transformers.js registers no optical-flow model class and has no <code>optical-flow</code> pipeline
+        task, so we run RAFT's ONNX graph directly with onnxruntime-web and hand-write the pre/post a
+        pipeline would own: resize both frames to the model's fixed 360×480, pack them as
+        <code>[1,3,360,480]</code> float32 in 0–255, and colour-code the returned <code>[1,2,360,480]</code>
+        motion field. Everything — download, inference, rendering — happens on your device.
+      </p>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Model runs
+      locally via <a href="https://onnxruntime.ai/docs/tutorials/web/" target="_blank" rel="noopener">ONNX Runtime Web</a>.
+      <a href="/web-ai-showcase/image-credits/">Image credits</a>.
+      Source on <a href="https://github.com/PaulKinlan/web-ai-showcase/tree/main/models/raft-optical-flow" target="_blank" rel="noopener">GitHub</a>.
+    </footer>
+
+    <script type="module">
+      import { buildFrames, drawColorWheel, FLOW_CSS, FlowEngine, flowToImageData, IN_H, IN_W, putImageDataFit, urlToBitmap } from "./flow.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = FLOW_CSS;
+      document.head.append(style);
+
+      // Licensed sample photos — documented in media/manifest.json + the site image ledger (textured
+      // scenes so there are features for the flow to lock onto).
+      const SAMPLES = [
+        ["../../media/assets/city-street.jpg", "Street"],
+        ["../../media/assets/market-crowd.jpg", "Market"],
+        ["../../media/assets/mountain-landscape.jpg", "Mountains"],
+        ["../../media/assets/night-city.jpg", "Night city"],
+        ["../../media/assets/bicycle-object.jpg", "Bicycle"],
+      ];
+      const samplesEl = document.getElementById("samples");
+      let currentBitmap = null;
+      let currentImg = null;
+      for (const [src, alt] of SAMPLES) {
+        const img = new Image();
+        img.src = src;
+        img.alt = alt;
+        img.loading = "lazy";
+        img.addEventListener("click", () => selectSample(img, src));
+        samplesEl.append(img);
+      }
+      async function selectSample(img, src) {
+        for (const c of samplesEl.children) c.classList.toggle("active", c === img);
+        currentImg = img;
+        currentBitmap = await urlToBitmap(src);
+        renderFrame1();
+      }
+
+      drawColorWheel(document.getElementById("wheel"), 36);
+      const amt = document.getElementById("amt"), amtv = document.getElementById("amtv");
+      amt.addEventListener("input", () => (amtv.textContent = amt.value + " px"));
+
+      const engine = new FlowEngine();
+      let ready = false;
+
+      function motion() {
+        const [sx, sy] = document.getElementById("dir").value.split(",").map(Number);
+        const a = Number(amt.value);
+        return { dx: sx * a, dy: sy * a };
+      }
+      function renderFrame1() {
+        if (!currentBitmap) return;
+        const { frame1 } = buildFrames(currentBitmap, motion());
+        putImageDataFit(document.getElementById("c1"), frame1);
+      }
+
+      const runBtn = document.getElementById("run");
+      const readout = document.getElementById("readout");
+      runBtn.addEventListener("click", async () => {
+        if (!ready || !currentBitmap) return;
+        runBtn.disabled = true;
+        readout.textContent = "Computing dense flow (RAFT, on-device)…";
+        const { frame1, frame2, appliedDx, appliedDy } = buildFrames(currentBitmap, motion());
+        putImageDataFit(document.getElementById("c1"), frame1);
+        putImageDataFit(document.getElementById("c2"), frame2);
+        try {
+          const r = await engine.computeFlow(frame1, frame2);
+          putImageDataFit(document.getElementById("cf"), flowToImageData(r.u, r.v, r.w, r.h, r.maxMag));
+          // honest recovered-vs-applied readout over the central region (the demo's built-in check).
+          let su = 0, sv = 0, n = 0;
+          for (let y = (r.h * 0.3) | 0; y < r.h * 0.7; y++) {
+            for (let x = (r.w * 0.3) | 0; x < r.w * 0.7; x++) { su += r.u[y * r.w + x]; sv += r.v[y * r.w + x]; n++; }
+          }
+          readout.textContent =
+            `Applied motion: u=${appliedDx}, v=${appliedDy} px · RAFT recovered (centre): ` +
+            `u=${(su / n).toFixed(1)}, v=${(sv / n).toFixed(1)} px · max speed ${r.maxMag.toFixed(1)} px · ${r.ms} ms`;
+        } catch (e) {
+          readout.textContent = "Flow failed: " + (e?.message || e);
+        } finally {
+          runBtn.disabled = false;
+        }
+      });
+
+      createModelLoader({
+        mount: document.getElementById("model-loader"),
+        model: {
+          modelId: "opencv/optical_flow_estimation_raft",
+          runtime: "onnxruntime-web",
+          dtype: "fp32",
+          sizeMB: 64,
+          requiresWebGPU: false,
+        },
+        load: (onProgress) => engine.load(onProgress).then(() => engine),
+        onReady: () => {
+          ready = true;
+          runBtn.disabled = false;
+          if (!currentBitmap) selectSample(samplesEl.children[0], SAMPLES[0][0]);
+        },
+      });
+    </script>
+    <script type="module" src="/web-ai-showcase/public/image-credit.js"></script>
+  </body>
+</html>

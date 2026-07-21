@@ -105,7 +105,7 @@ function annotate(byPath, base) {
         credit.style.cssText = "font-size:.72rem;opacity:.72;margin:.35rem 0 0;line-height:1.4;";
         strip.insertAdjacentElement("afterend", credit);
       }
-      credit.innerHTML = html;
+      if (credit.innerHTML !== html) credit.innerHTML = html;
     }
   } else {
     const main = document.querySelector("main") || document.body;
@@ -117,30 +117,36 @@ function annotate(byPath, base) {
       credit.style.cssText = "font-size:.72rem;opacity:.72;margin:1rem 0 0;line-height:1.4;";
       main.appendChild(credit);
     }
-    credit.innerHTML = html;
+    if (credit.innerHTML !== html) credit.innerHTML = html;
   }
 }
 
 try {
   const { byPath, base } = await loadLedger();
-  const run = () => annotate(byPath, base);
-  run();
-  // re-annotate when sample images are swapped in / added (throttled via microtask flag)
+  const OBS = { subtree: true, childList: true, attributes: true, attributeFilter: ["src"] };
+  let mo = null;
+  // CRITICAL: annotate() writes to the DOM (inserts/updates the .img-credit node). If the observer is
+  // live during those writes it re-fires on our OWN mutation → an infinite re-annotate loop that pegs the
+  // main thread on any page that shows a licensed image. So disconnect around every annotate pass.
+  const run = () => {
+    if (mo) mo.disconnect();
+    try {
+      annotate(byPath, base);
+    } finally {
+      if (mo) mo.observe(document.body, OBS);
+    }
+  };
+  annotate(byPath, base); // initial pass (observer not yet attached)
   let queued = false;
-  const mo = new MutationObserver(() => {
-    if (queued) return;
+  mo = new MutationObserver(() => {
+    if (queued) return; // coalesce a burst of mutations into one re-annotate
     queued = true;
     queueMicrotask(() => {
       queued = false;
       run();
     });
   });
-  mo.observe(document.body, {
-    subtree: true,
-    childList: true,
-    attributes: true,
-    attributeFilter: ["src"],
-  });
+  mo.observe(document.body, OBS);
 } catch (e) {
   // Non-fatal: credits are enhancement. The /image-credits/ page remains the authoritative record.
   console.warn("[image-credit] " + (e?.message || e));
