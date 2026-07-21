@@ -1,0 +1,113 @@
+{
+  "schemaVersion": 1,
+  "id": "speech-separation",
+  "revision": 1,
+  "reviewedAt": "2026-07-21T00:00:00Z",
+  "reviewer": "solo new-family build 2026-07-21 — separation correctness proven FIRST in headless Chrome (a 2-speaker mix split so each output correlated with a DIFFERENT original speaker: 0.80/0.96 with its own, ~0.11 with the other), then the deployed page driven end-to-end (sample mix -> 2 playable tracks + waveforms). SepFormer-WhamR (Apache) was tried first but suppressed the second clean speaker; ConvTasNet-Libri2Mix (clean-separation training) is the correct tool. Sample speakers are the repo's existing jfk/ted clips.",
+  "frontend": true,
+  "rubric": [
+    {
+      "dimension": "real-inference",
+      "score": 5,
+      "severity": "info",
+      "evidence": "RUNNABILITY + CORRECTNESS verified in headless Chrome (onnxruntime-web 1.21.0 WASM) BEFORE building. On a 3-4 s mix of two distinct speakers the two outputs map to DIFFERENT speakers cleanly: output A corr 0.80 with speaker 1 / 0.11 with speaker 2; output B corr 0.96 with speaker 2 / 0.12 with speaker 1. Deployed page (scripts/validate-speech-separation.mjs 7/7) re-runs the model in-page and confirms the same clean permutation, ~1.1 s for 4 s of audio. The separated tracks are the model's real output, not a canned split.",
+      "notes": "ConvTasNet is a lightweight time-domain net (no transformer), so it's fast (~285 ms per second of audio) — unlike the SepFormer transformer, which took ~16 s and, being WHAMR-trained, suppressed the clean second speaker."
+    },
+    {
+      "dimension": "io-shape",
+      "score": 5,
+      "severity": "info",
+      "evidence": "mixture [1, samples] float32 mono 16 kHz -> sources [1, 2, samples] (two speaker waveforms). A DISTINCT capability: 2-speaker SEPARATION, vs the built gtcrn speech-ENHANCEMENT (denoise one voice) and the built diarization (label who-speaks-when without separating audio). This produces two clean audio streams.",
+      "notes": "Time-domain (learned encoder -> mask -> decoder), so no STFT/iSTFT reconstruction is needed on our side — the ONNX is waveform-in, waveform-out."
+    },
+    {
+      "dimension": "runtime-config",
+      "score": 5,
+      "severity": "info",
+      "evidence": "At-a-glance declares the model (ConvTasNet Libri2Mix 16 kHz, linked), task (audio-to-audio / 2-speaker separation), runtime (onnxruntime-web 1.21 — noting transformers.js has no speech-separation task), the I/O shapes, the time-domain architecture, download (~20 MB) and license (CC BY-SA 4.0, JorisCos/Libri2Mix). No invented API.",
+      "notes": "onnxruntime-web is pinned in THIS worker only. The CC BY-SA license is stated plainly in the at-a-glance + footer with attribution; it's a free license (not NC/ND) and the model is used unmodified."
+    },
+    {
+      "dimension": "cache-init",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Loads through the shared createModelLoader auto-init architecture (model {modelId:'welcomyou/convtasnet-libri2mix-16k-onnx', runtime:'onnxruntime-web', dtype:'fp32', sizeMB:20}). The ONNX is fetched THROUGH Cache Storage under a key carrying the model-id path -> lib/model-cache.js auto-initialises on a returning visit with NO Download click; first visit shows an explicit Download (~20 MB). Verified: fresh profile showed Download, clicking it flipped to ready and separated the sample mix.",
+      "notes": "Small model, so re-download is cheap, but the never-silently-download guarantee + auto-init on return still hold via the shared loader."
+    },
+    {
+      "dimension": "states",
+      "score": 4,
+      "severity": "minor",
+      "evidence": "checking -> Download (absent) -> ready (mixes two sample speakers in-browser + auto-separates into 2 tracks) -> re-run via the sample chip or an upload; a busy guard prevents overlapping runs; error path via the shared loader + a per-run try/catch surfaced in the status line. Verified download -> ready -> separate -> upload path wired.",
+      "notes": "Clips are capped (4 s sample, 6 s upload) to bound memory; the separated-output block is hidden until a result exists."
+    },
+    {
+      "dimension": "controls",
+      "score": 4,
+      "severity": "info",
+      "evidence": "A 'sample mix' chip (mixes the two sample speakers) + a drag-and-drop / click upload for the user's own two-speaker recording. The mixture and both separated tracks are native <audio> players with waveforms.",
+      "notes": "Playing the mixture (both voices at once) then each isolated track makes the separation audible — the point of the demo. Object URLs are created per run."
+    },
+    {
+      "dimension": "no-fake-output",
+      "score": 5,
+      "severity": "info",
+      "evidence": "The two output tracks are the model's real separated waveforms (WAV-encoded from the raw float samples); the verification correlates each output with a different original speaker to prove it's a genuine split, not a copy of the mixture. Sample speakers are the repo's existing jfk.wav (public-domain JFK) + ted.wav (already used by 5+ built demos) - no new committed assets.",
+      "notes": "Honest about the model's scope: it's a clean 2-speaker separator (Libri2Mix sepclean); very noisy or >2-speaker input is out of its training distribution - noted as follow-ups."
+    },
+    {
+      "dimension": "accessibility",
+      "score": 4,
+      "severity": "info",
+      "evidence": "Status is role=status aria-live=polite; each waveform canvas has role=img + aria-label; audio uses native <audio controls>; the dropzone is a focusable role=button with Enter/Space activation + focus outline.",
+      "notes": "The primary output is audio (inherently accessible via the native players); waveforms are a visual aid with labels."
+    },
+    {
+      "dimension": "responsive",
+      "score": 4,
+      "severity": "info",
+      "evidence": "The two output blocks are flex (min-width 15rem, wrap on narrow screens); waveforms are width:100%/max-width:100%; audio players are max-width capped. Verified 0 horizontal overflow at desktop AND mobile 360px (validate-speech-separation.mjs), 0 console errors.",
+      "notes": "Index verified desktop+mobile; a subpage ladder is a recorded follow-up."
+    },
+    {
+      "dimension": "performance",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Inference runs in a dedicated module Worker; ConvTasNet is a light time-domain net, ~1.1 s for 4 s of audio on single-thread WASM (fast enough for interactive use). The ~20 MB download is small. Output waveforms are transferred (not copied) back to the main thread.",
+      "notes": "Clips are length-capped so memory + latency stay bounded; a chunking mode for long recordings is a recorded follow-up."
+    }
+  ],
+  "guidanceConsulted": [
+    {
+      "query": "run an audio-to-audio ONNX model off the main thread; play the result via native audio without blocking",
+      "id": "performance",
+      "recommendation": "Move inference off the main thread; keep interactions responsive (INP); don't block the UI on model work.",
+      "appliedOrException": "applied — separation runs in a module Worker; output samples are transferred back and WAV-encoded for native <audio> playback; a busy guard avoids overlapping runs.",
+      "evidence": "~1.1 s per 4 s clip; page responsive during separation"
+    },
+    {
+      "query": "responsive audio + waveform layout that wraps without horizontal overflow",
+      "id": "css-layout",
+      "recommendation": "Use flex-wrap + width:100%/max-width:100% for media; let output blocks wrap on narrow screens.",
+      "appliedOrException": "applied — the two output blocks flex-wrap; waveforms are width:100%; audio players are max-width capped.",
+      "evidence": "0 horizontal overflow at desktop + mobile 360px"
+    },
+    {
+      "query": "accessible file dropzone + live status; label canvas waveforms and use native audio controls",
+      "id": "html",
+      "recommendation": "Make custom drop targets focusable role=button with keyboard activation; announce status via aria-live; label canvas content; prefer native media controls.",
+      "appliedOrException": "applied — dropzone is role=button tabindex=0 with Enter/Space + focus outline; status is aria-live; waveforms have role=img + aria-label; audio uses native controls.",
+      "evidence": "keyboard opens the picker; status announces the separation result + timing"
+    }
+  ],
+  "openQuestions": [
+    "Should the demo offer a 3-speaker model too, or does 2-speaker keep the point clearest?",
+    "For long recordings, is fixed-window chunking with overlap-add enough, or does speaker-permutation across chunks need tracking?"
+  ],
+  "followUpGoals": [
+    "Add a 3-speaker separation variant (and handle permutation labelling across it).",
+    "Add a chunking + overlap-add mode so recordings longer than a few seconds separate without a memory spike.",
+    "Chain into the built ASR demos: separate, then transcribe each speaker track (a mini diarize-and-transcribe pipeline)."
+  ],
+  "summary": "Speech separation (ConvTasNet, 2-speaker) — a distinct audio capability (the cocktail-party split into two clean speaker tracks), separate from the built speech-enhancement (denoise one voice) and diarization (label without separating), proven correct in the browser on ORT-web WASM (each output correlates 0.80/0.96 with a different original speaker) and fast (~1.1 s / 4 s). Time-domain, ~20 MB. Index demo complete + verified 7/7; sample speakers reuse the repo's jfk/ted clips. A 3-speaker variant + long-audio chunking + a separate-then-transcribe chain are recorded follow-ups."
+}

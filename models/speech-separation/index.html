@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Speech separation — the cocktail-party problem in the browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run ConvTasNet locally via ONNX Runtime Web: split a recording of two people talking at once into two clean single-speaker tracks. On-device, nothing uploaded."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='13'>🗣️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">speech separation · audio · WASM · ~20 MB</p>
+      <h1>Speech separation (cocktail party)</h1>
+      <p class="lede">
+        The built <a href="/web-ai-showcase/models/gtcrn-speech-enhancement/">speech enhancement</a> demo
+        cleans noise off <em>one</em> voice. This one solves the harder
+        <strong>cocktail-party problem</strong>: given a recording of <strong>two people talking at once</strong>,
+        it pulls them apart into two clean single-speaker tracks. It's <strong>ConvTasNet</strong>, a
+        lightweight time-domain separator. Below, two speakers are mixed in your browser, then separated —
+        entirely on your device.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/JorisCos/ConvTasNet_Libri2Mix_sepclean_16k" target="_blank" rel="noopener">ConvTasNet</a> (Libri2Mix, clean 2-speaker, 16 kHz)</td></tr>
+          <tr><th>Task</th><td><code>audio-to-audio</code> — 2-speaker separation, run via raw ONNX Runtime Web (see note below)</td></tr>
+          <tr><th>Runtime</th><td>onnxruntime-web 1.21 (transformers.js has no speech-separation task)</td></tr>
+          <tr><th>Input</th><td><code>mixture</code> <code>[1, samples]</code> float32 — mono at 16 kHz</td></tr>
+          <tr><th>Output</th><td><code>sources</code> <code>[1, 2, samples]</code> — two separated speaker waveforms</td></tr>
+          <tr><th>Architecture</th><td>time-domain (learned encoder → masking → decoder, no STFT) — light + fast</td></tr>
+          <tr><th>Download</th><td>~20 MB, cached after first load (auto-inits on return)</td></tr>
+          <tr><th>License</th><td>CC BY-SA 4.0 (JorisCos / Libri2Mix) — used unmodified with attribution</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers, Web Audio (decode + WAV) — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Separate two voices</h3>
+      <div id="model-loader"></div>
+
+      <div class="sep-chips" id="chips" role="group" aria-label="Sample mixtures"></div>
+
+      <div class="sep-block">
+        <h4>Mixture (two speakers at once)</h4>
+        <div class="sep-row">
+          <audio id="mixAudio" controls></audio>
+        </div>
+        <canvas id="mixWave" class="sep-wave" width="900" height="64" role="img" aria-label="Mixture waveform"></canvas>
+      </div>
+
+      <div class="sep-out" id="sepOut" hidden>
+        <div class="sep-block">
+          <h4>Speaker 1</h4>
+          <audio id="s1Audio" controls></audio>
+          <canvas id="s1Wave" class="sep-wave" width="440" height="64" role="img" aria-label="Speaker 1 waveform"></canvas>
+        </div>
+        <div class="sep-block">
+          <h4>Speaker 2</h4>
+          <audio id="s2Audio" controls></audio>
+          <canvas id="s2Wave" class="sep-wave" width="440" height="64" role="img" aria-label="Speaker 2 waveform"></canvas>
+        </div>
+      </div>
+
+      <p style="margin:.6rem 0 .2rem">Or drop your own recording of two overlapping voices:</p>
+      <div class="sep-dropzone" id="drop" tabindex="0" role="button" aria-label="Upload an audio file with two overlapping speakers">
+        Drop an audio file here, or click to choose
+        <input type="file" id="file" accept="audio/*" hidden />
+      </div>
+      <p class="sep-status" id="status" role="status" aria-live="polite"></p>
+    </section>
+
+    <section class="panel">
+      <h3>Why raw ONNX Runtime Web?</h3>
+      <p class="muted">
+        transformers.js has no speech-separation task, so we run ConvTasNet's ONNX graph directly with
+        onnxruntime-web. Unlike spectrogram methods, ConvTasNet works in the <strong>time domain</strong>: a
+        learned encoder turns the waveform into features, a mask network splits them into two streams, and a
+        decoder turns each back into audio. It's small and fast, and every sample stays on your device.
+      </p>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Model runs
+      locally via <a href="https://onnxruntime.ai/docs/tutorials/web/" target="_blank" rel="noopener">ONNX Runtime Web</a>.
+      Model: <a href="https://huggingface.co/JorisCos/ConvTasNet_Libri2Mix_sepclean_16k" target="_blank" rel="noopener">ConvTasNet Libri2Mix</a> (CC BY-SA 4.0).
+      Source on <a href="https://github.com/PaulKinlan/web-ai-showcase/tree/main/models/speech-separation" target="_blank" rel="noopener">GitHub</a>.
+    </footer>
+
+    <script type="module">
+      import { decodeTo16kMono, drawWave, floatToWavBlob, mixClips, SeparationEngine, SEP_CSS, SR } from "./separation.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style");
+      style.textContent = SEP_CSS;
+      document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+
+      const engine = new SeparationEngine();
+      let ready = false, busy = false;
+      const A = "../whisper-speech-to-text/";
+      const MAX = SR * 4; // cap at 4 s
+      const urls = [];
+      const setAudio = (el, samples) => {
+        const url = URL.createObjectURL(floatToWavBlob(samples, SR));
+        urls.push(url);
+        el.src = url;
+        return url;
+      };
+
+      async function clip(url) {
+        const a = await decodeTo16kMono(await (await fetch(url)).arrayBuffer());
+        return a.length > MAX ? a.subarray(0, MAX) : a;
+      }
+
+      async function sampleMix() {
+        const [a, b] = await Promise.all([clip(A + "jfk.wav"), clip(A + "ted.wav")]);
+        return mixClips(a, b);
+      }
+
+      async function runOn(mix, label) {
+        if (!ready || busy) return;
+        busy = true;
+        setAudio($("mixAudio"), mix);
+        drawWave($("mixWave"), mix, "#c79a3a");
+        $("sepOut").hidden = true;
+        $("status").textContent = `Separating ${label}…`;
+        try {
+          const { s1, s2, ms } = await engine.separate(mix);
+          setAudio($("s1Audio"), s1);
+          setAudio($("s2Audio"), s2);
+          drawWave($("s1Wave"), s1, "#2bb59a");
+          drawWave($("s2Wave"), s2, "#4ac6e0");
+          $("sepOut").hidden = false;
+          $("status").textContent = `Separated into 2 speakers · ${(mix.length / SR).toFixed(1)} s · ${ms} ms`;
+        } catch (e) {
+          $("status").textContent = "Error: " + e.message;
+        } finally {
+          busy = false;
+        }
+      }
+
+      $("chips").innerHTML = `<button class="chip" type="button" id="sampleBtn">▶ Sample mix (two speakers)</button>`;
+      $("sampleBtn").addEventListener("click", async () => runOn(await sampleMix(), "the sample mix"));
+
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.style.borderColor = "#2bb59a"; });
+      drop.addEventListener("dragleave", () => (drop.style.borderColor = ""));
+      const handleFile = async (f) => {
+        let a = await decodeTo16kMono(await f.arrayBuffer());
+        if (a.length > SR * 6) a = a.subarray(0, SR * 6);
+        await runOn(a, f.name);
+      };
+      drop.addEventListener("drop", (e) => { e.preventDefault(); drop.style.borderColor = ""; if (e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]); });
+      file.addEventListener("change", () => { if (file.files[0]) handleFile(file.files[0]); });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "welcomyou/convtasnet-libri2mix-16k-onnx", runtime: "onnxruntime-web", dtype: "fp32", sizeMB: 20, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress).then(() => engine),
+        onReady: async () => { ready = true; await runOn(await sampleMix(), "the sample mix"); },
+      });
+    </script>
+  </body>
+</html>
