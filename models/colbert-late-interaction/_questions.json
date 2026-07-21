@@ -1,0 +1,113 @@
+{
+  "schemaVersion": 1,
+  "id": "colbert-late-interaction",
+  "revision": 1,
+  "reviewedAt": "2026-07-21T00:00:00Z",
+  "reviewer": "solo new-family build 2026-07-21: ColBERT correctness proven FIRST in headless Chrome (query 'Hamlet' -> document 'Hamlet' ~1.0, 'wrote' -> 'wrote' ~1.0; relevant document out-scores irrelevant by MaxSim), then the deployed page driven end-to-end (per-token alignment + document heatmap render). The projected vespa export (96-d/token) is used because the AutoModel path only exposes raw 384-d hidden states. Text-only demo.",
+  "frontend": true,
+  "rubric": [
+    {
+      "dimension": "real-inference",
+      "score": 5,
+      "severity": "info",
+      "evidence": "RUNNABILITY + CORRECTNESS verified in headless Chrome (onnxruntime-web 1.21.0 WASM) BEFORE building. The 96-d-per-token projected export scores by MaxSim: for 'who wrote the play Hamlet' the alignment is exact (query 'Hamlet' -> document 'Hamlet' 94%, 'wrote' -> 'wrote' 96%) and a relevant document out-scores an irrelevant one (4.63 vs 3.80). Deployed page (scripts/validate-colbert.mjs 9/9) reproduces the alignment + ranking in-page. The matches are the model's real per-token similarities, not canned.",
+      "notes": "Inference runs off the main thread: a transformers.js tokenizer + a raw onnxruntime-web session; MaxSim over content tokens is computed in the worker."
+    },
+    {
+      "dimension": "io-shape",
+      "score": 5,
+      "severity": "info",
+      "evidence": "query + document -> a 96-d L2-normalised vector PER TOKEN -> MaxSim (each query token's best document-token similarity, summed) + the per-query-token alignment. A DISTINCT retrieval paradigm: LATE INTERACTION, vs the built dense embeddings (one vector per text) and SPLADE sparse retrieval (a weight per vocabulary word). Its signature property is interpretability - every score contribution traces to a word pair.",
+      "notes": "Query is prefixed with the [Q] marker (token 1), document with [D] (token 2), per ColBERT; markers + special tokens are excluded from the displayed alignment."
+    },
+    {
+      "dimension": "runtime-config",
+      "score": 5,
+      "severity": "info",
+      "evidence": "At-a-glance declares the model (answerai-colbert-small-v1, linked), task (late-interaction retrieval / feature-extraction + MaxSim), runtime (onnxruntime-web 1.21 + a transformers.js tokenizer - noting transformers.js has no ColBERT task), the [Q]/[D] markers, output (96-d per token), quantisation (fp32, the projected export), download (~133 MB) and license (Apache-2.0). No invented API.",
+      "notes": "Honest about which export: the AutoModel path returns raw 384-d hidden states (no projection), so the projected vespa_colbert.onnx is used to get true ColBERT embeddings."
+    },
+    {
+      "dimension": "cache-init",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Loads through the shared createModelLoader auto-init architecture (model {modelId:'answerdotai/answerai-colbert-small-v1', runtime:'onnxruntime-web', dtype:'fp32', sizeMB:133}). The ONNX is fetched THROUGH Cache Storage under a key carrying the model-id path, and the tokenizer files are cached by transformers.js under the same repo -> lib/model-cache.js auto-initialises on a returning visit with NO Download click; first visit shows an explicit Download. Verified: fresh profile showed Download, clicking it flipped to ready and matched the first example.",
+      "notes": "133 MB is a real download, so the never-silently-download guarantee + auto-init on return both hold via the shared loader."
+    },
+    {
+      "dimension": "states",
+      "score": 4,
+      "severity": "minor",
+      "evidence": "checking -> Download (absent) -> ready (auto-matches the Hamlet example: score + doc heatmap + alignment) -> debounced live re-match on either input + example chips; a busy/queued guard coalesces rapid edits; error path via the shared loader + a per-run try/catch surfaced in the status line. Verified download -> ready -> match end-to-end.",
+      "notes": "Empty query or document clears the output. 550 ms debounce keeps live typing smooth."
+    },
+    {
+      "dimension": "controls",
+      "score": 4,
+      "severity": "info",
+      "evidence": "A query input + a document textarea + four example chips (relevant pairs across topics, and one deliberately-irrelevant recipe for the Hamlet query to show a low match). Each drives a live MaxSim score + alignment.",
+      "notes": "The irrelevant example makes the contrast legible; a multi-document ranking mode is a recorded follow-up."
+    },
+    {
+      "dimension": "no-fake-output",
+      "score": 5,
+      "severity": "info",
+      "evidence": "The alignment, the per-document-token heatmap, and the MaxSim score are all the model's real per-token cosine similarities. The copy is explicit that this is a SIMPLIFIED query encoding (no [MASK] augmentation) and that the token alignment shown is genuine. No media, so no provenance concerns.",
+      "notes": "Honest about the simplification: ColBERT normally pads queries with [MASK] tokens; omitting that changes the aggregate score slightly but not the per-token word-to-word alignment, which is what the demo shows."
+    },
+    {
+      "dimension": "accessibility",
+      "score": 4,
+      "severity": "info",
+      "evidence": "The score is role=status aria-live=polite; both inputs are labelled; each document token carries a title with its best-match %; the alignment rows are text (query word -> document word + %), not colour-only.",
+      "notes": "Colour intensity encodes similarity for scannability, but the alignment rows + per-token titles carry the numbers for non-colour users."
+    },
+    {
+      "dimension": "responsive",
+      "score": 4,
+      "severity": "info",
+      "evidence": "Full-width inputs (box-sizing: border-box), a wrapping document heatmap, and a capped-width alignment column (grid rows). Verified 0 horizontal overflow at desktop AND mobile 360px (validate-colbert.mjs), 0 console errors.",
+      "notes": "Text-only layout; verified desktop+mobile. Subpage ladder is a recorded follow-up."
+    },
+    {
+      "dimension": "performance",
+      "score": 4,
+      "severity": "info",
+      "evidence": "Inference runs in a dedicated module Worker; encoding a short query + document is well under a second, and the MaxSim loop is O(query x document tokens) - trivial for sentence-length text. A 550 ms debounce + busy/queued coalescing keep live editing smooth. The ~133 MB fp32 download is the main cost.",
+      "notes": "The projected export is fp32 only (the quantized variants in the repo are the non-projected 384-d model); a projected quantized export would cut the download - recorded as a follow-up."
+    }
+  ],
+  "guidanceConsulted": [
+    {
+      "query": "run a raw ONNX encoder + tokenizer off the main thread; keep two live inputs responsive",
+      "id": "performance",
+      "recommendation": "Move inference off the main thread; keep interactions responsive (INP); debounce live input; coalesce rapid edits.",
+      "appliedOrException": "applied — encoding + MaxSim run in a module Worker; inputs are debounced 550 ms with a busy/queued guard.",
+      "evidence": "sub-second per match; page responsive while typing"
+    },
+    {
+      "query": "full-width inputs + a wrapping token heatmap + a compact alignment list that never overflows",
+      "id": "css-layout",
+      "recommendation": "Use box-sizing: border-box for full-width inputs; let the token heatmap wrap; cap the alignment column width.",
+      "appliedOrException": "applied — inputs are width:100% box-sizing:border-box; the document heatmap wraps; the alignment is a capped-width grid.",
+      "evidence": "0 horizontal overflow at desktop + mobile 360px"
+    },
+    {
+      "query": "announce a changing score to assistive tech; convey per-token match strength without colour alone",
+      "id": "html",
+      "recommendation": "Announce the score via role=status aria-live; give each token a text title; show the alignment as text.",
+      "appliedOrException": "applied — the score is role=status aria-live=polite; doc tokens have a best-match title; alignment rows are word -> word + %.",
+      "evidence": "the MaxSim score is announced; each token's match % is in its title"
+    }
+  ],
+  "openQuestions": [
+    "Would adding ColBERT's [MASK] query augmentation change the ranking enough to matter for a demo, or does content-token MaxSim tell the story more clearly?",
+    "Is a multi-document ranking view (one query vs several passages, ranked) a better demonstration of retrieval than a single query-document pair?"
+  ],
+  "followUpGoals": [
+    "Add a [MASK]-augmented query mode to match the canonical ColBERT scoring exactly, with a note on the difference.",
+    "Add a multi-document ranking mode: one query vs several passages, ranked by MaxSim with the winning alignment shown.",
+    "Build a basics/practical/wild subpage ladder (obvious lexical matches; paraphrase matches where late interaction beats lexical; adversarial keyword-stuffed docs)."
+  ],
+  "summary": "Late-interaction retrieval (ColBERT small) — the third neural-retrieval paradigm (a 96-d vector per token + MaxSim), distinct from the built dense embeddings and SPLADE sparse retrieval, and uniquely INTERPRETABLE: it shows which document word each query word matched. Proven correct in the browser on ORT-web WASM (Hamlet->Hamlet ~1.0; relevant out-scores irrelevant). Uses the projected vespa export (transformers.js has no ColBERT task). ~133 MB fp32. Index demo complete + verified 9/9; a [MASK]-augmented query mode + multi-document ranking + subpage ladder are recorded follow-ups."
+}

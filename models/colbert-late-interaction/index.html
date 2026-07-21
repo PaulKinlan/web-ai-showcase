@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Late-interaction retrieval (ColBERT) — token-level matching in the browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run ColBERT locally via ONNX Runtime Web: score a query against a document by matching them token by token (MaxSim), and see exactly which document word each query word latched onto. The interpretable third neural-retrieval paradigm. On-device, nothing uploaded."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='13'>🔗</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">late-interaction retrieval · text · WASM · ~133 MB</p>
+      <h1>Late-interaction retrieval (ColBERT)</h1>
+      <p class="lede">
+        The built <a href="/web-ai-showcase/models/minilm-embeddings/">dense embeddings</a> compress a whole
+        text into one vector; <a href="/web-ai-showcase/models/splade-sparse-retrieval/">SPLADE</a> makes a
+        sparse bag of weighted words. <strong>ColBERT</strong> is the third way: it keeps a small vector for
+        <strong>every token</strong> and scores a query against a document with <strong>MaxSim</strong> — each
+        query word takes its best match among the document's words, and the matches are summed. The payoff is
+        <strong>interpretability</strong>: you can see exactly which document word each query word latched
+        onto. Runs entirely on your device.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/answerdotai/answerai-colbert-small-v1" target="_blank" rel="noopener">answerai-colbert-small-v1</a> — a compact BERT-based ColBERT</td></tr>
+          <tr><th>Task</th><td><code>late-interaction retrieval</code> (feature-extraction + MaxSim) — run via raw ONNX Runtime Web (see note below)</td></tr>
+          <tr><th>Runtime</th><td>onnxruntime-web 1.21 (transformers.js has no ColBERT task) + a transformers.js tokenizer</td></tr>
+          <tr><th>Input</th><td>a query (marked <code>[Q]</code>) and a document (marked <code>[D]</code>)</td></tr>
+          <tr><th>Output</th><td>a 96-d L2-normalised vector per token → MaxSim score + the per-query-token alignment</td></tr>
+          <tr><th>Quantization</th><td>fp32 ONNX (the projected export) — runs on the plain WASM backend, no WebGPU needed</td></tr>
+          <tr><th>Download</th><td>~133 MB, cached after first load (auto-inits on return)</td></tr>
+          <tr><th>License</th><td>Apache-2.0 (Answer.AI)</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Match a query to a document</h3>
+      <div id="model-loader"></div>
+
+      <div class="cb-chips" id="chips" role="group" aria-label="Examples"></div>
+      <div class="cb-field">
+        <label for="query">Query</label>
+        <input type="text" id="query" spellcheck="false" />
+      </div>
+      <div class="cb-field">
+        <label for="doc">Document</label>
+        <textarea id="doc" spellcheck="false"></textarea>
+      </div>
+
+      <p class="cb-score" id="score" role="status" aria-live="polite"></p>
+      <div class="cb-doc" id="docView"></div>
+      <h4 style="margin:.6rem 0 .2rem">Which document word each query word matched</h4>
+      <div class="cb-align" id="align"></div>
+      <p class="cb-status" id="status"></p>
+    </section>
+
+    <section class="panel">
+      <h3>Why raw ONNX Runtime Web?</h3>
+      <p class="muted">
+        transformers.js has no ColBERT task, so we run the projected ONNX export directly with onnxruntime-web
+        and tokenize with a transformers.js tokenizer. Each token becomes a 96-dimensional unit vector; MaxSim
+        pairs every query token with its most similar document token and sums those similarities. Unlike a
+        dense embedding — a single opaque vector — every contribution is traceable to a word, which is why
+        late interaction is prized for high-recall, explainable search. (This demo uses a simplified query
+        encoding without ColBERT's <code>[MASK]</code> augmentation; the token alignment it shows is genuine.)
+        Everything runs on your device.
+      </p>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Model runs
+      locally via <a href="https://onnxruntime.ai/docs/tutorials/web/" target="_blank" rel="noopener">ONNX Runtime Web</a>.
+      Model: <a href="https://huggingface.co/answerdotai/answerai-colbert-small-v1" target="_blank" rel="noopener">answerai-colbert-small-v1</a> (Apache-2.0).
+      Source on <a href="https://github.com/PaulKinlan/web-ai-showcase/tree/main/models/colbert-late-interaction" target="_blank" rel="noopener">GitHub</a>.
+    </footer>
+
+    <script type="module">
+      import { COLBERT_CSS, ColbertEngine, escapeHTML, renderAlignment, renderDoc } from "./colbert.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style");
+      style.textContent = COLBERT_CSS;
+      document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+
+      const engine = new ColbertEngine();
+      let ready = false, busy = false, queued = false;
+
+      const EXAMPLES = [
+        { q: "who wrote the play Hamlet", d: "William Shakespeare wrote the tragedy Hamlet around the year 1600." },
+        { q: "how do plants make energy", d: "Photosynthesis converts sunlight, water and carbon dioxide into glucose in a plant's leaves." },
+        { q: "side effects of caffeine", d: "Too much caffeine can cause insomnia, a racing heartbeat, jitteriness and an upset stomach." },
+        { q: "who wrote the play Hamlet", d: "The recipe calls for two cups of flour, a pinch of salt, and three eggs." },
+      ];
+      $("chips").innerHTML = EXAMPLES.map((e, i) => `<button class="chip" type="button" data-i="${i}">${escapeHTML(e.q.slice(0, 22))}…</button>`).join("");
+      for (const b of $("chips").querySelectorAll(".chip")) {
+        b.addEventListener("click", () => { const e = EXAMPLES[+b.dataset.i]; $("query").value = e.q; $("doc").value = e.d; run(); });
+      }
+
+      async function run() {
+        if (!ready) return;
+        if (busy) { queued = true; return; }
+        busy = true;
+        const query = $("query").value.trim(), doc = $("doc").value.trim();
+        if (!query || !doc) { $("score").textContent = ""; $("docView").innerHTML = ""; $("align").innerHTML = ""; $("status").textContent = ""; busy = false; return; }
+        $("status").textContent = "Matching…";
+        try {
+          const { docTokens, align, score, ms } = await engine.score(query, doc);
+          $("score").innerHTML = `MaxSim score: <b>${score.toFixed(1)}</b> <span style="color:var(--muted,#888);font-weight:400">(${align.length} query tokens)</span>`;
+          renderDoc($("docView"), docTokens);
+          renderAlignment($("align"), align);
+          $("status").textContent = `${ms} ms · each query token paired with its best document token`;
+        } catch (e) {
+          $("status").textContent = "Error: " + e.message;
+        } finally {
+          busy = false;
+          if (queued) { queued = false; run(); }
+        }
+      }
+
+      let timer = null;
+      const debounced = () => { clearTimeout(timer); timer = setTimeout(run, 550); };
+      $("query").addEventListener("input", debounced);
+      $("doc").addEventListener("input", debounced);
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "answerdotai/answerai-colbert-small-v1", runtime: "onnxruntime-web", dtype: "fp32", sizeMB: 133, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress).then(() => engine),
+        onReady: async () => { ready = true; const e = EXAMPLES[0]; $("query").value = e.q; $("doc").value = e.d; await run(); },
+      });
+    </script>
+  </body>
+</html>
