@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Learned sparse retrieval (SPLADE) — term expansion in the browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run SPLADE locally via ONNX Runtime Web: encode text into a sparse bag of weighted vocabulary terms — including expansion words the text never used — the basis of neural lexical search. Match two texts by shared terms. On-device, nothing uploaded."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='13'>🔎</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">learned sparse retrieval · text · WASM · ~532 MB</p>
+      <h1>Learned sparse retrieval (SPLADE)</h1>
+      <p class="lede">
+        The built <a href="/web-ai-showcase/models/minilm-embeddings/">embedding models</a> turn text into a
+        dense vector of opaque numbers. <strong>SPLADE</strong> does something different: it produces a
+        <strong>sparse</strong> vector — a <em>weight per word</em> in the vocabulary, mostly zero — and it
+        <strong>expands</strong> the text with related terms it never contained ("pasta" also lights up
+        "noodles", "italy", "food"). That's how neural lexical search matches meaning while staying an
+        interpretable, invertible index. Encode a sentence, then match a second one. Runs on your device.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/prithivida/Splade_PP_en_v1" target="_blank" rel="noopener">Splade_PP_en_v1</a> — a SPLADE++ sparse encoder (BERT MLM head)</td></tr>
+          <tr><th>Task</th><td><code>learned sparse retrieval</code> (feature-extraction) — run via raw ONNX Runtime Web (see note below)</td></tr>
+          <tr><th>Runtime</th><td>onnxruntime-web 1.21 (transformers.js has no SPLADE task) + a transformers.js tokenizer</td></tr>
+          <tr><th>Input</th><td>text → <code>input_ids / attention_mask / token_type_ids</code></td></tr>
+          <tr><th>Output</th><td>MLM logits → SPLADE pool <code>max<sub>i</sub> log(1 + relu(logits))</code> → a sparse weight per vocabulary term</td></tr>
+          <tr><th>Quantization</th><td>fp32 ONNX — runs on the plain WASM backend, no WebGPU needed</td></tr>
+          <tr><th>Download</th><td>~532 MB, cached after first load (auto-inits on return)</td></tr>
+          <tr><th>License</th><td>Apache-2.0 (Splade_PP_en_v1) — the weights stay Apache-2.0 wherever exported</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Encode &amp; expand</h3>
+      <div id="model-loader"></div>
+
+      <div class="sp-chips" id="chips" role="group" aria-label="Examples"></div>
+      <div class="sp-field">
+        <label for="text">Text</label>
+        <input type="text" id="text" spellcheck="false" />
+      </div>
+      <div class="sp-legend"><span><b>term in the text</b></span> <span><i>expansion +</i> (added by the model)</span></div>
+      <div class="sp-cloud" id="cloud" role="status" aria-live="polite"></div>
+
+      <h4 style="margin:1rem 0 .3rem">Match a second text</h4>
+      <p class="muted" style="margin:.1rem 0 .3rem">SPLADE relevance = the sparse dot-product of the two weighted-term vectors.</p>
+      <div class="sp-field">
+        <label for="text2">Compare against…</label>
+        <input type="text" id="text2" spellcheck="false" placeholder="a document or another sentence" />
+      </div>
+      <p class="sp-match" id="match"></p>
+      <div class="sp-shared" id="shared"></div>
+      <p class="sp-status" id="status"></p>
+    </section>
+
+    <section class="panel">
+      <h3>Why raw ONNX Runtime Web?</h3>
+      <p class="muted">
+        transformers.js has no SPLADE task, so we run the masked-LM ONNX directly with onnxruntime-web and
+        tokenize with a transformers.js tokenizer. SPLADE reads the model's word-prediction logits at every
+        position and keeps, for each vocabulary word, its strongest <code>log(1 + relu)</code> score — a
+        sparse vector where a handful of words carry weight, <strong>including words the text implies but
+        never wrote</strong>. Two texts are relevant when their sparse vectors overlap. Everything runs on
+        your device.
+      </p>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Model runs
+      locally via <a href="https://onnxruntime.ai/docs/tutorials/web/" target="_blank" rel="noopener">ONNX Runtime Web</a>.
+      Source on <a href="https://github.com/PaulKinlan/web-ai-showcase/tree/main/models/splade-sparse-retrieval" target="_blank" rel="noopener">GitHub</a>.
+    </footer>
+
+    <script type="module">
+      import { escapeHTML, renderCloud, sparseDot, SPLADE_CSS, SpladeEngine } from "./splade.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style");
+      style.textContent = SPLADE_CSS;
+      document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+
+      const engine = new SpladeEngine();
+      let ready = false, busy = false, queued = false;
+      let repA = null, repB = null;
+
+      const EXAMPLES = [
+        "A man is eating pasta at an Italian restaurant.",
+        "The spacecraft entered orbit around Mars.",
+        "How do I fix a slow laptop battery?",
+        "The central bank raised interest rates to curb inflation.",
+      ];
+      $("chips").innerHTML = EXAMPLES.map((e, i) => `<button class="chip" type="button" data-i="${i}">${escapeHTML(e.slice(0, 26))}…</button>`).join("");
+      for (const b of $("chips").querySelectorAll(".chip")) {
+        b.addEventListener("click", () => { $("text").value = EXAMPLES[+b.dataset.i]; run(); });
+      }
+
+      function showMatch() {
+        if (!repA || !repB) { $("match").textContent = ""; $("shared").innerHTML = ""; return; }
+        const score = sparseDot(repA.sparse, repB.sparse);
+        $("match").innerHTML = `Relevance score: <b>${score.toFixed(1)}</b>`;
+        // shared contributing terms (present in both top-term lists), by combined weight
+        const bTerms = new Map(repB.terms.map((t) => [t.term, t.weight]));
+        const shared = repA.terms
+          .filter((t) => bTerms.has(t.term))
+          .map((t) => ({ term: t.term, w: t.weight * bTerms.get(t.term) }))
+          .sort((x, y) => y.w - x.w).slice(0, 12);
+        $("shared").innerHTML = shared.map((s) => `<span>${escapeHTML(s.term)}</span>`).join("");
+      }
+
+      async function run() {
+        if (!ready) return;
+        if (busy) { queued = true; return; }
+        busy = true;
+        const a = $("text").value.trim(), b = $("text2").value.trim();
+        $("status").textContent = "Encoding…";
+        try {
+          if (a) { repA = await engine.encode(a); renderCloud($("cloud"), repA.terms); }
+          else { repA = null; $("cloud").innerHTML = ""; }
+          repB = b ? await engine.encode(b) : null;
+          showMatch();
+          $("status").textContent = repA ? `${repA.nonZero} non-zero terms${repB ? " · matched" : ""} · ${repA.ms} ms/encode` : "";
+        } catch (e) {
+          $("status").textContent = "Error: " + e.message;
+        } finally {
+          busy = false;
+          if (queued) { queued = false; run(); }
+        }
+      }
+
+      let timer = null;
+      const debounced = () => { clearTimeout(timer); timer = setTimeout(run, 550); };
+      $("text").addEventListener("input", debounced);
+      $("text2").addEventListener("input", debounced);
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "devve1/Splade_PP_en_v2_onnx", runtime: "onnxruntime-web", dtype: "fp32", sizeMB: 532, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress).then(() => engine),
+        onReady: async () => { ready = true; $("text").value = EXAMPLES[0]; await run(); },
+      });
+    </script>
+  </body>
+</html>
