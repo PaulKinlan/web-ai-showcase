@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Textual entailment (NLI) — does one statement follow from another? · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run a cross-encoder NLI model locally via transformers.js: given two sentences, decide whether one entails, contradicts, or is neutral to the other — the reasoning behind fact-checking and RAG grounding. On-device, nothing uploaded."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='13'>⚖️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">natural-language inference · text · WASM · ~91 MB</p>
+      <h1>Textual entailment (NLI)</h1>
+      <p class="lede">
+        The built <a href="/web-ai-showcase/models/zero-shot-text/">zero-shot classifiers</a> use an NLI model
+        to pin a <em>label</em> on a text. This demo exposes the reasoning itself: give it a
+        <strong>premise</strong> and a <strong>hypothesis</strong>, and it decides whether the hypothesis
+        <strong>follows from</strong>, <strong>contradicts</strong>, or is <strong>neutral</strong> to the
+        premise. It's the atomic step behind fact-checking and RAG grounding — <em>does this evidence support
+        the claim?</em> Runs entirely on your device.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/cross-encoder/nli-deberta-v3-xsmall" target="_blank" rel="noopener">nli-deberta-v3-xsmall</a> — a cross-encoder NLI model (deberta-v3-xsmall)</td></tr>
+          <tr><th>Task</th><td><code>text-classification</code> over a sentence PAIR (natural-language inference)</td></tr>
+          <tr><th>Runtime</th><td>transformers.js — tokenized as a pair (<code>tokenizer(premise, { text_pair: hypothesis })</code>), run low-level (the pipeline ignores the pair)</td></tr>
+          <tr><th>Input</th><td>a premise sentence + a hypothesis sentence</td></tr>
+          <tr><th>Output</th><td>a probability over <b>entailment</b> / <b>neutral</b> / <b>contradiction</b> (softmax of the logits)</td></tr>
+          <tr><th>Quantization</th><td>q8 (<code>model_quantized.onnx</code>) — runs on the plain WASM backend, no WebGPU needed</td></tr>
+          <tr><th>Download</th><td>~91 MB, cached after first load (auto-inits on return)</td></tr>
+          <tr><th>License</th><td>Apache-2.0 (base cross-encoder/nli-deberta-v3-xsmall, a fine-tune of Apache-2.0 deberta-v3-xsmall)</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Compare two statements</h3>
+      <div id="model-loader"></div>
+
+      <div class="nli-chips" id="chips" role="group" aria-label="Examples"></div>
+      <div class="nli-field">
+        <label for="premise">Premise (what we know)</label>
+        <input type="text" id="premise" spellcheck="false" />
+      </div>
+      <div class="nli-field">
+        <label for="hypothesis">Hypothesis (the statement to check)</label>
+        <input type="text" id="hypothesis" spellcheck="false" />
+      </div>
+
+      <p class="nli-verdict" id="verdict" role="status" aria-live="polite"></p>
+      <div class="nli-bars" id="bars"></div>
+      <p class="nli-status" id="status"></p>
+    </section>
+
+    <section class="panel">
+      <h3>Entailment vs classification</h3>
+      <p class="muted">
+        A zero-shot classifier runs an NLI model with a fixed hypothesis template ("This example is
+        <em>{label}</em>") to score labels. Here the hypothesis is a <strong>free sentence</strong>, so you
+        see the raw three-way relationship — the same signal used to check whether a retrieved passage
+        supports a generated answer, or whether two statements contradict. It's a
+        <strong>cross-encoder</strong>: premise and hypothesis are read together, so subtle disagreements are
+        caught. Everything runs on your device.
+      </p>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Model runs
+      locally via <a href="https://huggingface.co/docs/transformers.js" target="_blank" rel="noopener">transformers.js</a>.
+      Source on <a href="https://github.com/PaulKinlan/web-ai-showcase/tree/main/models/textual-entailment-nli" target="_blank" rel="noopener">GitHub</a>.
+    </footer>
+
+    <script type="module">
+      import { escapeHTML, labelVerdict, NLI_CSS, NliEngine, renderScores } from "./nli.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style");
+      style.textContent = NLI_CSS;
+      document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+
+      const engine = new NliEngine();
+      let ready = false, busy = false, queued = false;
+
+      const EXAMPLES = [
+        { name: "Entailment", p: "A man is playing a guitar on stage in front of a crowd.", h: "A person is performing music." },
+        { name: "Contradiction", p: "The Eiffel Tower is located in Paris, France.", h: "The Eiffel Tower is in Berlin." },
+        { name: "Neutral", p: "A woman is walking her dog in the park.", h: "The dog is a golden retriever." },
+        { name: "Fact-check", p: "At sea level, water boils at 100 degrees Celsius.", h: "Water boils at 50 degrees Celsius at sea level." },
+        { name: "RAG grounding", p: "The report says quarterly revenue rose 12% to $4.2 billion.", h: "Revenue increased last quarter." },
+      ];
+      $("chips").innerHTML = EXAMPLES.map((e, i) => `<button class="chip" type="button" data-i="${i}">${escapeHTML(e.name)}</button>`).join("");
+      for (const b of $("chips").querySelectorAll(".chip")) {
+        b.addEventListener("click", () => {
+          const e = EXAMPLES[+b.dataset.i];
+          $("premise").value = e.p;
+          $("hypothesis").value = e.h;
+          run();
+        });
+      }
+
+      async function run() {
+        if (!ready) return;
+        if (busy) { queued = true; return; }
+        busy = true;
+        const p = $("premise").value.trim(), h = $("hypothesis").value.trim();
+        if (!p || !h) { $("verdict").textContent = ""; $("bars").innerHTML = ""; $("status").textContent = ""; busy = false; return; }
+        $("status").textContent = "Reasoning…";
+        try {
+          const { scores, top, ms } = await engine.infer(p, h);
+          $("verdict").innerHTML = `<span style="color:${{ entailment: "#2bb59a", contradiction: "#e05b5b", neutral: "#c79a3a" }[top.label]}">${top.label}</span> — ${labelVerdict(top.label)}`;
+          renderScores($("bars"), scores);
+          $("status").textContent = `${Math.round(top.prob * 100)}% ${top.label} · ${ms} ms`;
+        } catch (e) {
+          $("status").textContent = "Error: " + e.message;
+        } finally {
+          busy = false;
+          if (queued) { queued = false; run(); }
+        }
+      }
+
+      let timer = null;
+      const debounced = () => { clearTimeout(timer); timer = setTimeout(run, 500); };
+      $("premise").addEventListener("input", debounced);
+      $("hypothesis").addEventListener("input", debounced);
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/nli-deberta-v3-xsmall-ONNX", runtime: "transformers.js", dtype: "q8", sizeMB: 91, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: async () => {
+          ready = true;
+          const e = EXAMPLES[0];
+          $("premise").value = e.p;
+          $("hypothesis").value = e.h;
+          await run();
+        },
+      });
+    </script>
+  </body>
+</html>
