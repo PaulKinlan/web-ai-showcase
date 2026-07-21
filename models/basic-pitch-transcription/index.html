@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Music transcription — audio to notes in the browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run Spotify's Basic Pitch locally via ONNX Runtime Web: turn music into a polyphonic piano roll of notes. Play a sample, upload a clip, or record from your mic — many notes at once, all on-device."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎼</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">music transcription · audio · WASM · ~0.3 MB</p>
+      <h1>Music transcription (audio → notes)</h1>
+      <p class="lede">
+        The built <a href="/web-ai-showcase/models/pitch-detection/">pitch detection</a> demo tracks one note
+        at a time. Real music is <strong>polyphonic</strong> — many notes at once. <strong>Basic Pitch</strong>,
+        Spotify's tiny (~0.3 MB) audio-to-MIDI model, listens to a whole mix and lights up every key it hears
+        as a <strong>piano roll</strong>. Play a sample, drop in an audio clip, or record from your mic — the
+        model runs entirely on your device; nothing is uploaded.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://github.com/spotify/basic-pitch" target="_blank" rel="noopener">Spotify Basic Pitch</a> (nmp) — a lightweight audio-to-MIDI network</td></tr>
+          <tr><th>Task</th><td><code>music-transcription</code> / audio-to-MIDI (polyphonic note detection) — run via raw ONNX Runtime Web (see note below)</td></tr>
+          <tr><th>Runtime</th><td>onnxruntime-web 1.21 (transformers.js has no music-transcription task)</td></tr>
+          <tr><th>Input</th><td><code>[1, 43844, 1]</code> float32 — one ~1.99 s window of mono audio at 22050 Hz (raw waveform; the harmonic-CQT frontend is inside the graph)</td></tr>
+          <tr><th>Output</th><td>per window: <b>note</b> <code>[1, 172, 88]</code> + <b>onset</b> <code>[1, 172, 88]</code> (MIDI 21–108) + fine <b>contour</b> <code>[1, 172, 264]</code></td></tr>
+          <tr><th>Quantization</th><td>fp32 ONNX — runs on the plain WASM execution provider, no WebGPU needed</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (single-threaded on GitHub Pages) — ~60 ms per ~2 s window</td></tr>
+          <tr><th>Download</th><td>~0.3 MB, cached after first load (auto-inits on return)</td></tr>
+          <tr><th>License</th><td>Apache-2.0 (Spotify) — the weights stay Apache-2.0 wherever mirrored</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers, Web Audio (decode + mic), Canvas — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Transcribe</h3>
+      <div id="model-loader"></div>
+
+      <div class="bp-controls" id="samples" role="group" aria-label="Sample clips">
+        <button class="chip bp-chip" type="button" data-src="sample-chords.wav">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+          Chords (C–F–G–C)
+        </button>
+        <button class="chip bp-chip" type="button" data-src="sample-arpeggio.wav">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 18 L10 12 L14 15 L20 6"/></svg>
+          Arpeggio
+        </button>
+        <button class="chip bp-chip" type="button" data-src="sample-duet.wav">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/><path d="M3 10h4"/></svg>
+          Two-hand duet
+        </button>
+        <button class="chip bp-chip" id="recBtn" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v4"/></svg>
+          <span id="recLabel">Record mic</span>
+        </button>
+      </div>
+
+      <div class="bp-dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an audio file">
+        Drop an audio file here, or click to choose
+        <input type="file" id="file" accept="audio/*" hidden />
+      </div>
+
+      <p class="bp-status" id="status" role="status" aria-live="polite">Pick a sample, upload a clip, or record to transcribe.</p>
+
+      <div class="bp-roll-wrap">
+        <canvas id="roll" width="1100" height="260" role="img" aria-label="Piano roll of detected notes over time"></canvas>
+      </div>
+
+      <h4 style="margin:.8rem 0 .3rem">Detected notes</h4>
+      <p class="muted" style="margin:.1rem 0 .3rem">A simple peak-pick over the model's note + onset heads (not Basic Pitch's full note-creation algorithm).</p>
+      <div class="bp-notes" id="notes" aria-live="polite"></div>
+    </section>
+
+    <section class="panel">
+      <h3>Why raw ONNX Runtime Web?</h3>
+      <p class="muted">
+        Transformers.js has no music-transcription task, so we run Basic Pitch's ONNX graph directly with
+        onnxruntime-web: resample audio to 22050 Hz mono, feed it in ~2 s windows, and read the model's note,
+        onset, and contour heads. The <strong>piano roll above is the model's raw note output</strong> — every
+        lit cell is a pitch the network heard at that moment. It's polyphonic by design, so chords and
+        two-hand playing show many keys at once. Everything runs on your device.
+      </p>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Model runs
+      locally via <a href="https://onnxruntime.ai/docs/tutorials/web/" target="_blank" rel="noopener">ONNX Runtime Web</a>.
+      Sample clips are synthesized in <a href="https://github.com/PaulKinlan/web-ai-showcase/blob/main/scripts/gen-basic-pitch-samples.mjs" target="_blank" rel="noopener">this repo</a>.
+      Source on <a href="https://github.com/PaulKinlan/web-ai-showcase/tree/main/models/basic-pitch-transcription" target="_blank" rel="noopener">GitHub</a>.
+    </footer>
+
+    <script type="module">
+      import { BP_CSS, decodeToMono22k, drawPianoRoll, pickNotes, TranscribeEngine } from "./transcribe.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style");
+      style.textContent = BP_CSS;
+      document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+
+      const engine = new TranscribeEngine();
+      let ready = false, busy = false;
+
+      async function transcribeAudio(audio, label) {
+        if (!ready || busy) return;
+        busy = true;
+        $("status").textContent = `Transcribing ${label}…`;
+        try {
+          const roll = await engine.transcribe(audio);
+          drawPianoRoll($("roll"), roll);
+          const notes = pickNotes(roll);
+          $("notes").innerHTML = notes.length
+            ? notes.map((n) => `<span class="bp-note" title="${n.startSec.toFixed(2)}s · ${(n.durSec * 1000) | 0}ms">${n.name}</span>`).join("")
+            : `<span class="muted">No clear notes picked (try a louder or more tonal clip).</span>`;
+          const poly = notes.length;
+          $("status").textContent = `${label}: ${poly} note event${poly === 1 ? "" : "s"} · ${roll.frames} frames · ${roll.ms} ms`;
+        } catch (e) {
+          $("status").textContent = "Transcription error: " + e.message;
+        } finally {
+          busy = false;
+        }
+      }
+
+      async function fromUrl(src, label) {
+        $("status").textContent = `Loading ${label}…`;
+        const ab = await (await fetch(src)).arrayBuffer();
+        await transcribeAudio(await decodeToMono22k(ab), label);
+      }
+
+      // sample chips
+      for (const b of document.querySelectorAll("#samples .chip[data-src]")) {
+        b.addEventListener("click", () => fromUrl(b.dataset.src, b.textContent.trim()));
+      }
+      // file upload
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.style.borderColor = "#2bb59a"; });
+      drop.addEventListener("dragleave", () => (drop.style.borderColor = ""));
+      drop.addEventListener("drop", async (e) => {
+        e.preventDefault();
+        drop.style.borderColor = "";
+        const f = e.dataTransfer.files[0];
+        if (f) { const ab = await f.arrayBuffer(); await transcribeAudio(await decodeToMono22k(ab), f.name); }
+      });
+      file.addEventListener("change", async () => {
+        const f = file.files[0];
+        if (f) { const ab = await f.arrayBuffer(); await transcribeAudio(await decodeToMono22k(ab), f.name); }
+      });
+      // mic record (up to ~5 s)
+      let rec = null, recording = false;
+      $("recBtn").addEventListener("click", async () => {
+        if (recording) { rec?.stop(); return; }
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          const chunks = [];
+          rec = new MediaRecorder(stream);
+          rec.ondataavailable = (e) => chunks.push(e.data);
+          rec.onstop = async () => {
+            recording = false;
+            $("recLabel").textContent = "Record mic";
+            stream.getTracks().forEach((t) => t.stop());
+            const ab = await new Blob(chunks).arrayBuffer();
+            await transcribeAudio(await decodeToMono22k(ab), "your recording");
+          };
+          rec.start();
+          recording = true;
+          $("recLabel").textContent = "Stop (recording…)";
+          setTimeout(() => recording && rec.stop(), 5000);
+        } catch {
+          $("status").textContent = "Microphone unavailable or permission denied.";
+        }
+      });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "spotify/basic-pitch", runtime: "onnxruntime-web", dtype: "fp32", sizeMB: 0.3, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress).then(() => engine),
+        onReady: async () => { ready = true; await fromUrl("sample-chords.wav", "Chords (C–F–G–C)"); },
+      });
+    </script>
+  </body>
+</html>
