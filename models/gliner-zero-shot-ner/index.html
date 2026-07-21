@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Zero-shot NER (GLiNER) — extract any entity types in the browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run GLiNER locally via ONNX Runtime Web: extract entities of ANY types you name — not a fixed label set. Type your own types (medication, spaceship, price…) and see them tagged. On-device, nothing uploaded."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='13'>🏷️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">zero-shot NER · text · WASM · ~183 MB</p>
+      <h1>Zero-shot entity extraction (GLiNER)</h1>
+      <p class="lede">
+        The built <a href="/web-ai-showcase/models/bert-ner/">NER models</a> only know a fixed handful of
+        classes (person, org, location…). <strong>GLiNER</strong> extracts entities of <strong>any types you
+        name</strong> — type <em>medication</em>, <em>spaceship</em>, or <em>price</em> and it finds them,
+        with no retraining. It scores every candidate word-span against your entity-type prompts. Edit the
+        text and the types below and watch the tags change. Runs entirely on your device.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://github.com/urchade/GLiNER" target="_blank" rel="noopener">GLiNER</a> small v2.1 — a single <code>deberta-v3-small</code> span encoder</td></tr>
+          <tr><th>Task</th><td><code>zero-shot / open-vocabulary NER</code> — run via raw ONNX Runtime Web (see note below)</td></tr>
+          <tr><th>Runtime</th><td>onnxruntime-web 1.21 (transformers.js has no GLiNER pipeline) + a transformers.js tokenizer</td></tr>
+          <tr><th>Input</th><td>text + a list of entity types, encoded as <code>&lt;&lt;ENT&gt;&gt; type … &lt;&lt;SEP&gt;&gt; words</code> with span indices</td></tr>
+          <tr><th>Output</th><td>a relevance score per (word-span × type); sigmoid + greedy non-overlapping selection → tagged spans</td></tr>
+          <tr><th>Quantization</th><td>q8 (<code>model_quantized.onnx</code>) — runs on the plain WASM backend, no WebGPU needed</td></tr>
+          <tr><th>Download</th><td>~183 MB, cached after first load (auto-inits on return)</td></tr>
+          <tr><th>License</th><td>Apache-2.0 (GLiNER) — the weights stay Apache-2.0 wherever converted</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Extract</h3>
+      <div id="model-loader"></div>
+
+      <div class="gl-chips" id="chips" role="group" aria-label="Examples"></div>
+      <div class="gl-field">
+        <label for="text">Text</label>
+        <textarea id="text" spellcheck="false"></textarea>
+      </div>
+      <div class="gl-field">
+        <label for="types">Entity types (comma-separated — type your own!)</label>
+        <input type="text" id="types" spellcheck="false" />
+      </div>
+
+      <div class="gl-legend" id="legend"></div>
+      <div class="gl-out" id="out" role="status" aria-live="polite"></div>
+      <p class="gl-status" id="status"></p>
+    </section>
+
+    <section class="panel">
+      <h3>Why raw ONNX Runtime Web?</h3>
+      <p class="muted">
+        transformers.js has no GLiNER pipeline, so we run the ONNX graph directly with onnxruntime-web and
+        tokenize with a transformers.js tokenizer. The preprocessing and span decoding faithfully reimplement
+        the MIT-licensed <a href="https://github.com/urchade/GLiNER" target="_blank" rel="noopener">gliner</a>
+        library — build the <code>&lt;&lt;ENT&gt;&gt;…&lt;&lt;SEP&gt;&gt;</code> prompt, enumerate candidate
+        spans, score each against each type, then greedily keep the highest-scoring non-overlapping ones. It
+        was proven correct against known sentences before shipping. Everything runs on your device.
+      </p>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Model runs
+      locally via <a href="https://onnxruntime.ai/docs/tutorials/web/" target="_blank" rel="noopener">ONNX Runtime Web</a>.
+      Model + method: <a href="https://github.com/urchade/GLiNER" target="_blank" rel="noopener">GLiNER</a> (Apache-2.0).
+      Source on <a href="https://github.com/PaulKinlan/web-ai-showcase/tree/main/models/gliner-zero-shot-ner" target="_blank" rel="noopener">GitHub</a>.
+    </footer>
+
+    <script type="module">
+      import { escapeHTML, GLINER_CSS, GlinerEngine, parseTypes, renderHighlighted, typeColor } from "./gliner.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style");
+      style.textContent = GLINER_CSS;
+      document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+
+      const engine = new GlinerEngine();
+      let ready = false, busy = false, queued = false;
+
+      const EXAMPLES = [
+        { name: "News", text: "Apple was founded by Steve Jobs in California in 1976 and is now led by Tim Cook.", types: "company, person, location, date" },
+        { name: "Medical", text: "The patient was prescribed 200mg of ibuprofen twice daily for chronic arthritis.", types: "medication, dosage, frequency, condition" },
+        { name: "Shopping", text: "I bought the Sony WH-1000XM5 headphones on Amazon for $349 last Tuesday.", types: "product, brand, retailer, price, day" },
+        { name: "Sci-fi", text: "Captain Kirk flew the USS Enterprise to the planet Vulcan to meet Spock.", types: "character, spaceship, planet" },
+      ];
+      $("chips").innerHTML = EXAMPLES.map((e, i) => `<button class="chip" type="button" data-i="${i}">${escapeHTML(e.name)}</button>`).join("");
+      for (const b of $("chips").querySelectorAll(".chip")) {
+        b.addEventListener("click", () => {
+          const e = EXAMPLES[+b.dataset.i];
+          $("text").value = e.text;
+          $("types").value = e.types;
+          run();
+        });
+      }
+
+      function renderLegend(types) {
+        $("legend").innerHTML = types.map((t) => `<span style="--c:${typeColor(t)}">${escapeHTML(t)}</span>`).join("");
+      }
+
+      async function run() {
+        if (!ready) return;
+        if (busy) { queued = true; return; }
+        busy = true;
+        const text = $("text").value;
+        const types = parseTypes($("types").value);
+        renderLegend(types);
+        if (!text.trim() || !types.length) { $("out").textContent = text; $("status").textContent = ""; busy = false; return; }
+        $("status").textContent = "Extracting…";
+        try {
+          const { spans, ms } = await engine.extract(text, types, 0.5);
+          renderHighlighted($("out"), text, spans);
+          $("status").textContent = `${spans.length} entit${spans.length === 1 ? "y" : "ies"} · ${types.length} types · ${ms} ms`;
+        } catch (e) {
+          $("status").textContent = "Error: " + e.message;
+        } finally {
+          busy = false;
+          if (queued) { queued = false; run(); }
+        }
+      }
+
+      let timer = null;
+      const debounced = () => { clearTimeout(timer); timer = setTimeout(run, 500); };
+      $("text").addEventListener("input", debounced);
+      $("types").addEventListener("input", debounced);
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/gliner_small-v2.1", runtime: "onnxruntime-web", dtype: "q8", sizeMB: 183, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress).then(() => engine),
+        onReady: async () => {
+          ready = true;
+          const e = EXAMPLES[0];
+          $("text").value = e.text;
+          $("types").value = e.types;
+          await run();
+        },
+      });
+    </script>
+  </body>
+</html>
