@@ -1,0 +1,113 @@
+{
+  "schemaVersion": 1,
+  "id": "pii-detection-redaction",
+  "revision": 1,
+  "reviewedAt": "2026-07-21T00:00:00Z",
+  "reviewer": "solo new-family build 2026-07-21: PII detection correctness + full-span capture proven FIRST in headless Chrome (transformers.js token-classification WASM q8), then the deployed page driven end-to-end. deberta-v3 quantises cleanly (q8 == fp16 == fp32 detection, verified) so q8 was chosen; whole PII values are captured as single spans so a redaction masks the value, never half of it. The ai4privacy ModernBERT anonymiser was BLOCKED this round (missed an email entirely at q8/fp16/fp32 alike) - this model detects that same email. No licensed media - the user types text.",
+  "frontend": true,
+  "rubric": [
+    {
+      "dimension": "real-inference",
+      "score": 5,
+      "severity": "info",
+      "evidence": "DETECTION CONSISTENCY + full-span capture verified in headless Chrome (transformers.js token-classification, WASM q8) BEFORE building. In naturally-phrased sentences the model tags whole PII values as single spans: 'sam.lee@acme.io' -> EMAIL, '415-555-0182' -> PHONE_NUMBER, a full credit-card number, IBAN GB29..., a full Bitcoin address 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa -> BITCOINADDRESS, SSN 078-05-1120 -> SSN, 1988-07-14 -> DATE. deberta-v3 quantises cleanly - q8 == fp16 == fp32 (verified), so q8 (143 MB) is honest. Deployed page (scripts/validate-pii-detection-redaction.mjs 14/14): the pre-filled message highlights 9 PII spans and the Redact toggle masks each. Every span is the model's real BIO output, not canned.",
+      "notes": "The email is even detected in a sentence ('Contact maria.gonzalez@hospital.org please.') where the ai4privacy ModernBERT anonymiser returned all-O identically at q8/fp16/fp32 - which is why that model was blocked and this one shipped."
+    },
+    {
+      "dimension": "io-shape",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Input free text -> per-token BIO tags over 60 PII categories (EMAIL, PHONE_NUMBER, CREDITCARDNUMBER, IBAN, BITCOINADDRESS, SSN, PASSWORD, IP, STREETADDRESS, FIRSTNAME/LASTNAME, DATE, ...). A DISTINCT capability from the built proper-noun NER (bert-ner: 4 PER/ORG/LOC/MISC classes) and general zero-shot NER (GLiNER): a dedicated STRUCTURED-PII scrubber over cards / IBANs / crypto wallets / credentials / addresses, with a redaction output.",
+      "notes": "The pipeline returns {entity, score, index, word} with NO char offsets; the worker maps each token back to the original text (cursor-walk indexOf), merges B-/I- runs, and trims wrapping punctuation so a highlight/redaction lands on the value."
+    },
+    {
+      "dimension": "runtime-config",
+      "score": 5,
+      "severity": "info",
+      "evidence": "At-a-glance declares the model (phatvo/deberta_finetuned_pii-ONNX, linked, ONNX build of lakshyakh93/deberta_finetuned_pii), task (token-classification), the 60 categories, architecture (mDeBERTa-v3 base), quantisation (q8, noted verified == fp16/fp32), backend (WASM), download (~143 MB) and license (MIT, base model). No invented API - the How-it-works block shows the real pipeline call + BIO output.",
+      "notes": "transformers.js is loaded via the shared lib/webai.js loadPipeline; the 60 labels come from the model config at load."
+    },
+    {
+      "dimension": "cache-init",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Loads through the shared createModelLoader auto-init architecture (model {modelId:'phatvo/deberta_finetuned_pii-ONNX', runtime:'transformers.js', dtype:'q8', sizeMB:143}). First visit shows an explicit Download (~143 MB); the ONNX + tokenizer are cached by transformers.js so a returning visit auto-initialises (checking -> ready) with NO Download click. Verified: fresh profile showed Download; clicking it flipped to ready and enabled the editor.",
+      "notes": "The never-silently-download guarantee + auto-init on return hold via the shared loader; inference is off the main thread in a module Worker."
+    },
+    {
+      "dimension": "states",
+      "score": 4,
+      "severity": "minor",
+      "evidence": "checking -> Download (~143 MB) -> ready (editor enabled) -> live detection debounced 350 ms after typing -> Redact toggle re-renders instantly -> Copy button appears only when PII is present. Errors surface on the page in a role=status .err region (detection failures), not only the console. Verified download -> ready -> detect -> redact end-to-end.",
+      "notes": "Empty input clears the output, legend, readout and copy button. A detection failure is caught per-run and shown in the status line."
+    },
+    {
+      "dimension": "controls",
+      "score": 5,
+      "severity": "info",
+      "evidence": "A real editable textarea (type/paste), four example chips (support message, wallets & logins, server log line, contact card), a Redact checkbox toggle, and a Copy-redacted-text button that writes the [CATEGORY]-masked string to the clipboard with 'Copied ✓' feedback. Every control is labelled and keyboard-operable; no dead controls.",
+      "notes": "The chips set the textarea and re-run; the toggle swaps highlight <-> redacted view without re-running inference."
+    },
+    {
+      "dimension": "no-fake-output",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Every highlight + placeholder is the model's real BIO output mapped to the text; the readout shows the live count + latency + backend, and the 'see inside' strip shows the raw per-token tags. The page is HONEST about limits: categories are best-effort (a card may read ACCOUNTNUMBER, an IBAN MASKEDNUMBER), adjacent numbers can split/mislabel, and no detector catches everything - framed as a strong first pass needing human review.",
+      "notes": "The redaction is verified to NOT leak the raw email into the output (validate 14/14) - the whole value is masked, not part of it."
+    },
+    {
+      "dimension": "accessibility",
+      "score": 4,
+      "severity": "minor",
+      "evidence": "The textarea has a visible label; the output region is aria-live=polite; every button (chips, copy) exposes an accessible name; the redact toggle is a native checkbox in a <label>. Each highlight carries a title with its category + confidence. Colour is not the only signal - the category name is shown as a text tag on every highlight and in the legend.",
+      "notes": "A per-highlight keyboard focus path (tab through detected spans) would be a reasonable enhancement; the results are already fully readable as text (tags + legend + readout)."
+    },
+    {
+      "dimension": "responsive",
+      "score": 4,
+      "severity": "info",
+      "evidence": "The textarea, toolbar, output, legend and token strip all use fluid widths and wrap; the output uses white-space:pre-wrap + word-break so long values (IBANs, wallet addresses) don't overflow. Verified 0 horizontal overflow at desktop AND mobile 360px (validate 14/14), 0 console errors.",
+      "notes": "The token 'see inside' strip is capped in height with its own scroll so a long input doesn't push the page."
+    },
+    {
+      "dimension": "performance",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Inference runs in a dedicated module Worker; detection is debounced 350 ms after typing so keystrokes stay smooth (INP). A deberta-v3 forward pass on a short message is well under a second on WASM. The ~143 MB download is one-time (cached).",
+      "notes": "The Redact toggle and copy operate on the already-computed spans (no re-inference), so they are instant."
+    }
+  ],
+  "guidanceConsulted": [
+    {
+      "query": "highlight and redact detected spans inline over user text",
+      "id": "highlight-text-ranges",
+      "recommendation": "Prefer the CSS Custom Highlight API to style arbitrary text ranges without wrapping text in extra DOM.",
+      "appliedOrException": "exception — I rebuild a SEPARATE read-only presentation node (never editing the source textarea in place) and need per-span category BADGES, individual tooltips, and a swap-to-[CATEGORY]-placeholder mode; the paint-only Highlight API cannot render inserted badge text or the placeholder, so <mark>/<span> wrapping in the rebuilt container is the correct tool and the 'don't touch source innerHTML' concern does not apply.",
+      "evidence": "highlights carry a visible category tag + tooltip and can be replaced by [CATEGORY] placeholders; the user's textarea is never mutated"
+    },
+    {
+      "query": "run model inference in a web worker to keep typing responsive (INP)",
+      "id": "performance",
+      "recommendation": "Move inference off the main thread; debounce rapid updates; avoid long blocking tasks so INP stays low.",
+      "appliedOrException": "applied — token-classification runs in a module Worker; detection is debounced 350 ms; the Redact/Copy paths reuse computed spans with no re-inference.",
+      "evidence": "typing stays smooth; the control UI never blocks on a forward pass"
+    },
+    {
+      "query": "accessible labelled controls, live results region, and colour-independent status",
+      "id": "accessibility",
+      "recommendation": "Use semantic labelled controls, announce dynamic results in an aria-live region, and never rely on colour alone.",
+      "appliedOrException": "applied — labelled textarea, aria-live output, named buttons, native checkbox toggle; every highlight shows its category as text (tag + legend), not colour alone.",
+      "evidence": "results are readable as text; controls are keyboard-operable"
+    }
+  ],
+  "openQuestions": [
+    "Would a second-pass regex/validator (Luhn for cards, IBAN checksum) on top of the model's spans meaningfully cut false positives and fix the best-effort category labels?",
+    "Is there a cleanly-licensed PII model that keeps types stable when several numbers are packed adjacently, or is that inherently ambiguous for a token classifier?"
+  ],
+  "followUpGoals": [
+    "Add an optional deterministic validator layer (Luhn / IBAN / email regex) that re-labels or confirms the model's numeric spans.",
+    "Offer redaction styles beyond [CATEGORY]: hashing, consistent pseudonyms (same name -> same token), or partial masking (keep last 4 digits).",
+    "Add a keyboard path to step through detected spans and toggle individual ones before copying."
+  ],
+  "summary": "PII detection & redaction (deberta_finetuned_pii, mDeBERTa-v3) — a distinct text family: a dedicated 60-category STRUCTURED-PII scrubber (emails, phones, cards, IBANs, crypto wallets, SSNs, passwords, IPs, addresses) with inline highlighting-by-group and a one-click Redact-to-[CATEGORY] copy, all on-device. Proven detection-consistent + full-span (no leak) in the browser on transformers.js WASM q8 (q8 == fp16 == fp32 verified; detects an email the blocked ai4privacy ModernBERT missed). ~143 MB, MIT (base). Index demo complete + verified 14/14; a deterministic validator layer, richer redaction styles, and a keyboard span-stepper are recorded follow-ups."
+}
