@@ -1,0 +1,113 @@
+{
+  "schemaVersion": 1,
+  "id": "person-reid",
+  "revision": 1,
+  "reviewedAt": "2026-07-21T00:00:00Z",
+  "reviewer": "solo new-family build 2026-07-21 — YouTu-ReID runnability + correctness proven FIRST in headless Chrome (real ONNX embedding on ORT-web WASM cleanly separated same-person from different-person crops), then the deployed page driven end-to-end (Download 107 MB -> auto-init -> preselected SAME pair 0.873 / different 0.579). Sample people are cropped CLIENT-SIDE from a ledgered licensed photo (no new images).",
+  "frontend": true,
+  "rubric": [
+    {
+      "dimension": "real-inference",
+      "score": 5,
+      "severity": "info",
+      "evidence": "RUNNABILITY + CORRECTNESS verified in headless Chrome (onnxruntime-web 1.21.0, WASM EP, no GPU) BEFORE building. YouTu-ReID fp32 (opencv/person_reid_youtureid, 107 MB) builds a session (input [1,3,256,128], output [1,768,1,1]) and runs ~1 s/crop. On runners cropped from a licensed marathon photo: SAME person (a jittered/brighter re-crop) scored cosine 0.939; DIFFERENT runners scored 0.65-0.75. Deployed page (scripts/validate-reid.mjs 5/5): preselected same-person pair 0.873 (verdict SAME), two different runners 0.579 (verdict DIFFERENT). The embedding separates identities — not a canned result.",
+      "notes": "Inference runs off the main thread in a module Worker; the L2-normalised 768-d embedding is transferred (not cloned) back. int8 exports risk aborting on WASM (as RAFT's did), so fp32 ships."
+    },
+    {
+      "dimension": "io-shape",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Person crop [1,3,256,128] float32 in 0-1 (plain RGB, CHW) -> L2-normalised 768-d embedding. Cosine similarity of two embeddings is the match score, shown with a bar + a threshold verdict. A DISTINCT capability: whole-body person re-identification (clothing/build/colour across cameras) vs the built face-embedding (a face) — different input framing, different use.",
+      "notes": "Output is [1,768,1,1]; flattened to 768 and L2-normalised in the worker so cosine = dot product."
+    },
+    {
+      "dimension": "runtime-config",
+      "score": 5,
+      "severity": "info",
+      "evidence": "At-a-glance declares the exact model id (opencv/person_reid_youtureid, linked), task (person-reid), runtime (onnxruntime-web 1.21 — noting transformers.js has no person-reid class/task), the real I/O shapes, quantisation (fp32), backend (WASM single-thread), download (~107 MB) and license (Apache-2.0, OpenCV Zoo). No invented API surface.",
+      "notes": "onnxruntime-web is pinned in THIS worker only (isolated per-worker ORT-web escape hatch, like raft/microdehaze); shared lib/webai.js untouched."
+    },
+    {
+      "dimension": "cache-init",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Loads through the shared createModelLoader auto-init architecture (model {modelId:'opencv/person_reid_youtureid', runtime:'onnxruntime-web', dtype:'fp32', sizeMB:107}). The weights are fetched THROUGH Cache Storage (person-reid-onnx-cache) so lib/model-cache.js scans '/opencv/person_reid_youtureid/' -> a returning visit auto-initialises with NO Download click; first visit shows an explicit Download (~107 MB). Verified: fresh profile showed 'Download model (~107 MB)', clicking it downloaded + flipped to ready.",
+      "notes": "107 MB is a real cost, so honest first-visit consent + auto-init on return matter; a per-model clear-cache control is offered once ready. Download % surfaces via the shared <model-download-status> runtime-owned aggregate."
+    },
+    {
+      "dimension": "states",
+      "score": 4,
+      "severity": "minor",
+      "evidence": "checking -> Download (absent) -> downloading (aggregate %) -> ready (preselects the same-person pair) -> 'Comparing embeddings…' -> similarity + verdict; error path surfaces the message + Retry via the shared loader. Verified the download -> ready -> compare sequence end-to-end.",
+      "notes": "PENDING: the basics/practical/wild/multi-model ladder is not yet built (index only). Recorded in followUpGoals."
+    },
+    {
+      "dimension": "controls",
+      "score": 4,
+      "severity": "info",
+      "evidence": "Click (or keyboard Enter/Space) two person cards to compare; a third selection replaces the oldest. Cards are focusable role=button with labels; the result + bar update live.",
+      "notes": "A person-crop upload (compare your own two crops) would broaden it; noted as a follow-up."
+    },
+    {
+      "dimension": "no-fake-output",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Every similarity is the real cosine of two model embeddings — the same-vs-different separation (0.87-0.94 vs 0.58-0.75) is the visible honesty check. The 'other view' crop is HONESTLY LABELLED as a re-framed/brightened crop of the same person (a stand-in for a second camera), not claimed to be a genuine multi-camera capture.",
+      "notes": "The threshold verdict (0.85) is a demonstrative cutoff, stated as approximate; the raw cosine is always shown so the user isn't given a false binary."
+    },
+    {
+      "dimension": "accessibility",
+      "score": 4,
+      "severity": "info",
+      "evidence": "The result is role=status aria-live=polite; person cards are role=button tabindex=0 with visible labels + keyboard activation; the similarity bar is aria-hidden (the numeric cosine + verdict text carry the information).",
+      "notes": "Selection state is shown by a border AND announced via the updated result text."
+    },
+    {
+      "dimension": "responsive",
+      "score": 4,
+      "severity": "info",
+      "evidence": "The gallery is flex-wrap; person crops are fixed small thumbnails that wrap; the bar is max-width capped. Verified 0 horizontal overflow at desktop AND mobile 390px (validate-reid.mjs), 0 console errors.",
+      "notes": "Index verified desktop+mobile; the subpage ladder + broader matrix are a recorded follow-up."
+    },
+    {
+      "dimension": "performance",
+      "score": 5,
+      "severity": "info",
+      "evidence": "All inference runs in a dedicated module Worker; embeddings are transferred (zero-copy). Embeddings are computed lazily on first selection and cached per person, so repeated comparisons are instant. The main thread stays responsive (the harness introspected it freely while embeddings computed).",
+      "notes": "~1 s per crop on single-thread WASM; a 107 MB one-time download is inherent to the ResNet-50-IBN backbone."
+    }
+  ],
+  "guidanceConsulted": [
+    {
+      "query": "run ONNX embedding inference off the main thread in a web worker; transfer typed arrays zero-copy",
+      "id": "performance",
+      "recommendation": "Move heavy work off the main thread; transfer (don't clone) large buffers; cache expensive results.",
+      "appliedOrException": "applied — embedding runs in a module Worker; the 768-d vector is postMessage-transferred; embeddings are cached per person so re-comparison is instant.",
+      "evidence": "page stays responsive during embedding; harness introspected the main thread while crops embedded"
+    },
+    {
+      "query": "responsive thumbnail gallery that wraps without horizontal overflow",
+      "id": "css-layout",
+      "recommendation": "Prefer flexible tracks + flex-wrap and intrinsic sizing over fixed widths; cap widths with max-inline-size.",
+      "appliedOrException": "applied — .reid-gallery is flex-wrap; person cards are small fixed thumbnails that wrap; the similarity bar is max-width capped.",
+      "evidence": "0 horizontal overflow measured at desktop + mobile 390px"
+    },
+    {
+      "query": "announce comparison result via aria-live; make image cards keyboard-operable buttons",
+      "id": "html",
+      "recommendation": "Announce results via role=status aria-live; make interactive cards role=button tabindex=0 with keyboard activation and accessible names.",
+      "appliedOrException": "applied — result is role=status aria-live=polite; person cards are role=button tabindex=0 with Enter/Space handlers + labels.",
+      "evidence": "cards keyboard-activatable; result text updates announce the verdict + cosine"
+    }
+  ],
+  "openQuestions": [
+    "Would genuine multi-camera person crops (real second views) strengthen the demo over the labelled re-crop stand-in, and can any be sourced under a clear license?",
+    "Is a smaller/int8 re-id export that runs cleanly on WASM available, to cut the 107 MB download?"
+  ],
+  "followUpGoals": [
+    "Build the basics/practical/wild/multi-model ladder (e.g. practical: a query-vs-gallery ranking; wild: hard cases — similar clothing, occlusion; multi-model: person-detector crops feeding re-id automatically).",
+    "Add a person-crop upload path so users can compare their own two crops.",
+    "Source genuine multi-camera / multi-view licensed person pairs to replace the labelled re-crop stand-in for the same-person case."
+  ],
+  "summary": "Whole-body person re-identification (YouTu-ReID) — a genuinely new vision family, distinct from face-embedding, proven to run + separate identities in the browser on ORT-web WASM (same-person 0.87-0.94 vs different 0.58-0.75). Index demo complete + verified; the same-person 'second view' is an honestly-labelled re-crop stand-in, and the subpage ladder is a recorded follow-up."
+}

@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Person re-identification — is it the same person? · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run YouTu-ReID locally via ONNX Runtime Web: it turns a person crop into an appearance embedding, so cosine similarity tells whether two crops are the same individual — the whole body, not the face. Pick two runners and compare, on-device."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🚶</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">person re-id · vision · WASM · ~107 MB</p>
+      <h1>Person re-identification — is it the same person?</h1>
+      <p class="lede">
+        Face recognition looks at a face. <strong>Person re-identification</strong> looks at the whole
+        body — clothing, build, gait, colour — to decide whether two crops from different moments or cameras
+        show the <strong>same individual</strong>. It's how retail analytics, sports tracking, and
+        surveillance re-find a person after they leave one camera's view. YouTu-ReID maps each person crop to
+        a 768-d <strong>embedding</strong>; the cosine similarity between two embeddings is the match score.
+        Pick two people below and compare — entirely on your device, nothing leaves the tab.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/opencv/person_reid_youtureid" target="_blank" rel="noopener">opencv/person_reid_youtureid</a> — YouTu-ReID (ResNet-50-IBN), OpenCV Zoo</td></tr>
+          <tr><th>Task</th><td><code>person-reid</code> (whole-body appearance embedding) — run via raw ONNX Runtime Web (see note below)</td></tr>
+          <tr><th>Runtime</th><td>onnxruntime-web 1.21 (transformers.js has no person-reid class / no such task)</td></tr>
+          <tr><th>Input</th><td><code>input</code> <code>[1, 3, 256, 128]</code> float32 in 0–1 — a person crop (plain RGB), tall aspect</td></tr>
+          <tr><th>Output</th><td><code>output</code> <code>[1, 768]</code> float32 — an L2-normalised appearance embedding; cosine similarity = match score</td></tr>
+          <tr><th>Quantization</th><td>fp32 ONNX — runs on the plain WASM execution provider, no WebGPU needed</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (single-threaded on GitHub Pages) — ~1 s per crop</td></tr>
+          <tr><th>Download</th><td>~107 MB, cached after first load (auto-inits on return)</td></tr>
+          <tr><th>License</th><td>Apache-2.0 (OpenCV Zoo)</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers, OffscreenCanvas, ImageBitmap — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">
+        The people below are cropped live from one licensed marathon photo (five distinct runners, plus a
+        second, re-framed crop of the lead runner as a stand-in for a different-camera view). Click <strong>two</strong>
+        crops to compare their appearance embeddings.
+      </p>
+      <div id="model-loader"></div>
+      <div class="reid-gallery" id="gallery" role="group" aria-label="People to compare"></div>
+      <p class="reid-result" id="result" role="status" aria-live="polite">Pick two people to compare.</p>
+      <div class="reid-bar" aria-hidden="true"><i id="bar" style="width:0"></i></div>
+    </section>
+
+    <section class="panel">
+      <h3>Why raw ONNX Runtime Web?</h3>
+      <p class="muted">
+        Transformers.js has no person-reid model class or task, so we run YouTu-ReID's ONNX graph directly
+        with onnxruntime-web and hand-write the pre/post a pipeline would own: crop each person to the fixed
+        128×256 input, pack it as <code>[1,3,256,128]</code> float32 in 0–1, and L2-normalise the 768-d
+        output so cosine similarity is the match score. Everything runs on your device.
+      </p>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Model runs
+      locally via <a href="https://onnxruntime.ai/docs/tutorials/web/" target="_blank" rel="noopener">ONNX Runtime Web</a>.
+      <a href="/web-ai-showcase/image-credits/">Image credits</a>.
+      Source on <a href="https://github.com/PaulKinlan/web-ai-showcase/tree/main/models/person-reid" target="_blank" rel="noopener">GitHub</a>.
+    </footer>
+
+    <script type="module">
+      import { cosine, cropPerson, putImageData, REID_CSS, ReidEngine, urlToBitmap } from "./reid.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style");
+      style.textContent = REID_CSS;
+      document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+
+      // Person boxes [x,y,w,h] in the source photo (people-marathon.jpg, 1280×855). Five distinct runners
+      // + a re-framed crop of runner 1 as a "different view" stand-in.
+      const SRC = "../../media/assets/people-marathon.jpg";
+      const PEOPLE = [
+        { box: [300, 150, 230, 690], label: "Runner 1 (blue)" },
+        { box: [470, 175, 150, 640], label: "Runner 2 (orange)" },
+        { box: [560, 190, 150, 620], label: "Runner 3 (pink)" },
+        { box: [880, 180, 210, 660], label: "Runner 5 (red)" },
+        { box: [300, 150, 230, 690], jitter: 0.35, label: "Runner 1 — other view" },
+      ];
+
+      const galleryEl = $("gallery");
+      let bmp = null, ready = false;
+      const embeds = new Array(PEOPLE.length).fill(null);
+      const cards = [];
+      const selected = [];
+
+      async function build() {
+        bmp = await urlToBitmap(SRC);
+        PEOPLE.forEach((p, i) => {
+          const fig = document.createElement("figure");
+          fig.className = "reid-person";
+          fig.setAttribute("role", "button");
+          fig.setAttribute("tabindex", "0");
+          const cv = document.createElement("canvas");
+          putImageData(cv, cropPerson(bmp, p.box, { jitter: p.jitter || 0 }));
+          const cap = document.createElement("figcaption");
+          cap.textContent = p.label;
+          fig.append(cv, cap);
+          fig.addEventListener("click", () => select(i));
+          fig.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); select(i); } });
+          galleryEl.append(fig);
+          cards.push(fig);
+        });
+      }
+
+      async function ensureEmbed(i) {
+        if (embeds[i]) return embeds[i];
+        embeds[i] = (await engine.embed(cropPerson(bmp, PEOPLE[i].box, { jitter: PEOPLE[i].jitter || 0 }))).vec;
+        return embeds[i];
+      }
+
+      async function select(i) {
+        if (!ready) return;
+        const at = selected.indexOf(i);
+        if (at >= 0) { selected.splice(at, 1); cards[i].classList.remove("sel"); return refresh(); }
+        selected.push(i);
+        cards[i].classList.add("sel");
+        if (selected.length > 2) { const drop = selected.shift(); cards[drop].classList.remove("sel"); }
+        refresh();
+      }
+
+      async function refresh() {
+        if (selected.length < 2) { $("result").textContent = "Pick two people to compare."; $("bar").style.width = "0"; return; }
+        const [a, b] = selected;
+        $("result").textContent = "Comparing appearance embeddings…";
+        const [va, vb] = [await ensureEmbed(a), await ensureEmbed(b)];
+        const sim = cosine(va, vb);
+        $("bar").style.width = `${Math.max(0, Math.min(1, sim)) * 100}%`;
+        const verdict = sim >= 0.85 ? "Likely the SAME person" : "Likely DIFFERENT people";
+        $("result").innerHTML = `<span class="reid-verdict">${verdict}</span> — cosine similarity ${sim.toFixed(3)} ` +
+          `(${PEOPLE[a].label} vs ${PEOPLE[b].label}). Same-person crops score high (~0.9+); different people score lower (~0.6–0.8).`;
+      }
+
+      const engine = new ReidEngine();
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "opencv/person_reid_youtureid", runtime: "onnxruntime-web", dtype: "fp32", sizeMB: 107, requiresWebGPU: false },
+        load: (onProgress) => engine.load(onProgress).then(() => engine),
+        onReady: async () => {
+          ready = true;
+          // preselect the two lead-runner crops so the "same person" case is visible immediately.
+          await select(0);
+          await select(4);
+        },
+      });
+
+      build();
+    </script>
+    <script type="module" src="/web-ai-showcase/public/image-credit.js"></script>
+  </body>
+</html>
