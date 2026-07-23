@@ -45,6 +45,16 @@ Deno.test("proxies the catalogue from the published GitHub Pages site", async ()
   assertIsolated(response);
 });
 
+Deno.test("proxies top-level directory-index routes", async () => {
+  for (const directory of ["explore", "architecture", "image-credits"]) {
+    const path = `${SITE_PREFIX}/${directory}/`;
+    const response = await handle(new Request(`https://example.test${path}`));
+    assertEquals(response.status, 200, path);
+    assertEquals(new URL(requests.at(-1)!.url).pathname, path);
+    assertIsolated(response);
+  }
+});
+
 Deno.test("proxies directory-index model routes with their trailing slash", async () => {
   const path = `${SITE_PREFIX}/models/smolvlm-vision-language/`;
   const response = await handle(new Request(`https://example.test${path}`));

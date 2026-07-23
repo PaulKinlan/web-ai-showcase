@@ -49,7 +49,7 @@ function publicPath(pathname: string): boolean {
   const segments = relative.split("/");
   if (segments.some((segment) => !segment || segment.startsWith("."))) return false;
   return segments.length === 1
-    ? PUBLIC_ROOT_FILES.has(segments[0])
+    ? PUBLIC_ROOT_FILES.has(segments[0]) || PUBLIC_DIRECTORIES.has(segments[0])
     : PUBLIC_DIRECTORIES.has(segments[0]);
 }
 
