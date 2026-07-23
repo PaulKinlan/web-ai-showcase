@@ -1,6 +1,5 @@
-import { serveDir } from "jsr:@std/http/file-server";
-
 export const SITE_PREFIX = "/web-ai-showcase";
+export const UPSTREAM_ORIGIN = "https://paulkinlan.github.io";
 
 const PUBLIC_ROOT_FILES = new Set([
   "download-routes.json",
@@ -34,6 +33,7 @@ export const ISOLATION_HEADERS = {
 
 function isolated(response: Response): Response {
   const headers = new Headers(response.headers);
+  headers.delete("set-cookie");
   for (const [name, value] of Object.entries(ISOLATION_HEADERS)) headers.set(name, value);
   headers.set("Cache-Control", "public, max-age=0, must-revalidate");
   return new Response(response.body, {
@@ -53,7 +53,17 @@ function publicPath(pathname: string): boolean {
     : PUBLIC_DIRECTORIES.has(segments[0]);
 }
 
-export function createHandler(root = Deno.cwd()) {
+function upstreamRequest(request: Request, url: URL): Request {
+  const target = new URL(`${url.pathname}${url.search}`, UPSTREAM_ORIGIN);
+  const headers = new Headers();
+  for (const name of ["accept", "accept-encoding", "if-modified-since", "if-none-match", "range"]) {
+    const value = request.headers.get(name);
+    if (value) headers.set(name, value);
+  }
+  return new Request(target, { method: request.method, headers, redirect: "follow" });
+}
+
+export function createHandler(fetchUpstream: typeof fetch = fetch) {
   return async (request: Request): Promise<Response> => {
     const url = new URL(request.url);
     if (request.method !== "GET" && request.method !== "HEAD") {
@@ -67,16 +77,11 @@ export function createHandler(root = Deno.cwd()) {
     if (!url.pathname.startsWith(`${SITE_PREFIX}/`) || !publicPath(url.pathname)) {
       return isolated(new Response("Not found", { status: 404 }));
     }
-    const fileUrl = new URL(request.url);
-    fileUrl.pathname = fileUrl.pathname.slice(SITE_PREFIX.length) || "/";
-    const fileRequest = new Request(fileUrl, request);
-    const response = await serveDir(fileRequest, {
-      fsRoot: root,
-      quiet: true,
-      showDirListing: false,
-      showDotfiles: false,
-    });
-    return isolated(response);
+    try {
+      return isolated(await fetchUpstream(upstreamRequest(request, url)));
+    } catch {
+      return isolated(new Response("Upstream unavailable", { status: 502 }));
+    }
   };
 }
 

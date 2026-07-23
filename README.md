@@ -25,17 +25,18 @@ Every model gets:
 
 ## Develop
 
-Static client-side site, served locally through the same COOP/COEP header wrapper used on Deno
-Deploy:
+Static client-side site. The Deno command runs the same COOP/COEP edge proxy used in production,
+backed by the published GitHub Pages files:
 
 ```bash
 deno task serve   # then open http://localhost:8000/web-ai-showcase/
 ```
 
-The Deno server sets `Cross-Origin-Opener-Policy: same-origin` and
-`Cross-Origin-Embedder-Policy: require-corp`, enabling `crossOriginIsolated`, `SharedArrayBuffer`, and
-the zero-copy audio ring-buffer path. GitHub Pages remains the compatibility deployment and uses the
-transferable `postMessage` fallback because it cannot set those headers.
+The small Deno edge proxy adds `Cross-Origin-Opener-Policy: same-origin` and
+`Cross-Origin-Embedder-Policy: require-corp` to the GitHub Pages responses, enabling
+`crossOriginIsolated`, `SharedArrayBuffer`, and the zero-copy audio ring-buffer path without moving
+inference or model data onto a server. GitHub Pages remains the compatibility deployment and uses
+transferable `postMessage` because it cannot set those headers.
 
 `models.json` is the catalogue; `models/<slug>/` holds each model's pages; `lib/webai.js` is the shared
 model-loading helper; `sw.js` caches the shell + model blobs. See **[CLAUDE.md](CLAUDE.md)** for the

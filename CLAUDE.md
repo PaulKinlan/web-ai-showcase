@@ -33,8 +33,8 @@ runnable, legible demos — and for each model make the case for _why a business
 be excited_: what it enables, what it unlocks, what it replaces.
 
 - Hosted on **GitHub Pages** (compatibility deployment) and a cross-origin-isolated **Deno Deploy**
-  static server. Inference, model discovery, and caching remain client-side; Deno only supplies
-  COOP/COEP and static files so SharedArrayBuffer/threaded WASM paths can run.
+  edge proxy. Inference, model discovery, and caching remain client-side; Deno proxies the published
+  GitHub Pages files and adds COOP/COEP so SharedArrayBuffer/threaded WASM paths can run.
 - Sibling projects:
   [chrome-platform-showcase](https://github.com/PaulKinlan/chrome-platform-showcase) (web-platform
   demos), [gendn](https://github.com/PaulKinlan/gendn) (MDN-style docs),
