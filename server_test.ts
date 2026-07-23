@@ -46,7 +46,7 @@ Deno.test("proxies the catalogue from the published GitHub Pages site", async ()
 });
 
 Deno.test("proxies top-level directory-index routes", async () => {
-  for (const directory of ["explore", "architecture", "image-credits"]) {
+  for (const directory of ["explore", "architecture", "image-credits", "storage"]) {
     const path = `${SITE_PREFIX}/${directory}/`;
     const response = await handle(new Request(`https://example.test${path}`));
     assertEquals(response.status, 200, path);

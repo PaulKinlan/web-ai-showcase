@@ -20,6 +20,7 @@ const PUBLIC_DIRECTORIES = new Set([
   "public",
   "reports",
   "search",
+  "storage",
 ]);
 
 export const ISOLATION_HEADERS = {
