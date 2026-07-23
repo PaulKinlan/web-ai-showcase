@@ -36,7 +36,10 @@ The small Deno edge proxy adds `Cross-Origin-Opener-Policy: same-origin` and
 `Cross-Origin-Embedder-Policy: require-corp` to the GitHub Pages responses, enabling
 `crossOriginIsolated`, `SharedArrayBuffer`, and the zero-copy audio ring-buffer path without moving
 inference or model data onto a server. GitHub Pages remains the compatibility deployment and uses
-transferable `postMessage` because it cannot set those headers.
+transferable `postMessage` because it cannot set those headers. Production browser evidence is retained
+in [`reports/deno-isolation-validation.json`](reports/deno-isolation-validation.json): SAB was shared
+with a Worker through `Atomics`, the audio pipeline selected `sab-isolated`, and
+`performance.measureUserAgentSpecificMemory()` returned a real breakdown.
 
 `models.json` is the catalogue; `models/<slug>/` holds each model's pages; `lib/webai.js` is the shared
 model-loading helper; `sw.js` caches the shell + model blobs. See **[CLAUDE.md](CLAUDE.md)** for the
