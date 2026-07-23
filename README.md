@@ -7,7 +7,8 @@ No servers, no API keys, no uploads. Each model loads and runs on your device vi
 [🤗 Transformers.js](https://github.com/huggingface/transformers.js) (WebGPU, with a WASM fallback),
 cached offline by a service worker.
 
-Live: **https://paulkinlan.github.io/web-ai-showcase/** · A sibling of
+Live: **https://paulkinlan.github.io/web-ai-showcase/** · Cross-origin-isolated deployment:
+**https://web-ai-showcase.paulkinlan-ea.deno.net/web-ai-showcase/** · A sibling of
 [chrome-platform-showcase](https://github.com/PaulKinlan/chrome-platform-showcase) and
 [image-embedding-lab](https://github.com/PaulKinlan/image-embedding-lab).
 
@@ -24,11 +25,17 @@ Every model gets:
 
 ## Develop
 
-Static site — serve the folder and open it:
+Static client-side site, served locally through the same COOP/COEP header wrapper used on Deno
+Deploy:
 
 ```bash
-python3 -m http.server 8080   # then open http://localhost:8080/
+deno task serve   # then open http://localhost:8000/web-ai-showcase/
 ```
+
+The Deno server sets `Cross-Origin-Opener-Policy: same-origin` and
+`Cross-Origin-Embedder-Policy: require-corp`, enabling `crossOriginIsolated`, `SharedArrayBuffer`, and
+the zero-copy audio ring-buffer path. GitHub Pages remains the compatibility deployment and uses the
+transferable `postMessage` fallback because it cannot set those headers.
 
 `models.json` is the catalogue; `models/<slug>/` holds each model's pages; `lib/webai.js` is the shared
 model-loading helper; `sw.js` caches the shell + model blobs. See **[CLAUDE.md](CLAUDE.md)** for the

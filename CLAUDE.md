@@ -32,8 +32,9 @@ The thesis (Paul): people don't know what models actually _do_ or unlock. Ground
 runnable, legible demos — and for each model make the case for _why a business or developer should
 be excited_: what it enables, what it unlocks, what it replaces.
 
-- Hosted on **GitHub Pages** (paulkinlan.github.io/web-ai-showcase). Static — no server. Inference,
-  model discovery, and caching are all client-side.
+- Hosted on **GitHub Pages** (compatibility deployment) and a cross-origin-isolated **Deno Deploy**
+  static server. Inference, model discovery, and caching remain client-side; Deno only supplies
+  COOP/COEP and static files so SharedArrayBuffer/threaded WASM paths can run.
 - Sibling projects:
   [chrome-platform-showcase](https://github.com/PaulKinlan/chrome-platform-showcase) (web-platform
   demos), [gendn](https://github.com/PaulKinlan/gendn) (MDN-style docs),
@@ -480,8 +481,8 @@ explicit-download policy (invariant 12).
   dispose + object-URL cleanup. Dedicated **module** workers. Image/video preprocessing via
   OffscreenCanvas/ImageBitmap with a measured main-thread fallback; real-time audio via
   **AudioWorklet** posting bounded chunks/ring-buffer to a worker — SharedArrayBuffer needs
-  COOP/COEP which **GitHub Pages cannot set**, so the non-isolated postMessage path is the DEFAULT
-  (`lib/media-pipeline.js`).
+  COOP/COEP. The Deno deployment supplies those headers and uses the SAB ring; GitHub Pages cannot,
+  so it retains the non-isolated postMessage fallback (`lib/media-pipeline.js`).
 - **Resumable downloads are REAL here (researched + proven), not faked** (`lib/model-download.js`):
   fetch the `…/resolve/…` URL, `Range: bytes=<received>-` + `If-Range:<strong-etag>` (206 append /
   200 or 412 clean restart), IndexedDB partials, `storage.persist()`, and **WebCrypto SHA-256
