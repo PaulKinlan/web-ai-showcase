@@ -10,7 +10,7 @@ export class SmolVLMEngine {
     this.onProgress = null;
     this._loadWaiters = [];
     this._probeWaiters = [];
-    this._active = null; // { id, onToken, onPrompt, resolve, reject }
+    this._active = null; // { id, onToken, onPrompt, onPhase, resolve, reject }
     this._id = 0;
     this.worker.addEventListener("message", (e) => this._onMessage(e.data));
     this.worker.addEventListener("error", (e) => {
@@ -44,6 +44,9 @@ export class SmolVLMEngine {
         break;
       case "prompt":
         if (this._active && this._active.id === msg.id) this._active.onPrompt?.(msg.template);
+        break;
+      case "phase":
+        if (this._active && this._active.id === msg.id) this._active.onPhase?.(msg.phase);
         break;
       case "token":
         if (this._active && this._active.id === msg.id) this._active.onToken?.(msg.token, msg.t);
@@ -81,11 +84,11 @@ export class SmolVLMEngine {
     });
   }
 
-  /** Stream a generation. onToken(token, tMs) fires per token; onPrompt(template) once. */
-  generate(imageURL, prompt, { maxTokens = 200, onToken, onPrompt } = {}) {
+  /** Stream a generation. onToken(token, tMs) fires per token; onPhase(phase) tracks real work. */
+  generate(imageURL, prompt, { maxTokens = 200, onToken, onPrompt, onPhase } = {}) {
     const id = ++this._id;
     return new Promise((resolve, reject) => {
-      this._active = { id, onToken, onPrompt, resolve, reject };
+      this._active = { id, onToken, onPrompt, onPhase, resolve, reject };
       this.worker.postMessage({ type: "run", id, image: imageURL, prompt, maxTokens });
     });
   }

@@ -46,6 +46,7 @@ async function ensureLoaded() {
 async function run(id, imageURL, prompt, maxTokens) {
   await ensureLoaded();
   const { TextStreamer, load_image } = mod;
+  post({ type: "phase", id, phase: "loading-image" });
   const image = await load_image(imageURL);
 
   const messages = [
@@ -54,8 +55,10 @@ async function run(id, imageURL, prompt, maxTokens) {
   const text = processor.apply_chat_template(messages, { add_generation_prompt: true });
   post({ type: "prompt", id, template: text }); // for "See inside": the constructed chat template
 
+  post({ type: "phase", id, phase: "preparing-inputs" });
   const inputs = await processor(text, [image], { do_image_splitting: false });
 
+  post({ type: "phase", id, phase: "generating" });
   const t0 = performance.now();
   let count = 0;
   const streamer = new TextStreamer(processor.tokenizer, {
