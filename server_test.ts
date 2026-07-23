@@ -45,6 +45,14 @@ Deno.test("proxies the catalogue from the published GitHub Pages site", async ()
   assertIsolated(response);
 });
 
+Deno.test("proxies directory-index model routes with their trailing slash", async () => {
+  const path = `${SITE_PREFIX}/models/smolvlm-vision-language/`;
+  const response = await handle(new Request(`https://example.test${path}`));
+  assertEquals(response.status, 200);
+  assertEquals(new URL(requests.at(-1)!.url).pathname, path);
+  assertIsolated(response);
+});
+
 Deno.test("proxies module assets, strips cookies, and adds isolation headers", async () => {
   const response = await handle(
     new Request(`https://example.test${SITE_PREFIX}/lib/media-pipeline.js`),

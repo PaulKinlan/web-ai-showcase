@@ -44,7 +44,7 @@ function isolated(response: Response): Response {
 }
 
 function publicPath(pathname: string): boolean {
-  const relative = pathname.slice(SITE_PREFIX.length).replace(/^\/+/, "");
+  const relative = pathname.slice(SITE_PREFIX.length).replace(/^\/+|\/+$/g, "");
   if (!relative) return true;
   const segments = relative.split("/");
   if (segments.some((segment) => !segment || segment.startsWith("."))) return false;
