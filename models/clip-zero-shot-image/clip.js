@@ -64,6 +64,18 @@ export class ClipEngine {
       this.worker.postMessage({ type: "run", id, image: imageURL, labels });
     });
   }
+
+  /** Release the model from memory: terminate the worker (frees its WASM heap + ONNX session) and
+   *  reject anything in flight. The engine is single-use after this — build a fresh one to reload. */
+  dispose() {
+    const err = new Error("Model released from memory");
+    for (const w of this._loadWaiters) w.reject(err);
+    this._loadWaiters = [];
+    for (const [, p] of this._pending) p.reject(err);
+    this._pending.clear();
+    this.ready = false;
+    this.worker.terminate();
+  }
 }
 
 /** Read a File (from upload or drop) into a data URL usable by the worker. */

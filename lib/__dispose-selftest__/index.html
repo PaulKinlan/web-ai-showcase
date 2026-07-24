@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>createModelLoader dispose self-test</title>
+</head>
+<body>
+  <!--
+    Self-test for the shared loader's genuine memory-release contract (lib/model-loader.js).
+    It mounts the REAL createModelLoader with a synthetic load (resolves instantly to a fake, disposable
+    instance — NO model is downloaded) and a synthetic dispose, so the real Download → ready → Release →
+    released → reload state machine runs end-to-end against real (empty) Cache Storage / IndexedDB.
+    Driven headless by scripts/dispose-selftest-driver.mjs. Not shipped in the catalogue.
+  -->
+  <main>
+    <h1>Loader dispose self-test</h1>
+    <div id="loader"></div>
+    <button id="run" disabled>Run inference (synthetic)</button>
+  </main>
+
+  <script type="module">
+    import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+    const $ = (id) => document.getElementById(id);
+
+    // Observable counters the driver asserts against.
+    const counters = { disposeCalls: 0, onDisposeCalls: 0, readyCalls: 0, loadCalls: 0, instanceLive: false };
+    let fake = null;
+
+    createModelLoader({
+      mount: $("loader"),
+      // A synthetic "model": a unique id nobody has cached, so inspectModel resolves to `absent`
+      // and the loader shows a real Download button — no network, deterministic.
+      model: {
+        modelId: "selftest/dispose-fixture-" + Math.random().toString(36).slice(2),
+        runtime: "transformers.js",
+        dtype: "q8",
+        sizeMB: 1,
+        requiresWebGPU: false,
+      },
+      load: async (onProgress) => {
+        counters.loadCalls++;
+        // Emit a couple of honest per-file progress events so the download-status panel exercises too.
+        onProgress?.({ status: "initiate", file: "fixture.onnx", loaded: 0, total: 1000 });
+        onProgress?.({ status: "progress", file: "fixture.onnx", loaded: 1000, total: 1000, progress: 100 });
+        await new Promise((r) => setTimeout(r, 30));
+        fake = { id: counters.loadCalls, disposed: false };
+        counters.instanceLive = true;
+        return fake;
+      },
+      onReady: () => {
+        counters.readyCalls++;
+        $("run").disabled = false; // mirrors a real demo re-enabling its controls
+      },
+      dispose: async (instance) => {
+        counters.disposeCalls++;
+        instance.disposed = true; // a real demo would terminate its worker / dispose its pipeline here
+        await new Promise((r) => setTimeout(r, 5));
+      },
+      onDispose: () => {
+        counters.onDisposeCalls++;
+        counters.instanceLive = false;
+        $("run").disabled = true; // no model in memory
+      },
+    });
+
+    // Hooks for the CDP driver: read state, list/click real action buttons, read counters.
+    const actionButtons = () => [...document.querySelectorAll("#loader .loader-actions button")];
+    window.__dispose = {
+      state: () => document.querySelector("#loader .model-loader")?.dataset.state ?? null,
+      actionLabels: () => actionButtons().map((b) => b.textContent.trim()),
+      status: () => document.querySelector("#loader .status")?.textContent ?? null,
+      runEnabled: () => !$("run").disabled,
+      counters: () => ({ ...counters }),
+      // Click the first action button whose label contains `text` (case-insensitive). Returns true if found.
+      click: (text) => {
+        const t = text.toLowerCase();
+        const b = actionButtons().find((el) => el.textContent.toLowerCase().includes(t));
+        if (!b) return false;
+        b.click();
+        return true;
+      },
+    };
+    window.__disposeReady = true;
+  </script>
+</body>
+</html>
