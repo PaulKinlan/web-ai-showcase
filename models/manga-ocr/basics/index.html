@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Basics — line, column, bubble · Manga OCR · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="The fundamental skill of Manga OCR: read a horizontal line, a vertical column and a whole multi-line speech bubble of Japanese text — on-device, with the model's per-character confidence visible."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='12'>読</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/models/manga-ocr/">← Manga OCR</a> · <a href="/web-ai-showcase/">All models</a></p>
+
+    <header>
+      <p class="eyebrow">basics · image → Japanese text · WASM</p>
+      <h1>Line, column, bubble</h1>
+      <p class="lede">
+        Japanese is written three ways in the wild: horizontal lines (modern print), vertical columns
+        (manga, novels, newspapers), and stacked lines inside a speech bubble. Manga OCR reads all three
+        with the same single model — no mode switch, no line splitting. Load it once, then read each
+        sample and watch the decoder's confidence on every character.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Load the model</h3>
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+    </section>
+
+    <section aria-labelledby="cards-h">
+      <h2 id="cards-h">Three reading challenges</h2>
+      <div class="basics-grid">
+        <article class="panel demo-card" aria-labelledby="c1-h">
+          <h3 id="c1-h">Horizontal line</h3>
+          <p class="muted">Modern print reads left-to-right, top-to-bottom — the easy case.</p>
+          <img class="demo-img" src="../sample-horizontal.png" alt="A horizontal Japanese line rendered in black on white" />
+          <button type="button" class="read-btn" data-target="out1" data-src="../sample-horizontal.png" disabled>Read it</button>
+          <p class="text-box" id="out1" lang="ja" aria-live="polite"></p>
+          <div class="token-trace" data-trace="out1"></div>
+        </article>
+        <article class="panel demo-card" aria-labelledby="c2-h">
+          <h3 id="c2-h">Vertical column</h3>
+          <p class="muted">Manga and novels stack characters top-to-bottom — the model re-orders them into reading order.</p>
+          <img class="demo-img tall" src="../sample-vertical.png" alt="A vertical Japanese column rendered in black on white" />
+          <button type="button" class="read-btn" data-target="out2" data-src="../sample-vertical.png" disabled>Read it</button>
+          <p class="text-box" id="out2" lang="ja" aria-live="polite"></p>
+          <div class="token-trace" data-trace="out2"></div>
+        </article>
+        <article class="panel demo-card" aria-labelledby="c3-h">
+          <h3 id="c3-h">Whole bubble at once</h3>
+          <p class="muted">A speech bubble is several lines — the model reads it in one pass, no line segmentation.</p>
+          <img class="demo-img" src="../sample-bubble.png" alt="A three-line Japanese speech bubble rendered in black on white" />
+          <button type="button" class="read-btn" data-target="out3" data-src="../sample-bubble.png" disabled>Read it</button>
+          <p class="text-box" id="out3" lang="ja" aria-live="polite"></p>
+          <div class="token-trace" data-trace="out3"></div>
+        </article>
+      </div>
+      <p class="muted">
+        Under each result: one chip per decoded character with the model's probability at that step
+        (amber border = below 60%, worth a second look). The vertical and bubble samples prove the two
+        things a generic OCR gets wrong about manga: reading direction and line grouping.
+      </p>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>.
+      <a href="/web-ai-showcase/models/manga-ocr/">Back to Manga OCR →</a>
+    </footer>
+
+    <script type="module">
+      import { MangaOcrEngine, OCR_CSS, escapeHTML, renderTokenChip } from "../ocr.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = OCR_CSS + `
+        .basics-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem; }
+        .demo-card { display: flex; flex-direction: column; }
+        .demo-img { max-inline-size: 100%; max-block-size: 180px; object-fit: contain; background: #fff;
+          border: 1px solid var(--border); border-radius: 8px; padding: 4px; align-self: center; }
+        .demo-img.tall { max-block-size: 240px; }
+        .read-btn { margin: .5rem 0; }
+        .demo-card .text-box { font-size: 1.05rem; }
+      `;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      let engine = null, ready = false;
+
+      function setStatus(msg, err) {
+        $("runStatus").hidden = !msg;
+        $("runStatus").textContent = msg || "";
+        $("runStatus").classList.toggle("err", !!err);
+      }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: {
+          modelId: "onnx-community/manga-ocr-base-ONNX",
+          runtime: "onnxruntime-web",
+          dtype: "uint8+q8",
+          sizeMB: 117,
+          requiresWebGPU: false,
+        },
+        load: async (onProgress) => {
+          engine = new MangaOcrEngine();
+          await engine.load(onProgress);
+          return engine;
+        },
+        onReady: () => {
+          ready = true;
+          document.querySelectorAll(".read-btn").forEach((b) => (b.disabled = false));
+        },
+        dispose: (e) => e.dispose(),
+        onDispose: () => {
+          ready = false;
+          engine = null;
+          document.querySelectorAll(".read-btn").forEach((b) => (b.disabled = true));
+        },
+      });
+
+      document.querySelectorAll(".read-btn").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          if (!ready) return;
+          const out = $(btn.dataset.target);
+          const trace = document.querySelector(`[data-trace="${btn.dataset.target}"]`);
+          out.innerHTML = '<span class="cursor"></span>';
+          trace.replaceChildren();
+          btn.disabled = true;
+          setStatus("Reading…");
+          let streamed = "";
+          try {
+            const r = await engine.recognize(btn.dataset.src, 160, (tok) => {
+              renderTokenChip(trace, tok);
+              if (tok.token) {
+                streamed += tok.token;
+                out.innerHTML = escapeHTML(streamed) + '<span class="cursor"></span>';
+              }
+            });
+            out.textContent = r.text || "(no text recognised)";
+            setStatus("");
+          } catch (err) {
+            setStatus("Recognition failed: " + err.message, true);
+            out.textContent = "";
+          } finally {
+            btn.disabled = !ready;
+          }
+        });
+      });
+    </script>
+  </body>
+</html>

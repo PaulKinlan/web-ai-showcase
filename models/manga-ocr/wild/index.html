@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Wild — Japanese text radar · Manga OCR · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Point your camera at manga, packaging or signage: every frame you capture is read on-device, logged with its confidence, and assembled into a session reading log. Nothing is uploaded."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='12'>読</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/models/manga-ocr/">← Manga OCR</a> · <a href="/web-ai-showcase/">All models</a></p>
+
+    <header>
+      <p class="eyebrow">wild · live camera reading log · WASM</p>
+      <h1>Japanese text radar</h1>
+      <p class="lede">
+        Walk up to a manga volume, a snack packet, a sign. Every frame you capture is read right here —
+        the frame never leaves your device — and appended to a rolling session log with its reading time
+        and character confidence. Watch the model cope (or honestly fail) with real-world lighting,
+        angles and fonts it was never shown in training.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Load the model</h3>
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+    </section>
+
+    <div class="ocr-grid">
+      <section class="panel" aria-labelledby="cap-h">
+        <h3 id="cap-h">1 · Capture a frame</h3>
+        <div id="cap"></div>
+        <p class="muted" style="margin-top:.4rem">
+          The camera starts only when you press its button, and stops when you leave this page. Each
+          captured frame is read immediately and added to the log — capture as many as you like.
+        </p>
+      </section>
+
+      <section class="panel" aria-labelledby="log-h">
+        <h3 id="log-h">2 · Session reading log</h3>
+        <ol id="log" class="radar-log"></ol>
+        <p id="empty" class="muted">Frames you capture appear here, newest first.</p>
+        <div class="row">
+          <button id="copyLog" type="button" class="btn-ghost" disabled>Copy log</button>
+          <button id="clearLog" type="button" class="btn-ghost">Clear</button>
+          <span id="copyMsg" class="muted" role="status"></span>
+        </div>
+      </section>
+    </div>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>.
+      <a href="/web-ai-showcase/models/manga-ocr/">Back to Manga OCR →</a>
+    </footer>
+
+    <script type="module">
+      import { MangaOcrEngine, OCR_CSS } from "../ocr.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      import { createCapture, CAPTURE_CSS, injectOnce } from "/web-ai-showcase/lib/capture-ux.js";
+
+      injectOnce("capture-ux-css", CAPTURE_CSS);
+      const style = document.createElement("style");
+      style.textContent = OCR_CSS + `
+        .radar-log { list-style: none; margin: .6rem 0 0; padding: 0; display: grid; gap: .45rem; }
+        .radar-log li { display: flex; gap: .6rem; align-items: center; border: 1px solid var(--border);
+          border-radius: 10px; padding: .4rem .6rem; }
+        .radar-log img { block-size: 44px; inline-size: auto; max-inline-size: 110px; object-fit: contain;
+          background: #fff; border-radius: 6px; border: 1px solid var(--border); }
+        .radar-log .rtext { flex: 1; overflow-wrap: anywhere; }
+        .radar-log .meta { font-size: .76rem; color: var(--muted); white-space: nowrap; text-align: end; }
+        .radar-log .meta .low { color: var(--warn, #b45309); font-weight: 600; }
+      `;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      let engine = null, ready = false, reading = false;
+      const entries = []; // {url, text, meanConf, ms, time}
+
+      function setStatus(msg, err) {
+        $("runStatus").hidden = !msg;
+        $("runStatus").textContent = msg || "";
+        $("runStatus").classList.toggle("err", !!err);
+      }
+      function renderLog() {
+        $("empty").hidden = entries.length > 0;
+        $("copyLog").disabled = entries.length === 0;
+        $("log").replaceChildren(
+          ...entries.map((e) => {
+            const li = document.createElement("li");
+            const img = document.createElement("img");
+            img.src = e.url; img.alt = "Captured frame";
+            const span = document.createElement("span");
+            span.className = "rtext"; span.lang = "ja";
+            span.textContent = e.text;
+            const meta = document.createElement("span");
+            meta.className = "meta";
+            const confCls = e.meanConf >= 0 && e.meanConf < 0.85 ? ' class="low"' : "";
+            meta.innerHTML = `${e.time}<br><span${confCls}>${e.meanConf >= 0 ? Math.round(e.meanConf * 100) + "%" : "—"}</span> · ${(e.ms / 1000).toFixed(1)}s`;
+            li.append(img, span, meta);
+            return li;
+          }),
+        );
+      }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: {
+          modelId: "onnx-community/manga-ocr-base-ONNX",
+          runtime: "onnxruntime-web",
+          dtype: "uint8+q8",
+          sizeMB: 117,
+          requiresWebGPU: false,
+        },
+        load: async (onProgress) => {
+          engine = new MangaOcrEngine();
+          await engine.load(onProgress);
+          return engine;
+        },
+        onReady: () => { ready = true; },
+        dispose: (e) => e.dispose(),
+        onDispose: () => { ready = false; engine = null; },
+      });
+
+      async function readFrame(bitmap) {
+        const c = document.createElement("canvas");
+        const scale = Math.min(1, 900 / Math.max(bitmap.width, bitmap.height));
+        c.width = Math.round(bitmap.width * scale);
+        c.height = Math.round(bitmap.height * scale);
+        c.getContext("2d").drawImage(bitmap, 0, 0, c.width, c.height);
+        const url = c.toDataURL("image/png");
+        const t0 = performance.now();
+        const toks = [];
+        try {
+          const r = await engine.recognize(url, 160, (t) => toks.push(t));
+          const probs = toks.filter((t) => t.prob > 0).map((t) => t.prob);
+          entries.unshift({
+            url,
+            text: r.text || "(no text recognised)",
+            meanConf: probs.length ? probs.reduce((a, b) => a + b, 0) / probs.length : -1,
+            ms: performance.now() - t0,
+            time: new Date().toLocaleTimeString(),
+          });
+        } catch (err) {
+          entries.unshift({ url, text: `(failed: ${err.message})`, meanConf: -1, ms: performance.now() - t0, time: new Date().toLocaleTimeString() });
+        }
+        if (entries.length > 12) URL.revokeObjectURL(entries.pop().url);
+        renderLog();
+      }
+
+      const cap = createCapture({
+        mount: $("cap"),
+        kind: "photo",
+        facing: "environment",
+        rationale: "Frames are read entirely on your device — nothing is uploaded anywhere.",
+        fallback: { label: "Use a sample bubble instead", url: "../sample-bubble.png" },
+        onResult: async (r) => {
+          if (!ready) { setStatus("Load the model first.", true); r.cleanup(); return; }
+          if (reading) { r.cleanup(); return; }
+          reading = true;
+          setStatus("Reading frame…");
+          try {
+            const bmp = r.imageBitmap ?? (await createImageBitmap(r.blob));
+            await readFrame(bmp);
+            setStatus("");
+          } catch (err) {
+            setStatus("Read failed: " + err.message, true);
+          } finally {
+            reading = false;
+            r.cleanup();
+          }
+        },
+      });
+
+      $("copyLog").addEventListener("click", async () => {
+        const text = entries.map((e) => `[${e.time}] ${e.text}`).join("\n");
+        try {
+          await navigator.clipboard.writeText(text);
+          $("copyMsg").textContent = "Copied.";
+        } catch {
+          $("copyMsg").textContent = "Clipboard blocked by the browser.";
+        }
+        setTimeout(() => ($("copyMsg").textContent = ""), 2000);
+      });
+      $("clearLog").addEventListener("click", () => {
+        entries.forEach((e) => URL.revokeObjectURL(e.url));
+        entries.length = 0;
+        renderLog();
+      });
+      renderLog();
+    </script>
+  </body>
+</html>

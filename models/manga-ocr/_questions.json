@@ -1,0 +1,129 @@
+{
+  "schemaVersion": 1,
+  "id": "manga-ocr",
+  "revision": 1,
+  "reviewedAt": "2026-07-26T00:00:00Z",
+  "reviewer": "solo new-family build 2026-07-26: correctness proven FIRST against the author's own 12-image test suite in headless Chrome (hand-rolled raw-onnxruntime-web greedy decode: 6/12 exact, 3 punctuation-normalisation diffs, 3 genuine errors — faithful reproduction of kha-white/manga-ocr-base), then the deployed page driven end-to-end (scripts/validate-manga-ocr.mjs) with per-sample ground-truth assertions on first-party procedural PNGs.",
+  "frontend": true,
+  "rubric": [
+    {
+      "dimension": "real-inference",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Raw onnxruntime-web sessions in a module Worker (no canned output): ViT encoder (uint8 QDQ, 87 MB — q8 QOperator rejected because ORT-Web WASM lacks ConvInteger) + char-level decoder (q8, 29.6 MB, verified byte-identical output to fp32 on all 12 author refs). Hand-rolled greedy cacheless decode because transformers.js 3.7.5 hard-requires decoder_model_merged for Vision2Seq (absent from this export) and its generate() derails the model's leading [CLS]. Reproduces the author's published test suite; on the deployed page 6/7 first-party samples recognised exactly (horizontal line, vertical column, multi-line bubble, vertical bubble, noisy print, sentence).",
+      "notes": "Every character on the page is the model's real decoded token, streamed with its true softmax probability."
+    },
+    {
+      "dimension": "io-shape",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Input an IMAGE of Japanese text → output a Japanese string decoded autoregressively ([CLS]…[SEP]) with per-character probabilities. Distinct from every built family: no shipped demo reads Japanese/CJK (trocr is English handwriting, nougat academic pages, texify LaTeX, mgp-str scene text, donut-docvqa English QA).",
+      "notes": "Raw vs post-processed toggle exposes the model's literal output (whitespace kept, half-width preserved) vs the showcase's display normalisation."
+    },
+    {
+      "dimension": "runtime-config",
+      "score": 5,
+      "severity": "info",
+      "evidence": "At-a-glance declares the model (kha-white/manga-ocr-base, linked, ONNX build onnx-community/manga-ocr-base-ONNX), task (image-to-text, vision-encoder-decoder), quantisation (encoder uint8 / decoder q8), backend (WASM via onnxruntime-web), download (~117 MB) and license (Apache-2.0). The How-it-works block shows the real pipeline steps including the hand-rolled greedy loop. No invented API.",
+      "notes": "License verified on the model card; the onnx-community export is transformers.js-tagged and not gated."
+    },
+    {
+      "dimension": "cache-init",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Loads through the shared createModelLoader architecture. First visit shows an explicit Download (~117 MB) with real per-file progress (encoder/decoder/vocab, counted bytes); the worker stores files in Cache Storage and a returning visit auto-initialises (checking → ready) with NO Download click. Verified in fresh headless profiles: download-required → Download → progress → ready; release-from-memory → reload-from-cache → ready.",
+      "notes": "Cache Storage on this Chrome build rejects synthesized puts above ~64 MB, so the 87 MB encoder runs from memory when its put fails (worker catches it honestly); the decoder + vocab still cache. A reload then re-downloads the encoder with full progress — never a silent cache claim."
+    },
+    {
+      "dimension": "states",
+      "score": 4,
+      "severity": "info",
+      "evidence": "checking → Download (~117 MB) → ready → reading (status + streaming tokens) → done (text + confidence chips + copy) and honest error paths: OCR failures and translation failures surface in a role=status .err region; a download stall is detected by a 45 s watchdog and surfaces as a loader error with Retry (observed real HF-CDN xet-bridge stalls on the build host).",
+      "notes": "Cancel stops an in-flight recognition via a cancelled flag; the worker keeps sessions loaded for reuse."
+    },
+    {
+      "dimension": "controls",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Overview: 7 alt-texted sample thumbnails, a labelled file input, drag-to-reframe crop selection, Read/Cancel/Copy, raw-vs-processed toggle. Practical: queue management (add/remove/clear), batch transcribe, copy-all. Wild: camera capture via the shared capture-ux component (explicit permission, preview, stop). Multimodel: two independent loaders plus an editable intermediate textarea. No dead controls.",
+      "notes": "All sample buttons are real <button> elements with visible labels; the crop overlay is a live canvas."
+    },
+    {
+      "dimension": "no-fake-output",
+      "score": 5,
+      "severity": "info",
+      "evidence": "The text is the model's real streamed decode; the readout shows measured time, char count and mean confidence. The page is HONEST about limits: trained on synthetic manga renders (real scan quality varies), no text detection (tries to read everything in frame), ~3000-character vocabulary, and a measured failure (a widely-spaced menu render) is disclosed on-page.",
+      "notes": "The wide-spaced menu sample genuinely fails (scrambled digits) — disclosed, not hidden; the shipped menu sample uses natural spacing and reads exactly."
+    },
+    {
+      "dimension": "accessibility",
+      "score": 4,
+      "severity": "info",
+      "evidence": "Output is aria-live with lang=ja so screen readers pick the right speech engine; status is role=status; every control has an accessible name; samples carry descriptive alt text; the token chips expose their probability via title. The demo itself is an accessibility tool (manga is inaccessible to screen readers without OCR).",
+      "notes": "The crop overlay is pointer-only — keyboard region entry is a follow-up."
+    },
+    {
+      "dimension": "responsive",
+      "score": 4,
+      "severity": "info",
+      "evidence": "Fluid two-column grid collapses to one column at ≤860 px; samples wrap; the Japanese output wraps with overflow-wrap; the token trace wraps. Verified 0 horizontal overflow at desktop 1280×800 AND mobile widths in the validation harness; chrome-devtools-mcp passes at 1280×800 and 390×844 during build.",
+      "notes": "Sample thumbnails are capped in height; the crop canvas scales to its container."
+    },
+    {
+      "dimension": "performance",
+      "score": 4,
+      "severity": "minor",
+      "evidence": "Inference runs in a dedicated module Worker; decode streams token-by-token so the page shows progress; per-128 KB throttled download progress never floods the main thread (a per-chunk posting bug was found and fixed during build). The practical page yields between batch regions.",
+      "notes": "A bubble takes ~1–2 s on WASM (cacheless decode re-runs the encoder-side decoder state each step); a KV-cached merged decoder would speed it up (follow-up)."
+    }
+  ],
+  "guidanceConsulted": [
+    {
+      "query": "long autoregressive decode without blocking the main thread",
+      "id": "break-up-long-tasks",
+      "recommendation": "Move heavy work to a Worker and yield between steps; stream partial results.",
+      "appliedOrException": "applied — the whole pipeline (sessions + greedy loop) lives in a module Worker and posts each token as decoded; the page only renders.",
+      "evidence": "UI stays responsive during multi-second decodes; Cancel is instant."
+    },
+    {
+      "query": "input latency while tokens stream in",
+      "id": "identify-inp-causes",
+      "recommendation": "Keep DOM writes small and batched during streaming to avoid INP regressions.",
+      "appliedOrException": "applied — one chip append per token (text-scale DOM ops); download progress posts are throttled to one per 128 KB.",
+      "evidence": "no long tasks observed in the page during runs; earlier per-chunk posting caused main-thread stalls and was fixed."
+    },
+    {
+      "query": "reserve space for asynchronously appearing output",
+      "id": "defer-rendering-heavy-content",
+      "recommendation": "Reserve layout space for async content to avoid CLS; defer heavy rendering.",
+      "appliedOrException": "applied — the output box has a min-height and the crop canvas has a reserved drop zone before any image loads.",
+      "evidence": "no layout shift when recognition completes."
+    },
+    {
+      "query": "live-region announcements for streamed results",
+      "id": "accessibility",
+      "recommendation": "Announce dynamic results via aria-live and keep the accessible source of truth textual.",
+      "appliedOrException": "applied — the recognised text is an aria-live <output lang=ja>; chips are supplementary (title attributes), the plain text node is the source of truth.",
+      "evidence": "screen readers receive the final string in Japanese."
+    },
+    {
+      "query": "avoid layout shifts from late-loading fonts on CJK text",
+      "id": "visually-stable-font-fallbacks",
+      "recommendation": "Use system font stacks for CJK and reserve output space so font fallback does not shift layout.",
+      "appliedOrException": "applied — the output uses the system CJK stack (no webfont download) inside a min-height box.",
+      "evidence": "no webfont requests; no shift on first render."
+    }
+  ],
+  "openQuestions": [
+    "Would a merged decoder with KV cache (re-export with optimum) cut the per-step decoder cost meaningfully for long bubbles?",
+    "Can a light text-region detector (e.g. a small detector already in the catalogue) auto-crop panels so users can photograph a whole page?",
+    "Does the wide-spaced-menu failure reproduce on real printed menus, and would a whitespace-collapse pre-transform fix it?"
+  ],
+  "followUpGoals": [
+    "Add keyboard-accessible region entry (x/y/w/h fields) alongside the pointer crop overlay.",
+    "Try a WebGPU encoder session for the ViT to cut the ~1 s encode on capable devices.",
+    "Evaluate a re-export with a merged decoder + KV cache for faster long-bubble decode.",
+    "Feed the OCR output into the built text-to-speech family for a read-aloud manga accessibility demo."
+  ],
+  "summary": "Manga OCR (kha-white/manga-ocr-base, ViT encoder + char decoder) — the catalogue's first Japanese/CJK reading capability: reads horizontal lines, vertical columns and whole multi-line bubbles in one pass, streaming per-character confidence, all on-device. Proven faithful against the author's own test suite BEFORE building (hand-rolled raw-ORT greedy decode, 12/12 refs checked), then validated end-to-end on the deployed page (6/7 first-party samples exact; the one failure mode disclosed). ~117 MB (encoder uint8 87 MB + decoder q8 29.6 MB), Apache-2.0. Full ladder: basics (line/column/bubble), practical (batch region transcript sheet), wild (camera text radar), multimodel (OCR → M2M100 ja→en with editable intermediate). KV-cached decode, WebGPU encoder and keyboard region entry are recorded follow-ups."
+}

@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Multi-model — read Japanese, then translate · Manga OCR · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Two models chained entirely in your browser: Manga OCR reads the Japanese out of an image, M2M100 translates it to English — the intermediate text is visible and editable before translation."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='12'>読</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/models/manga-ocr/">← Manga OCR</a> · <a href="/web-ai-showcase/">All models</a></p>
+
+    <header>
+      <p class="eyebrow">multi-model composition · manga-ocr → m2m100 · both WASM</p>
+      <h1>Read the bubble, then translate it</h1>
+      <p class="lede">
+        The obvious composition for this model: <strong>Manga OCR</strong> turns pixels into Japanese text,
+        then <a href="/web-ai-showcase/models/m2m100-translation/">M2M100</a> (418M, q8) translates that text
+        to English. Both run on-device in separate workers. The recognised Japanese sits in an editable box
+        between them — fix any misread character before translating, because translation quality depends
+        entirely on the OCR being right.
+      </p>
+    </header>
+
+    <div class="ocr-grid">
+      <section class="panel" aria-labelledby="ocr-h">
+        <h3 id="ocr-h">Step 1 · Manga OCR (image → Japanese)</h3>
+        <div id="loader-ocr"></div>
+        <div class="row">
+          <div id="samples" class="samples">
+            <button type="button" class="sample-thumb" data-src="../sample-horizontal.png">
+              <img src="../sample-horizontal.png" alt="Sample: famous first line" loading="lazy" /><span>Line</span>
+            </button>
+            <button type="button" class="sample-thumb" data-src="../sample-bubble.png">
+              <img src="../sample-bubble.png" alt="Sample: multi-line bubble" loading="lazy" /><span>Bubble</span>
+            </button>
+            <button type="button" class="sample-thumb" data-src="../sample-menu.png">
+              <img src="../sample-menu.png" alt="Sample: menu list" loading="lazy" /><span>Menu</span>
+            </button>
+            <button type="button" class="sample-thumb" data-src="../sample-sentence.png">
+              <img src="../sample-sentence.png" alt="Sample: sentence about on-device reading" loading="lazy" /><span>Sentence</span>
+            </button>
+          </div>
+          <label class="btn">Upload… <input type="file" id="file" accept="image/*" hidden /></label>
+        </div>
+        <div id="crop" style="margin-top:.6rem"></div>
+        <div class="row" style="margin-top:.6rem">
+          <button id="read" type="button" disabled>Read Japanese</button>
+          <button id="cancel1" type="button" class="btn-ghost" disabled>Cancel</button>
+        </div>
+        <p class="muted" id="ocrMeta"></p>
+      </section>
+
+      <section class="panel" aria-labelledby="tr-h">
+        <h3 id="tr-h">Step 2 · M2M100 (Japanese → English)</h3>
+        <div id="loader-tr"></div>
+        <label class="muted" for="ja">Recognised Japanese (editable)</label>
+        <textarea id="ja" lang="ja" rows="3" placeholder="Read an image first, or type Japanese here…"></textarea>
+        <div class="row" style="margin-top:.5rem">
+          <button id="translate" type="button" disabled>Translate to English</button>
+        </div>
+        <p id="en" class="text-box" lang="en" aria-live="polite"></p>
+        <p class="muted" id="trMeta"></p>
+      </section>
+    </div>
+
+    <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why this composition is honest</h2>
+      <ul>
+        <li><strong>No silent pipeline:</strong> the OCR output is shown <em>and editable</em> before translation — errors are yours to fix, not buried.</li>
+        <li><strong>Independent lifecycles:</strong> each model has its own loader, its own worker, and its own release button; releasing one never disturbs the other.</li>
+        <li><strong>Real timings:</strong> both steps report measured wall-clock time on your device, never claimed numbers.</li>
+        <li><strong>Where it breaks:</strong> OCR garbage in → translation garbage out. A low-confidence read (amber characters) usually produces a nonsense translation — that is the model telling the truth, not a bug.</li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>.
+      <a href="/web-ai-showcase/models/manga-ocr/">Back to Manga OCR →</a>
+    </footer>
+
+    <script type="module">
+      import { CropCanvas, MangaOcrEngine, OCR_CSS, escapeHTML } from "../ocr.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      import { createUploadFeedback } from "/web-ai-showcase/lib/upload-feedback.js";
+
+      const style = document.createElement("style");
+      style.textContent = OCR_CSS + `
+        #ja { inline-size: 100%; border: 1px solid var(--border); border-radius: 10px;
+          padding: .55rem .8rem; font: inherit; font-size: 1.05rem; background: var(--surface); color: var(--text); }
+        #en { min-block-size: 3.2rem; font-size: 1.05rem; }
+      `;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const crop = new CropCanvas($("crop"));
+      createUploadFeedback({ mount: $("ocr-h").parentElement, idPrefix: "mocr-mm" });
+      let ocr = null, ocrReady = false, trWorker = null, trReady = false;
+      let trId = 0, lastJa = "";
+
+      function setStatus(msg, err) {
+        $("runStatus").hidden = !msg;
+        $("runStatus").textContent = msg || "";
+        $("runStatus").classList.toggle("err", !!err);
+      }
+      const refresh = () => {
+        $("read").disabled = !ocrReady || !crop.hasImage;
+        $("translate").disabled = !trReady || !$("ja").value.trim();
+      };
+      $("ja").addEventListener("input", refresh);
+
+      createModelLoader({
+        mount: $("loader-ocr"),
+        model: {
+          modelId: "onnx-community/manga-ocr-base-ONNX",
+          runtime: "onnxruntime-web",
+          dtype: "uint8+q8",
+          sizeMB: 117,
+          requiresWebGPU: false,
+        },
+        load: async (onProgress) => {
+          ocr = new MangaOcrEngine();
+          await ocr.load(onProgress);
+          return ocr;
+        },
+        onReady: () => { ocrReady = true; refresh(); },
+        dispose: (e) => e.dispose(),
+        onDispose: () => { ocrReady = false; ocr = null; refresh(); },
+      });
+
+      createModelLoader({
+        mount: $("loader-tr"),
+        model: {
+          modelId: "Xenova/m2m100_418M",
+          runtime: "transformers.js",
+          dtype: "q8",
+          sizeMB: 470,
+          requiresWebGPU: false,
+        },
+        load: async (onProgress) => {
+          trWorker = new Worker("../translate-worker.js", { type: "module" });
+          trWorker.onmessage = (e) => {
+            const m = e.data || {};
+            if (m.type === "progress") onProgress(m.p);
+            else if (m.type === "ready") trWorker.__resolve?.();
+            else if (m.type === "stream" && m.id === trId) {
+              $("en").innerHTML = escapeHTML(m.text) + '<span class="cursor"></span>';
+            } else if (m.type === "result" && m.id === trId) {
+              $("en").textContent = m.text || "(empty translation)";
+              $("trMeta").textContent = `Translated in ${(m.ms / 1000).toFixed(2)}s · M2M100 418M q8 on WASM`;
+              setStatus("");
+            } else if (m.type === "error") {
+              setStatus("Translation failed: " + m.message, true);
+              trWorker.__reject?.(new Error(m.message));
+            }
+          };
+          await new Promise((res, rej) => {
+            trWorker.__resolve = res;
+            trWorker.__reject = rej;
+            trWorker.postMessage({ type: "load" });
+          });
+          trWorker.__resolve = trWorker.__reject = null;
+          return { dispose: () => { trWorker?.terminate(); trWorker = null; } };
+        },
+        onReady: () => { trReady = true; refresh(); },
+        dispose: (h) => h.dispose(),
+        onDispose: () => { trReady = false; refresh(); },
+      });
+
+      function useURL(url) { crop.setSrc(url); refresh(); }
+      document.querySelectorAll("#samples .sample-thumb").forEach((b) =>
+        b.addEventListener("click", () => useURL(b.dataset.src)),
+      );
+      $("file").addEventListener("change", (e) => {
+        const f = e.target.files?.[0];
+        if (!f) return;
+        useURL(URL.createObjectURL(f));
+        e.target.value = "";
+      });
+
+      $("read").addEventListener("click", async () => {
+        if (!ocrReady) return;
+        $("read").disabled = true;
+        $("cancel1").disabled = false;
+        setStatus("Reading Japanese…");
+        const t0 = performance.now();
+        try {
+          const r = await ocr.recognize(await crop.cropDataURL(1200), 160, () => {});
+          lastJa = r.text;
+          $("ja").value = r.text;
+          $("ocrMeta").textContent = `Read in ${((performance.now() - t0) / 1000).toFixed(2)}s · ${r.charCount} characters · mean confidence ${Math.round(r.meanProb * 100)}%`;
+          setStatus("");
+        } catch (err) {
+          if (String(err?.message) !== "cancelled") setStatus("OCR failed: " + err.message, true);
+          else setStatus("");
+        } finally {
+          $("cancel1").disabled = true;
+          refresh();
+        }
+      });
+      $("cancel1").addEventListener("click", () => ocr?.cancel());
+
+      $("translate").addEventListener("click", () => {
+        if (!trReady || !$("ja").value.trim()) return;
+        trId += 1;
+        $("en").innerHTML = '<span class="cursor"></span>';
+        $("trMeta").textContent = "";
+        setStatus("Translating…");
+        trWorker.postMessage({ type: "run", id: trId, text: $("ja").value.trim() });
+      });
+
+      refresh();
+      document.querySelector("#samples .sample-thumb").click();
+    </script>
+  </body>
+</html>

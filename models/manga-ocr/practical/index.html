@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Practical — panel transcript sheet · Manga OCR · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="A real lettering/QC workflow: crop several regions out of a page, transcribe them all in reading order on-device, and copy the numbered transcript."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='12'>読</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/models/manga-ocr/">← Manga OCR</a> · <a href="/web-ai-showcase/">All models</a></p>
+
+    <header>
+      <p class="eyebrow">practical · batch region transcription · WASM</p>
+      <h1>Panel transcript sheet</h1>
+      <p class="lede">
+        Letterers and accessibility editors don't read one bubble — they transcribe every region of a page
+        in order. Crop each region, queue it, then transcribe the whole batch in one pass. Every region
+        shows its own confidence so you can spot the one panel that needs a manual check.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Load the model</h3>
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+    </section>
+
+    <div class="ocr-grid">
+      <section class="panel" aria-labelledby="q-h">
+        <h3 id="q-h">1 · Queue regions</h3>
+        <div class="row">
+          <div id="samples" class="samples">
+            <button type="button" class="sample-thumb" data-src="../sample-bubble.png">
+              <img src="../sample-bubble.png" alt="Sample speech bubble" loading="lazy" /><span>Bubble</span>
+            </button>
+            <button type="button" class="sample-thumb" data-src="../sample-menu.png">
+              <img src="../sample-menu.png" alt="Sample menu list" loading="lazy" /><span>Menu</span>
+            </button>
+            <button type="button" class="sample-thumb" data-src="../sample-sentence.png">
+              <img src="../sample-sentence.png" alt="Sample sentence" loading="lazy" /><span>Line</span>
+            </button>
+            <button type="button" class="sample-thumb" data-src="../sample-vbubble.png">
+              <img src="../sample-vbubble.png" alt="Sample vertical bubble" loading="lazy" /><span>Vertical</span>
+            </button>
+          </div>
+          <label class="btn">Upload… <input type="file" id="file" accept="image/*" hidden /></label>
+        </div>
+        <div id="crop" style="margin-top:.6rem"></div>
+        <div class="row" style="margin-top:.6rem">
+          <button id="add" type="button" disabled>Add region to queue</button>
+          <button id="runAll" type="button" disabled>Transcribe queue</button>
+          <button id="clear" type="button" class="btn-ghost">Clear</button>
+        </div>
+        <ol id="queue" class="queue"></ol>
+      </section>
+
+      <section class="panel" aria-labelledby="t-h">
+        <h3 id="t-h">2 · Transcript</h3>
+        <ol id="transcript" class="queue"></ol>
+        <p id="empty" class="muted">Transcribed regions appear here in queue order, each with mean character confidence.</p>
+        <div class="row">
+          <button id="copyAll" type="button" class="btn-ghost" disabled>Copy transcript</button>
+          <span id="copyMsg" class="muted" role="status"></span>
+        </div>
+      </section>
+    </div>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>.
+      <a href="/web-ai-showcase/models/manga-ocr/">Back to Manga OCR →</a>
+    </footer>
+
+    <script type="module">
+      import { CropCanvas, MangaOcrEngine, OCR_CSS, escapeHTML } from "../ocr.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      import { createUploadFeedback } from "/web-ai-showcase/lib/upload-feedback.js";
+
+      const style = document.createElement("style");
+      style.textContent = OCR_CSS + `
+        .queue { list-style: none; margin: .6rem 0 0; padding: 0; display: grid; gap: .45rem; }
+        .queue li { display: flex; gap: .6rem; align-items: center; border: 1px solid var(--border);
+          border-radius: 10px; padding: .4rem .6rem; }
+        .queue img { block-size: 40px; inline-size: auto; max-inline-size: 120px; object-fit: contain;
+          background: #fff; border-radius: 6px; border: 1px solid var(--border); }
+        .queue .qtext { flex: 1; overflow-wrap: anywhere; }
+        .queue .conf { font-size: .78rem; color: var(--muted); white-space: nowrap; }
+        .queue .conf.low { color: var(--warn, #b45309); font-weight: 600; }
+        .queue button { flex-shrink: 0; }
+      `;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const crop = new CropCanvas($("crop"));
+      const uploadNote = createUploadFeedback({ mount: $("q-h").parentElement, idPrefix: "mocr-practical" });
+      let engine = null, ready = false, busy = false;
+      const queue = []; // {id, dataURL, text?, meanConf?}
+      let nextId = 1;
+
+      function setStatus(msg, err) {
+        $("runStatus").hidden = !msg;
+        $("runStatus").textContent = msg || "";
+        $("runStatus").classList.toggle("err", !!err);
+      }
+      function refreshButtons() {
+        $("add").disabled = !ready || busy || !crop.hasImage;
+        $("runAll").disabled = !ready || busy || queue.length === 0;
+        $("copyAll").disabled = !queue.some((q) => q.text);
+      }
+      function renderQueue() {
+        $("queue").replaceChildren(
+          ...queue.map((q) => {
+            const li = document.createElement("li");
+            const img = document.createElement("img");
+            img.src = q.dataURL; img.alt = `Region ${q.id}`;
+            const span = document.createElement("span");
+            span.className = "qtext muted";
+            span.textContent = `Region ${q.id}`;
+            const del = document.createElement("button");
+            del.type = "button"; del.className = "btn-ghost"; del.textContent = "Remove";
+            del.disabled = busy;
+            del.addEventListener("click", () => {
+              queue.splice(queue.indexOf(q), 1);
+              renderQueue(); renderTranscript(); refreshButtons();
+            });
+            li.append(img, span, del);
+            return li;
+          }),
+        );
+      }
+      function renderTranscript() {
+        const done = queue.filter((q) => q.text !== undefined);
+        $("empty").hidden = done.length > 0;
+        $("transcript").replaceChildren(
+          ...done.map((q) => {
+            const li = document.createElement("li");
+            const img = document.createElement("img");
+            img.src = q.dataURL; img.alt = `Region ${q.id}`;
+            const span = document.createElement("span");
+            span.className = "qtext"; span.lang = "ja";
+            span.textContent = `${q.id}. ${q.text}`;
+            const conf = document.createElement("span");
+            conf.className = "conf" + (q.meanConf < 0.85 ? " low" : "");
+            conf.textContent = `${Math.round(q.meanConf * 100)}%`;
+            conf.title = "Mean character confidence — low values deserve a manual check";
+            li.append(img, span, conf);
+            return li;
+          }),
+        );
+        refreshButtons();
+      }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: {
+          modelId: "onnx-community/manga-ocr-base-ONNX",
+          runtime: "onnxruntime-web",
+          dtype: "uint8+q8",
+          sizeMB: 117,
+          requiresWebGPU: false,
+        },
+        load: async (onProgress) => {
+          engine = new MangaOcrEngine();
+          await engine.load(onProgress);
+          return engine;
+        },
+        onReady: () => { ready = true; refreshButtons(); },
+        dispose: (e) => e.dispose(),
+        onDispose: () => { ready = false; engine = null; refreshButtons(); },
+      });
+
+      function useURL(url) { crop.setSrc(url); refreshButtons(); }
+      document.querySelectorAll("#samples .sample-thumb").forEach((b) =>
+        b.addEventListener("click", () => useURL(b.dataset.src)),
+      );
+      $("file").addEventListener("change", (e) => {
+        const f = e.target.files?.[0];
+        if (!f) return;
+        uploadNote.show({ fileName: f.name });
+        useURL(URL.createObjectURL(f));
+        e.target.value = "";
+      });
+
+      $("add").addEventListener("click", async () => {
+        const d = await crop.cropDataURL(1200);
+        queue.push({ id: nextId++, dataURL: d });
+        renderQueue(); refreshButtons();
+      });
+      $("clear").addEventListener("click", () => {
+        if (busy) return;
+        queue.length = 0;
+        renderQueue(); renderTranscript(); refreshButtons();
+      });
+
+      $("runAll").addEventListener("click", async () => {
+        if (!ready || busy || queue.length === 0) return;
+        busy = true; refreshButtons();
+        for (const q of queue) {
+          setStatus(`Reading region ${q.id} of ${queue.length}…`);
+          try {
+            const toks = [];
+            const r = await engine.recognize(q.dataURL, 160, (t) => toks.push(t));
+            q.text = r.text || "(no text)";
+            const probs = toks.filter((t) => t.prob > 0).map((t) => t.prob);
+            q.meanConf = probs.length ? probs.reduce((a, b) => a + b, 0) / probs.length : 0;
+          } catch (err) {
+            q.text = `(failed: ${err.message})`;
+            q.meanConf = 0;
+          }
+          renderTranscript();
+          // Yield between regions so the page stays responsive through a long queue.
+          await new Promise((r2) => setTimeout(r2, 0));
+        }
+        busy = false; setStatus(""); renderQueue(); renderTranscript();
+      });
+
+      $("copyAll").addEventListener("click", async () => {
+        const text = queue.filter((q) => q.text).map((q) => `${q.id}. ${q.text}`).join("\n");
+        try {
+          await navigator.clipboard.writeText(text);
+          $("copyMsg").textContent = "Copied.";
+        } catch {
+          $("copyMsg").textContent = "Clipboard blocked by the browser.";
+        }
+        setTimeout(() => ($("copyMsg").textContent = ""), 2000);
+      });
+
+      renderQueue(); renderTranscript();
+      document.querySelector("#samples .sample-thumb").click();
+    </script>
+  </body>
+</html>
