@@ -273,6 +273,7 @@ export const OCR_CSS = `
   block-size: 52px; max-inline-size: 160px; object-fit: contain; border-radius: 6px;
   border: 2px solid transparent; cursor: pointer; padding: 2px; background: #fff;
 }
+.sample-thumb img { max-inline-size: 100%; block-size: 100%; object-fit: contain; }
 .sample-thumb.active { border-color: var(--accent); }
 .sample-thumb:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .crop-wrap { position: relative; display: inline-block; max-inline-size: 100%; touch-action: none; }
