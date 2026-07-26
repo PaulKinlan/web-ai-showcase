@@ -5,6 +5,13 @@ short version for tools that look for `AGENTS.md`.
 
 ## Hard rules
 
+### Delivery orchestration
+
+- One fresh **parent/integrator** owns review, integration, and push. Leaf workers never spawn their own reviewers and never self-accept or push.
+- Reserve independent reviewer capacity **before** launching a leaf. A green local commit must be handed immediately to that reserved reviewer; an orchestration failure must be recovered by the parent, not allowed to strand completed work.
+- Keep experimental model builds in isolated worktrees. A failed or hung experiment must never block review/push of an unrelated completed batch.
+- Every long model download/inference command needs a hard timeout plus incremental logs. When the timeout expires or output proves failure, terminate its process tree, record fail-closed evidence, and stop retrying unless one small evidence-backed fix remains.
+- Parents must rotate before their subagent/session limit is exhausted and keep enough capacity for review and one correction pass. Workers write bounded status artifacts and stop before context exhaustion.
 - **Models must really run in-browser.** Real `pipeline()` / WebLLM calls on the visitor's device.
   Never present a canned result as live output. Degrade honestly (labelled needs-WebGPU / too-large
   / unsupported) — never fake success.

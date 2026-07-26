@@ -5,6 +5,14 @@
 > routine on a cron; the rules below exist so it stays a _pinnacle-of-modern-web_ showcase, not a
 > model dump.
 
+## Delivery orchestration (non-negotiable)
+
+- A fresh parent/integrator owns reviewer allocation, acceptance, integration, and push. Leaf workers do not spawn reviewers, self-accept, or push.
+- Reserve an independent reviewer before starting each bounded leaf. Hand green commits to that reviewer immediately; reviewer-tool failure is a parent recovery problem and must not strand completed work.
+- Isolate experimental model builds in worktrees. Failed/hung experiments do not block unrelated reviewed commits.
+- Put hard timeouts and incremental logs around long downloads and real-inference validation. Kill the process tree when timed out or already proven failed; preserve fail-closed evidence and do not repeat long retries without one specific evidence-backed fix.
+- Rotate parents before subagent/session limits are exhausted. Reserve capacity for independent review and one correction pass. Workers must checkpoint and stop before context exhaustion.
+
 ## What this project is
 
 The Chrome Platform Showcase, but for **Web AI**. For every browser-runnable model (transformers.js
