@@ -8,14 +8,21 @@
 //   node scripts/validate-manga-ocr.mjs           → full assertion suite (exit 1 on any FAIL)
 //   node scripts/validate-manga-ocr.mjs --report  → print true outputs, skip text assertions
 const B = "./browser.mjs";
-const { closePage, launchChrome, openPage, setViewport, startServer, MOBILE, CDP } = await import(B);
+const { closePage, launchChrome, openPage, setViewport, startServer, MOBILE, CDP } = await import(
+  B
+);
 const REPORT = process.argv.includes("--report");
 // Clean up stale harness Chromes/profiles from interrupted runs (they lock the profile dir).
 const { execFileSync } = await import("node:child_process");
-try { execFileSync("pkill", ["-f", "conformance-chrome-profile"]); } catch { /* none */ }
+try {
+  execFileSync("pkill", ["-f", "conformance-chrome-profile"]);
+} catch { /* none */ }
 try {
   const { rmSync } = await import("node:fs");
-  rmSync(new URL("../.conformance-chrome-profile", import.meta.url), { recursive: true, force: true });
+  rmSync(new URL("../.conformance-chrome-profile", import.meta.url), {
+    recursive: true,
+    force: true,
+  });
 } catch { /* ignore */ }
 const { server, port } = await startServer();
 const chrome = await launchChrome();
@@ -85,7 +92,11 @@ try {
       dl:[...document.querySelectorAll(".loader-actions button")].some(b=>/Download/.test(b.textContent))}))()`,
     15000,
   );
-  chk("loads: loader + Download (fresh profile = absent)", s0?.loader && s0?.dl, JSON.stringify(s0));
+  chk(
+    "loads: loader + Download (fresh profile = absent)",
+    s0?.loader && s0?.dl,
+    JSON.stringify(s0),
+  );
 
   await evalL(
     pg.sessionId,
@@ -111,8 +122,14 @@ try {
           ready:!document.getElementById("run").disabled})`,
         15000,
       );
-      if (st?.state === "error") { loadErr = st.status; break; }
-      if (st?.state === "ready" && st?.ready) { ready = true; break; }
+      if (st?.state === "error") {
+        loadErr = st.status;
+        break;
+      }
+      if (st?.state === "ready" && st?.ready) {
+        ready = true;
+        break;
+      }
       await sleep(2000);
     }
   }
@@ -210,6 +227,56 @@ try {
       10000,
     );
     chk("no horizontal overflow (mobile 360px)", odMob === true);
+  }
+  if (!REPORT) {
+    // The Basics page runs in its own Worker. Resolve its relative sample URL in the
+    // document before crossing the Worker boundary, then prove a card produces OCR.
+    const basics = await openPage(
+      cdp,
+      `http://127.0.0.1:${port}/web-ai-showcase/models/manga-ocr/basics/`,
+    );
+    await sleep(1000);
+    await evalL(
+      basics.sessionId,
+      `(()=>{const b=[...document.querySelectorAll(".loader-actions button")].find(x=>/Download|Load model/.test(x.textContent));if(b)b.click();return !!b;})()`,
+      15000,
+    );
+    let basicsReady = false;
+    for (let i = 0; i < 120; i++) {
+      basicsReady = await evalL(
+        basics.sessionId,
+        `document.querySelector(".model-loader")?.dataset.state === "ready"`,
+        15000,
+      );
+      if (basicsReady) break;
+      await sleep(2000);
+    }
+    if (basicsReady) {
+      await evalL(basics.sessionId, `document.querySelector(".read-btn")?.click()`, 10000);
+    }
+    let basicsResult = null;
+    for (let i = 0; i < 90; i++) {
+      basicsResult = await evalL(
+        basics.sessionId,
+        `({out:document.getElementById("out1")?.textContent || "",
+          err:document.getElementById("runStatus")?.classList.contains("err")
+            ? document.getElementById("runStatus").textContent : ""})`,
+        15000,
+      );
+      if (basicsResult?.out || basicsResult?.err) break;
+      await sleep(2000);
+    }
+    chk(
+      "Basics card resolves its sample URL and produces real OCR",
+      basicsReady && basicsResult?.out === SAMPLES[0].want && !basicsResult?.err,
+      JSON.stringify(basicsResult),
+    );
+    chk(
+      "Basics page has no console errors",
+      basics.errors.length === 0,
+      basics.errors.slice(0, 3).join(" | "),
+    );
+    await closePage(cdp, basics.targetId);
   }
   chk("no console errors", pg.errors.length === 0, pg.errors.slice(0, 3).join(" | "));
   await closePage(cdp, pg.targetId);
