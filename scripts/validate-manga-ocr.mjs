@@ -59,6 +59,30 @@ const SAMPLES = [
   { src: "sample-vbubble.png", want: "縦書きの吹き出しも一度に読む" },
 ];
 
+async function loadPageModel(sid, mountSelector) {
+  let clicked = false;
+  for (let i = 0; i < 120; i++) {
+    const state = await evalL(
+      sid,
+      `document.querySelector(${JSON.stringify(mountSelector + " .model-loader")})?.dataset.state`,
+      15000,
+    );
+    if (state === "ready") return true;
+    if (state === "error") return false;
+    if (!clicked) {
+      clicked = await evalL(
+        sid,
+        `(()=>{const root=document.querySelector(${
+          JSON.stringify(mountSelector)
+        });const b=root&&[...root.querySelectorAll(".loader-actions button")].find(x=>/Download|Load model/.test(x.textContent));if(b)b.click();return !!b;})()`,
+        15000,
+      );
+    }
+    await sleep(2000);
+  }
+  return false;
+}
+
 async function runSample(sid, src) {
   const kicked = await evalL(
     sid,
@@ -277,6 +301,114 @@ try {
       basics.errors.slice(0, 3).join(" | "),
     );
     await closePage(cdp, basics.targetId);
+
+    const practical = await openPage(
+      cdp,
+      `http://127.0.0.1:${port}/web-ai-showcase/models/manga-ocr/practical/`,
+    );
+    await sleep(1000);
+    const practicalInit = await evalL(
+      practical.sessionId,
+      `({loaders:document.querySelectorAll(".model-loader").length,
+        canvas:document.querySelector("#crop")?.tagName,
+        overflow:document.documentElement.scrollWidth > innerWidth + 1})`,
+      15000,
+    );
+    const practicalReady = practicalInit?.loaders === 1 && practicalInit?.canvas === "CANVAS" &&
+      !practicalInit?.overflow && await loadPageModel(practical.sessionId, "#model-loader");
+    if (practicalReady) {
+      for (let i = 0; i < 30; i++) {
+        const canAdd = await evalL(
+          practical.sessionId,
+          `!document.getElementById("add").disabled`,
+          10000,
+        );
+        if (canAdd) break;
+        await sleep(500);
+      }
+      await evalL(practical.sessionId, `document.getElementById("add").click()`, 10000);
+      for (let i = 0; i < 30; i++) {
+        const canRun = await evalL(
+          practical.sessionId,
+          `!document.getElementById("runAll").disabled`,
+          10000,
+        );
+        if (canRun) break;
+        await sleep(200);
+      }
+      await evalL(practical.sessionId, `document.getElementById("runAll").click()`, 10000);
+    }
+    let practicalOut = "";
+    for (let i = 0; i < 90 && practicalReady; i++) {
+      practicalOut = await evalL(
+        practical.sessionId,
+        `document.querySelector("#transcript .qtext")?.textContent || ""`,
+        10000,
+      );
+      if (practicalOut) break;
+      await sleep(2000);
+    }
+    chk(
+      "Practical page initializes and transcribes a queued region",
+      practicalReady && practicalOut.includes(SAMPLES[2].want),
+      JSON.stringify({ init: practicalInit, out: practicalOut }),
+    );
+    chk(
+      "Practical page has no console errors",
+      practical.errors.length === 0,
+      practical.errors.slice(0, 3).join(" | "),
+    );
+    await closePage(cdp, practical.targetId);
+
+    const multimodel = await openPage(
+      cdp,
+      `http://127.0.0.1:${port}/web-ai-showcase/models/manga-ocr/multimodel/`,
+    );
+    await sleep(1000);
+    const multimodelInit = await evalL(
+      multimodel.sessionId,
+      `({loaders:document.querySelectorAll(".model-loader").length,
+        canvas:document.querySelector("#crop")?.tagName,
+        overflow:document.documentElement.scrollWidth > innerWidth + 1})`,
+      15000,
+    );
+    const multimodelReady = multimodelInit?.loaders === 2 &&
+      multimodelInit?.canvas === "CANVAS" && !multimodelInit?.overflow &&
+      await loadPageModel(multimodel.sessionId, "#loader-ocr");
+    if (multimodelReady) {
+      for (let i = 0; i < 30; i++) {
+        const canRead = await evalL(
+          multimodel.sessionId,
+          `!document.getElementById("read").disabled`,
+          10000,
+        );
+        if (canRead) break;
+        await sleep(500);
+      }
+      await evalL(multimodel.sessionId, `document.getElementById("read").click()`, 10000);
+    }
+    let multimodelResult = { out: "", meta: "" };
+    for (let i = 0; i < 90 && multimodelReady; i++) {
+      multimodelResult = await evalL(
+        multimodel.sessionId,
+        `({out:document.getElementById("ja").value,meta:document.getElementById("ocrMeta").textContent})`,
+        10000,
+      );
+      if (multimodelResult?.out) break;
+      await sleep(2000);
+    }
+    chk(
+      "Multi-model page initializes and produces editable real OCR",
+      multimodelReady && multimodelResult?.out === SAMPLES[0].want &&
+        !/undefined|NaN/.test(multimodelResult?.meta || ""),
+      JSON.stringify({ init: multimodelInit, ...multimodelResult }),
+    );
+    chk(
+      "Multi-model page has no console errors",
+      multimodel.errors.length === 0,
+      multimodel.errors.slice(0, 3).join(" | "),
+    );
+    await closePage(cdp, multimodel.targetId);
   }
   chk("no console errors", pg.errors.length === 0, pg.errors.slice(0, 3).join(" | "));
   await closePage(cdp, pg.targetId);

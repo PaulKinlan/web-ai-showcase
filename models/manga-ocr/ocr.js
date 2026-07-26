@@ -109,7 +109,7 @@ export function fileToDataURL(file) {
  * Manga OCR reads anything from a single line to a whole speech bubble, so the crop is how you point
  * it at exactly the text you want. Returns the whole image when the region covers (nearly) everything.
  */
-export function cropRegion(img, region) {
+export function cropRegion(img, region, maxSize = Infinity) {
   const iw = img.naturalWidth || img.width;
   const ih = img.naturalHeight || img.height;
   let { x = 0, y = 0, w = 1, h = 1 } = region || {};
@@ -119,11 +119,12 @@ export function cropRegion(img, region) {
   h = Math.max(0.02, Math.min(1 - y, h));
   const sx = Math.round(x * iw), sy = Math.round(y * ih);
   const sw = Math.round(w * iw), sh = Math.round(h * ih);
+  const scale = Math.min(1, maxSize / sw, maxSize / sh);
   const canvas = document.createElement("canvas");
-  canvas.width = sw;
-  canvas.height = sh;
+  canvas.width = Math.max(1, Math.round(sw * scale));
+  canvas.height = Math.max(1, Math.round(sh * scale));
   const ctx = canvas.getContext("2d");
-  ctx.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
+  ctx.drawImage(img, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
   return canvas.toDataURL("image/png");
 }
 
@@ -190,11 +191,17 @@ export class CropCanvas {
     this.draw();
     this.onChange?.();
   }
+  get hasImage() {
+    return this.img.naturalWidth > 0;
+  }
   region() {
     return { ...this.sel };
   }
   crop() {
     return cropRegion(this.img, this.sel);
+  }
+  cropDataURL(maxSize = Infinity) {
+    return cropRegion(this.img, this.sel, maxSize);
   }
   _resize() {
     const maxW = 560;
@@ -221,7 +228,10 @@ export class CropCanvas {
         s.y * this.img.naturalHeight,
         s.w * this.img.naturalWidth,
         s.h * this.img.naturalHeight,
-        rx, ry, rw, rh,
+        rx,
+        ry,
+        rw,
+        rh,
       );
       ctx.strokeStyle = "#6366f1";
       ctx.lineWidth = 2;
@@ -246,7 +256,9 @@ export function renderTokenChip(container, tok) {
   chip.className = "tok";
   chip.title = `step ${tok.i + 1} · ${(tok.prob * 100).toFixed(1)}%` +
     (tok.alternatives?.length
-      ? ` · also: ${tok.alternatives.map((a) => `${a.token || "␣"} ${(a.p * 100).toFixed(1)}%`).join(", ")}`
+      ? ` · also: ${
+        tok.alternatives.map((a) => `${a.token || "␣"} ${(a.p * 100).toFixed(1)}%`).join(", ")
+      }`
       : "");
   const label = tok.token || "⟨end⟩";
   chip.innerHTML = `${escapeHTML(label)}<small>${(tok.prob * 100).toFixed(0)}%</small>`;
