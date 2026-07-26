@@ -12,6 +12,7 @@
 - Isolate experimental model builds in worktrees. Failed/hung experiments do not block unrelated reviewed commits.
 - Put hard timeouts and incremental logs around long downloads and real-inference validation. Kill the process tree when timed out or already proven failed; preserve fail-closed evidence and do not repeat long retries without one specific evidence-backed fix.
 - Rotate parents before subagent/session limits are exhausted. Reserve capacity for independent review and one correction pass. Workers must checkpoint and stop before context exhaustion.
+- Acceptance is route-complete, not family-level: visibly drive overview/inside plus every Basics, Practical, Wild, and Multi-model route at desktop and mobile, checking controls, console, and network. Committed validators must exercise every claimed rung. Static gates or overview inference cannot prove ladder behavior; every advertised multi-model stage must run for real or remain explicitly unverified and unpublished.
 
 ## What this project is
 

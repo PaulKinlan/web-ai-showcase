@@ -12,6 +12,7 @@ short version for tools that look for `AGENTS.md`.
 - Keep experimental model builds in isolated worktrees. A failed or hung experiment must never block review/push of an unrelated completed batch.
 - Every long model download/inference command needs a hard timeout plus incremental logs. When the timeout expires or output proves failure, terminate its process tree, record fail-closed evidence, and stop retrying unless one small evidence-backed fix remains.
 - Parents must rotate before their subagent/session limit is exhausted and keep enough capacity for review and one correction pass. Workers write bounded status artifacts and stop before context exhaustion.
+- **Drive every claimed route before acceptance.** For each new or touched family, visibly exercise the overview/inside surface and every Basics, Practical, Wild, and Multi-model route at desktop and mobile, with console/network inspection. A family-level inference pass or static gate does not prove its ladder pages. Committed validation must cover every claimed rung; multi-model pages must run every advertised model stage or remain explicitly unverified and unpublished.
 - **Models must really run in-browser.** Real `pipeline()` / WebLLM calls on the visitor's device.
   Never present a canned result as live output. Degrade honestly (labelled needs-WebGPU / too-large
   / unsupported) — never fake success.
