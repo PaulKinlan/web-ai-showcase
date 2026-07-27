@@ -156,10 +156,13 @@ async function exercise(cdp, page, rung, viewport) {
       tps: document.querySelector('#rTps')?.textContent || ''
     })`,
     );
+    // transformers.js TextStreamer flushes at whitespace boundaries, so each streamed callback is
+    // a word-chunk, not a raw subword — "GRAND TOTAL: $42.99" genuinely arrives in 3 chunks.
+    // Requiring >= 2 proves the decode really streamed incrementally (first chunk + later flush).
     check(
       `${viewport} overview: real ${OCR_ID} transcription + see-inside token trace`,
       evidence.out.includes("GRAND TOTAL") && evidence.out.includes("42.99") &&
-        evidence.tokens > 5 && /WASM/.test(evidence.backend),
+        evidence.tokens >= 2 && /WASM/.test(evidence.backend),
       JSON.stringify(evidence),
     );
   } else if (rung === "basics") {
@@ -183,7 +186,7 @@ async function exercise(cdp, page, rung, viewport) {
     );
     check(
       `${viewport} basics: real line read from ${OCR_ID}`,
-      evidence.out.includes("GRAND TOTAL") && Number(evidence.tok) > 3 &&
+      evidence.out.includes("GRAND TOTAL") && Number(evidence.tok) >= 2 &&
         /ms/.test(evidence.ms),
       JSON.stringify(evidence),
     );
@@ -203,10 +206,12 @@ async function exercise(cdp, page, rung, viewport) {
       180_000,
       `${viewport} practical receipt line`,
     );
+    // The page puts the transcription into each row input's VALUE (renderRows sets inp.value);
+    // textContent only sees the "line N" labels, so probe the input values directly.
     const rowsEvidence = await evaluate(
       cdp,
       sid,
-      `({ rows: document.querySelector('#rows')?.textContent || '', n: document.querySelectorAll('#rows .row-line input').length })`,
+      `({ rows: [...document.querySelectorAll('#rows .row-line input')].map((i) => i.value).join(' | '), n: document.querySelectorAll('#rows .row-line input').length })`,
     );
     check(
       `${viewport} practical: receipt line digitised into editable list`,
