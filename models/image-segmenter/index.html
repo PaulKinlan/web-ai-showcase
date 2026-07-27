@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Image Segmenter — 21-class pixel labelling in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run Google's MediaPipe Image Segmenter (DeepLab v3+, PASCAL VOC 21 classes) locally: every pixel of a photo is labelled person, dog, car, chair… with a colour mask, coverage and confidence — real .tflite inference, no server."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🧩</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">image-segmentation · vision · MediaPipe · ~2.8 MB</p>
+      <h1>Image Segmenter — every pixel gets a class</h1>
+      <p class="lede">
+        Google's MediaPipe Image Segmenter (a DeepLab v3+ trained on PASCAL VOC 2012) labels
+        <strong>every pixel</strong> of a photo with one of <strong>21 classes</strong> — person, dog,
+        cat, car, bicycle, chair, TV… — and returns a category mask plus a confidence mask per class.
+        It's a real <code>.tflite</code> model that runs on-device via WebAssembly (with a GPU
+        delegate when available). Pick a photo and watch the mask appear.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://ai.google.dev/edge/mediapipe/solutions/vision/image_segmenter" target="_blank" rel="noopener">MediaPipe Image Segmenter — DeepLab v3+ (Google)</a></td></tr>
+          <tr><th>Runtime</th><td>MediaPipe Tasks Vision (<code>@mediapipe/tasks-vision</code>) — official <code>.tflite</code> bundle</td></tr>
+          <tr><th>Output</th><td>Category mask (one class index per pixel) + 21 float confidence masks + label map</td></tr>
+          <tr><th>Classes</th><td>21 PASCAL VOC 2012 classes (background + 20 object/animal/person classes)</td></tr>
+          <tr><th>Delegate</th><td>GPU when a WebGPU/WebGL adapter exists, otherwise CPU (XNNPACK)</td></tr>
+          <tr><th>Download</th><td>~2.8 MB <code>deeplab_v3.tflite</code>, cached by the browser after first load</td></tr>
+          <tr><th>License</th><td>Apache-2.0 (Google MediaPipe)</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Canvas — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Pick a sample photo or drop your own. The model labels each pixel; the legend lists every class found with its coverage and mean confidence.</p>
+
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop a photo to segment">
+        <span id="dropText">Drop a photo here, or click to choose</span>
+        <input type="file" id="file" accept="image/*" hidden />
+      </div>
+      <div class="sample-strip" id="samples" aria-label="Sample photos">
+        <img class="sample-thumb active" src="../../media/assets/portrait-person.jpg" data-src="../../media/assets/portrait-person.jpg" alt="Portrait of a person" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../../media/assets/dog-outdoor.jpg" data-src="../../media/assets/dog-outdoor.jpg" alt="A dog outdoors" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../../media/assets/obj-cat.jpg" data-src="../../media/assets/obj-cat.jpg" alt="A cat" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../../media/assets/city-street.jpg" data-src="../../media/assets/city-street.jpg" alt="A street scene" tabindex="0" role="button" />
+      </div>
+
+      <div class="field-row">
+        <button id="run" type="button" disabled>Segment image</button>
+        <span class="seg-view" role="group" aria-label="Mask view mode">
+          <button type="button" id="modeOverlay" aria-pressed="true">Overlay</button>
+          <button type="button" id="modeMask" aria-pressed="false">Mask only</button>
+          <button type="button" id="modeCutout" aria-pressed="false">Cutout</button>
+        </span>
+        <label class="seg-slider" for="opacity">Overlay opacity
+          <input type="range" id="opacity" min="10" max="100" value="55" step="5" />
+          <span id="opacityVal" aria-live="polite">55%</span>
+        </label>
+      </div>
+
+      <div class="canvas-wrap">
+        <canvas id="stage" class="stage-canvas" tabindex="0" aria-label="Result: the photo with the segmentation mask drawn on it. The classes found are listed in the legend below."></canvas>
+      </div>
+      <div class="readout" id="readout" hidden>
+        <span>delegate <b id="rDelegate">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+        <span>mask <b id="rMask">–</b></span>
+        <span>classes found <b id="rClasses">–</b></span>
+      </div>
+
+      <h4 style="margin:1rem 0 .2rem">Classes found</h4>
+      <p class="muted" style="font-size:.85rem">Coverage = share of pixels labelled with that class; conf = the model's mean confidence over those pixels (from the per-class confidence masks).</p>
+      <div class="count-chips" id="legend" aria-label="Segmentation class legend"></div>
+      <p class="muted" id="legendEmpty" style="font-family:var(--font-mono);font-size:.8rem">Segment an image to see its class legend.</p>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside</h3>
+      <p class="muted">
+        The model returns a <strong>category mask</strong> (one byte per pixel: the winning class index)
+        and a <strong>confidence mask per class</strong> (one float per pixel per class). The table below
+        is computed from exactly those arrays for the current image — pixel counts per class, share of the
+        frame, and mean confidence. The label map comes from the model bundle itself
+        (<code>getLabels()</code>).
+      </p>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Segment an image to see its per-class pixel statistics.</div>
+      <div id="insideWrap" hidden>
+        <div class="readout">
+          <span>label map <b id="iLabels">–</b></span>
+          <span>confidence masks <b id="iConf">–</b></span>
+          <span>mask pixels <b id="iPx">–</b></span>
+        </div>
+        <table class="inside-table">
+          <thead><tr><th>class</th><th>pixels</th><th>coverage</th><th>mean conf</th></tr></thead>
+          <tbody id="insideRows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        Semantic segmentation — "which object is each pixel part of?" — used to mean a server-side
+        vision API. This 2.8 MB model turns it into a local function call in any browser: private,
+        offline, fast enough for interactive editing. Unlike promptable segmenters (SAM) you get a
+        <em>named</em> class for every region in one pass, so apps can act on "the person" or "the TV"
+        without any clicking.
+      </p>
+      <ul>
+        <li><strong>Photo editing</strong> — cut out people/objects, replace or blur backgrounds, recolour one class of thing.</li>
+        <li><strong>Content understanding</strong> — tag uploads with what's actually in them (animals, vehicles, furniture) for search or moderation.</li>
+        <li><strong>AR &amp; effects</strong> — anchor effects behind/in front of people or objects using the mask as a depth-free matte.</li>
+        <li><strong>Accessibility</strong> — describe a scene's layout ("a dog on the left, a person centre-frame") from pixel evidence.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">One photo in, 21 classes out — read the mask, the coverage and the confidence for each class found.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Person cutout studio: lift people off their background and export a transparent PNG.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Class spotlight: click a class in the legend and watch everything else fade away.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>MediaPipe Tasks loads the official <code>.tflite</code> model and gives you a segmenter you call per image:</p>
+      <pre><code>import { FilesetResolver, ImageSegmenter } from "@mediapipe/tasks-vision";
+
+const vision = await FilesetResolver.forVisionTasks(".../wasm");
+const segmenter = await ImageSegmenter.createFromOptions(vision, {
+  baseOptions: {
+    modelAssetPath: ".../deeplab_v3.tflite",  // ~2.8 MB, 21 VOC classes
+    delegate: "GPU",                           // or "CPU"
+  },
+  runningMode: "IMAGE",                        // or "VIDEO"
+  outputCategoryMask: true,                    // one class index per pixel
+  outputConfidenceMasks: true,                 // one float mask per class
+});
+
+const result = segmenter.segment(imageElement);
+// result.categoryMask.getAsUint8Array()  → Uint8Array, class index per pixel
+// result.confidenceMasks[i]              → float mask for class i
+// segmenter.getLabels()                  → the bundle's label map (21 VOC names)</code></pre>
+      <p class="muted">This page runs the segmenter in a Web Worker through the showcase's shared auto-init loader; the main thread only colorizes the returned mask. Inference uses the WASM/CPU delegate here (a GPU delegate is used automatically when a real adapter exists).</p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://ai.google.dev/edge/mediapipe/solutions/vision/image_segmenter" target="_blank" rel="noopener">MediaPipe Image Segmenter — task guide</a></li>
+        <li><a href="https://ai.google.dev/edge/mediapipe/solutions/vision/image_segmenter/web_js" target="_blank" rel="noopener">Image Segmenter for Web (JS)</a></li>
+        <li><a href="https://storage.googleapis.com/mediapipe-models/image_segmenter/deeplab_v3/float32/1/deeplab_v3.tflite" target="_blank" rel="noopener">The model file (deeplab_v3.tflite)</a></li>
+        <li><a href="https://www.npmjs.com/package/@mediapipe/tasks-vision" target="_blank" rel="noopener">@mediapipe/tasks-vision on npm</a></li>
+        <li><a href="/web-ai-showcase/image-credits/">Sample image credits</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://ai.google.dev/edge/mediapipe" target="_blank" rel="noopener">MediaPipe Tasks</a>.
+      Sample photos are license-verified Wikimedia Commons images (see <a href="/web-ai-showcase/image-credits/">credits</a>).
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import {
+        SegmenterWorkerClient, MODEL_URL, MODEL_SIZE_MB, SEGMENT_CSS,
+        drawSegmentation, renderLegend, summarize, classColor,
+      } from "./segment.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style"); style.textContent = SEGMENT_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      let seg = null, currentImg = null, lastResult = null, mode = "overlay";
+
+      function setStatus(m, c) { $("status").textContent = m; $("status").classList.remove("err", "ok"); if (c) $("status").classList.add(c); }
+      function decode(url) { return new Promise((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = () => rej(new Error("decode failed")); im.src = url; }); }
+      function resetOutput() { $("readout").hidden = true; $("insideWrap").hidden = true; $("insideEmpty").hidden = false; $("legend").replaceChildren(); $("legendEmpty").hidden = false; lastResult = null; }
+      async function useURL(url) { currentImg = await decode(url); const c = $("stage"); c.width = currentImg.naturalWidth; c.height = currentImg.naturalHeight; c.getContext("2d").drawImage(currentImg, 0, 0); resetOutput(); $("run").disabled = !seg; }
+      async function pickSample(el) { for (const t of $("samples").children) t.classList.toggle("active", t === el); await useURL(el.dataset.src); }
+      for (const thumb of $("samples").children) { thumb.addEventListener("click", () => pickSample(thumb)); thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } }); }
+
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) { for (const t of $("samples").children) t.classList.remove("active"); $("dropText").textContent = f.name; await useURL(URL.createObjectURL(f)); }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: MODEL_URL, runtime: "mediapipe", sizeMB: MODEL_SIZE_MB, requiresWebGPU: false },
+        load: (onProgress) => SegmenterWorkerClient.create({ modelUrl: MODEL_URL, onProgress }),
+        onReady: (task) => { seg = task; $("run").disabled = !currentImg; setStatus("Model ready.", "ok"); },
+      });
+      pickSample($("samples").firstElementChild);
+
+      function repaint() {
+        if (!currentImg || !lastResult) return;
+        drawSegmentation($("stage"), currentImg, lastResult, { mode, opacity: Number($("opacity").value) / 100 });
+      }
+      function setMode(next) {
+        mode = next;
+        for (const [id, m] of [["modeOverlay", "overlay"], ["modeMask", "mask"], ["modeCutout", "cutout"]]) {
+          $(id).setAttribute("aria-pressed", String(m === mode));
+        }
+        repaint();
+      }
+      $("modeOverlay").addEventListener("click", () => setMode("overlay"));
+      $("modeMask").addEventListener("click", () => setMode("mask"));
+      $("modeCutout").addEventListener("click", () => setMode("cutout"));
+      $("opacity").addEventListener("input", () => { $("opacityVal").textContent = $("opacity").value + "%"; repaint(); });
+
+      $("run").addEventListener("click", async () => {
+        if (!seg || !currentImg) return;
+        $("run").disabled = true; setStatus("Segmenting…");
+        try {
+          const t0 = performance.now();
+          const result = await seg.segmentImage(currentImg);
+          if (!result) return;
+          const ms = Math.round(performance.now() - t0);
+          lastResult = result;
+          repaint();
+          const summary = summarize(result);
+          $("rDelegate").textContent = seg.delegate;
+          $("rMs").textContent = ms + " ms";
+          $("rMask").textContent = `${result.width}×${result.height}`;
+          $("rClasses").textContent = String(summary.length);
+          $("readout").hidden = false;
+          $("legendEmpty").hidden = true;
+          renderLegend($("legend"), summary);
+          $("insideEmpty").hidden = true; $("insideWrap").hidden = false;
+          $("iLabels").textContent = String(seg.labels.length || summary.length);
+          $("iConf").textContent = String(result.conf.filter((c) => c != null).length);
+          $("iPx").textContent = result.mask.length.toLocaleString();
+          $("insideRows").replaceChildren(...summary.map((s) => {
+            const tr = document.createElement("tr");
+            const px = Math.round((s.pct / 100) * result.mask.length);
+            tr.innerHTML = `<td><span style="display:inline-block;inline-size:.7rem;block-size:.7rem;border-radius:3px;background:${classColor(s.index)};margin-inline-end:.35rem"></span>${s.name}</td><td>${px.toLocaleString()}</td><td>${s.pct.toFixed(1)}%</td><td>${s.conf != null ? s.conf.toFixed(3) : "–"}</td>`;
+            return tr;
+          }));
+          setStatus(`Found ${summary.length} classes in ${ms} ms.`, "ok");
+        } catch (e) { setStatus("Segmentation failed: " + e.message, "err"); }
+        finally { $("run").disabled = false; }
+      });
+      globalThis.addEventListener("pagehide", () => { seg?.terminate?.(); }, { once: true });
+    </script>
+    <script type="module" src="/web-ai-showcase/public/image-credit.js"></script>
+  </body>
+</html>

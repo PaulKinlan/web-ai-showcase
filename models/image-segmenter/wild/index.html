@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Wild — class spotlight · MediaPipe Image Segmenter · Web AI Showcase</title>
+    <meta name="description" content="Click a class in the legend and everything else fades away — explore a photo one semantic class at a time with the MediaPipe Image Segmenter." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🔦</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="../">← Image Segmenter</a> · <a href="/web-ai-showcase/">All models</a></p>
+
+    <header>
+      <p class="eyebrow">wild · image-segmentation · MediaPipe</p>
+      <h1>Wild — class spotlight</h1>
+      <p class="lede">
+        A photo becomes a set of semantic layers. Segment it once, then click a class in the legend —
+        <em>person</em>, <em>dog</em>, <em>bicycle</em> — and everything that isn't that class sinks
+        into darkness. Click again to bring the world back. It's a strangely compelling way to see a
+        scene the way the model does.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Shine the spotlight</h3>
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="sample-strip" id="samples" aria-label="Sample photos">
+        <img class="sample-thumb active" src="../../../media/assets/market-crowd.jpg" data-src="../../../media/assets/market-crowd.jpg" alt="A busy market crowd" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../../../media/assets/people-group-hike.jpg" data-src="../../../media/assets/people-group-hike.jpg" alt="A group of people hiking" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../../../media/assets/dog-outdoor.jpg" data-src="../../../media/assets/dog-outdoor.jpg" alt="A dog outdoors" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../../../media/assets/bicycle-object.jpg" data-src="../../../media/assets/bicycle-object.jpg" alt="A bicycle" tabindex="0" role="button" />
+      </div>
+      <div class="field-row">
+        <button id="run" type="button" disabled>Segment the scene</button>
+        <span id="spotState" class="muted" aria-live="polite">No class selected.</span>
+      </div>
+      <p class="muted" style="font-size:.85rem">After segmenting, the legend chips below become toggle buttons — pick a class to spotlight it.</p>
+      <div class="count-chips" id="legend" aria-label="Class legend — select a class to spotlight"></div>
+      <div class="canvas-wrap">
+        <canvas id="stage" class="stage-canvas" tabindex="0" aria-label="The photo with the selected class spotlit and all other classes dimmed."></canvas>
+      </div>
+      <div class="readout" id="readout" hidden>
+        <span>spotlight <b id="rSpot">–</b></span>
+        <span>coverage <b id="rCov">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+      </div>
+    </section>
+
+    <section aria-labelledby="how-h">
+      <h2 id="how-h">How it works</h2>
+      <p>
+        One pass of the model produces the category mask; the spotlight is pure rendering — the mask
+        pixels of the chosen class keep the photo, everything else is dimmed to near-black. Because
+        the mask is per-pixel, the spotlight hugs the outline of the thing you picked: a bicycle
+        frame, a dog's ears, the crowd in the market.
+      </p>
+    </section>
+
+    <footer class="byline">
+      Runs locally via <a href="https://ai.google.dev/edge/mediapipe" target="_blank" rel="noopener">MediaPipe Tasks</a>.
+      <a href="../">Back to Image Segmenter →</a>
+    </footer>
+
+    <script type="module">
+      import {
+        SegmenterWorkerClient, MODEL_URL, MODEL_SIZE_MB, SEGMENT_CSS,
+        drawSegmentation, renderLegend, summarize, className,
+      } from "../segment.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style"); style.textContent = SEGMENT_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      let seg = null, currentImg = null, lastResult = null, lastSummary = null, selected = null;
+
+      function setStatus(m, c) { $("status").textContent = m; $("status").classList.remove("err", "ok"); if (c) $("status").classList.add(c); }
+      function decode(url) { return new Promise((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = () => rej(new Error("decode failed")); im.src = url; }); }
+      async function useURL(url) { currentImg = await decode(url); const c = $("stage"); c.width = currentImg.naturalWidth; c.height = currentImg.naturalHeight; c.getContext("2d").drawImage(currentImg, 0, 0); lastResult = null; selected = null; $("legend").replaceChildren(); $("readout").hidden = true; $("spotState").textContent = "No class selected."; $("run").disabled = !seg; }
+      async function pickSample(el) { for (const t of $("samples").children) t.classList.toggle("active", t === el); await useURL(el.dataset.src); }
+      for (const thumb of $("samples").children) { thumb.addEventListener("click", () => pickSample(thumb)); thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } }); }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: MODEL_URL, runtime: "mediapipe", sizeMB: MODEL_SIZE_MB, requiresWebGPU: false },
+        load: (onProgress) => SegmenterWorkerClient.create({ modelUrl: MODEL_URL, onProgress }),
+        onReady: (task) => { seg = task; $("run").disabled = !currentImg; setStatus("Model ready.", "ok"); },
+      });
+      pickSample($("samples").firstElementChild);
+
+      function repaint() {
+        if (!currentImg || !lastResult) return;
+        if (selected == null) {
+          drawSegmentation($("stage"), currentImg, lastResult, { mode: "overlay", opacity: 0.55 });
+        } else {
+          drawSegmentation($("stage"), currentImg, lastResult, { mode: "spotlight", isolate: selected });
+        }
+        const s = lastSummary?.find((x) => x.index === selected);
+        $("spotState").textContent = selected == null
+          ? "No class selected."
+          : `Spotlighting “${className(selected)}” — click it again to reset.`;
+        $("rSpot").textContent = selected == null ? "–" : className(selected);
+        $("rCov").textContent = s ? s.pct.toFixed(1) + "%" : "–";
+        renderLegend($("legend"), lastSummary || [], { onSelect, selected });
+      }
+      function onSelect(next) { selected = next; repaint(); }
+
+      $("run").addEventListener("click", async () => {
+        if (!seg || !currentImg) return;
+        $("run").disabled = true; setStatus("Segmenting…");
+        try {
+          const t0 = performance.now();
+          const result = await seg.segmentImage(currentImg);
+          if (!result) return;
+          const ms = Math.round(performance.now() - t0);
+          lastResult = result;
+          lastSummary = summarize(result);
+          selected = null;
+          repaint();
+          $("rMs").textContent = ms + " ms";
+          $("readout").hidden = false;
+          setStatus(`Scene split into ${lastSummary.length} classes in ${ms} ms — pick one to spotlight.`, "ok");
+        } catch (e) { setStatus("Segmentation failed: " + e.message, "err"); }
+        finally { $("run").disabled = false; }
+      });
+      globalThis.addEventListener("pagehide", () => { seg?.terminate?.(); }, { once: true });
+    </script>
+    <script type="module" src="/web-ai-showcase/public/image-credit.js"></script>
+  </body>
+</html>
