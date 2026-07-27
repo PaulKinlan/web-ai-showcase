@@ -8,7 +8,6 @@
 
 import { loadPipeline } from "/web-ai-showcase/lib/webai.js";
 
-const MODEL = "onnx-community/whisper-tiny.en";
 const TASK = "automatic-speech-recognition";
 
 let pipe = null;
@@ -33,7 +32,7 @@ async function ensureLoaded() {
   try {
     const loaded = await loadPipeline({
       task: TASK,
-      model: MODEL,
+      model: "onnx-community/whisper-tiny.en",
       backend: want,
       dtype: want === "webgpu" ? "fp32" : "q8",
       onProgress: (p) => post({ type: "progress", p }),
@@ -44,7 +43,7 @@ async function ensureLoaded() {
     if (want !== "wasm") {
       const loaded = await loadPipeline({
         task: TASK,
-        model: MODEL,
+        model: "onnx-community/whisper-tiny.en",
         backend: "wasm",
         dtype: "q8",
         onProgress: (p) => post({ type: "progress", p }),
