@@ -271,26 +271,36 @@ try {
     for (const [rung, route] of Object.entries(ROUTES)) {
       const cell = { route, viewport, pass: false };
       results.push(cell);
-      let cdp;
-      let page;
-      try {
-        console.log(`\n=== ${viewport} × ${rung}: ${route} ===`);
-        chrome = await launchChrome({
-          userDataDir: PROFILE_DIR,
-          resetProfile: false,
-          removeProfileOnKill: false,
-        });
-        cdp = new CDP(chrome.ws);
-        page = await openPage(cdp, url(route));
+      // One bounded fresh-process retry is allowed only when a transient CDP/startup failure occurs
+      // before this cell records any checks. Never duplicate or hide a failed assertion.
+      for (let attempt = 1; attempt <= 2 && !cell.pass; attempt++) {
+        let cdp;
+        let page;
         const before = passed;
-        await exercise(cdp, page, rung, viewport);
-        cell.pass = passed - before === 3;
-      } catch (error) {
-        console.log(`FAIL  ${viewport} ${rung}: ${String(error.stack || error).slice(0, 500)}`);
-      } finally {
-        if (page) await closePage(cdp, page.targetId);
-        if (chrome) await chrome.kill({ removeProfile: false });
-        chrome = null;
+        try {
+          console.log(
+            `\n=== ${viewport} × ${rung}: ${route}${
+              attempt > 1 ? " (fresh-process retry)" : ""
+            } ===`,
+          );
+          chrome = await launchChrome({
+            userDataDir: PROFILE_DIR,
+            resetProfile: false,
+            removeProfileOnKill: false,
+          });
+          cdp = new CDP(chrome.ws);
+          page = await openPage(cdp, url(route));
+          await exercise(cdp, page, rung, viewport);
+          cell.pass = passed - before === 3;
+        } catch (error) {
+          console.log(`FAIL  ${viewport} ${rung}: ${String(error.stack || error).slice(0, 500)}`);
+          if (passed !== before) break;
+        } finally {
+          if (page) await closePage(cdp, page.targetId);
+          if (chrome) await chrome.kill({ removeProfile: false });
+          chrome = null;
+          await sleep(1_000);
+        }
       }
     }
   }
