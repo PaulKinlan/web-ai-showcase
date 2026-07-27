@@ -1,0 +1,130 @@
+{
+  "schemaVersion": 1,
+  "id": "trocr-base-printed",
+  "revision": 1,
+  "reviewedAt": "2026-07-27T00:00:00Z",
+  "reviewer": "build-lane worker (code-grounded + live probe + acceptance validator), revision 1",
+  "frontend": true,
+  "rubric": [
+    {
+      "dimension": "real-inference",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Real transformers.js image-to-text in a dedicated module Worker (models/trocr-base-printed/worker.js): loadPipeline({task:\"image-to-text\", model:\"Xenova/trocr-base-printed\", backend:\"wasm\", dtype:\"q8\"}) then pipe(cropURL, {max_new_tokens, streamer}). Pre-build live probe in headless Chrome (transformers.js 3.7.5, exact shared CDN build from lib/webai.js): sample-total.png → 'GRAND TOTAL: $42.99' (2465 ms), sample-fox.png → 'THE QUICK BROWN FOX JUMPS' (2449 ms), sample-serial.png → 'SN: 487X-9021-KD' (2550 ms) — real q8 WASM output, never canned.",
+      "notes": "Every route reads through the same OcrEngine worker; token streaming is a real TextStreamer callback per decoded token."
+    },
+    {
+      "dimension": "io-shape",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Pipeline output [{generated_text}] as expected for image-to-text; input is a single cropped line image (data URL). Probe outputs match the sample ground truth (modulo the checkpoint's SROIE uppercase normalisation, documented on the page).",
+      "notes": "Semantic sanity asserted in the validator: 'GRAND TOTAL' + '$42.99' on the total sample; 'PLATFORM 9' on the sign sample."
+    },
+    {
+      "dimension": "runtime-config",
+      "score": 5,
+      "severity": "info",
+      "evidence": "backend wasm (pickDevice honestly falls back when no WebGPU adapter), dtype q8, model id Xenova/trocr-base-printed literal at every createModelLoader call site and in worker.js. Readout surfaces backend/tokens/ms/tok/s after each run.",
+      "notes": "~340 MB download (encoder q8 88 MB + merged decoder q8 249.6 MB + tokenizer files), measured from HF resolve headers."
+    },
+    {
+      "dimension": "cache-init",
+      "score": 5,
+      "severity": "info",
+      "evidence": "createModelLoader (lib/model-loader.js + lib/model-cache.js) on all 5 routes: absent → Download; cached+current → auto-init (checking→initialising→ready, no Load button). Validator reuses one profile across cells, so cells 2..10 prove cached auto-init.",
+      "notes": "Per-model clear-cache via the shared loader; dispose terminates the worker to free the WASM heap."
+    },
+    {
+      "dimension": "states",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Progress bars + per-file status during download; worker errors post {type:'error'} → red status line on the page; Run disabled until ready; camera-denied state on wild route directs to the bundled-photo fallback.",
+      "notes": "Empty-selection crop falls back to the full image; 'no text found' is an honest empty result, not a fake."
+    },
+    {
+      "dimension": "controls",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Every control driven in the validator: sample thumbnails (click), Read button, reset-crop, max-token slider (overview), editable line list + copy-all + serial workflow (practical), camera + bundled-photo fallback (wild), language select + read&translate (multi-model). All buttons have text/aria labels (hygiene assertion).",
+      "notes": "Dropzone + thumbnails are keyboard-operable (Enter/Space) with focus rings."
+    },
+    {
+      "dimension": "no-fake-output",
+      "score": 5,
+      "severity": "info",
+      "evidence": "No canned strings anywhere: the only way text reaches #textOut/#rows/#serialOut/#transOut is an engine.recognize/translate promise resolving from the worker. Validator would fail on any static output.",
+      "notes": "Bundled fallback photos on the wild route are first-party samples, clearly labelled, and still run REAL inference."
+    },
+    {
+      "dimension": "accessibility",
+      "score": 4,
+      "severity": "info",
+      "evidence": "role=status aria-live=polite status lines; aria-live output boxes; labelled range/select/buttons; crop canvas has an aria-label and a keyboard Reset-selection alternative; token stream is decorative-adjacent (status conveys completion).",
+      "notes": "Drag-to-crop has no full keyboard box-draw — Reset + full-image default keeps the flow usable without a pointer; a future nudge-handles control would improve this (followUpGoals)."
+    },
+    {
+      "dimension": "responsive",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Validator asserts scrollWidth - innerWidth ≤ 1 on all 5 routes at 360×740 AND 1280×800; field-row/sample-strip flex-wrap; canvases max-inline-size 100%; 44px sample thumbs.",
+      "notes": "scripts/responsive-check.mjs --slug trocr-base-printed result recorded in models.json support."
+    },
+    {
+      "dimension": "performance",
+      "score": 4,
+      "severity": "info",
+      "evidence": "All inference + token streaming in a module worker; main thread only appends token spans. ~2.5 s/line on WASM (probe), ~20 tok/s after the encoder pass. No long-task measurement beyond the worker split yet.",
+      "notes": "Base decoder is deeper than small — first-token (encode) dominates; documented on the page."
+    }
+  ],
+  "guidanceConsulted": [
+    {
+      "query": "drag-to-crop image region selection accessible canvas",
+      "id": "expose-canvas-content-to-browser-features",
+      "source": "npx -y modern-web-guidance@latest search",
+      "recommendation": "Canvas-rendered content must remain operable/exposed to assistive technology — provide text alternatives and non-canvas controls.",
+      "appliedOrException": "applied — the crop canvas carries an aria-label, the selection defaults to the full image, a keyboard-operable Reset-selection chip exists, and the transcribed output is real DOM text (not canvas pixels).",
+      "evidence": "CropCanvas in ocr.js; aria-label on #canvas/#serialCanvas; validator hygiene check on all routes"
+    },
+    {
+      "query": "live region streaming text output aria-live progress",
+      "id": "accessibility",
+      "source": "npx -y modern-web-guidance@latest search",
+      "recommendation": "Use semantic HTML, focus management and polite live regions for dynamic status/output updates.",
+      "appliedOrException": "applied — role=status aria-live=polite on every status line and output box; token-by-token stream appends spans inside an aria-live box without stealing focus.",
+      "evidence": "index/basics/practical/wild/multi-model markup; validator drives controls and asserts labelled buttons"
+    },
+    {
+      "query": "getUserMedia camera capture consent fallback",
+      "id": "privacy",
+      "source": "npx -y modern-web-guidance@latest search",
+      "recommendation": "Request permissions only on explicit user action, explain why, minimise data, provide a no-permission path.",
+      "appliedOrException": "applied — camera starts only from the Start-camera button with rationale text; tracks stop on pagehide; denial surfaces an on-page error and a bundled-photo fallback that still runs real inference.",
+      "evidence": "wild/index.html camBtn flow + fallback panel"
+    },
+    {
+      "query": "responsive image gallery mobile tap targets",
+      "id": "deliver-optimized-decorative-images",
+      "source": "npx -y modern-web-guidance@latest search",
+      "recommendation": "Serve appropriately sized images and keep interactive media controls touch-friendly.",
+      "appliedOrException": "applied — bundled samples are small first-party PNGs; thumbnails are 44px block-size with object-fit contain and keyboard activation.",
+      "evidence": "OCR_CSS .sample-thumb; responsive-check run"
+    }
+  ],
+  "openQuestions": [
+    "The SROIE-tuned checkpoint normalises output to UPPERCASE — noted on the page; users wanting case-faithful OCR should know this is the model, not the page.",
+    "Drag-to-crop is pointer-first; keyboard users get full-image + reset but not a nudge-able selection box."
+  ],
+  "followUpGoals": [
+    {
+      "goal": "Add arrow-key nudge handles for the crop selection so keyboard users can box a line precisely.",
+      "kind": "targeted-fix",
+      "priority": "low"
+    },
+    {
+      "goal": "Batch line-detection pre-pass (auto-split a receipt into line crops) feeding the base reader — a credible new multi-step demo.",
+      "kind": "new-demo",
+      "priority": "low"
+    }
+  ]
+}

@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OCR Wild — live webcam OCR · Web AI Showcase</title>
+    <meta name="description" content="Point your camera at a line of text, line it up in the reticle, and read it on the fly with the base TrOCR checkpoint — live webcam OCR, entirely on-device. No camera? Read a bundled photo instead." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🔠</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">TrOCR Base</a></p>
+
+    <header>
+      <p class="eyebrow">use case · wild</p>
+      <h1>Wild: live webcam OCR</h1>
+      <p class="lede">
+        Point your camera at some text, line it up inside the reticle, and read it. The frame never
+        leaves your device — the camera feeds straight into the base model, which copes with real-world
+        blur and contrast better than its small sibling. Great for grabbing a serial number, a code, or
+        a label off a real object.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+
+      <div class="field-row" style="align-items:stretch">
+        <div style="flex:1 1 320px">
+          <div style="margin:.4rem 0">
+            <button id="camBtn" type="button">Start camera</button>
+            <button id="shotBtn" type="button" disabled>Read framed line</button>
+          </div>
+          <p class="crop-hint">Fit one line of text between the guide lines, then read. Camera access is only requested when you press Start, and stops when you leave the page.</p>
+          <div class="crop-wrap" style="position:relative">
+            <video id="video" playsinline muted style="max-inline-size:100%;border-radius:8px;display:block;background:#000"></video>
+            <div id="reticle" aria-hidden="true" style="position:absolute;left:8%;right:8%;top:44%;height:12%;border:2px solid #6366f1;border-radius:4px;box-shadow:0 0 0 999px rgba(20,20,30,.35);pointer-events:none"></div>
+          </div>
+          <canvas id="canvas" hidden></canvas>
+        </div>
+        <div style="flex:1 1 240px">
+          <p class="status" id="runStatus" role="status" aria-live="polite"></p>
+          <div class="text-box" id="textOut" aria-live="polite"></div>
+          <div class="readout" id="readout" hidden><span>backend <b id="rBackend">–</b></span><span>tokens <b id="rTok">–</b></span><span>total <b id="rMs">–</b></span></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="fallback-h">
+      <h3 id="fallback-h">No camera? Read a bundled photo instead</h3>
+      <p class="muted">
+        Camera unavailable, denied, or you'd just rather not — the same read-it-live flow works on these
+        first-party sample photos. Pick one; it's framed through the identical reticle crop.
+      </p>
+      <div class="sample-strip" id="samples">
+        <img class="sample-thumb active" src="../sample-sign.png" data-src="../sample-sign.png" alt="A sign reading Platform 9" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-serial.png" data-src="../sample-serial.png" alt="A label reading SN 4B7X-9021-KD" tabindex="0" role="button" />
+        <img class="sample-thumb" src="../sample-total.png" data-src="../sample-total.png" alt="A receipt line reading Grand Total $42.99" tabindex="0" role="button" />
+      </div>
+      <div style="margin:.4rem 0"><button id="readSample" type="button" disabled>Read selected photo</button></div>
+    </section>
+
+    <p class="crumbs"><a href="../practical/">← Practical</a> · <a href="../">Back to TrOCR Base</a> · Next: <a href="../multi-model/">Multi-model →</a></p>
+
+    <script type="module">
+      import { OcrEngine, fileToDataURL, escapeHTML, OCR_CSS } from "../ocr.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = OCR_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new OcrEngine();
+      let stream = null, ready = false;
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/trocr-base-printed", runtime: "transformers.js", dtype: "q8", sizeMB: 340, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { ready = true; $("readSample").disabled = false; if (stream) $("shotBtn").disabled = false; },
+      });
+
+      $("camBtn").addEventListener("click", async () => {
+        $("runStatus").classList.remove("err", "ok");
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment", width: { ideal: 1280 } }, audio: false });
+          $("video").srcObject = stream; await $("video").play();
+          $("camBtn").textContent = "Camera on";
+          $("shotBtn").disabled = !ready;
+          $("runStatus").textContent = ready ? "Line up some text and read it." : "Camera on — waiting for the model to finish loading…";
+        } catch (err) {
+          $("runStatus").textContent = "Camera unavailable: " + err.message + " — use the bundled photos below.";
+          $("runStatus").classList.add("err");
+        }
+      });
+
+      async function readURL(url) {
+        $("runStatus").classList.remove("err", "ok"); $("runStatus").textContent = "Reading…";
+        $("textOut").innerHTML = '<span class="cursor">&nbsp;</span>';
+        let text = "";
+        try {
+          const r = await engine.recognize(url, 48, (m) => { text += m.token; $("textOut").innerHTML = escapeHTML(text) + '<span class="cursor">&nbsp;</span>'; });
+          $("textOut").textContent = r.text || "(no text read — try steadier framing)";
+          $("readout").hidden = false; $("rBackend").textContent = r.device.toUpperCase(); $("rTok").textContent = r.tokens; $("rMs").textContent = r.ms + " ms";
+          $("runStatus").textContent = "Done."; $("runStatus").classList.add("ok");
+        } catch (err) { $("runStatus").textContent = "Failed: " + err.message; $("runStatus").classList.add("err"); $("textOut").textContent = ""; }
+      }
+
+      $("shotBtn").addEventListener("click", async () => {
+        const v = $("video");
+        if (!v.videoWidth) { $("runStatus").textContent = "Camera not ready yet."; return; }
+        $("shotBtn").disabled = true;
+        // Crop the reticle band (left 8%..92%, top 44%..56%) from the live frame.
+        const vw = v.videoWidth, vh = v.videoHeight;
+        const sx = vw * 0.08, sw = vw * 0.84, sy = vh * 0.44, sh = vh * 0.12;
+        const c = $("canvas"); c.width = Math.round(sw); c.height = Math.round(sh);
+        c.getContext("2d").drawImage(v, sx, sy, sw, sh, 0, 0, c.width, c.height);
+        await readURL(c.toDataURL("image/png"));
+        $("shotBtn").disabled = false;
+      });
+
+      // Bundled-photo fallback — identical read path, no camera involved.
+      let selectedSample = "../sample-sign.png";
+      for (const thumb of $("samples").children) {
+        const pick = () => {
+          for (const t of $("samples").children) t.classList.toggle("active", t === thumb);
+          selectedSample = thumb.dataset.src;
+        };
+        thumb.addEventListener("click", pick);
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(); } });
+      }
+      $("readSample").addEventListener("click", async () => {
+        $("readSample").disabled = true;
+        try {
+          const blob = await (await fetch(selectedSample)).blob();
+          await readURL(await fileToDataURL(new File([blob], "s", { type: blob.type })));
+        } finally { $("readSample").disabled = false; }
+      });
+
+      addEventListener("pagehide", () => { stream?.getTracks().forEach((t) => t.stop()); });
+    </script>
+  </body>
+</html>
