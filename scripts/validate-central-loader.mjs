@@ -83,6 +83,29 @@ const DRIVER = `
     (e)=>{ e({status:"progress",progress:0}); e({status:"progress",progress:45}); },
     (e)=>{ e({status:"progress",progress:100}); });
 
+  // A browser Cache Storage operation can remain pending indefinitely (observed in real navigation).
+  // The shared loader must leave "checking", explain uncertainty, and offer recovery instead of hanging.
+  const realCacheKeys = caches.keys.bind(caches);
+  Object.defineProperty(caches, "keys", { configurable: true, value: () => new Promise(() => {}) });
+  const timeoutMount = document.createElement("div"); main.appendChild(timeoutMount);
+  createModelLoader({
+    mount: timeoutMount,
+    model: { modelId: uid(), runtime: "transformers.js", dtype: "q8", sizeMB: 42 },
+    load: async () => ({}),
+    onReady: () => {}, onError: () => {},
+  });
+  await sleep(7300);
+  report.timeout = {
+    state: timeoutMount.querySelector(".model-loader")?.dataset.state,
+    status: timeoutMount.querySelector(".status")?.textContent || "",
+    buttons: [...timeoutMount.querySelectorAll("button")].map((b) => b.textContent.trim()),
+  };
+  Object.defineProperty(caches, "keys", { configurable: true, value: realCacheKeys });
+  timeoutMount.querySelector("button")?.click();
+  for (let i=0;i<30 && timeoutMount.querySelector(".model-loader")?.dataset.state === "checking";i++) await sleep(50);
+  report.timeout.retryState = timeoutMount.querySelector(".model-loader")?.dataset.state;
+  timeoutMount.remove();
+
   return report;
 })()
 `;
@@ -113,6 +136,19 @@ try {
     "TJS: reaches ready + offers Clear cached model",
     r.tjs.after.phase === "ready" && r.tjs.after.clearBtn,
     JSON.stringify(r.tjs.after),
+  );
+
+  rec(
+    "Hung local-cache API exits checking with honest recovery controls",
+    r.timeout.state === "check-timeout" &&
+      r.timeout.buttons.some((x) => /Retry local check/.test(x)) &&
+      r.timeout.buttons.some((x) => /may download ~42 MB/.test(x)),
+    JSON.stringify(r.timeout),
+  );
+  rec(
+    "Retry recovers after the Cache Storage API responds",
+    r.timeout.retryState === "download-required",
+    `state=${r.timeout.retryState}`,
   );
 
   // WebLLM
