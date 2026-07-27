@@ -86,15 +86,6 @@ function peakNorm(x, peak = 0.98) {
   return out;
 }
 
-/** Overlay two clips (peak-normalised) into one mono mixture of the shorter length. */
-export function mixClips(a, b) {
-  const n = Math.min(a.length, b.length);
-  const na = peakNorm(a), nb = peakNorm(b);
-  const mix = new Float32Array(n);
-  for (let i = 0; i < n; i++) mix[i] = (na[i] + nb[i]) * 0.5;
-  return mix;
-}
-
 /** Encode a mono Float32 clip to a 16-bit PCM WAV Blob (for <audio> playback / download). */
 export function floatToWavBlob(samples, sr = SR) {
   const n = samples.length;
@@ -147,15 +138,18 @@ export function drawWave(canvas, samples, color = "#2bb59a") {
 }
 
 export const SEP_CSS = `
-  .sep-chips { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 0.5rem 0; }
   .sep-block { margin: 0.8rem 0; }
   .sep-block h4 { margin: 0 0 0.3rem; font-size: 0.95rem; }
-  .sep-row { display: flex; flex-wrap: wrap; gap: 0.8rem; align-items: center; }
-  .sep-wave { width: 100%; max-width: 100%; height: 64px; background: #0b0f14; border-radius: 8px; display: block; }
-  .sep-block audio { width: 100%; max-width: 26rem; }
+  .sep-row { display: flex; flex-wrap: wrap; gap: 0.8rem; align-items: safe center; }
+  .sep-wave { inline-size: 100%; max-inline-size: 100%; block-size: 64px; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; display: block; }
+  .sep-block audio { inline-size: 100%; max-inline-size: 26rem; }
   .sep-out { display: flex; flex-wrap: wrap; gap: 1rem; }
-  .sep-out > div { flex: 1; min-width: 15rem; }
-  .sep-dropzone { border: 1.5px dashed #8884; border-radius: 10px; padding: 0.9rem; text-align: center; cursor: pointer; font-size: 0.9rem; }
-  .sep-dropzone:focus-visible { outline: 2px solid #2bb59a; }
-  .sep-status { font-family: var(--font-mono, monospace); font-size: 0.9rem; margin: 0.4rem 0; }
+  .sep-out > div { flex: 1 1 15rem; min-inline-size: 0; }
+  .sep-dropzone { border: 2px dashed var(--border-strong); border-radius: 10px; padding: 0.9rem; margin-block: 0.6rem; font-size: 0.9rem; }
+  .sep-dropzone label { display: block; margin-block-end: 0.5rem; }
+  .sep-dropzone input { max-inline-size: 100%; min-block-size: 44px; }
+  .sep-dropzone.is-dragging { border-color: var(--accent); background: var(--bg-secondary); }
+  #separateBtn { min-block-size: 44px; }
+  .sep-status { font-family: var(--font-mono, monospace); font-size: 0.9rem; margin: 0.6rem 0; }
+  .sep-status.err { color: var(--bad); }
 `;

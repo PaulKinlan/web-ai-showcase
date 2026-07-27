@@ -12,10 +12,6 @@
 // derived from Libri2Mix / LibriSpeech) — a free license used here unmodified with attribution. Nothing
 // leaves the tab.
 //
-// Correctness proven FIRST in headless Chrome (onnxruntime-web 1.21.0 WASM): a 3 s mix of two distinct
-// speakers separated cleanly — output A correlated 0.80 with speaker 1 and 0.11 with speaker 2, output B
-// correlated 0.96 with speaker 2 and 0.12 with speaker 1 (a clear one-speaker-per-output split), in ~0.9 s.
-
 const ORT_URL = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.21.0/dist/ort.wasm.min.mjs";
 const ORT_WASM = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.21.0/dist/";
 const REPO = "welcomyou/convtasnet-libri2mix-16k-onnx";

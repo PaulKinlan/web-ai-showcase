@@ -22,8 +22,8 @@
         cleans noise off <em>one</em> voice. This one solves the harder
         <strong>cocktail-party problem</strong>: given a recording of <strong>two people talking at once</strong>,
         it pulls them apart into two clean single-speaker tracks. It's <strong>ConvTasNet</strong>, a
-        lightweight time-domain separator. Below, two speakers are mixed in your browser, then separated —
-        entirely on your device.
+        lightweight time-domain separator. Choose your own recording of two overlapping voices and separate it —
+        entirely on your device, without uploading the audio.
       </p>
     </header>
 
@@ -45,17 +45,26 @@
     </section>
 
     <section class="panel" aria-labelledby="run-h">
-      <h3 id="run-h">Separate two voices</h3>
+      <h3 id="run-h">Separate your recording</h3>
       <div id="model-loader"></div>
 
-      <div class="sep-chips" id="chips" role="group" aria-label="Sample mixtures"></div>
+      <p id="uploadHelp">
+        Choose a local audio file containing two voices that overlap. The first 6 seconds are processed at
+        16 kHz mono. This page does not request camera or microphone permission, so file upload remains
+        available when either permission is absent or denied. No example recording is bundled.
+      </p>
+      <div class="sep-dropzone" id="drop">
+        <label for="file"><strong>Audio file with two overlapping voices</strong></label>
+        <input type="file" id="file" accept="audio/*" aria-describedby="uploadHelp status" />
+      </div>
+      <button type="button" id="separateBtn" disabled>Separate audio</button>
 
-      <div class="sep-block">
-        <h4>Mixture (two speakers at once)</h4>
+      <div class="sep-block" id="mixBlock" hidden>
+        <h4>Your mixture (two voices at once)</h4>
         <div class="sep-row">
-          <audio id="mixAudio" controls></audio>
+          <audio id="mixAudio" controls aria-label="Uploaded mixture"></audio>
         </div>
-        <canvas id="mixWave" class="sep-wave" width="900" height="64" role="img" aria-label="Mixture waveform"></canvas>
+        <canvas id="mixWave" class="sep-wave" width="900" height="64" role="img" aria-label="Uploaded mixture waveform"></canvas>
       </div>
 
       <div class="sep-out" id="sepOut" hidden>
@@ -71,12 +80,9 @@
         </div>
       </div>
 
-      <p style="margin:.6rem 0 .2rem">Or drop your own recording of two overlapping voices:</p>
-      <div class="sep-dropzone" id="drop" tabindex="0" role="button" aria-label="Upload an audio file with two overlapping speakers">
-        Drop an audio file here, or click to choose
-        <input type="file" id="file" accept="audio/*" hidden />
-      </div>
-      <p class="sep-status" id="status" role="status" aria-live="polite"></p>
+      <p class="sep-status" id="status" role="status" aria-live="polite">
+        No audio selected. Choose a local file above; separation starts only when you press “Separate audio”.
+      </p>
     </section>
 
     <section class="panel">
@@ -85,7 +91,7 @@
         transformers.js has no speech-separation task, so we run ConvTasNet's ONNX graph directly with
         onnxruntime-web. Unlike spectrogram methods, ConvTasNet works in the <strong>time domain</strong>: a
         learned encoder turns the waveform into features, a mask network splits them into two streams, and a
-        decoder turns each back into audio. It's small and fast, and every sample stays on your device.
+        decoder turns each back into audio. It's small and fast, and your recording stays on your device.
       </p>
     </section>
 
@@ -97,7 +103,7 @@
     </footer>
 
     <script type="module">
-      import { decodeTo16kMono, drawWave, floatToWavBlob, mixClips, SeparationEngine, SEP_CSS, SR } from "./separation.js";
+      import { decodeTo16kMono, drawWave, floatToWavBlob, SeparationEngine, SEP_CSS, SR } from "./separation.js";
       import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
       const style = document.createElement("style");
       style.textContent = SEP_CSS;
@@ -105,70 +111,92 @@
       const $ = (id) => document.getElementById(id);
 
       const engine = new SeparationEngine();
-      let ready = false, busy = false;
-      const A = "../whisper-speech-to-text/";
-      const MAX = SR * 4; // cap at 4 s
-      const urls = [];
+      let ready = false, busy = false, selectedMix = null, selectedLabel = "";
+      const MAX = SR * 6;
       const setAudio = (el, samples) => {
+        if (el.dataset.objectUrl) URL.revokeObjectURL(el.dataset.objectUrl);
         const url = URL.createObjectURL(floatToWavBlob(samples, SR));
-        urls.push(url);
+        el.dataset.objectUrl = url;
         el.src = url;
-        return url;
+      };
+      const waveColor = () => getComputedStyle(document.documentElement).getPropertyValue("--accent").trim();
+      const setStatus = (text, error = false) => {
+        $("status").textContent = text;
+        $("status").classList.toggle("err", error);
+      };
+      const syncRunControl = () => {
+        $("separateBtn").disabled = !ready || !selectedMix || busy;
       };
 
-      async function clip(url) {
-        const a = await decodeTo16kMono(await (await fetch(url)).arrayBuffer());
-        return a.length > MAX ? a.subarray(0, MAX) : a;
-      }
-
-      async function sampleMix() {
-        const [a, b] = await Promise.all([clip(A + "jfk.wav"), clip(A + "ted.wav")]);
-        return mixClips(a, b);
-      }
-
-      async function runOn(mix, label) {
-        if (!ready || busy) return;
+      async function runSelected() {
+        if (!selectedMix || !ready || busy) return;
         busy = true;
-        setAudio($("mixAudio"), mix);
-        drawWave($("mixWave"), mix, "#c79a3a");
+        syncRunControl();
+        $("status").setAttribute("aria-busy", "true");
         $("sepOut").hidden = true;
-        $("status").textContent = `Separating ${label}…`;
+        setStatus(`Separating ${selectedLabel}…`);
         try {
-          const { s1, s2, ms } = await engine.separate(mix);
+          const { s1, s2, ms } = await engine.separate(selectedMix);
           setAudio($("s1Audio"), s1);
           setAudio($("s2Audio"), s2);
-          drawWave($("s1Wave"), s1, "#2bb59a");
-          drawWave($("s2Wave"), s2, "#4ac6e0");
+          drawWave($("s1Wave"), s1, waveColor());
+          drawWave($("s2Wave"), s2, waveColor());
           $("sepOut").hidden = false;
-          $("status").textContent = `Separated into 2 speakers · ${(mix.length / SR).toFixed(1)} s · ${ms} ms`;
-        } catch (e) {
-          $("status").textContent = "Error: " + e.message;
+          setStatus(`Separated into 2 speaker tracks · ${(selectedMix.length / SR).toFixed(1)} s · ${ms} ms`);
+        } catch (error) {
+          setStatus(`Could not separate this file: ${error.message}`, true);
         } finally {
           busy = false;
+          $("status").removeAttribute("aria-busy");
+          syncRunControl();
         }
       }
 
-      $("chips").innerHTML = `<button class="chip" type="button" id="sampleBtn">▶ Sample mix (two speakers)</button>`;
-      $("sampleBtn").addEventListener("click", async () => runOn(await sampleMix(), "the sample mix"));
+      async function handleFile(f) {
+        $("sepOut").hidden = true;
+        $("file").removeAttribute("aria-invalid");
+        setStatus(`Reading ${f.name}…`);
+        try {
+          let audio = await decodeTo16kMono(await f.arrayBuffer());
+          if (audio.length > MAX) audio = audio.subarray(0, MAX);
+          if (!audio.length) throw new Error("the decoded file contains no audio samples");
+          selectedMix = audio;
+          selectedLabel = f.name;
+          setAudio($("mixAudio"), audio);
+          drawWave($("mixWave"), audio, waveColor());
+          $("mixBlock").hidden = false;
+          setStatus(ready
+            ? `${f.name} is ready. Press “Separate audio” to run ConvTasNet on your device.`
+            : `${f.name} is ready. Download or initialise ConvTasNet above, then press “Separate audio”.`);
+        } catch (error) {
+          selectedMix = null;
+          $("mixBlock").hidden = true;
+          $("file").setAttribute("aria-invalid", "true");
+          setStatus(`Could not read this audio file: ${error.message}`, true);
+        }
+        syncRunControl();
+      }
 
       const drop = $("drop"), file = $("file");
-      drop.addEventListener("click", () => file.click());
-      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
-      drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.style.borderColor = "#2bb59a"; });
-      drop.addEventListener("dragleave", () => (drop.style.borderColor = ""));
-      const handleFile = async (f) => {
-        let a = await decodeTo16kMono(await f.arrayBuffer());
-        if (a.length > SR * 6) a = a.subarray(0, SR * 6);
-        await runOn(a, f.name);
-      };
-      drop.addEventListener("drop", (e) => { e.preventDefault(); drop.style.borderColor = ""; if (e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]); });
+      drop.addEventListener("dragover", (event) => { event.preventDefault(); drop.classList.add("is-dragging"); });
+      drop.addEventListener("dragleave", () => drop.classList.remove("is-dragging"));
+      drop.addEventListener("drop", (event) => {
+        event.preventDefault();
+        drop.classList.remove("is-dragging");
+        if (event.dataTransfer.files[0]) handleFile(event.dataTransfer.files[0]);
+      });
       file.addEventListener("change", () => { if (file.files[0]) handleFile(file.files[0]); });
+      $("separateBtn").addEventListener("click", runSelected);
 
       createModelLoader({
         mount: $("model-loader"),
         model: { modelId: "welcomyou/convtasnet-libri2mix-16k-onnx", runtime: "onnxruntime-web", dtype: "fp32", sizeMB: 20, requiresWebGPU: false },
         load: (onProgress) => engine.load(onProgress).then(() => engine),
-        onReady: async () => { ready = true; await runOn(await sampleMix(), "the sample mix"); },
+        onReady: () => {
+          ready = true;
+          syncRunControl();
+          if (!selectedMix) setStatus("ConvTasNet is ready. Choose a local two-voice audio file to continue.");
+        },
       });
     </script>
   </body>
