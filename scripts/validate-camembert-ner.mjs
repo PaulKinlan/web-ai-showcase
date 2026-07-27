@@ -157,8 +157,9 @@ async function exercise(cdp, page, rung, viewport) {
     );
     check(
       `${viewport} overview: real ${NER_ID} entities + see-inside`,
-      evidence.out.includes("Marie Curie") && evidence.entCards >= 2 &&
-        /Person|Organisation|Location/.test(evidence.entities) && evidence.tokens > 0 &&
+      evidence.entities.includes("Marie Curie") && evidence.out.includes("rejoint") &&
+        evidence.entCards >= 2 &&
+        /Person|Organisation|Location/.test(evidence.entities) && evidence.tokens > 10 &&
         Number(evidence.entCount) >= 2 && /WASM/.test(evidence.backend),
       JSON.stringify(evidence),
     );
@@ -216,7 +217,11 @@ async function exercise(cdp, page, rung, viewport) {
       JSON.stringify(indexEvidence).slice(0, 220),
     );
     // Second workflow on the same route: privacy redaction (PER+ORG checked by default).
-    await evaluate(cdp, sid, `(() => { document.querySelector('#redact').click(); return true; })()`);
+    await evaluate(
+      cdp,
+      sid,
+      `(() => { document.querySelector('#redact').click(); return true; })()`,
+    );
     const redactEvidence = await evaluate(
       cdp,
       sid,
@@ -285,7 +290,8 @@ async function exercise(cdp, page, rung, viewport) {
     );
     check(
       `${viewport} multi-model: ${NER_ID} then ${FM_ID} both ran`,
-      evidence.tagged.includes("Marie Curie") && evidence.swaps.includes("Marie Curie") &&
+      evidence.tagged.includes("Marie") && evidence.tagged.includes("Curie") &&
+        evidence.swaps.includes("Marie Curie") &&
         /After:/.test(evidence.after) && evidence.after.length > 20 && Number(evidence.n) >= 1,
       JSON.stringify(evidence).slice(0, 220),
     );

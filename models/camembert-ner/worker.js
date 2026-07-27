@@ -128,7 +128,9 @@ function entitySpans(words, text) {
 }
 
 async function analyse(text) {
-  const raw = await pipe(text);
+  // ignore_labels: [] keeps the 'O' (non-entity) tokens — the pipeline drops them by default,
+  // and the pages render the WHOLE sentence with only the entity words highlighted.
+  const raw = await pipe(text, { ignore_labels: [] });
   const tokens = raw.map((t) => ({
     entity: t.entity,
     score: t.score,

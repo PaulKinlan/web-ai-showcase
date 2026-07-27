@@ -17,7 +17,10 @@ export const TYPES = {
   PER: { label: "Person", desc: "a person's name — real or fictional" },
   ORG: { label: "Organisation", desc: "a company, institution, team or agency" },
   LOC: { label: "Location", desc: "a place — city, country, region, landmark" },
-  MISC: { label: "Miscellaneous", desc: "a named entity that is none of the above (events, works…)" },
+  MISC: {
+    label: "Miscellaneous",
+    desc: "a named entity that is none of the above (events, works…)",
+  },
 };
 
 export class NerEngine {
