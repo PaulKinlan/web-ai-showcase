@@ -86,16 +86,43 @@ async function waitFor(cdp, sessionId, expression, deadlineMs, label, intervalMs
   throw new Error(`hard timeout after ${deadlineMs}ms: ${label}`);
 }
 
+const loaderSnapshot =
+  `JSON.stringify([...document.querySelectorAll('.model-loader')].map((loader) => ({
+  state: loader.dataset.state || '',
+  status: (loader.querySelector('.status')?.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 180),
+  buttons: [...loader.querySelectorAll('button')].map((button) => button.textContent.trim())
+})))`;
+
 async function ensureReady(cdp, sessionId, label) {
-  // Wait for the shared loader to reach a ready/auto-initialised state and enable inputs.
-  await waitFor(
-    cdp,
-    sessionId,
-    `!document.querySelector('textarea[disabled], input[disabled], button#shuffle[disabled]')`,
-    12 * 60_000,
-    `${label} loader-ready`,
-    3_000,
-  );
+  // Fresh profile ⇒ model absent ⇒ the honest Download control appears; click it (the auto-init
+  // policy correctly refuses to download silently), then poll the shared loader until ready.
+  const started = Date.now();
+  let nextLog = 0;
+  while (Date.now() - started < 12 * 60_000) {
+    const snapshot = JSON.parse(await evaluate(cdp, sessionId, loaderSnapshot));
+    if (Date.now() >= nextLog) {
+      console.log(
+        `  [${label}] ${Math.round((Date.now() - started) / 1000)}s ${JSON.stringify(snapshot)}`,
+      );
+      nextLog = Date.now() + 10_000;
+    }
+    if (snapshot.length === 1 && snapshot.every((item) => item.state === "ready")) return snapshot;
+    await evaluate(
+      cdp,
+      sessionId,
+      `(() => {
+      const buttons = [...document.querySelectorAll('.model-loader')].flatMap((loader) =>
+        [...loader.querySelectorAll('button')].filter((item) =>
+          /Download|Retry|Re-download/i.test(item.textContent) && !item.disabled
+        )
+      );
+      setTimeout(() => buttons.forEach((button) => button.click()), 0);
+      return buttons.length;
+    })()`,
+    );
+    await sleep(3_000);
+  }
+  throw new Error(`hard timeout after 720000ms: ${label} model download/init`);
 }
 
 async function driveRoute(rung, viewport) {
