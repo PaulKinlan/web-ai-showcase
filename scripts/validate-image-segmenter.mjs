@@ -251,8 +251,10 @@ async function exercise(cdp, page, rung, viewport) {
       const chips = [...document.querySelectorAll('#legend .count-chip')];
       const person = chips.find((c) => /person/.test(c.textContent)) || chips[1] || chips[0];
       person.click();
+      // The legend re-renders on selection, so re-query for the pressed chip.
+      const pressed = document.querySelector('#legend .count-chip[aria-pressed="true"]');
       return {
-        pressed: person.getAttribute('aria-pressed'),
+        pressed: pressed ? /person/.test(pressed.textContent) || pressed.textContent : false,
         spot: document.querySelector('#rSpot')?.textContent || '',
         state: document.querySelector('#spotState')?.textContent || ''
       };
@@ -260,7 +262,7 @@ async function exercise(cdp, page, rung, viewport) {
     );
     check(
       `${viewport} wild: class spotlight toggles`,
-      spot.pressed === "true" && spot.spot !== "–" && /Spotlighting/.test(spot.state),
+      !!spot.pressed && spot.spot !== "–" && /Spotlighting/.test(spot.state),
       JSON.stringify(spot),
     );
   }
