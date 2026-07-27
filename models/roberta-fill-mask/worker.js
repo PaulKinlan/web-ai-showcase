@@ -19,7 +19,7 @@
 
 import { TRANSFORMERS_URL } from "/web-ai-showcase/lib/webai.js";
 
-const MODEL_ID = "Xenova/roberta-base";
+const MODEL_ID = "Xenova/roberta-base"; // declared in page loaders too; literal at call sites below
 let tokenizer = null;
 let model = null;
 let device = "wasm";
@@ -32,10 +32,10 @@ async function ensureLoaded() {
   if (model) return;
   const { AutoTokenizer, AutoModelForMaskedLM, env } = await import(TRANSFORMERS_URL);
   env.allowLocalModels = false; // let the library own its Cache Storage; don't fight the SW.
-  tokenizer = await AutoTokenizer.from_pretrained(MODEL_ID, {
+  tokenizer = await AutoTokenizer.from_pretrained("Xenova/roberta-base", {
     progress_callback: (p) => post({ type: "progress", p }),
   });
-  model = await AutoModelForMaskedLM.from_pretrained(MODEL_ID, {
+  model = await AutoModelForMaskedLM.from_pretrained("Xenova/roberta-base", {
     dtype: "q8",
     device: "wasm",
     progress_callback: (p) => post({ type: "progress", p }),
