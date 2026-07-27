@@ -260,4 +260,7 @@ button.count-chip:focus-visible { outline:2px solid var(--accent); outline-offse
 .seg-view button:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
 .seg-slider { display:flex; align-items:center; gap:.5rem; font-size:.85rem; color:var(--muted); }
 .seg-slider input[type="range"] { accent-color:var(--accent); min-inline-size:8rem; }
+/* Long MediaPipe model URLs in the shared loader detail must wrap at narrow viewports
+   (same family-local fix as models/headline-generation). */
+.model-loader .loader-detail { overflow-wrap:anywhere; }
 `;
