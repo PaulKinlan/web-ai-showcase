@@ -134,9 +134,22 @@ async function ensureReady(cdp, sessionId, expectedCount, label) {
   throw new Error(`hard timeout after 720000ms: ${label} model download/init`);
 }
 
+// The crop canvas starts at the default 300x150 bitmap; CropCanvas resizes it to the scaled
+// image dimensions once the sample's pixels actually load — that (not width>0) proves loadable.
+const CROP_LOADED =
+  `(() => { const c = document.querySelector('#canvas'); return c.width !== 300 || c.height !== 150; })()`;
+
 // Draw two pen-like strokes on a canvas element via real mouse input (the DrawPad listens to
 // pointer events, which Chrome synthesises from mouse input).
 async function drawOnPad(cdp, sessionId, selector) {
+  // The pad can sit below the fold once the loader panel expands; Input.dispatchMouseEvent only
+  // reaches elements inside the viewport, so scroll it into view before measuring coordinates.
+  await evaluate(
+    cdp,
+    sessionId,
+    `(() => { document.querySelector('${selector}').scrollIntoView({ block: 'center' }); return true; })()`,
+  );
+  await sleep(400);
   const rect = await evaluate(
     cdp,
     sessionId,
@@ -183,8 +196,12 @@ async function exercise(cdp, page, rung, viewport) {
       sid,
       `(() => { [...document.querySelectorAll('#samples .sample-thumb')][0].click(); return true; })()`,
     );
-    await waitFor(cdp, sid, `document.querySelector('#canvas').width > 0`, 30_000, `${viewport} overview sample load`);
-    await evaluate(cdp, sid, `(() => { document.querySelector('#readPhoto').click(); return true; })()`);
+    await waitFor(cdp, sid, CROP_LOADED, 30_000, `${viewport} overview sample load`);
+    await evaluate(
+      cdp,
+      sid,
+      `(() => { document.querySelector('#readPhoto').click(); return true; })()`,
+    );
     await waitFor(
       cdp,
       sid,
@@ -212,7 +229,11 @@ async function exercise(cdp, page, rung, viewport) {
   } else if (rung === "basics") {
     // Example 1: draw real strokes on the pad and read them.
     await drawOnPad(cdp, sid, "#pad");
-    await evaluate(cdp, sid, `(() => { document.querySelector('#readPad').click(); return true; })()`);
+    await evaluate(
+      cdp,
+      sid,
+      `(() => { document.querySelector('#readPad').click(); return true; })()`,
+    );
     await waitFor(
       cdp,
       sid,
@@ -232,8 +253,12 @@ async function exercise(cdp, page, rung, viewport) {
       JSON.stringify(padEvidence),
     );
     // Example 2: the preloaded public-domain manuscript line.
-    await waitFor(cdp, sid, `document.querySelector('#canvas').width > 0`, 30_000, `${viewport} basics manuscript load`);
-    await evaluate(cdp, sid, `(() => { document.querySelector('#readLine').click(); return true; })()`);
+    await waitFor(cdp, sid, CROP_LOADED, 30_000, `${viewport} basics manuscript load`);
+    await evaluate(
+      cdp,
+      sid,
+      `(() => { document.querySelector('#readLine').click(); return true; })()`,
+    );
     await waitFor(
       cdp,
       sid,
@@ -253,8 +278,12 @@ async function exercise(cdp, page, rung, viewport) {
     );
   } else if (rung === "practical") {
     // The note sample is preloaded; read one boxed line into the editable list.
-    await waitFor(cdp, sid, `document.querySelector('#canvas').width > 0`, 30_000, `${viewport} practical sample load`);
-    await evaluate(cdp, sid, `(() => { document.querySelector('#readLine').click(); return true; })()`);
+    await waitFor(cdp, sid, CROP_LOADED, 30_000, `${viewport} practical sample load`);
+    await evaluate(
+      cdp,
+      sid,
+      `(() => { document.querySelector('#readLine').click(); return true; })()`,
+    );
     await waitFor(
       cdp,
       sid,
@@ -299,7 +328,11 @@ async function exercise(cdp, page, rung, viewport) {
       return true;
     })()`,
     );
-    await evaluate(cdp, sid, `(() => { document.querySelector('#camBtn').click(); return true; })()`);
+    await evaluate(
+      cdp,
+      sid,
+      `(() => { document.querySelector('#camBtn').click(); return true; })()`,
+    );
     await waitFor(
       cdp,
       sid,
@@ -307,7 +340,11 @@ async function exercise(cdp, page, rung, viewport) {
       30_000,
       `${viewport} wild camera start`,
     );
-    await evaluate(cdp, sid, `(() => { document.querySelector('#shotBtn').click(); return true; })()`);
+    await evaluate(
+      cdp,
+      sid,
+      `(() => { document.querySelector('#shotBtn').click(); return true; })()`,
+    );
     await waitFor(
       cdp,
       sid,
@@ -339,8 +376,12 @@ async function exercise(cdp, page, rung, viewport) {
       sid,
       `(() => { [...document.querySelectorAll('#samples .sample-thumb')][0].click(); return true; })()`,
     );
-    await waitFor(cdp, sid, `document.querySelector('#canvas').width > 0`, 30_000, `${viewport} multimodel sample load`);
-    await evaluate(cdp, sid, `(() => { document.querySelector('#runPhoto').click(); return true; })()`);
+    await waitFor(cdp, sid, CROP_LOADED, 30_000, `${viewport} multimodel sample load`);
+    await evaluate(
+      cdp,
+      sid,
+      `(() => { document.querySelector('#runPhoto').click(); return true; })()`,
+    );
     await waitFor(
       cdp,
       sid,
