@@ -1,8 +1,9 @@
 // TrOCR base printed-text OCR worker — all inference off the main thread so the control UI stays
 // responsive. TrOCR is a VisionEncoderDecoder: a ViT-style image encoder reads a cropped LINE of
 // text into patch embeddings, and a RoBERTa-style text decoder transcribes it character/token by
-// token. We stream each decoded token back to the page (via a TextStreamer) with a timestamp, so the
-// page can show the transcription forming in real time and the per-token timing in "See inside".
+// token. We stream each streamed word-chunk back to the page (via a TextStreamer, which flushes at
+// whitespace, not per subword) with a timestamp, so the
+// page can show the transcription forming in real time and the per-chunk timing in "See inside".
 //
 // Model: Xenova/trocr-base-printed (task: image-to-text), WASM backend, q8. ~340 MB.
 
@@ -37,7 +38,7 @@ async function run(id, imageURL, maxTokens) {
   const t0 = performance.now();
   let i = 0;
 
-  // Stream each newly decoded token to the page with a timestamp — the heart of "See inside".
+  // Stream each newly finalised word-chunk to the page with a timestamp — the heart of "See inside".
   const streamer = new TextStreamer(pipe.tokenizer, {
     skip_prompt: true,
     skip_special_tokens: true,

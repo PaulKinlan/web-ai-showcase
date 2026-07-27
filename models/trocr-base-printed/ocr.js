@@ -61,7 +61,7 @@ export class OcrEngine {
   }
 
   /**
-   * Transcribe a (cropped) line image. Streams tokens via onToken({token, t, i}); resolves with
+   * Transcribe a (cropped) line image. Streams word-chunks via onToken({token, t, i}); resolves with
    * { id, text, tokens, ms, device } when transcription finishes.
    */
   recognize(imageURL, maxTokens = 48, onToken) {
