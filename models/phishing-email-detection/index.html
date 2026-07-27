@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Phishing email detector — spot credential scams in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Paste an email or URL and get a phishing / legitimate verdict with confidence, locally in your browser — plus queue triage, the exact words that trip the alarm, and an adversarial evasion lab. No server, nothing uploaded."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎣</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">text-classification · text · WASM · ~64 MB</p>
+      <h1>Phishing email detector — is this message trying to rob you?</h1>
+      <p class="lede">
+        A DistilBERT classifier fine-tuned to tell phishing emails and malicious URLs from legitimate
+        ones. Paste any email or link and it scores it <strong>PHISHING</strong> or
+        <strong>LEGITIMATE</strong> with a confidence — then look inside to see which exact words tripped
+        the alarm. Everything runs on your device; the message never leaves the page.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/onnx-community/phishing-email-detection-distilbert_v2.4.1-ONNX" target="_blank" rel="noopener">onnx-community/phishing-email-detection-distilbert_v2.4.1-ONNX</a></td></tr>
+          <tr><th>Original weights</th><td><a href="https://huggingface.co/cybersectony/phishing-email-detection-distilbert_v2.4.1" target="_blank" rel="noopener">cybersectony/phishing-email-detection-distilbert_v2.4.1</a></td></tr>
+          <tr><th>Task / pipeline</th><td><code>text-classification</code></td></tr>
+          <tr><th>Labels</th><td>4 logits — card mapping: <code>legitimate_email</code>, <code>phishing</code>, <code>legitimate_url</code>, <code>phishing_url_alt</code>. We report <strong>threat</strong> = P(phishing)+P(phishing_url_alt)</td></tr>
+          <tr><th>Architecture</th><td>DistilBERT base uncased, fine-tuned 3 epochs on PhishingEmailDetectionv2.0 (card-reported accuracy 99.58%)</td></tr>
+          <tr><th>Quantization</th><td>q8 (8-bit) ONNX</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (runs anywhere; no WebGPU needed)</td></tr>
+          <tr><th>Download</th><td>~64 MB, cached after first load</td></tr>
+          <tr><th>License</th><td>Apache-2.0</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Paste an email or URL. The verdict re-scores automatically (debounced) a moment after
+        you stop typing. The dual meter shows the probability split between the threat and legitimate
+        classes; the bars below show all four raw class scores.</p>
+
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
+        Email or URL text
+        <textarea id="text" rows="3" disabled>URGENT: Your account has been suspended. Verify your password immediately at http://secure-login-verify.example.com or lose access permanently.</textarea>
+      </label>
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.5rem 0">
+        <button class="chip" type="button" data-set="URGENT: Your account has been suspended. Verify your password immediately at http://secure-login-verify.example.com or lose access permanently.">account scare</button>
+        <button class="chip" type="button" data-set="Dear customer, we detected unusual sign-in activity. Confirm your identity within 24 hours at http://paypa1-secure.example.net or your account will be closed.">credential lure</button>
+        <button class="chip" type="button" data-set="Hi team, I've attached the slides from today's review. Let me know if anything needs changing before Friday.">work email</button>
+        <button class="chip" type="button" data-set="Your package will be delivered tomorrow between 2 and 4pm. Track it any time from your account.">delivery notice</button>
+      </div>
+
+      <div class="verdict-row" id="verdictRow" hidden>
+        <span class="verdict-label" id="vLabel">–</span>
+        <span class="verdict-conf">confidence <b id="vConf">–</b></span>
+      </div>
+      <div class="meter-dual" id="meter" hidden>
+        <div class="meter-safe" id="fillSafe" style="inline-size:50%"></div>
+        <div class="meter-threat" id="fillThreat" style="inline-size:50%"></div>
+      </div>
+      <div class="meter-labels" id="meterLabels" hidden><span>legitimate</span><span>phishing</span></div>
+      <div class="class-bars" id="bars" aria-live="polite"></div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside — the words that trip the alarm</h3>
+      <p class="muted">
+        This is <strong>occlusion attribution</strong>: we re-run the model with each word removed and see
+        how much the phishing score shifts (measured in <em>log-odds</em>, because the model is so
+        confident that raw percentages barely move). Remove a word that was pushing "phishing" and the
+        score drops — so that word gets a <span style="color:var(--bad)">red</span> weight. Remove a word
+        that was keeping it looking legitimate and the score rises —
+        <span style="color:var(--good)">green</span>. No gradients, no hand-waving: just the model's own
+        predictions, N+1 of them.
+      </p>
+      <button id="explain" type="button" class="secondary" disabled>Explain the current message</button>
+      <p class="status" id="attrStatus" role="status" aria-live="polite" hidden></p>
+      <div class="attr-wrap" id="attr" aria-live="polite"></div>
+      <div class="attr-legend" id="attrLegend" hidden>
+        <span><span class="swatch" style="background:var(--bad)"></span>pushes PHISHING</span>
+        <span><span class="swatch" style="background:var(--good)"></span>pushes legitimate</span>
+        <span>brighter = larger effect</span>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        Phishing is the single most common way breaches start — and the lures arrive by email, SMS, and
+        chat faster than any blocklist can follow. Running the detector in the browser means a suspicious
+        message can be scored the moment it is read, with its contents never leaving the device: no
+        round-trip, no logging of the very credentials the attacker wants.
+      </p>
+      <ul>
+        <li><strong>Read-side email defense</strong> — score a suspicious message inside the mail client or webmail, before anyone clicks.</li>
+        <li><strong>Security-ops triage</strong> — batch-sort a reported-phish queue so analysts start with the highest-confidence catches.</li>
+        <li><strong>SMS / chat scam filters</strong> — flag credential lures in messaging apps, offline and on-device.</li>
+        <li><strong>Security training</strong> — show people <em>which words</em> (urgency, verification, look-alike links) make a message smell phishy.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Type an email, get PHISHING / LEGITIMATE + confidence, updating live as you type.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Paste a reported-phish queue and watch it auto-triage into Threat and Clear columns.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Adversarial lab: obfuscate a lure with leetspeak and zero-width characters and watch how far you can fool the detector.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">Phish-gate a mailbox, then summarize only the legitimate messages with DistilBART.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>Classification is one call; <code>top_k: 4</code> returns every class score:</p>
+      <pre><code>import { pipeline } from "@huggingface/transformers";
+
+const classify = await pipeline(
+  "text-classification",
+  "onnx-community/phishing-email-detection-distilbert_v2.4.1-ONNX",
+); // downloads + caches ~64 MB once
+
+const out = await classify("URGENT: verify your password now", { top_k: 4 });
+// → [{ label: "LABEL_1", score: 0.9999 }, …]
+// Card mapping: LABEL_0 legitimate_email · LABEL_1 phishing ·
+//               LABEL_2 legitimate_url · LABEL_3 phishing_url_alt</code></pre>
+      <p class="muted">
+        "See inside" re-uses that same call: it classifies the full message plus one copy per word with
+        that word deleted (batched in a single pass), then subtracts the threat log-odds to attribute the
+        shift to each word. All of it runs in a Web Worker so typing never janks.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/onnx-community/phishing-email-detection-distilbert_v2.4.1-ONNX" target="_blank" rel="noopener">Model card — phishing email detection (onnx-community ONNX)</a></li>
+        <li><a href="https://huggingface.co/cybersectony/phishing-email-detection-distilbert_v2.4.1" target="_blank" rel="noopener">Original weights — cybersectony/phishing-email-detection-distilbert_v2.4.1</a></li>
+        <li><a href="https://huggingface.co/datasets/cybersectony/PhishingEmailDetectionv2.0" target="_blank" rel="noopener">Training dataset — PhishingEmailDetectionv2.0</a></li>
+        <li><a href="https://arxiv.org/abs/1910.01108" target="_blank" rel="noopener">Paper — DistilBERT (Sanh et al., 2019, arXiv:1910.01108)</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { PhishEngine, renderVerdict, renderClassBars, renderAttribution, debounce, PHISH_CSS }
+        from "./phishing.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = PHISH_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new PhishEngine();
+      let loaded = false;
+
+      for (const c of document.querySelectorAll(".chip")) {
+        c.addEventListener("click", () => { $("text").value = c.dataset.set; scheduleScore(); clearAttr(); });
+      }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: {
+          modelId: "onnx-community/phishing-email-detection-distilbert_v2.4.1-ONNX",
+          runtime: "transformers.js",
+          dtype: "q8",
+          sizeMB: 64,
+          requiresWebGPU: false,
+        },
+        load: async (onProgress) => {
+          await engine.load(onProgress);
+          return engine;
+        },
+        onReady: () => {
+          $("text").disabled = false;
+          $("explain").disabled = false;
+          loaded = true;
+          score();
+        },
+      });
+
+      const scheduleScore = debounce(score, 350);
+      $("text").addEventListener("input", () => { scheduleScore(); clearAttr(); });
+
+      async function score() {
+        if (!loaded) return;
+        const text = $("text").value.trim();
+        if (!text) { $("verdictRow").hidden = true; $("meter").hidden = true; $("meterLabels").hidden = true; $("bars").replaceChildren(); return; }
+        try {
+          const r = await engine.classify(text);
+          $("verdictRow").hidden = false; $("meter").hidden = false; $("meterLabels").hidden = false;
+          renderVerdict({
+            label: $("vLabel"), conf: $("vConf"), fillThreat: $("fillThreat"), fillSafe: $("fillSafe"),
+          }, r);
+          renderClassBars($("bars"), { classes: r.classes });
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = r.ms + " ms";
+        } catch (err) {
+          $("runStatus").hidden = false;
+          $("runStatus").textContent = "Scoring failed: " + err.message; $("runStatus").classList.add("err");
+        }
+      }
+
+      function clearAttr() { $("attr").replaceChildren(); $("attrLegend").hidden = true; }
+
+      $("explain").addEventListener("click", async () => {
+        if (!loaded) return;
+        const text = $("text").value.trim();
+        if (!text) return;
+        $("explain").disabled = true;
+        $("attrStatus").hidden = false; $("attrStatus").classList.remove("err", "ok");
+        $("attrStatus").textContent = "Scoring each word out…";
+        try {
+          const r = await engine.attribute(text);
+          renderAttribution($("attr"), r.words, r.attributions);
+          $("attrLegend").hidden = false;
+          $("attrStatus").textContent = `${r.words.length} words scored on ${r.device.toUpperCase()} in ${r.ms} ms.`;
+          $("attrStatus").classList.add("ok");
+        } catch (err) {
+          $("attrStatus").textContent = "Attribution failed: " + err.message; $("attrStatus").classList.add("err");
+        } finally { $("explain").disabled = false; }
+      });
+    </script>
+  </body>
+</html>
