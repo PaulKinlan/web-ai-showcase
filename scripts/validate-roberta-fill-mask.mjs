@@ -146,22 +146,27 @@ async function driveRoute(rung, viewport) {
     if (rung === "overview") {
       // real inference: ranked predictions render with probability bars + raw logits.
       await waitFor(
-        cdp, sessionId,
+        cdp,
+        sessionId,
         `document.querySelectorAll('#preds .pred-row').length >= 3`,
-        120_000, `${label} preds`,
+        120_000,
+        `${label} preds`,
       );
       const top = await evaluate(
-        cdp, sessionId,
+        cdp,
+        sessionId,
         `document.querySelector('#preds .pred-row .pred-tok')?.textContent || ''`,
       );
       mark(top.length > 0, "real-prediction-rendered", `top token "${top}"`);
       const logitTxt = await evaluate(
-        cdp, sessionId,
+        cdp,
+        sessionId,
         `document.querySelector('#preds .pred-logit')?.textContent || ''`,
       );
       mark(/^logit -?\d+\.\d{2}$/.test(logitTxt), "raw-logit-shown", logitTxt);
       const ent = await evaluate(
-        cdp, sessionId,
+        cdp,
+        sessionId,
         `document.getElementById('entLine')?.hidden === false && /bits/.test(document.getElementById('entLine')?.textContent || '')`,
       );
       mark(ent === true, "entropy-see-inside", "top-k entropy rendered");
@@ -169,105 +174,131 @@ async function driveRoute(rung, viewport) {
       await evaluate(cdp, sessionId, `document.querySelectorAll('#chips .mask-chip')[1].click()`);
       await sleep(1_500);
       await waitFor(
-        cdp, sessionId,
+        cdp,
+        sessionId,
         `document.querySelectorAll('#preds .pred-row').length >= 3`,
-        120_000, `${label} rerun`,
+        120_000,
+        `${label} rerun`,
       );
       const filled = await evaluate(
-        cdp, sessionId,
+        cdp,
+        sessionId,
         `document.getElementById('filled')?.textContent || ''`,
       );
       mark(!filled.includes("<mask>"), "chip-rerun-fills-mask", filled.slice(0, 80));
       // top-k slider control
       await evaluate(
-        cdp, sessionId,
+        cdp,
+        sessionId,
         `(() => { const s = document.getElementById('topk'); s.value = '5'; s.dispatchEvent(new Event('input')); return s.value; })()`,
       );
       await sleep(1_500);
       await waitFor(
-        cdp, sessionId,
+        cdp,
+        sessionId,
         `document.querySelectorAll('#preds .pred-row').length === 5`,
-        120_000, `${label} topk`,
+        120_000,
+        `${label} topk`,
       );
       mark(true, "topk-slider-5-rows", "slider drove a 5-row re-run");
     } else if (rung === "basics") {
       await waitFor(
-        cdp, sessionId,
+        cdp,
+        sessionId,
         `document.querySelectorAll('#preds .pred-row').length >= 3`,
-        120_000, `${label} preds`,
+        120_000,
+        `${label} preds`,
       );
       const top = await evaluate(
-        cdp, sessionId,
+        cdp,
+        sessionId,
         `document.querySelector('#preds .pred-row .pred-tok')?.textContent || ''`,
       );
       mark(top.length > 0, "real-prediction-rendered", `top token "${top}"`);
       const backend = await evaluate(
-        cdp, sessionId,
+        cdp,
+        sessionId,
         `document.getElementById('rBackend')?.textContent || ''`,
       );
       mark(backend === "WASM", "backend-readout-wasm", backend);
       await evaluate(cdp, sessionId, `document.querySelectorAll('#chips .mask-chip')[2].click()`);
       await sleep(1_500);
       await waitFor(
-        cdp, sessionId,
+        cdp,
+        sessionId,
         `document.querySelectorAll('#preds .pred-row').length >= 3`,
-        120_000, `${label} rerun`,
+        120_000,
+        `${label} rerun`,
       );
       mark(true, "chip-rerun", "object chip re-ran inference");
     } else if (rung === "practical") {
       await waitFor(
-        cdp, sessionId,
+        cdp,
+        sessionId,
         `document.querySelectorAll('#scores .cand-row').length >= 3`,
-        120_000, `${label} scores`,
+        120_000,
+        `${label} scores`,
       );
       const first = await evaluate(
-        cdp, sessionId,
+        cdp,
+        sessionId,
         `document.querySelector('#scores .cand-row .cand-word')?.textContent || ''`,
       );
       mark(first.length > 0, "candidate-scores-rendered", `top candidate "${first}"`);
       const num = await evaluate(
-        cdp, sessionId,
+        cdp,
+        sessionId,
         `document.querySelector('#scores .cand-row .cand-num')?.textContent || ''`,
       );
       mark(/logit -?\d+\.\d{2}/.test(num), "candidate-logits-shown", num);
       await evaluate(cdp, sessionId, `document.querySelectorAll('#chips .mask-chip')[2].click()`);
       await sleep(1_500);
       await waitFor(
-        cdp, sessionId,
+        cdp,
+        sessionId,
         `[...document.querySelectorAll('#scores .cand-row .cand-word')].some(e => /moved|postponed|cancelled|rescheduled|brought/.test(e.textContent))`,
-        120_000, `${label} rerun`,
+        120_000,
+        `${label} rerun`,
       );
       mark(true, "template-chip-rerun", "scheduling template re-scored its candidates");
     } else if (rung === "wild") {
       await waitFor(
-        cdp, sessionId,
+        cdp,
+        sessionId,
         `document.querySelectorAll('#results .probe-card').length === 12`,
-        180_000, `${label} batch`,
+        180_000,
+        `${label} batch`,
       );
       const n = await evaluate(
-        cdp, sessionId,
+        cdp,
+        sessionId,
         `document.getElementById('rN')?.textContent || ''`,
       );
       mark(n === "12", "batch-12-real-fills", `${n} prompts filled`);
       const sure = await evaluate(
-        cdp, sessionId,
+        cdp,
+        sessionId,
         `document.getElementById('rSure')?.textContent || ''`,
       );
       mark(/^\d+\/12$/.test(sure), "certainty-readout", sure);
       const oneTok = await evaluate(
-        cdp, sessionId,
+        cdp,
+        sessionId,
         `document.querySelector('#results .probe-card .pred-tok')?.textContent || ''`,
       );
       mark(oneTok.length > 0, "proverb-top1-real", `first card top-1 "${oneTok}"`);
       await evaluate(
-        cdp, sessionId,
+        cdp,
+        sessionId,
         `(() => { const s = document.getElementById('set'); s.value = 'idioms'; s.dispatchEvent(new Event('change')); return s.value; })()`,
       );
       await sleep(2_000);
       await waitFor(
-        cdp, sessionId,
+        cdp,
+        sessionId,
         `document.querySelectorAll('#results .probe-card').length === 12`,
-        180_000, `${label} idioms`,
+        180_000,
+        `${label} idioms`,
       );
       mark(true, "set-select-rerun", "idioms set re-ran the batch");
     }
