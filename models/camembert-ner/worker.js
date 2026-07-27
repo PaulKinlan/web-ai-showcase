@@ -18,7 +18,6 @@
 
 import { loadPipeline } from "/web-ai-showcase/lib/webai.js";
 
-const MODEL_ID = "Xenova/camembert-ner";
 const SP = "▁"; // SentencePiece word-boundary marker ▁
 let pipe = null;
 let device = "wasm";
@@ -31,7 +30,7 @@ async function ensureLoaded() {
   if (pipe) return;
   const loaded = await loadPipeline({
     task: "token-classification",
-    model: MODEL_ID,
+    model: "Xenova/camembert-ner",
     backend: "wasm",
     dtype: "q8",
     onProgress: (p) => post({ type: "progress", p }),

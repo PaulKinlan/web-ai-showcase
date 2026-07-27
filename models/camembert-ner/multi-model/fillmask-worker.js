@@ -7,7 +7,6 @@
 
 import { loadPipeline } from "/web-ai-showcase/lib/webai.js";
 
-const MODEL_ID = "Xenova/camembert-base";
 let pipe = null;
 let device = "wasm";
 let maskToken = "<mask>";
@@ -20,7 +19,7 @@ async function ensureLoaded() {
   if (pipe) return;
   const loaded = await loadPipeline({
     task: "fill-mask",
-    model: MODEL_ID,
+    model: "Xenova/camembert-base",
     backend: "wasm",
     dtype: "q8",
     onProgress: (p) => post({ type: "progress", p }),
