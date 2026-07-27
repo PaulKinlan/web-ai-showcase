@@ -1,0 +1,130 @@
+{
+  "schemaVersion": 1,
+  "id": "camembert-ner",
+  "revision": 1,
+  "reviewedAt": "2026-07-20T00:00:00Z",
+  "reviewer": "build-lane worker (code-grounded + live probe + acceptance validator), revision 1",
+  "frontend": true,
+  "rubric": [
+    {
+      "dimension": "real-inference",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Real transformers.js token-classification in a dedicated module Worker (models/camembert-ner/worker.js): loadPipeline({task:\"token-classification\", model:\"Xenova/camembert-ner\", backend:\"wasm\", dtype:\"q8\"}) then pipe(text) for per-sub-token {entity,score,index,word}. Verified by a pre-build live probe in headless Chrome (transformers.js 3.7.5, exact shared CDN build): 'Apple est créée par Steve Jobs à Los Altos en Californie.' → I-ORG 'Apple' 0.85, I-PER 'Steve/Job/s' 0.96–0.99, I-LOC 'Los/Al/tos' + 'Californie' — real q8 WASM output, never canned. CamemBERT is SentencePiece with an I-only tag set ({O,I-PER,I-ORG,I-LOC,I-MISC}), so the worker merges sub-word pieces into words (▁-boundary + monotonic char-cursor walk), maps each word to its char span, and aggregates consecutive same-type words into entity spans (WikiNER simple aggregation).",
+      "notes": "Raw sub-tokens, merged words AND entity spans are all returned so the page shows the genuine token→word→span reconstruction."
+    },
+    {
+      "dimension": "io-shape",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Pipeline output is per-token {entity, score, index, word}; worker post-processes to per-word {surface, entity, type, score, start, end} and per-span {type, text, start, end, score}. The I-only label set means spans come from consecutive same-type words — 'Los' I-LOC + 'Al' I-LOC + 'tos' I-LOC → one LOC 'Los Altos' (probe-verified token stream). Shape matches the token-classification pipeline contract and the model card's aggregation_strategy=simple example.",
+      "notes": "Char-span mapping makes inline highlighting and redaction land exactly on the original text (the pipeline returns no offsets)."
+    },
+    {
+      "dimension": "runtime-config",
+      "score": 5,
+      "severity": "info",
+      "evidence": "At-a-glance declares the exact loaded repo (Xenova/camembert-ner, linked) as the ONNX q8 export of Jean-Baptiste/camembert-ner (linked), task token-classification, WikiNER tag set, architecture (CamemBERT RoBERTa SentencePiece ~110M, fine-tuned on ~170k WikiNER-fr sentences), language French (honest note + links to the built English bert-ner and multilingual-ner families), q8 quantisation, WebAssembly backend (no WebGPU), ~111 MB download, MIT license. Matches worker.js + every createModelLoader call site (literal modelId, dtype q8, sizeMB 111).",
+      "notes": "hfId records the repo actually loaded (Xenova conversion), matching the bert-ner/pos-tagging precedent; the canonical Jean-Baptiste repo is linked and credited."
+    },
+    {
+      "dimension": "cache-init",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Every route loads via shared createModelLoader (literal modelId \"Xenova/camembert-ner\"; multi-model adds \"Xenova/camembert-base\"). A valid cached model auto-initialises with no Load click; Download/Re-download/Update + clear-cache appear otherwise. The acceptance validator reuses one Chrome profile across route cells, so later routes prove cached auto-init after the first real download.",
+      "notes": "modelId keyed on the repo so the ~111 MB cache is tracked for the no-silent-re-download guarantee."
+    },
+    {
+      "dimension": "states",
+      "score": 4,
+      "severity": "info",
+      "evidence": "Status is <p role=status aria-live=polite> (runStatus); the output region is aria-live; inputs start disabled and enable onReady. Worker errors post {type:error} and surface on the page ('Tagging failed: …'). Download/progress/retry states come from the shared loader + <model-download-status>.",
+      "notes": ""
+    },
+    {
+      "dimension": "controls",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Every control is real + keyboard-operable and drives the real model: free-text textareas (debounced re-tag on overview/basics), example chips (4 overview, 4 basics, 3 wild), the Analyse/redact/copy buttons + type checkboxes on practical, the recast inputs + rebuild on wild, the entity-type select + run button + two loaders on multi-model. The acceptance validator clicks/types through each route at both viewports.",
+      "notes": ""
+    },
+    {
+      "dimension": "no-fake-output",
+      "score": 5,
+      "severity": "info",
+      "evidence": "No hardcoded entities anywhere: every highlight, span, index entry, redaction mask and recast swap derives from the live pipe(text) result and the deterministic merge/aggregate. Example chip sentences are inputs, not outputs. Validator asserts entity text appears in output and differs across inputs.",
+      "notes": ""
+    },
+    {
+      "dimension": "accessibility",
+      "score": 4,
+      "severity": "info",
+      "evidence": "role=status aria-live status + aria-live output; each entity chip carries a text type label (never colour alone) plus a title with raw label + confidence; every button/input/select has an accessible name (validator asserts); recast inputs get per-entity aria-labels; palette tuned for light+dark WCAG AA (same palette discipline as pos-tagging).",
+      "notes": "Entity chips are spans (not focusable) — the info is duplicated in the entity list, so nothing is hover-only."
+    },
+    {
+      "dimension": "responsive",
+      "score": 4,
+      "severity": "info",
+      "evidence": "Fluid flex/grid with flex-wrap, intrinsic sizing and logical properties; no fixed widths; textarea min-block-size; chips wrap. Acceptance validator drives 1280×800 desktop AND 360×740 mobile (DPR 3, touch) on all five routes and asserts scrollWidth−innerWidth ≤ 1; responsive-check runs the same matrix.",
+      "notes": ""
+    },
+    {
+      "dimension": "performance",
+      "score": 4,
+      "severity": "info",
+      "evidence": "All inference AND the sub-word merge/char-span mapping/span aggregation run in a module Worker; the main thread only renders. Typing is debounced (350ms) so WASM runs don't queue per keystroke. No dense-output canvas composite (text-only family).",
+      "notes": ""
+    }
+  ],
+  "guidanceConsulted": [
+    {
+      "query": "responsive control panel no horizontal overflow mobile",
+      "id": "css-layout",
+      "source": "npx -y modern-web-guidance@latest search",
+      "recommendation": "Use fluid flex/grid with flex-wrap, intrinsic sizing and logical properties; avoid fixed widths that force horizontal overflow.",
+      "appliedOrException": "applied — chip rows, entity cards, stat grids and readouts all use flex-wrap/grid with logical properties; validator asserts no horizontal overflow at 360px.",
+      "evidence": "NER_CSS flex-wrap layouts; acceptance hygiene check (overflow ≤ 1) on all 5 routes × 2 viewports"
+    },
+    {
+      "query": "accessible live region status updates loading progress",
+      "id": "accessibility",
+      "source": "npx -y modern-web-guidance@latest search",
+      "recommendation": "Announce loading/ready/error via role=status aria-live; give every control an accessible name; never convey info by colour alone.",
+      "appliedOrException": "applied — role=status aria-live status + aria-live output region; every entity chip shows a text type label; every button has an accessible name (validator-asserted).",
+      "evidence": "runStatus role=status; out aria-live=polite; validator named-buttons check"
+    },
+    {
+      "query": "labelled form controls keyboard accessible buttons",
+      "id": "forms",
+      "source": "npx -y modern-web-guidance@latest search",
+      "recommendation": "Associate visible labels with every input/select/textarea; native controls for keyboard operability; visible focus.",
+      "appliedOrException": "applied — textareas wrapped in <label>, selects labelled, native checkboxes/buttons, :focus-visible outline on inputs.",
+      "evidence": "label-wrapped controls on all routes; ner-input:focus-visible outline"
+    },
+    {
+      "query": "break up long tasks keep INP low run heavy work off the main thread in a web worker",
+      "id": "break-up-long-tasks",
+      "source": "npx -y modern-web-guidance@latest search (id retained from the pos-tagging family's consultation of the same guide)",
+      "recommendation": "Move heavy synchronous work off the main thread and break up long tasks so the browser can service input and repaint.",
+      "appliedOrException": "applied — token-classification + merge/aggregate run in a dedicated module Worker; page thread renders only; 350ms debounce on typing.",
+      "evidence": "worker.js new Worker(type:module); ner.js NerEngine worker client"
+    }
+  ],
+  "openQuestions": [
+    "The tag set is I-only (no B- tags), so two ADJACENT same-type entities with no separator merge into one span ('simple' aggregation, same as the model card). Worth noting if a user pastes 'Paris Lyon' expecting two locations.",
+    "The model is FRENCH — is the language note prominent enough that an English-speaking visitor isn't surprised? (Mirrors the pos-tagging family's honest-note pattern.)"
+  ],
+  "followUpGoals": [
+    {
+      "goal": "Add lang=\"fr\" to the French text regions for correct screen-reader pronunciation of highlighted entities.",
+      "kind": "targeted-fix",
+      "priority": "low"
+    },
+    {
+      "goal": "Batch mode: entity-index several documents in one run via the worker's tagMany path (already implemented worker-side).",
+      "kind": "new-demo",
+      "priority": "low"
+    }
+  ]
+}

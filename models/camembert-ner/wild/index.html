@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>French NER — Wild: recast the story with your own names · Web AI Showcase</title>
+    <meta name="description" content="The model finds every person, organisation and place in a French story — you swap in your own cast and rebuild it. Entity-aware Mad-Libs for names, in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🇫🇷</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">French NER</a></p>
+
+    <header>
+      <p class="eyebrow">Wild · token-classification · WASM</p>
+      <h1>Recast the story</h1>
+      <p class="lede">
+        Every story is one casting decision away from a different universe. The model finds the actual
+        named entities — the people, organisations and places — without you marking anything up. Then you
+        recast each one: put yourself on the throne, move the capital to your street, hand the company to
+        your cat. Type your replacements and rebuild the text with its grammar untouched and its names
+        gloriously wrong.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Find the cast</h3>
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.6rem 0" id="chips">
+        <button class="ner-chip" type="button" data-set="Le roi Louis XIV fit construire le château de Versailles et y installa sa cour." data-gloss="“King Louis XIV had the Palace of Versailles built and moved his court there.”">a royal court</button>
+        <button class="ner-chip" type="button" data-set="Tintin et le capitaine Haddock partent de Bruxelles pour retrouver le trésor de Rackham le Rouge." data-gloss="“Tintin and Captain Haddock leave Brussels to find Red Rackham's treasure.”">a treasure hunt</button>
+        <button class="ner-chip" type="button" data-set="La start-up BlaBlaCar, fondée par Frédéric Mazzella à Paris, connecte des conducteurs dans toute l'Europe." data-gloss="“The start-up BlaBlaCar, founded by Frédéric Mazzella in Paris, connects drivers across Europe.”">a start-up</button>
+      </div>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">
+        Votre histoire (your story)
+        <textarea id="text" class="ner-input" rows="3" disabled>Le roi Louis XIV fit construire le château de Versailles et y installa sa cour.</textarea>
+      </label>
+      <p class="gloss" id="gloss">“King Louis XIV had the Palace of Versailles built and moved his court there.”</p>
+
+      <div style="margin:.5rem 0;display:flex;gap:.4rem;flex-wrap:wrap">
+        <button id="run" type="button" disabled>Find the names</button>
+      </div>
+
+      <div id="fillArea" hidden>
+        <p class="muted" style="font-size:.82rem">Recast each name (leave one blank to keep the original), then rebuild:</p>
+        <div id="cast"></div>
+        <button id="rebuild" type="button" class="secondary" style="margin-top:.6rem">Rebuild the story</button>
+        <p id="result" style="font-family:var(--font-display);font-size:1.25rem;margin-top:.8rem;line-height:1.6"></p>
+      </div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+        <span>names found <b id="rEnts">–</b></span>
+      </div>
+    </section>
+
+    <section aria-labelledby="next-h">
+      <h2 id="next-h">Keep exploring</h2>
+      <div class="model-grid">
+        <a class="model-card" href="../basics/"><h3>← Basics</h3><p class="muted">Highlight every name by its type.</p></a>
+        <a class="model-card" href="../practical/"><h3>Practical →</h3><p class="muted">Entity index &amp; privacy redaction.</p></a>
+        <a class="model-card" href="../multi-model/"><h3>Multi-model →</h3><p class="muted">Let a second model recast the names for you.</p></a>
+      </div>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="../">Back to the model →</a>
+    </footer>
+
+    <script type="module">
+      import { NerEngine, NER_CSS, TYPES } from "../ner.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = NER_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new NerEngine();
+      let lastResult = null;
+
+      for (const c of document.querySelectorAll(".ner-chip")) {
+        c.addEventListener("click", () => {
+          $("text").value = c.dataset.set;
+          $("gloss").textContent = c.dataset.gloss || "";
+          $("fillArea").hidden = true;
+        });
+      }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/camembert-ner", runtime: "transformers.js", dtype: "q8", sizeMB: 111, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("run").disabled = false; run(); },
+      });
+
+      $("run").addEventListener("click", run);
+      async function run() {
+        const text = $("text").value.trim();
+        if (!text) return;
+        $("run").disabled = true;
+        try {
+          const r = await engine.tag(text);
+          lastResult = r;
+          $("cast").replaceChildren(...r.entities.map((e, i) => {
+            const row = document.createElement("div");
+            row.className = "pill-row";
+            row.style.alignItems = "center";
+            const orig = document.createElement("span");
+            orig.className = "kw-pill pg-" + e.type;
+            orig.textContent = e.text;
+            orig.title = `${TYPES[e.type]?.label ?? e.type} · ${(e.score * 100).toFixed(0)}%`;
+            const arrow = document.createElement("span");
+            arrow.setAttribute("aria-hidden", "true");
+            arrow.textContent = "→";
+            const inp = document.createElement("input");
+            inp.className = "remix-input";
+            inp.dataset.idx = String(i);
+            inp.placeholder = (TYPES[e.type]?.label ?? e.type).toLowerCase();
+            inp.setAttribute("aria-label", `Replacement ${TYPES[e.type]?.label ?? e.type} for “${e.text}”`);
+            row.append(orig, arrow, inp);
+            return row;
+          }));
+          if (!r.entities.length) $("cast").innerHTML = '<span class="muted">No named entities in this text — try one of the examples.</span>';
+          $("fillArea").hidden = false;
+          $("result").textContent = "";
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = r.ms + " ms";
+          $("rEnts").textContent = r.entities.length;
+        } catch (err) {
+          $("runStatus").hidden = false;
+          $("runStatus").textContent = "Tagging failed: " + err.message;
+          $("runStatus").classList.add("err");
+        } finally {
+          $("run").disabled = false;
+        }
+      }
+
+      $("rebuild").addEventListener("click", () => {
+        if (!lastResult) return;
+        const fills = new Map();
+        for (const inp of $("cast").querySelectorAll(".remix-input")) {
+          const v = inp.value.trim();
+          if (v) fills.set(Number(inp.dataset.idx), v);
+        }
+        // Replace spans from the end so earlier offsets stay valid.
+        let out = lastResult.text;
+        lastResult.entities.forEach((e, i) => {
+          const rep = fills.get(i);
+          if (rep != null && e.start != null && e.end != null) {
+            out = out.slice(0, e.start) + rep + out.slice(e.end);
+          }
+        });
+        $("result").textContent = out;
+      });
+    </script>
+  </body>
+</html>
