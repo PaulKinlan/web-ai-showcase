@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>RoBERTa Wild — does it know its proverbs? · Web AI Showcase</title>
+    <meta name="description" content="A batch probe of English proverbs and idioms with the final word masked: watch RoBERTa complete each one with real logits, and see where 160 GB of text made it certain — and where it hedges. In your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎭</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">RoBERTa</a></p>
+
+    <header>
+      <p class="eyebrow">use case · wild</p>
+      <h1>Wild: finish the proverb</h1>
+      <p class="lede">
+        "A penny saved is a penny…" — RoBERTa read ~160 GB of English, so how many sayings did it
+        memorise? We mask the final word of twelve proverbs and idioms, run them all in one batch, and
+        show the top-3 completions with their real probabilities. Certainty is earned; hedging is data.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;align-items:center;margin:.2rem 0 .5rem">
+        <button id="probe" type="button" class="secondary" disabled>Run the batch probe</button>
+        <label style="font-size:.78rem;font-family:var(--font-mono);color:var(--muted);display:flex;align-items:center;gap:.4rem">
+          set
+          <select id="set" disabled>
+            <option value="proverbs">proverbs & sayings</option>
+            <option value="idioms">idioms</option>
+          </select>
+        </label>
+      </div>
+
+      <div id="results" class="probe-grid two"></div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>batch latency <b id="rMs">–</b></span>
+        <span>prompts <b id="rN">–</b></span>
+        <span>certain (top-1 ≥ 50%) <b id="rSure">–</b></span>
+      </div>
+
+      <p class="muted" style="font-size:.85rem">
+        Every card is a real forward pass over the same model — twelve prompts, one worker, no canned
+        answers. A “miss” is often the more interesting result: the model tells you which wording it
+        actually saw most.
+      </p>
+    </section>
+
+    <p class="crumbs"><a href="../">← Back to RoBERTa</a></p>
+
+    <script type="module">
+      import { RobertaFillMaskEngine, ROBERTA_CSS, MASK, renderPredictions } from "../fillmask.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = ROBERTA_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new RobertaFillMaskEngine();
+      let loaded = false;
+
+      const SETS = {
+        proverbs: [
+          "A penny saved is a penny <mask>.",
+          "An apple a day keeps the <mask> away.",
+          "Actions speak louder than <mask>.",
+          "The early bird catches the <mask>.",
+          "Don't count your chickens before they <mask>.",
+          "A picture is worth a thousand <mask>.",
+          "When in Rome, do as the <mask> do.",
+          "Better late than <mask>.",
+          "Two heads are better than <mask>.",
+          "The grass is always greener on the other <mask>.",
+          "Don't put all your eggs in one <mask>.",
+          "Practice makes <mask>.",
+        ],
+        idioms: [
+          "It's raining cats and <mask>.",
+          "Break a <mask> tonight!",
+          "He let the cat out of the <mask>.",
+          "She hit the nail on the <mask>.",
+          "We're in the same <mask>.",
+          "That test was a piece of <mask>.",
+          "He spilled the <mask> about the surprise party.",
+          "She was on cloud <mask> after the news.",
+          "They finally tied the <mask>.",
+          "The ball is in your <mask>.",
+          "He bit off more than he could <mask>.",
+          "She cost me an arm and a <mask>.",
+        ],
+      };
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/roberta-base", runtime: "transformers.js", dtype: "q8", sizeMB: 120, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => {
+          $("probe").disabled = false; $("set").disabled = false;
+          loaded = true; run();
+        },
+      });
+
+      $("probe").addEventListener("click", run);
+      $("set").addEventListener("change", run);
+
+      async function run() {
+        if (!loaded) return;
+        $("runStatus").hidden = false; $("runStatus").classList.remove("err");
+        $("runStatus").textContent = "Running the batch…";
+        $("results").replaceChildren();
+        try {
+          const texts = SETS[$("set").value];
+          const r = await engine.fillMany(texts, 3);
+          $("runStatus").hidden = true;
+          render(r);
+        } catch (err) {
+          $("runStatus").hidden = false; $("runStatus").textContent = "Probe failed: " + err.message;
+          $("runStatus").classList.add("err");
+        }
+      }
+
+      function render(r) {
+        let sure = 0;
+        $("results").replaceChildren(...r.results.map((one) => {
+          const card = document.createElement("div");
+          card.className = "probe-card";
+          const head = document.createElement("h4");
+          head.textContent = one.text.replace(MASK, "…");
+          const list = document.createElement("div");
+          list.className = "pred-list";
+          const preds = one.masks[0]?.predictions ?? [];
+          if ((preds[0]?.prob ?? 0) >= 0.5) sure++;
+          renderPredictions(list, preds, null);
+          card.append(head, list);
+          return card;
+        }));
+        $("readout").hidden = false;
+        $("rBackend").textContent = r.device.toUpperCase();
+        $("rMs").textContent = r.ms + " ms";
+        $("rN").textContent = r.results.length;
+        $("rSure").textContent = `${sure}/${r.results.length}`;
+      }
+    </script>
+  </body>
+</html>

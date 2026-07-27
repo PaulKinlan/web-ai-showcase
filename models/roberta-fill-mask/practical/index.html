@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>RoBERTa Practical — compare word choices at the blank · Web AI Showcase</title>
+    <meta name="description" content="A local word-choice aid: put a <mask> in your sentence, list the candidate words you're torn between, and RoBERTa scores each one with its real logit and probability — offline, in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎭</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">RoBERTa</a></p>
+
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Practical: which word fits better?</h1>
+      <p class="lede">
+        Torn between "great" and "excellent"? "happy" or "thrilled"? Put a <code>&lt;mask&gt;</code> in
+        your sentence, list the candidates, and RoBERTa scores each one with the real logit it assigns
+        in <em>your</em> context — a private, offline second opinion on word choice.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.2rem 0 .5rem" id="chips" role="group" aria-label="Writing templates">
+        <button class="mask-chip" type="button" data-set="The service at the restaurant was <mask>." data-cands="great,excellent,terrible,slow,friendly">review tone</button>
+        <button class="mask-chip" type="button" data-set="I am <mask> to announce our new product." data-cands="happy,thrilled,proud,excited,sorry">announcement</button>
+        <button class="mask-chip" type="button" data-set="The meeting has been <mask> until Friday." data-cands="moved,postponed,cancelled,rescheduled,brought">scheduling</button>
+        <button class="mask-chip" type="button" data-set="She gave a <mask> presentation to the board." data-cands="good,compelling,brief,brilliant,long">formality</button>
+      </div>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">
+        Your sentence (with one <code>&lt;mask&gt;</code>)
+        <input id="text" class="mask-input" disabled value="The service at the restaurant was <mask>." />
+      </label>
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.5rem">
+        Candidate words (comma-separated)
+        <input id="cands" class="mask-input" disabled value="great,excellent,terrible,slow,friendly" />
+      </label>
+      <button id="score" type="button" class="secondary" disabled style="margin-top:.5rem">Score the candidates</button>
+
+      <div id="scores" style="margin-top:.6rem"></div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+        <span>candidates <b id="rCands">–</b></span>
+      </div>
+
+      <p class="muted" style="font-size:.85rem">
+        Each bar is the candidate's probability at the mask, softmaxed against the whole 50,265-token
+        vocabulary — so common words start with an advantage and context does the rest. Multi-word
+        candidates are compared by their leading subword (a deliberate simplification).
+      </p>
+    </section>
+
+    <p class="crumbs"><a href="../">← Back to RoBERTa</a> · Next: <a href="../wild/">Wild →</a></p>
+
+    <script type="module">
+      import { RobertaFillMaskEngine, ROBERTA_CSS, MASK, debounce, escapeHTML } from "../fillmask.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = ROBERTA_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new RobertaFillMaskEngine();
+      let loaded = false;
+
+      for (const c of document.querySelectorAll(".mask-chip")) {
+        c.addEventListener("click", () => {
+          $("text").value = c.dataset.set;
+          $("cands").value = c.dataset.cands;
+          schedule();
+        });
+      }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/roberta-base", runtime: "transformers.js", dtype: "q8", sizeMB: 120, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => {
+          $("text").disabled = false; $("cands").disabled = false; $("score").disabled = false;
+          loaded = true; run();
+        },
+      });
+
+      const schedule = debounce(run, 500);
+      $("text").addEventListener("input", schedule);
+      $("cands").addEventListener("input", schedule);
+      $("score").addEventListener("click", run);
+
+      async function run() {
+        if (!loaded) return;
+        const text = $("text").value;
+        const candidates = $("cands").value.split(",").map((s) => s.trim()).filter(Boolean);
+        if (!text.includes(MASK)) {
+          $("runStatus").hidden = false; $("runStatus").classList.remove("err");
+          $("runStatus").textContent = "Add one <mask> token to your sentence.";
+          $("scores").replaceChildren(); $("readout").hidden = true; return;
+        }
+        if (candidates.length === 0) {
+          $("runStatus").hidden = false; $("runStatus").classList.remove("err");
+          $("runStatus").textContent = "Add at least one candidate word.";
+          return;
+        }
+        $("runStatus").hidden = true;
+        try {
+          const r = await engine.scoreCandidates(text, candidates.slice(0, 12));
+          renderScores(r);
+        } catch (err) {
+          $("runStatus").hidden = false; $("runStatus").textContent = "Scoring failed: " + err.message;
+          $("runStatus").classList.add("err");
+        }
+      }
+
+      function renderScores(r) {
+        const rows = r.scores.filter((s) => s.logit != null).sort((a, b) => b.prob - a.prob);
+        const max = Math.max(1e-9, ...rows.map((s) => s.prob));
+        $("scores").replaceChildren(...rows.map((s) => {
+          const row = document.createElement("div");
+          row.className = "cand-row";
+          const word = document.createElement("span");
+          word.className = "cand-word"; word.textContent = s.word;
+          const bar = document.createElement("span");
+          bar.className = "cand-bar";
+          const fill = document.createElement("span");
+          fill.className = "cand-fill"; fill.style.inlineSize = `${(s.prob / max) * 100}%`;
+          bar.append(fill);
+          const num = document.createElement("span");
+          num.className = "cand-num";
+          num.textContent = `${(s.prob * 100).toFixed(1)}% · logit ${s.logit.toFixed(2)}`;
+          row.append(word, bar, num);
+          return row;
+        }));
+        $("readout").hidden = false;
+        $("rBackend").textContent = r.device.toUpperCase();
+        $("rMs").textContent = r.ms + " ms";
+        $("rCands").textContent = rows.length;
+      }
+    </script>
+  </body>
+</html>
