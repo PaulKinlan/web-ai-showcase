@@ -4,6 +4,7 @@
 //   Xenova/multilingual-e5-small (all routes — feature-extraction embeddings, q8 WASM)
 // The harness owns one fresh Chrome process tree per route cell while reusing its own cache profile;
 // every wait has a hard deadline and long downloads emit incremental state logs.
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -38,6 +39,7 @@ let checks = 0;
 let passed = 0;
 let server;
 let chrome;
+let cdp;
 
 function check(label, condition, detail = "") {
   checks++;
@@ -155,11 +157,7 @@ async function driveRoute(rung, viewport) {
         sessionId,
         `document.querySelector('#sims .e5-sim-row .txt')?.textContent || ''`,
       );
-      mark(
-        !second.includes("omelette") || second.length === 0 ? true : true,
-        "rerun-after-edit",
-        second.slice(0, 80),
-      );
+      mark(second.length > 0, "rerun-after-edit", second.slice(0, 80));
       // chip control
       await evaluate(cdp, sessionId, `document.querySelectorAll('.e5-chip')[1].click()`);
       await sleep(1_500);
@@ -291,7 +289,6 @@ async function driveRoute(rung, viewport) {
   return cell;
 }
 
-const HEAD = process.env.GIT_HEAD || "unknown";
 try {
   server = await startServer();
   chrome = await launchChrome({
@@ -299,7 +296,7 @@ try {
     resetProfile: false,
     removeProfileOnKill: false,
   });
-  const cdp = new CDP(chrome.ws);
+  cdp = new CDP(chrome.ws);
   for (const rung of Object.keys(ROUTES)) {
     for (const viewport of Object.keys(VIEWPORTS)) {
       await driveRoute(rung, viewport);
@@ -312,23 +309,30 @@ try {
 }
 
 console.log(`\n${passed}/${checks} checks passed across ${results.length} route cells`);
-if (WRITE_RUN) {
+const succeeded = passed === checks && results.length === 8 &&
+  results.every((c) => c.checks > 0 && c.checks === c.passed);
+if (WRITE_RUN && succeeded) {
+  const commit = execFileSync("git", ["rev-parse", "HEAD"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+  }).trim();
   writeFileSync(
     RUN_RECORD,
     JSON.stringify(
       {
-        slug: "multilingual-e5-small",
-        model: MODEL_ID,
-        head: HEAD,
-        at: new Date().toISOString(),
-        checks,
-        passed,
-        cells: results,
+        commit,
+        ranAt: new Date().toISOString(),
+        exitCode: 0,
+        results: results.map((c) => ({
+          route: ROUTES[c.rung],
+          viewport: c.viewport,
+          pass: true,
+        })),
       },
       null,
       2,
     ) + "\n",
   );
-  console.log(`run record written: ${RUN_RECORD}`);
+  console.log(`WROTE ${RUN_RECORD} for ${commit}`);
 }
-process.exit(passed === checks ? 0 : 1);
+process.exit(succeeded ? 0 : 1);
