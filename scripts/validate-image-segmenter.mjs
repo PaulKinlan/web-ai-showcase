@@ -25,6 +25,9 @@ const RUN_RECORD = join(repoRoot, "models/image-segmenter/acceptance-run.json");
 const PROFILE_DIR = mkdtempSync(join(tmpdir(), "image-segmenter-acceptance-"));
 if (WRITE_RUN) rmSync(RUN_RECORD, { force: true });
 
+// Advertised stage (acceptance.json) — the catalogue id for Google's MediaPipe image segmenter.
+const MODEL_ID = "mediapipe/image-segmenter";
+
 const ROUTES = {
   overview: "models/image-segmenter/",
   basics: "models/image-segmenter/basics/",
@@ -153,7 +156,7 @@ async function exercise(cdp, page, rung, viewport) {
     })`,
     );
     check(
-      `${viewport} overview: real segmentation + legend + readout`,
+      `${viewport} overview: real ${MODEL_ID} segmentation + legend + readout`,
       evidence.chips >= 2 && Number(evidence.classes) >= 2 && /ms/.test(evidence.ms) &&
         /CPU|GPU/.test(evidence.delegate),
       JSON.stringify(evidence),
