@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TrOCR Handwriting — read handwritten text in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run TrOCR (small, handwritten, IAM-trained) locally in your browser: write a line with your finger or mouse — or photograph a handwritten note — and watch it transcribe token by token. No server, nothing leaves your device."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>✍️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">image-to-text · vision → text (handwriting OCR) · WASM · ~64 MB</p>
+      <h1>TrOCR Handwriting — read what people <em>write by hand</em></h1>
+      <p class="lede">
+        Printed-text OCR is a solved problem; <strong>handwriting</strong> is not — every person's
+        letterforms are different. This TrOCR checkpoint is fine-tuned on the IAM handwriting
+        database: a Vision Transformer <em>looks</em> at a line of handwriting and a text decoder
+        <em>writes it out</em>, one token at a time — entirely on your device.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/Xenova/trocr-small-handwritten" target="_blank" rel="noopener">Xenova/trocr-small-handwritten</a> (ONNX of <a href="https://huggingface.co/microsoft/trocr-small-handwritten" target="_blank" rel="noopener">microsoft/trocr-small-handwritten</a>)</td></tr>
+          <tr><th>Task / pipeline</th><td><code>image-to-text</code></td></tr>
+          <tr><th>Architecture</th><td>ViT-style image encoder → RoBERTa-style text decoder (VisionEncoderDecoder, cross-attention)</td></tr>
+          <tr><th>Trained on</th><td>IAM Handwriting Database — modern English handwriting, single text lines</td></tr>
+          <tr><th>Input</th><td>A single <strong>line</strong> of handwritten text (draw it, or crop to one line)</td></tr>
+          <tr><th>Output</th><td>The transcribed characters, generated token by token</td></tr>
+          <tr><th>Quantization</th><td>q8 (8-bit) ONNX — separate encoder + decoder graphs</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (runs anywhere; no WebGPU needed)</td></tr>
+          <tr><th>Download</th><td>~64 MB, cached after first load</td></tr>
+          <tr><th>License</th><td>MIT (microsoft/trocr-small-handwritten)</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers, Canvas, Pointer Events, FileReader — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">
+        The most natural way to test a handwriting model: <strong>write something</strong>. Draw a
+        line on the pad below (mouse, finger, or pen) and hit Read — or drop a photo of a handwritten
+        note and drag a box around one line. TrOCR is a single-line reader.
+      </p>
+
+      <div id="model-loader"></div>
+
+      <div class="field-row" style="align-items:stretch">
+        <div style="flex:1 1 300px">
+          <p class="crop-hint" style="margin-top:0"><strong>Write a line here</strong> — then Read it. <button id="clearPad" class="chip" type="button">Clear pad</button></p>
+          <div class="draw-wrap"><canvas id="pad" aria-label="Handwriting pad — draw a line of text with your pointer, then press Read the writing"></canvas></div>
+          <details style="margin-top:.6rem">
+            <summary>…or use a photo / sample instead</summary>
+            <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an image of handwriting" style="margin-top:.5rem">
+              <span id="dropText">Drop an image here, or click to choose</span>
+              <input type="file" id="file" accept="image/*" hidden />
+            </div>
+            <div class="sample-strip" id="samples" aria-label="Sample handwriting images">
+              <img class="sample-thumb" src="sample-note.jpg" data-src="sample-note.jpg" alt="A handwritten assignment note in an exercise book" tabindex="0" role="button" />
+              <img class="sample-thumb" src="sample-manuscript.jpg" data-src="sample-manuscript.jpg" alt="A page of handwritten manuscript text" tabindex="0" role="button" />
+            </div>
+            <p class="crop-hint">Drag on the image to select a line. <button id="resetCrop" class="chip" type="button">Reset selection</button></p>
+            <div class="crop-wrap"><canvas id="canvas" aria-label="Selected image — drag to box the line of handwriting to read"></canvas></div>
+          </details>
+        </div>
+        <div style="flex:1 1 260px">
+          <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">
+            Max output length <span id="maxVal" style="font-family:var(--font-mono)">48 tokens</span>
+            <input type="range" id="maxtok" min="8" max="80" value="48" />
+          </label>
+          <div style="margin:.5rem 0">
+            <button id="readPad" type="button" disabled>Read the writing</button>
+            <button id="readPhoto" class="chip" type="button" disabled hidden>Read photo selection</button>
+          </div>
+          <p class="status" id="runStatus" role="status" aria-live="polite"></p>
+          <div class="text-box" id="textOut" aria-live="polite"></div>
+          <button id="copyBtn" class="chip" type="button" hidden>Copy text</button>
+          <div class="readout" id="readout" hidden>
+            <span>backend <b id="rBackend">–</b></span>
+            <span>tokens <b id="rTok">–</b></span>
+            <span>total <b id="rMs">–</b></span>
+            <span>speed <b id="rTps">–</b></span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside — the decode, token by token</h3>
+      <p class="muted">
+        Handwriting recognition here is <strong>autoregressive generation</strong>, not template
+        matching. The encoder reads the line into patch embeddings once; then the decoder emits the
+        transcription one token at a time, each conditioned on the image <em>and</em> everything
+        decoded so far — which is how TrOCR resolves ambiguous strokes from context (is that
+        <em>cl</em> or <em>d</em>? the surrounding word decides). The trace below shows every token
+        as it arrived, with the elapsed time. The first token is the slow one (it includes the image
+        encode); the rest come faster.
+      </p>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Read a line to see the token-by-token trace.</div>
+      <div id="insideWrap" hidden>
+        <div class="token-trace" id="trace"></div>
+        <div class="readout" style="margin-top:.6rem">
+          <span>first token <b id="iFirst">–</b></span>
+          <span>tokens/sec <b id="iTps">–</b></span>
+          <span>characters <b id="iChars">–</b></span>
+        </div>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        An enormous amount of the world's text is still handwriting: meeting notes, whiteboards,
+        forms, prescriptions, letters, historical archives. Handwriting OCR turns those pen strokes
+        into searchable, copyable, translatable characters — and doing it <strong>locally</strong>
+        means the note never leaves the device, which matters for exactly the things people write by
+        hand (medical, legal, personal).
+      </p>
+      <ul>
+        <li><strong>Digitise handwritten notes</strong> — photograph a notebook page, read it line by line into editable text, no upload.</li>
+        <li><strong>Pen-first input</strong> — write with a stylus or finger and get text: handwriting as a first-class keyboard alternative.</li>
+        <li><strong>Forms &amp; field work</strong> — read filled-in paper forms, delivery sheets, and inspection notes on-site, offline.</li>
+        <li><strong>Accessibility</strong> — read aloud or magnify handwriting that a low-vision reader can't decipher.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Write a word or pick a sample line — watch handwriting become text, token by token.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Digitise a handwritten note: read each line into an editable, copyable list.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Live camera handwriting reader — point your camera at a note and read it on the fly.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">Handwriting → translation: read a handwritten line, then translate it locally.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>The base call is two lines with Transformers.js:</p>
+      <pre><code>import { pipeline } from "@huggingface/transformers";
+
+const reader = await pipeline(
+  "image-to-text",
+  "Xenova/trocr-small-handwritten",
+); // downloads + caches ~64 MB once
+
+const out = await reader(lineImageURL, { max_new_tokens: 48 });
+// → [{ generated_text: "Meeting moved to Friday 3pm" }]</code></pre>
+      <p class="muted">
+        The important bit is the input: TrOCR expects <strong>one line</strong> of handwriting, so
+        this page hands it either the drawing pad's bitmap or a cropped region of a photo. For "See
+        inside", it passes a <code>TextStreamer</code> into the same call — the streamer fires once
+        per decoded token, so the page renders the transcription as it forms and records each token's
+        arrival time, all off the main thread in a Web Worker. <em>Note:</em> the IAM training data
+        is modern English handwriting on clean lines — old copperplate, heavily crossed-out text, and
+        very stylised writing are honest limits, not bugs.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/Xenova/trocr-small-handwritten" target="_blank" rel="noopener">Model card — Xenova/trocr-small-handwritten (ONNX)</a></li>
+        <li><a href="https://huggingface.co/microsoft/trocr-small-handwritten" target="_blank" rel="noopener">Original weights — microsoft/trocr-small-handwritten</a></li>
+        <li><a href="https://arxiv.org/abs/2109.10282" target="_blank" rel="noopener">TrOCR paper (arXiv 2109.10282)</a></li>
+        <li><a href="https://fki.tic.heia-fr.ch/databases/iam-handwriting-database" target="_blank" rel="noopener">IAM Handwriting Database</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module" src="/web-ai-showcase/public/image-credit.js"></script>
+    <script type="module">
+      import { OcrEngine, CropCanvas, DrawPad, fileToDataURL, escapeHTML, OCR_CSS } from "./hw.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = OCR_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      let engine = null;
+      const crop = new CropCanvas($("canvas"));
+      const pad = new DrawPad($("pad"));
+      let photoMode = false;
+
+      // Photo / sample input (secondary to the pad).
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        const blob = await (await fetch(el.dataset.src)).blob();
+        crop.setSrc(await fileToDataURL(new File([blob], "sample", { type: blob.type })));
+        photoMode = true;
+        $("readPhoto").hidden = false;
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } });
+      }
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      file.addEventListener("change", async () => { if (file.files[0]) await loadFile(file.files[0]); });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      drop.addEventListener("drop", async (e) => { const f = e.dataTransfer?.files?.[0]; if (f && f.type.startsWith("image/")) await loadFile(f); });
+      async function loadFile(f) {
+        for (const t of $("samples").children) t.classList.remove("active");
+        crop.setSrc(await fileToDataURL(f));
+        $("dropText").textContent = f.name;
+        photoMode = true;
+        $("readPhoto").hidden = false;
+      }
+      $("resetCrop").addEventListener("click", () => crop.reset());
+      $("clearPad").addEventListener("click", () => pad.clear());
+
+      const maxtok = $("maxtok");
+      maxtok.addEventListener("input", () => { $("maxVal").textContent = maxtok.value + " tokens"; });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/trocr-small-handwritten", runtime: "transformers.js", dtype: "q8", sizeMB: 64, requiresWebGPU: false },
+        load: async (onProgress) => {
+          engine = new OcrEngine(); await engine.load(onProgress); return engine; },
+        onReady: () => { $("readPad").disabled = false; $("readPhoto").disabled = false; },
+        dispose: (e) => e.worker.terminate(), // frees the WASM heap + ONNX session
+        onDispose: () => { $("readPad").disabled = true; $("readPhoto").disabled = true; engine = null; },
+      });
+
+      let lastText = "";
+      $("copyBtn").addEventListener("click", async () => {
+        try { await navigator.clipboard.writeText(lastText); $("copyBtn").textContent = "Copied!"; setTimeout(() => $("copyBtn").textContent = "Copy text", 1200); }
+        catch { $("copyBtn").textContent = "Copy failed"; }
+      });
+
+      $("readPad").addEventListener("click", () => read(pad.toDataURL(), "pad"));
+      $("readPhoto").addEventListener("click", () => read(crop.crop(), "photo"));
+      async function read(imageURL, source) {
+        if (source === "pad" && pad.isEmpty()) {
+          $("runStatus").textContent = "Write something on the pad first.";
+          $("runStatus").classList.add("err");
+          return;
+        }
+        $("runStatus").classList.remove("err", "ok");
+        $("readPad").disabled = true; $("readPhoto").disabled = true;
+        $("runStatus").textContent = "Reading…"; $("textOut").innerHTML = '<span class="cursor">&nbsp;</span>';
+        $("copyBtn").hidden = true;
+        $("trace").replaceChildren(); $("insideEmpty").hidden = true; $("insideWrap").hidden = false;
+        let text = ""; let firstT = null;
+        try {
+          const r = await engine.recognize(imageURL, Number(maxtok.value), (m) => {
+            if (firstT === null) firstT = m.t;
+            text += m.token;
+            $("textOut").innerHTML = escapeHTML(text) + '<span class="cursor">&nbsp;</span>';
+            const tok = document.createElement("span");
+            tok.className = "tok";
+            tok.innerHTML = escapeHTML(m.token) + `<small>${m.t}ms</small>`;
+            $("trace").append(tok);
+          });
+          lastText = r.text;
+          $("textOut").textContent = r.text || "(no text recognised)";
+          $("copyBtn").hidden = !r.text;
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rTok").textContent = r.tokens;
+          $("rMs").textContent = r.ms + " ms";
+          const tps = r.tokens > 0 ? (r.tokens / (r.ms / 1000)).toFixed(1) : "–";
+          $("rTps").textContent = tps + " tok/s";
+          $("iFirst").textContent = (firstT ?? r.ms) + " ms";
+          $("iTps").textContent = tps;
+          $("iChars").textContent = r.text.length;
+          $("runStatus").textContent = "Done."; $("runStatus").classList.add("ok");
+        } catch (err) {
+          $("runStatus").textContent = "Reading failed: " + err.message; $("runStatus").classList.add("err");
+          $("textOut").textContent = "";
+        } finally { $("readPad").disabled = false; $("readPhoto").disabled = false; }
+      }
+
+      if ("serviceWorker" in navigator) navigator.serviceWorker.register("/web-ai-showcase/sw.js").catch(() => {});
+    </script>
+  </body>
+</html>

@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TrOCR Handwriting Basics — write a line, read it back · Web AI Showcase</title>
+    <meta name="description" content="The fundamental capability: handwritten strokes become text. Write on the pad or pick a manuscript line and watch TrOCR transcribe it locally, token by token." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>✍️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">TrOCR Handwriting</a></p>
+
+    <header>
+      <p class="eyebrow">use case · basics</p>
+      <h1>Basics: strokes in, text out</h1>
+      <p class="lede">
+        The whole trick in one interaction: you write a line by hand, the model reads it. Two ways to
+        try it — your own writing on the pad, and a real handwritten manuscript line.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="ex1-h">
+      <h3 id="ex1-h">1 · Write a word, watch it get read</h3>
+      <div id="model-loader"></div>
+      <p class="crop-hint">Write a short word or name on the pad — print letters or cursive, your choice. <button id="clearPad" class="chip" type="button">Clear</button></p>
+      <div class="draw-wrap"><canvas id="pad" aria-label="Handwriting pad — write a word with your pointer"></canvas></div>
+      <div class="field-row">
+        <button id="readPad" type="button" disabled>Read my writing</button>
+        <p class="status" id="s1" role="status" aria-live="polite" style="margin:0"></p>
+      </div>
+      <div class="text-box" id="out1" aria-live="polite"></div>
+    </section>
+
+    <section class="panel" aria-labelledby="ex2-h">
+      <h3 id="ex2-h">2 · Read a real manuscript line</h3>
+      <p class="muted">
+        A genuine handwritten manuscript page (public domain). Drag a box around <strong>one</strong>
+        line — including the crossed-out words if you want to see how the model handles edits — and
+        read it.
+      </p>
+      <div class="crop-wrap"><canvas id="canvas" aria-label="Manuscript image — drag to box one line of handwriting"></canvas></div>
+      <p class="crop-hint">Drag to select a single line. <button id="resetCrop" class="chip" type="button">Reset selection</button></p>
+      <div class="field-row">
+        <button id="readLine" type="button" disabled>Read this line</button>
+        <p class="status" id="s2" role="status" aria-live="polite" style="margin:0"></p>
+      </div>
+      <div class="text-box" id="out2" aria-live="polite"></div>
+      <p class="muted" style="font-size:.8rem">
+        Honest limit: the model was trained on clean single lines. Crossed-out words and cramped
+        double-spaced cursive are exactly where it stumbles — try a clean line vs. an edited one.
+      </p>
+    </section>
+
+    <p class="crumbs"><a href="../">← TrOCR Handwriting</a> · <a href="../practical/">Practical →</a></p>
+
+    <script type="module" src="/web-ai-showcase/public/image-credit.js"></script>
+    <script type="module">
+      import { OcrEngine, CropCanvas, DrawPad, escapeHTML, OCR_CSS } from "../hw.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = OCR_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      let engine = null;
+      const pad = new DrawPad($("pad"));
+      const crop = new CropCanvas($("canvas"));
+      crop.setSrc("../sample-manuscript.jpg");
+      $("clearPad").addEventListener("click", () => pad.clear());
+      $("resetCrop").addEventListener("click", () => crop.reset());
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/trocr-small-handwritten", runtime: "transformers.js", dtype: "q8", sizeMB: 64, requiresWebGPU: false },
+        load: async (onProgress) => { engine = new OcrEngine(); await engine.load(onProgress); return engine; },
+        onReady: () => { $("readPad").disabled = false; $("readLine").disabled = false; },
+        dispose: (e) => e.worker.terminate(),
+        onDispose: () => { $("readPad").disabled = true; $("readLine").disabled = true; engine = null; },
+      });
+
+      async function run(imageURL, statusEl, outEl, btns) {
+        statusEl.classList.remove("err", "ok");
+        for (const b of btns) b.disabled = true;
+        statusEl.textContent = "Reading…";
+        outEl.innerHTML = '<span class="cursor">&nbsp;</span>';
+        let text = "";
+        try {
+          const r = await engine.recognize(imageURL, 48, (m) => {
+            text += m.token;
+            outEl.innerHTML = escapeHTML(text) + '<span class="cursor">&nbsp;</span>';
+          });
+          outEl.textContent = r.text || "(nothing recognised)";
+          statusEl.textContent = `Done — ${r.tokens} tokens in ${r.ms} ms (${r.device.toUpperCase()}).`;
+          statusEl.classList.add("ok");
+        } catch (err) {
+          statusEl.textContent = "Failed: " + err.message;
+          statusEl.classList.add("err");
+          outEl.textContent = "";
+        } finally { for (const b of btns) b.disabled = false; }
+      }
+      $("readPad").addEventListener("click", () => {
+        if (pad.isEmpty()) { $("s1").textContent = "Write something first."; $("s1").classList.add("err"); return; }
+        run(pad.toDataURL(), $("s1"), $("out1"), [$("readPad")]);
+      });
+      $("readLine").addEventListener("click", () => run(crop.crop(), $("s2"), $("out2"), [$("readLine")]));
+
+      if ("serviceWorker" in navigator) navigator.serviceWorker.register("/web-ai-showcase/sw.js").catch(() => {});
+    </script>
+  </body>
+</html>

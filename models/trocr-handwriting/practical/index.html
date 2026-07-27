@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TrOCR Handwriting Practical — digitise a handwritten note · Web AI Showcase</title>
+    <meta name="description" content="A business workflow that runs entirely on-device: photograph a handwritten note or exercise book, read it line by line into an editable list, copy the digitised text out." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>✍️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">TrOCR Handwriting</a></p>
+
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Practical: digitise a handwritten note</h1>
+      <p class="lede">
+        The workflow a business actually ships: snap a photo of a handwritten note — a meeting page,
+        a filled form, an exercise book — and turn it into editable, copyable text. No OCR API, no
+        per-page bill, and the note never leaves the device.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Note → text</h3>
+      <div id="model-loader"></div>
+      <div class="field-row" style="align-items:stretch">
+        <div style="flex:1 1 300px">
+          <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop a photo of a handwritten note">
+            <span id="dropText">Drop a note photo, or click to choose</span>
+            <input type="file" id="file" accept="image/*" hidden />
+          </div>
+          <div class="sample-strip" id="samples">
+            <img class="sample-thumb active" src="../sample-note.jpg" data-src="../sample-note.jpg" alt="A handwritten assignment note in an exercise book" tabindex="0" role="button" />
+            <img class="sample-thumb" src="../sample-manuscript.jpg" data-src="../sample-manuscript.jpg" alt="A page of handwritten manuscript text" tabindex="0" role="button" />
+          </div>
+          <p class="crop-hint">Drag to box <strong>one line</strong>, then "Read line into list". Repeat per line. <button id="resetCrop" class="chip" type="button">Reset selection</button></p>
+          <div class="crop-wrap"><canvas id="canvas" aria-label="Note image — drag to box the next line to read"></canvas></div>
+        </div>
+        <div style="flex:1 1 260px">
+          <div style="margin:.5rem 0">
+            <button id="readLine" type="button" disabled>Read line into list</button>
+          </div>
+          <p class="status" id="runStatus" role="status" aria-live="polite"></p>
+          <div class="rows-out" id="rows" aria-live="polite"></div>
+          <div class="field-row">
+            <button id="copyAll" class="chip" type="button" hidden>Copy all text</button>
+            <button id="clearRows" class="chip" type="button" hidden>Clear list</button>
+          </div>
+          <div class="readout" id="readout" hidden><span>lines <b id="rLines">–</b></span><span>total time <b id="rMs">–</b></span></div>
+        </div>
+      </div>
+      <p class="muted" style="font-size:.85rem">
+        Why line-by-line? TrOCR is a single-line reader — you choose the reading order and skip the
+        margins, doodles, and printed prompts a full-page OCR would choke on. Each row is editable
+        before you copy: the model proposes, you correct.
+      </p>
+    </section>
+
+    <p class="crumbs"><a href="../basics/">← Basics</a> · <a href="../wild/">Wild →</a></p>
+
+    <script type="module" src="/web-ai-showcase/public/image-credit.js"></script>
+    <script type="module">
+      import { OcrEngine, CropCanvas, fileToDataURL, OCR_CSS } from "../hw.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = OCR_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      let engine = null;
+      const crop = new CropCanvas($("canvas"));
+      const lines = [];
+      let totalMs = 0;
+
+      async function pickSample(el) {
+        for (const t of $("samples").children) t.classList.toggle("active", t === el);
+        const blob = await (await fetch(el.dataset.src)).blob();
+        crop.setSrc(await fileToDataURL(new File([blob], "s", { type: blob.type })));
+      }
+      for (const thumb of $("samples").children) {
+        thumb.addEventListener("click", () => pickSample(thumb));
+        thumb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSample(thumb); } });
+      }
+      pickSample($("samples").firstElementChild);
+
+      const drop = $("drop"), file = $("file");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadFile(f) { for (const t of $("samples").children) t.classList.remove("active"); crop.setSrc(await fileToDataURL(f)); $("dropText").textContent = f.name; }
+      file.addEventListener("change", () => file.files[0] && loadFile(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("image/")) loadFile(f); });
+      $("resetCrop").addEventListener("click", () => crop.reset());
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/trocr-small-handwritten", runtime: "transformers.js", dtype: "q8", sizeMB: 64, requiresWebGPU: false },
+        load: async (onProgress) => { engine = new OcrEngine(); await engine.load(onProgress); return engine; },
+        onReady: () => { $("readLine").disabled = false; },
+        dispose: (e) => e.worker.terminate(),
+        onDispose: () => { $("readLine").disabled = true; engine = null; },
+      });
+
+      function renderRows() {
+        $("rows").replaceChildren();
+        lines.forEach((ln, i) => {
+          const div = document.createElement("div");
+          div.className = "row-line";
+          const b = document.createElement("b"); b.textContent = "line " + (i + 1);
+          const inp = document.createElement("input");
+          inp.value = ln; inp.style.cssText = "flex:1;font:inherit;border:0;background:transparent;color:inherit";
+          inp.setAttribute("aria-label", "Transcribed line " + (i + 1) + " — edit to correct");
+          inp.addEventListener("input", () => { lines[i] = inp.value; });
+          div.append(b, inp);
+          $("rows").append(div);
+        });
+        const has = lines.length > 0;
+        $("copyAll").hidden = !has; $("clearRows").hidden = !has; $("readout").hidden = !has;
+        $("rLines").textContent = lines.length;
+        $("rMs").textContent = totalMs + " ms";
+      }
+      $("copyAll").addEventListener("click", async () => {
+        try { await navigator.clipboard.writeText(lines.join("\n")); $("copyAll").textContent = "Copied!"; setTimeout(() => $("copyAll").textContent = "Copy all text", 1200); }
+        catch { $("copyAll").textContent = "Copy failed"; }
+      });
+      $("clearRows").addEventListener("click", () => { lines.length = 0; totalMs = 0; renderRows(); });
+
+      $("readLine").addEventListener("click", async () => {
+        $("runStatus").classList.remove("err", "ok");
+        $("readLine").disabled = true;
+        $("runStatus").textContent = "Reading line…";
+        try {
+          const r = await engine.recognize(crop.crop(), 64, () => {});
+          if (r.text) { lines.push(r.text); totalMs += r.ms; }
+          renderRows();
+          $("runStatus").textContent = r.text ? `Line added (${r.ms} ms). Box the next line.` : "Nothing recognised — try a tighter crop.";
+          $("runStatus").classList.toggle("ok", Boolean(r.text));
+          $("runStatus").classList.toggle("err", !r.text);
+        } catch (err) {
+          $("runStatus").textContent = "Failed: " + err.message;
+          $("runStatus").classList.add("err");
+        } finally { $("readLine").disabled = false; }
+      });
+
+      if ("serviceWorker" in navigator) navigator.serviceWorker.register("/web-ai-showcase/sw.js").catch(() => {});
+    </script>
+  </body>
+</html>
