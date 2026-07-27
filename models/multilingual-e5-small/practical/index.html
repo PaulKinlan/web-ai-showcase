@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Practical — multilingual semantic search, on-device · Multilingual E5 · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="A working cross-lingual semantic search box: query a small mixed-language document set in any language and get the genuinely most relevant documents ranked by real embedding similarity — all local."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🔎</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs">
+      <a href="/web-ai-showcase/">← All models</a> ·
+      <a href="/web-ai-showcase/models/multilingual-e5-small/">Multilingual E5</a>
+    </p>
+
+    <header>
+      <p class="eyebrow">practical · feature-extraction · text · WASM</p>
+      <h1>Practical — search ten documents in five languages with one query</h1>
+      <p class="lede">
+        This is what a business ships: a support-knowledge-base search that doesn't care which language
+        the customer types in. Below is a small mixed-language document set (a mini FAQ). Type a query —
+        English, French, Japanese, Arabic, anything — and the documents are ranked by real embedding
+        similarity, live. No keyword matching, no translation step, no server.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
+        Search query (any language)
+        <input id="q" class="e5-input" type="search" disabled value="How do I get a refund?" />
+      </label>
+      <div class="e5-chips">
+        <button class="e5-chip" type="button" data-set="How do I get a refund?">refund (en)</button>
+        <button class="e5-chip" type="button" data-set="J'ai oublié mon mot de passe">password (fr)</button>
+        <button class="e5-chip" type="button" data-set="配送にはどのくらいかかりますか？">shipping (ja)</button>
+        <button class="e5-chip" type="button" data-set="كيف أغير عنواني؟">address (ar)</button>
+      </div>
+
+      <div id="results" class="e5-sims" aria-live="polite"></div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+        <span>documents <b id="rN">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="docs-h">
+      <h3 id="docs-h">The document set being searched</h3>
+      <p class="muted">Ten FAQ answers across five languages. The model sees them as <code>passage:</code>-prefixed texts; your query is <code>query:</code>-prefixed — exactly the asymmetric retrieval setup the E5 card prescribes.</p>
+      <ol id="doclist" style="font-size:.86rem"></ol>
+    </section>
+
+    <section aria-labelledby="back-h">
+      <h2>More with this model</h2>
+      <div class="model-grid">
+        <a class="model-card" href="/web-ai-showcase/models/multilingual-e5-small/"><h3>Overview</h3><p class="muted">Query→passage matching with the full cosine matrix and raw embedding.</p></a>
+        <a class="model-card" href="../basics/"><h3>Basics</h3><p class="muted">Two texts in, one similarity number out.</p></a>
+        <a class="model-card" href="../wild/"><h3>Wild</h3><p class="muted">Language-blind meaning clusters.</p></a>
+      </div>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/models/multilingual-e5-small/">Back to the model →</a>
+    </footer>
+
+    <script type="module">
+      import { E5Engine, E5_CSS, debounce, renderSimList } from "../e5.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = E5_CSS;
+      document.head.append(style);
+
+      const DOCS = [
+        { lang: "English", text: "Refunds are issued to the original payment method within 5–10 business days of us receiving your return." },
+        { lang: "English", text: "To reset your password, open Settings → Security and choose 'Forgot password'; we email you a reset link." },
+        { lang: "Français", text: "Pour modifier votre adresse de livraison, ouvrez votre compte, puis Adresses, et enregistrez la nouvelle adresse avant l'expédition." },
+        { lang: "Français", text: "Le remboursement est effectué sur le moyen de paiement d'origine sous 5 à 10 jours ouvrés après réception du retour." },
+        { lang: "Deutsch", text: "Die Lieferung dauert je nach Zielregion 2 bis 7 Werktage; eine Sendungsverfolgung erhalten Sie per E-Mail." },
+        { lang: "Deutsch", text: "Ihr Passwort setzen Sie in den Kontoeinstellungen unter Sicherheit zurück; wir senden Ihnen einen Link per E-Mail." },
+        { lang: "日本語", text: "返金は商品の返品到着後、5〜10営業日以内に元のお支払い方法へ行われます。" },
+        { lang: "日本語", text: "お届け先住所は、発送前であればアカウントの「住所」ページから変更できます。" },
+        { lang: "العربية", text: "يتم استرداد المبلغ إلى وسيلة الدفع الأصلية خلال 5 إلى 10 أيام عمل من استلامنا للمرتجع." },
+        { lang: "Español", text: "El envío tarda entre 2 y 7 días laborables según la región; recibirás el seguimiento por correo electrónico." },
+      ];
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new E5Engine(new URL("../worker.js", import.meta.url));
+      let loaded = false;
+
+      const ol = $("doclist");
+      for (const d of DOCS) {
+        const li = document.createElement("li");
+        li.textContent = `[${d.lang}] ${d.text}`;
+        ol.append(li);
+      }
+
+      for (const c of document.querySelectorAll(".e5-chip")) {
+        c.addEventListener("click", () => {
+          $("q").value = c.dataset.set;
+          schedule();
+        });
+      }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: {
+          modelId: "Xenova/multilingual-e5-small",
+          runtime: "transformers.js",
+          dtype: "q8",
+          sizeMB: 118,
+          requiresWebGPU: false,
+        },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("q").disabled = false; loaded = true; run(); },
+      });
+
+      const schedule = debounce(run, 500);
+      $("q").addEventListener("input", schedule);
+
+      async function run() {
+        if (!loaded) return;
+        const q = $("q").value.trim();
+        if (!q) { $("results").replaceChildren(); $("readout").hidden = true; return; }
+        try {
+          const items = [{ text: q, kind: "query" }, ...DOCS.map((d) => ({ text: d.text, kind: "passage" }))];
+          const r = await engine.embed(items);
+          const rows = DOCS.map((d, i) => ({ ...d, sim: r.sims[0][i + 1] }));
+          rows.sort((a, b) => b.sim - a.sim);
+          rows.forEach((row, i) => { if (i < 3) row.best = i === 0; });
+          renderSimList($("results"), rows.slice(0, 5), { showKind: false });
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = r.ms + " ms";
+          $("rN").textContent = DOCS.length;
+        } catch (err) {
+          $("runStatus").hidden = false;
+          $("runStatus").textContent = "Search failed: " + err.message;
+          $("runStatus").classList.add("err");
+        }
+      }
+    </script>
+  </body>
+</html>

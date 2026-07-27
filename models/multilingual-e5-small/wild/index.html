@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Wild — language-blind meaning clusters · Multilingual E5 · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Throw a bag of sentences in six languages at multilingual-e5-small and watch it cluster them by topic, not by tongue — a live, local demonstration that the embedding space really is shared."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🧪</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs">
+      <a href="/web-ai-showcase/">← All models</a> ·
+      <a href="/web-ai-showcase/models/multilingual-e5-small/">Multilingual E5</a>
+    </p>
+
+    <header>
+      <p class="eyebrow">wild · feature-extraction · text · WASM</p>
+      <h1>Wild — the model can't tell languages apart, only meanings</h1>
+      <p class="lede">
+        Twelve sentences: four topics (food, weather, sport, money), each said in three different
+        languages. We hand all twelve to the model as one batch, then for every sentence ask a simple
+        question of the real similarity matrix: <em>which other sentence is your nearest neighbour?</em>
+        If the space is truly shared, every sentence should link to a same-topic sentence in a
+        <strong>different language</strong> — forming cross-language topic chains with zero keywords in
+        common. Press run and inspect the chains.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <div class="e5-chips">
+        <button id="shuffle" class="e5-chip" type="button" disabled>🔀 shuffle the bag &amp; run</button>
+      </div>
+
+      <div id="chains" style="margin-top:.6rem" aria-live="polite"></div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+        <span>cross-language links <b id="rX">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="matrix-h">
+      <h3 id="matrix-h">See inside — the 12×12 meaning matrix</h3>
+      <p class="muted">
+        Every cell is a real cosine similarity. Sentences are numbered; hover a header cell for its full
+        text. Watch the diagonal blocks light up by <em>topic</em> even though neighbouring rows are
+        different languages.
+      </p>
+      <div id="matrix" class="e5-matrix-wrap"></div>
+    </section>
+
+    <section aria-labelledby="back-h">
+      <h2>More with this model</h2>
+      <div class="model-grid">
+        <a class="model-card" href="/web-ai-showcase/models/multilingual-e5-small/"><h3>Overview</h3><p class="muted">Query→passage matching with the full cosine matrix and raw embedding.</p></a>
+        <a class="model-card" href="../basics/"><h3>Basics</h3><p class="muted">Two texts in, one similarity number out.</p></a>
+        <a class="model-card" href="../practical/"><h3>Practical</h3><p class="muted">Semantic search over a mixed-language document set.</p></a>
+      </div>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/models/multilingual-e5-small/">Back to the model →</a>
+    </footer>
+
+    <script type="module">
+      import { E5Engine, E5_CSS, renderMatrix } from "../e5.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = E5_CSS;
+      document.head.append(style);
+
+      const TOPICS = { food: "🍜 food", weather: "🌦 weather", sport: "⚽ sport", money: "💶 money" };
+      const BAG = [
+        { topic: "food", lang: "English", text: "I cooked rice and vegetables for dinner." },
+        { topic: "food", lang: "日本語", text: "夕食にご飯と野菜を作りました。" },
+        { topic: "food", lang: "Français", text: "J'ai cuisiné du riz et des légumes pour le dîner." },
+        { topic: "weather", lang: "English", text: "It rained all morning and the sky stayed grey." },
+        { topic: "weather", lang: "Deutsch", text: "Es hat den ganzen Morgen geregnet und der Himmel blieb grau." },
+        { topic: "weather", lang: "Español", text: "Llovió toda la mañana y el cielo siguió gris." },
+        { topic: "sport", lang: "English", text: "Our team scored two goals in the final match." },
+        { topic: "sport", lang: "العربية", text: "سجل فريقنا هدفين في المباراة النهائية." },
+        { topic: "sport", lang: "Français", text: "Notre équipe a marqué deux buts lors du match final." },
+        { topic: "money", lang: "English", text: "The bank raised interest rates on savings accounts." },
+        { topic: "money", lang: "Deutsch", text: "Die Bank hat die Zinsen für Sparkonten erhöht." },
+        { topic: "money", lang: "中文", text: "银行提高了储蓄账户的利率。" },
+      ];
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new E5Engine(new URL("../worker.js", import.meta.url));
+      let loaded = false;
+      let order = BAG.map((_, i) => i);
+
+      $("shuffle").addEventListener("click", () => {
+        for (let i = order.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [order[i], order[j]] = [order[j], order[i]];
+        }
+        run();
+      });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: {
+          modelId: "Xenova/multilingual-e5-small",
+          runtime: "transformers.js",
+          dtype: "q8",
+          sizeMB: 118,
+          requiresWebGPU: false,
+        },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("shuffle").disabled = false; loaded = true; run(); },
+      });
+
+      async function run() {
+        if (!loaded) return;
+        const items = order.map((i) => ({ text: BAG[i].text, kind: "passage" }));
+        try {
+          const r = await engine.embed(items);
+          // Nearest-neighbour link for each sentence (excluding itself).
+          let crossLang = 0;
+          const chains = $("chains");
+          chains.replaceChildren();
+          const list = document.createElement("ol");
+          list.style.cssText = "display:flex;flex-direction:column;gap:.4rem;font-size:.88rem";
+          order.forEach((bi, pos) => {
+            let best = -1, bestSim = -2;
+            r.sims[pos].forEach((s, j) => { if (j !== pos && s > bestSim) { bestSim = s; best = j; } });
+            const me = BAG[bi], nn = BAG[order[best]];
+            const sameTopic = me.topic === nn.topic;
+            const xlang = me.lang !== nn.lang;
+            if (sameTopic && xlang) crossLang++;
+            const li = document.createElement("li");
+            li.textContent = `${pos + 1}. [${me.lang}] “${me.text}” → nearest: [${nn.lang}] “${nn.text}” (${bestSim.toFixed(3)}) ` +
+              (sameTopic ? `— same topic ${TOPICS[me.topic]}${xlang ? ", different language ✓" : " (same language)"}` : "— topic drift");
+            list.append(li);
+          });
+          chains.append(list);
+          renderMatrix(
+            $("matrix"),
+            order.map((bi, pos) => `${pos + 1} · ${TOPICS[BAG[bi].topic]} · ${BAG[bi].lang} — ${BAG[bi].text}`),
+            r.sims,
+          );
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = r.ms + " ms";
+          $("rX").textContent = `${crossLang}/${items.length}`;
+        } catch (err) {
+          $("runStatus").hidden = false;
+          $("runStatus").textContent = "Clustering failed: " + err.message;
+          $("runStatus").classList.add("err");
+        }
+      }
+    </script>
+  </body>
+</html>

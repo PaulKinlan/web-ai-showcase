@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Basics — measure how alike two texts are, in any language · Multilingual E5 · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="The fundamental capability of multilingual-e5-small: embed any two texts — in any of 100 languages — and read the real cosine similarity between their meanings, computed locally in your browser."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🌍</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs">
+      <a href="/web-ai-showcase/">← All models</a> ·
+      <a href="/web-ai-showcase/models/multilingual-e5-small/">Multilingual E5</a>
+    </p>
+
+    <header>
+      <p class="eyebrow">basics · feature-extraction · text · WASM</p>
+      <h1>Basics — how alike are these two texts?</h1>
+      <p class="lede">
+        The whole idea in one dial: two texts go in, one number comes back — the cosine similarity of
+        their meanings, from −1 (opposite) through 0 (unrelated) to 1 (the same meaning). Try a
+        translation pair, a paraphrase, or two unrelated sentences — in any mix of languages.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <div class="e5-chips" id="chips">
+        <button class="e5-chip" type="button"
+          data-a="The cat sits on the mat." data-b="Le chat est assis sur le tapis.">translation pair (en/fr)</button>
+        <button class="e5-chip" type="button"
+          data-a="How do I reset my password?" data-b="I forgot my password — what now?">paraphrase (en/en)</button>
+        <button class="e5-chip" type="button"
+          data-a="私は毎朝コーヒーを飲みます。" data-b="The quarterly report is due on Friday.">unrelated (ja/en)</button>
+        <button class="e5-chip" type="button"
+          data-a="I love this phone, the battery lasts forever" data-b="This phone is terrible, the battery dies by lunch">opposite sentiment (en/en)</button>
+      </div>
+
+      <div style="display:grid;gap:.6rem;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));margin-top:.4rem">
+        <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">
+          Text A
+          <textarea id="a" class="e5-input" rows="2" disabled>The cat sits on the mat.</textarea>
+        </label>
+        <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">
+          Text B
+          <textarea id="b" class="e5-input" rows="2" disabled>Le chat est assis sur le tapis.</textarea>
+        </label>
+      </div>
+
+      <div id="gauge" style="margin-top:.8rem" aria-live="polite"></div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="wall-h">
+      <h3 id="wall-h">The meaning wall — one sentence, five languages</h3>
+      <p class="muted">
+        Five ways of saying "I drink coffee every morning". All five embeddings land within a hair of
+        each other — the model barely notices which language you used. Every score below is live.
+      </p>
+      <div id="wall" class="e5-sims" aria-live="polite"></div>
+    </section>
+
+    <section aria-labelledby="back-h">
+      <h2>More with this model</h2>
+      <div class="model-grid">
+        <a class="model-card" href="/web-ai-showcase/models/multilingual-e5-small/"><h3>Overview</h3><p class="muted">Cross-lingual query→passage matching plus the full cosine matrix and raw embedding.</p></a>
+        <a class="model-card" href="../practical/"><h3>Practical</h3><p class="muted">Semantic search over a mixed-language document set.</p></a>
+        <a class="model-card" href="../wild/"><h3>Wild</h3><p class="muted">Language-blind meaning clusters.</p></a>
+      </div>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/models/multilingual-e5-small/">Back to the model →</a>
+    </footer>
+
+    <script type="module">
+      import { E5Engine, E5_CSS, debounce, renderSimList } from "../e5.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = E5_CSS;
+      document.head.append(style);
+
+      const WALL = [
+        { lang: "English", text: "I drink coffee every morning." },
+        { lang: "Français", text: "Je bois du café tous les matins." },
+        { lang: "Deutsch", text: "Ich trinke jeden Morgen Kaffee." },
+        { lang: "日本語", text: "私は毎朝コーヒーを飲みます。" },
+        { lang: "العربية", text: "أشرب القهوة كل صباح." },
+      ];
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new E5Engine(new URL("../worker.js", import.meta.url));
+      let loaded = false;
+
+      for (const c of document.querySelectorAll(".e5-chip")) {
+        c.addEventListener("click", () => {
+          $("a").value = c.dataset.a;
+          $("b").value = c.dataset.b;
+          schedule();
+        });
+      }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: {
+          modelId: "Xenova/multilingual-e5-small",
+          runtime: "transformers.js",
+          dtype: "q8",
+          sizeMB: 118,
+          requiresWebGPU: false,
+        },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("a").disabled = false; $("b").disabled = false; loaded = true; run(); runWall(); },
+      });
+
+      const schedule = debounce(run, 450);
+      $("a").addEventListener("input", schedule);
+      $("b").addEventListener("input", schedule);
+
+      function verdict(s) {
+        if (s >= 0.85) return "essentially the same meaning";
+        if (s >= 0.7) return "closely related";
+        if (s >= 0.5) return "loosely related";
+        return "unrelated";
+      }
+
+      async function run() {
+        if (!loaded) return;
+        const a = $("a").value.trim(), b = $("b").value.trim();
+        if (!a || !b) { $("gauge").replaceChildren(); $("readout").hidden = true; return; }
+        try {
+          const r = await engine.embed([
+            { text: a, kind: "passage" },
+            { text: b, kind: "passage" },
+          ]);
+          const s = r.sims[0][1];
+          const g = $("gauge");
+          g.replaceChildren();
+          const big = document.createElement("p");
+          big.style.cssText = "font-size:2rem;font-weight:700;margin:.2rem 0;font-variant-numeric:tabular-nums";
+          big.textContent = s.toFixed(3);
+          const cap = document.createElement("p");
+          cap.className = "muted";
+          cap.textContent = verdict(s) + " (cosine similarity of the two embeddings)";
+          g.append(big, cap);
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = r.ms + " ms";
+        } catch (err) {
+          $("runStatus").hidden = false;
+          $("runStatus").textContent = "Embedding failed: " + err.message;
+          $("runStatus").classList.add("err");
+        }
+      }
+
+      async function runWall() {
+        if (!loaded) return;
+        try {
+          const items = WALL.map((w) => ({ text: w.text, kind: "passage" }));
+          const r = await engine.embed(items);
+          const rows = WALL.map((w, i) => ({ ...w, sim: r.sims[0][i] }));
+          renderSimList($("wall"), rows, { showKind: false });
+        } catch (err) {
+          $("runStatus").hidden = false;
+          $("runStatus").textContent = "Wall failed: " + err.message;
+          $("runStatus").classList.add("err");
+        }
+      }
+    </script>
+  </body>
+</html>

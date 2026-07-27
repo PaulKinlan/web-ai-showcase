@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Multilingual E5 — one meaning space for 100 languages, in your browser · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="multilingual-e5-small embeds text from 100 languages into one shared 384-dimensional meaning space, so a French question can find its English answer by meaning alone. Runs locally in your browser on a real ONNX model — nothing leaves the tab."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🌍</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">feature-extraction · text · WASM · ~118 MB</p>
+      <h1>Multilingual E5 — one meaning space for 100 languages</h1>
+      <p class="lede">
+        Most search matches <em>words</em>. This model matches <strong>meaning</strong> — across languages.
+        <strong>multilingual-e5-small</strong> turns any text from 100 languages into a 384-number vector
+        placed in a single shared space, so "Bonjour le monde" lands next to "Hello world" and a Hindi
+        question can retrieve its Spanish answer. Type below and watch the real cosine similarities come
+        back from a model running entirely on your device.
+      </p>
+      <p class="muted" style="font-size:.86rem">
+        <strong>Honest note:</strong> this runs
+        <a href="https://huggingface.co/Xenova/multilingual-e5-small" target="_blank" rel="noopener">Xenova/multilingual-e5-small</a>,
+        the ONNX q8 export of <strong>intfloat/multilingual-e5-small</strong> (XLM-RoBERTa base, ~118M
+        params, MIT). E5 models expect a <code>query:</code> or <code>passage:</code> prefix on every
+        input — the demo adds them for you, exactly as the model card prescribes.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/Xenova/multilingual-e5-small" target="_blank" rel="noopener">Xenova/multilingual-e5-small</a> (ONNX q8 of <a href="https://huggingface.co/intfloat/multilingual-e5-small" target="_blank" rel="noopener">intfloat/multilingual-e5-small</a>)</td></tr>
+          <tr><th>Task / pipeline</th><td><code>feature-extraction</code> (sentence embeddings)</td></tr>
+          <tr><th>Output</th><td>384-dimensional vector per text, mean-pooled + L2-normalised → cosine similarity is a dot product</td></tr>
+          <tr><th>Architecture</th><td>XLM-RoBERTa base (12 layers, ~118M params) contrastively trained on ~1B multilingual text pairs</td></tr>
+          <tr><th>Languages</th><td>100 (XLM-R vocabulary; evaluated on MIRACL, Mr. TyDi, multilingual MTEB)</td></tr>
+          <tr><th>Input convention</th><td>prefix every text with <code>query: </code> or <code>passage: </code> (applied automatically here)</td></tr>
+          <tr><th>Quantization</th><td>q8 (8-bit) ONNX</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (runs anywhere; no WebGPU needed)</td></tr>
+          <tr><th>Download</th><td>~118 MB, cached after first load</td></tr>
+          <tr><th>License</th><td>MIT</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it — cross-lingual meaning match</h3>
+      <p class="muted">
+        Write a <strong>query</strong> in any supported language. It is matched, by meaning alone, against
+        five passages in <em>other</em> languages. The bar is the real cosine similarity the model produced.
+      </p>
+
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
+        Your query (any of 100 languages)
+        <textarea id="query" class="e5-input" rows="2" disabled>Comment faire une omelette ?</textarea>
+      </label>
+      <div class="e5-chips" id="chips">
+        <button class="e5-chip" type="button" data-set="Comment faire une omelette ?">🇫🇷 cooking</button>
+        <button class="e5-chip" type="button" data-set="¿Cuál es la capital de Australia?">🇪🇸 geography</button>
+        <button class="e5-chip" type="button" data-set="Wie repariere ich einen platten Fahrradreifen?">🇩🇪 repair</button>
+        <button class="e5-chip" type="button" data-set="犬の散歩は一日にどのくらい必要ですか？">🇯🇵 pets</button>
+      </div>
+
+      <div id="sims" class="e5-sims" aria-live="polite"></div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+        <span>texts embedded <b id="rN">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside — the meaning space, measured</h3>
+      <p class="muted">
+        Each text becomes 384 real numbers. Below: the <strong>full cosine matrix</strong> between your
+        query and every passage (and the passages against each other — near-duplicate meanings in
+        different languages score high even with zero words in common), and a <strong>bar-strip of the
+        query's raw embedding</strong> (blue = positive dimension, orange = negative).
+      </p>
+      <h4 style="margin:.6rem 0 .2rem">Cosine matrix (1 = query, 2–6 = passages)</h4>
+      <div id="matrix" class="e5-matrix-wrap"></div>
+      <h4 style="margin:1rem 0 .2rem">Your query's embedding (384 dims, every 2nd shown)</h4>
+      <div id="dims" class="e5-dims" aria-label="Bar strip of the query embedding's dimension values"></div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        A shared multilingual embedding space collapses "translate, then search" into one step — and it
+        runs offline on the device, so private text never has to leave.
+      </p>
+      <ul>
+        <li><strong>Cross-lingual search &amp; RAG</strong> — one index serves every language; a Portuguese question retrieves a Japanese document.</li>
+        <li><strong>Duplicate &amp; FAQ matching</strong> — cluster support tickets by meaning regardless of the customer's language.</li>
+        <li><strong>Semantic dedup &amp; clustering</strong> — near-duplicate detection for knowledge bases, news aggregation, moderation queues.</li>
+        <li><strong>On-device privacy</strong> — embeddings of sensitive text (mail, notes, health) computed locally; only vectors ever leave.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Embed two texts in any languages and read their real cosine similarity — plus a five-language meaning wall.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">A working multilingual semantic search box over a mixed-language document set, ranked live.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Language-blind meaning clusters: throw ten sentences in six languages at the model and watch it group them by topic, not tongue.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>Embeddings are one pipeline call — remember the E5 prefixes:</p>
+      <pre><code>import { pipeline } from "@huggingface/transformers";
+
+const embed = await pipeline("feature-extraction", "Xenova/multilingual-e5-small");
+const out = await embed(
+  ["query: Comment faire une omelette ?", "passage: How to cook an omelette"],
+  { pooling: "mean", normalize: true },
+);
+// out.dims → [2, 384]; out[0].data → Float32Array(384), L2-normalised
+// cosine similarity = dot(out[0].data, out[1].data) ≈ 0.9</code></pre>
+      <p class="muted">
+        <code>pooling: "mean"</code> averages token vectors into one sentence vector and
+        <code>normalize: true</code> unit-lengths it, so a plain dot product <em>is</em> the cosine
+        similarity. The <code>query:</code>/<code>passage:</code> prefixes come from the model card —
+        E5 was trained with them and scores measurably worse without. Everything runs in a Web Worker
+        so typing stays smooth.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/Xenova/multilingual-e5-small" target="_blank" rel="noopener">Model card — multilingual-e5-small (Xenova ONNX)</a></li>
+        <li><a href="https://huggingface.co/intfloat/multilingual-e5-small" target="_blank" rel="noopener">Original model card — intfloat/multilingual-e5-small</a></li>
+        <li><a href="https://arxiv.org/abs/2402.05672" target="_blank" rel="noopener">Paper — Multilingual E5 Text Embeddings (Wang et al., 2024)</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { E5Engine, E5_CSS, debounce, renderSimList, renderMatrix, renderDims } from "./e5.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = E5_CSS;
+      document.head.append(style);
+
+      const PASSAGES = [
+        { lang: "English", text: "How do you cook an omelette?" },
+        { lang: "English", text: "The capital of Australia is Canberra, not Sydney." },
+        { lang: "Deutsch", text: "Ein platten Fahrradreifen lässt sich mit einem Flickensatz reparieren." },
+        { lang: "中文", text: "狗每天需要遛多久取决于品种和年龄。" },
+        { lang: "Español", text: "Para hacer una tortilla, bate los huevos y cuájalos en la sartén." },
+      ];
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new E5Engine();
+      let loaded = false;
+
+      for (const c of document.querySelectorAll(".e5-chip")) {
+        c.addEventListener("click", () => {
+          $("query").value = c.dataset.set;
+          schedule();
+        });
+      }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: {
+          modelId: "Xenova/multilingual-e5-small",
+          runtime: "transformers.js",
+          dtype: "q8",
+          sizeMB: 118,
+          requiresWebGPU: false,
+        },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("query").disabled = false; loaded = true; run(); },
+      });
+
+      const schedule = debounce(run, 450);
+      $("query").addEventListener("input", schedule);
+
+      async function run() {
+        if (!loaded) return;
+        const q = $("query").value.trim();
+        if (!q) { $("sims").replaceChildren(); $("matrix").replaceChildren(); $("dims").replaceChildren(); $("readout").hidden = true; return; }
+        try {
+          const items = [{ text: q, kind: "query" }, ...PASSAGES.map((p) => ({ text: p.text, kind: "passage" }))];
+          const r = await engine.embed(items);
+          const rows = PASSAGES.map((p, i) => ({ ...p, sim: r.sims[0][i + 1] }));
+          rows.sort((a, b) => b.sim - a.sim);
+          rows[0].best = true;
+          renderSimList($("sims"), rows, { showKind: false });
+          renderMatrix($("matrix"), [q, ...PASSAGES.map((p) => `${p.lang} — ${p.text}`)], r.sims);
+          renderDims($("dims"), r.vectors[0]);
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = r.ms + " ms";
+          $("rN").textContent = items.length;
+        } catch (err) {
+          $("runStatus").hidden = false;
+          $("runStatus").textContent = "Embedding failed: " + err.message;
+          $("runStatus").classList.add("err");
+        }
+      }
+    </script>
+  </body>
+</html>
