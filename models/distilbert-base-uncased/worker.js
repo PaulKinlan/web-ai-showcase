@@ -121,8 +121,9 @@ async function fillMany(id, texts, topk) {
 
 // First-subword id for a candidate word (WordPiece). Multi-token candidates are compared by
 // their leading token — a deliberate, disclosed simplification for the candidate-scoring surface.
+// transformers.js v3 signature: encode(text, options) — same as the validated roberta-fill-mask worker.
 function firstTokenId(word) {
-  const enc = tokenizer.encode(word, null, { add_special_tokens: false });
+  const enc = tokenizer.encode(word, { add_special_tokens: false });
   return enc && enc.length ? enc[0] : null;
 }
 
