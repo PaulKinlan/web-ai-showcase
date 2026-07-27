@@ -139,11 +139,137 @@ const extractStages = (dir) => {
   return [...found].sort();
 };
 
+// --- Stage-literal hardening (review finding: non-literal model ids evade extraction) --------
+// Stage ids are extracted from loader call-site string LITERALS, so a non-literal model
+// argument (const, variable, expression — e.g. `pipeline("task", M)` or `modelId: cfg.model`)
+// loads an undeclared, unnamed model straight past the gate. In-scope families must therefore
+// declare the model id as a string literal AT the call site (the repo convention across the 294
+// legacy families), and every declared stage must be referenced in the family sources.
+// Detection is offset-preserving and regex-based like the rest of this gate: HTML prose,
+// comments, and string CONTENTS are blanked first so literal call sites, comments, and
+// non-loader identifiers never trip it.
+
+const familySourceFiles = (dir) => {
+  const files = [];
+  const walk = (d) => {
+    for (const ent of readdirSync(d, { withFileTypes: true })) {
+      const p = join(d, ent.name);
+      if (ent.isDirectory()) walk(p);
+      else if (/\.(js|mjs|html)$/.test(ent.name)) {
+        files.push({
+          rel: p.startsWith(ROOT) ? p.slice(ROOT.length).replace(/^\//, "") : p,
+          html: ent.name.endsWith(".html"),
+          src: readFileSync(p, "utf8"),
+        });
+      }
+    }
+  };
+  walk(dir);
+  return files;
+};
+
+// HTML: blank everything except <script> bodies (prose can legitimately contain "model: ...").
+const blankNonScript = (src) => {
+  const keep = new Uint8Array(src.length);
+  const re = /<script\b[^>]*>([\s\S]*?)<\/script\s*>/gi;
+  let m;
+  while ((m = re.exec(src))) {
+    if (m[1].length === 0) continue;
+    const start = m.index + m[0].indexOf(m[1]);
+    for (let i = start; i < start + m[1].length; i++) keep[i] = 1;
+  }
+  return src.split("").map((ch, i) => (keep[i] || ch === "\n" ? ch : " ")).join("");
+};
+
+// Blank comments and string/template CONTENTS (the quotes stay, so a literal argument is still
+// recognisable as a literal). Newlines and offsets are preserved for snippet reporting.
+const blankStringsAndComments = (src) => {
+  const out = src.split("");
+  const n = src.length;
+  let i = 0;
+  while (i < n) {
+    const ch = src[i];
+    if (ch === "/" && src[i + 1] === "/") {
+      while (i < n && src[i] !== "\n") out[i++] = " ";
+    } else if (ch === "/" && src[i + 1] === "*") {
+      while (i < n && !(src[i] === "*" && src[i + 1] === "/")) {
+        if (src[i] !== "\n") out[i] = " ";
+        i++;
+      }
+      for (let k = 0; k < 2 && i < n; k++, i++) if (src[i] !== "\n") out[i] = " ";
+    } else if (ch === '"' || ch === "'" || ch === "`") {
+      const quote = ch;
+      i++;
+      while (i < n && src[i] !== quote) {
+        if (quote !== "`" && src[i] === "\n") break; // unterminated single-line string
+        if (src[i] !== "\n") out[i] = " ";
+        i++;
+        if (src[i - 1] === "\\" && i < n) { // escaped char is part of the string
+          if (src[i] !== "\n") out[i] = " ";
+          i++;
+        }
+      }
+      i++; // keep the closing quote
+    } else {
+      i++;
+    }
+  }
+  return out.join("");
+};
+
+// Non-literal model arguments at loader call sites. Matched against the blanked scan source, so
+// a string literal at the argument position (quotes preserved above) never matches.
+const NON_LITERAL_STAGE_PATTERNS = [
+  // pipeline("<task>", <model>) with a non-literal model argument.
+  /\bpipeline\s*\(\s*["'`][^"'`]*["'`]\s*,\s*(?!["'`)\s])/g,
+  // modelId: <value> / model: <value> with a non-literal value. Whitespace must be excluded
+  // (regex backtracking would otherwise let the lookahead succeed on the space before a
+  // literal), null/undefined/true/false are state initialisers (not model ids), and `{` opens
+  // a nested config object whose inner keys are scanned in their own right.
+  /(?<![\w$-])modelId\s*:\s*(?![\s{"'`]|null\b|undefined\b|true\b|false\b)/g,
+  /(?<![\w$-])model\s*:\s*(?![\s{"'`]|null\b|undefined\b|true\b|false\b)/g,
+  // <Class>.from_pretrained(<model>) / fromPretrained(<model>) with a non-literal first arg.
+  /\bfrom_?pretrained\s*\(\s*(?!["'`)\s])/gi,
+];
+
+const snippetAt = (src, idx) => {
+  const s = src.slice(idx, idx + 160).replace(/\s+/g, " ").trim();
+  return s.length > 80 ? s.slice(0, 77) + "..." : s;
+};
+
+const findNonLiteralStageLoads = (files) => {
+  const hits = [];
+  for (const f of files) {
+    const scan = blankStringsAndComments(f.html ? blankNonScript(f.src) : f.src);
+    for (const re of NON_LITERAL_STAGE_PATTERNS) {
+      re.lastIndex = 0;
+      let m;
+      while ((m = re.exec(scan))) {
+        hits.push({ rel: f.rel, snippet: snippetAt(f.src, m.index) });
+        if (re.lastIndex === m.index) re.lastIndex++; // guard against zero-width loops
+      }
+    }
+  }
+  return hits;
+};
+
 const errors = [];
 const checkSlug = (slug) => {
   const dir = join(ROOT, "models", slug);
   const manifestRel = `models/${slug}/acceptance.json`;
   const startLen = errors.length;
+
+  // Non-literal loader call sites evade stage extraction entirely — fail closed on them no
+  // matter what acceptance.json declares.
+  const srcFiles = familySourceFiles(dir);
+  for (const h of findNonLiteralStageLoads(srcFiles)) {
+    errors.push(
+      `${slug}: non-literal model id at loader call site in ${h.rel} — "${h.snippet}" — ` +
+        "declare the model id as a string literal at the call site (repo convention across the " +
+        "294 families) so stages are statically extractable",
+    );
+  }
+
   if (!existsSync(join(dir, "acceptance.json"))) {
     errors.push(
       `${slug}: missing ${manifestRel} — new/touched families must declare their route-complete acceptance matrix (validator, rungs x viewports, stages, run record)`,
@@ -239,6 +365,19 @@ const checkSlug = (slug) => {
     const name = String(s).split("/").pop().toLowerCase();
     if (!vsrcLower.includes(String(s).toLowerCase()) && !vsrcLower.includes(name)) {
       errors.push(`${slug}: validator never names advertised stage "${s}"`);
+    }
+  }
+  // A declared stage that is never referenced in the family sources proves nothing is loaded
+  // under that id — fake stages could otherwise pad the manifest while something else loads.
+  // The id may legitimately appear only in a worker, so search every family file (raw text).
+  const familyText = srcFiles.map((f) => f.src).join("\n").toLowerCase();
+  for (const s of stages) {
+    const name = String(s).split("/").pop().toLowerCase();
+    if (!familyText.includes(String(s).toLowerCase()) && !familyText.includes(name)) {
+      errors.push(
+        `${slug}: declared stage "${s}" is never referenced in the family sources — ` +
+          "remove it or load it for real",
+      );
     }
   }
 
