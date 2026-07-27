@@ -3,8 +3,12 @@
 // at desktop and mobile. Advertised stages driven for real:
 //   Xenova/grammar-synthesis-small (all routes)
 //   onnx-community/moonshine-base-ONNX (multi-model, public-domain JFK sample)
-// The harness owns one Chrome child and only terminates that child; every wait has a hard deadline
-// and long downloads emit incremental state logs.
+// The harness owns one fresh Chrome process tree per route cell while reusing its own cache profile;
+// every wait has a hard deadline and long downloads emit incremental state logs.
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   CDP,
   closePage,
@@ -12,9 +16,15 @@ import {
   launchChrome,
   MOBILE,
   openPage,
+  repoRoot,
   setViewport,
   startServer,
 } from "./browser.mjs";
+
+const WRITE_RUN = process.argv.includes("--write-run");
+const RUN_RECORD = join(repoRoot, "models/grammar-correction/acceptance-run.json");
+const PROFILE_DIR = mkdtempSync(join(tmpdir(), "grammar-correction-acceptance-"));
+if (WRITE_RUN) rmSync(RUN_RECORD, { force: true });
 
 const GEC_ID = "Xenova/grammar-synthesis-small";
 const ASR_ID = "onnx-community/moonshine-base-ONNX";
@@ -102,11 +112,15 @@ async function ensureReady(cdp, sessionId, expectedCount, label) {
       cdp,
       sessionId,
       `(() => {
-      for (const loader of document.querySelectorAll('.model-loader')) {
-        const button = [...loader.querySelectorAll('button')].find((item) => /Download|Retry|Re-download/i.test(item.textContent));
-        if (button && !button.disabled) button.click();
-      }
-      return true;
+      const buttons = [...document.querySelectorAll('.model-loader')].flatMap((loader) =>
+        [...loader.querySelectorAll('button')].filter((item) =>
+          /Download|Retry|Re-download/i.test(item.textContent) && !item.disabled
+        )
+      );
+      // Let CDP receive this evaluation result before model download/initialisation can saturate
+      // the renderer. The next ensureReady poll observes the real state transition.
+      setTimeout(() => buttons.forEach((button) => button.click()), 0);
+      return buttons.length;
     })()`,
     );
     await sleep(3_000);
@@ -264,17 +278,25 @@ async function exercise(cdp, page, rung, viewport) {
 try {
   const started = await startServer();
   server = started.server;
-  chrome = await launchChrome();
-  const cdp = new CDP(chrome.ws);
   const url = (route) => `http://127.0.0.1:${started.port}/web-ai-showcase/${route}`;
 
+  // Each cell gets a fresh process tree so released route workers cannot starve later CDP or WASM
+  // work. The validator-owned profile persists only between cells, proving cached auto-init without
+  // retaining renderer memory.
   for (const viewport of ["desktop", "mobile"]) {
     for (const [rung, route] of Object.entries(ROUTES)) {
       const cell = { route, viewport, pass: false };
       results.push(cell);
+      let cdp;
       let page;
       try {
         console.log(`\n=== ${viewport} × ${rung}: ${route} ===`);
+        chrome = await launchChrome({
+          userDataDir: PROFILE_DIR,
+          resetProfile: false,
+          removeProfileOnKill: false,
+        });
+        cdp = new CDP(chrome.ws);
         page = await openPage(cdp, url(route));
         const before = passed;
         await exercise(cdp, page, rung, viewport);
@@ -283,18 +305,31 @@ try {
         console.log(`FAIL  ${viewport} ${rung}: ${String(error.stack || error).slice(0, 500)}`);
       } finally {
         if (page) await closePage(cdp, page.targetId);
+        if (chrome) await chrome.kill({ removeProfile: false });
+        chrome = null;
       }
     }
   }
 } finally {
   console.log(`\n${passed}/${checks} checks passed`);
   console.log(`ROUTE-RESULTS-JSON: ${JSON.stringify(results)}`);
-  if (chrome) chrome.kill();
+  if (chrome) await chrome.kill({ removeProfile: false });
   if (server) await new Promise((resolve) => server.close(resolve));
+  rmSync(PROFILE_DIR, { recursive: true, force: true });
 }
 
-process.exit(
-  checks === 30 && passed === checks && results.length === 10 && results.every((item) => item.pass)
-    ? 0
-    : 1,
-);
+const succeeded = checks === 30 && passed === checks && results.length === 10 &&
+  results.every((item) => item.pass);
+if (WRITE_RUN && succeeded) {
+  const commit = execFileSync("git", ["rev-parse", "HEAD"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+  }).trim();
+  writeFileSync(
+    RUN_RECORD,
+    JSON.stringify({ commit, ranAt: new Date().toISOString(), exitCode: 0, results }, null, 2) +
+      "\n",
+  );
+  console.log(`WROTE ${RUN_RECORD} for ${commit}`);
+}
+process.exit(succeeded ? 0 : 1);

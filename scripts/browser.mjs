@@ -128,10 +128,43 @@ async function connect(url, attempts = 6) {
   throw lastErr;
 }
 
-async function spawnChromeOnce(userDataDir) {
+const detachedProcessGroup = process.platform !== "win32";
+
+function signalProcessTree(proc) {
   try {
-    rmSync(userDataDir, { recursive: true, force: true });
-  } catch { /* ignore */ }
+    if (detachedProcessGroup) process.kill(-proc.pid, "SIGKILL");
+    else proc.kill("SIGKILL");
+  } catch { /* already stopped */ }
+}
+
+async function stopProcessTree(proc) {
+  signalProcessTree(proc);
+  if (proc.exitCode !== null || proc.signalCode !== null) return;
+  await new Promise((resolve) => {
+    const timer = setTimeout(resolve, 5_000);
+    proc.once("exit", () => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
+}
+
+async function spawnChromeOnce(userDataDir, resetProfile) {
+  if (resetProfile) {
+    try {
+      rmSync(userDataDir, { recursive: true, force: true });
+    } catch { /* ignore */ }
+  } else {
+    // These are process-lifetime artifacts, not cache data. A SIGKILLed previous cell cannot clean
+    // them itself, and a stale DevTools port must never be mistaken for the fresh process's port.
+    for (
+      const name of ["DevToolsActivePort", "SingletonCookie", "SingletonLock", "SingletonSocket"]
+    ) {
+      try {
+        rmSync(join(userDataDir, name), { force: true });
+      } catch { /* ignore */ }
+    }
+  }
   const proc = spawn(findChrome(), [
     "--headless=new",
     "--no-sandbox",
@@ -145,7 +178,7 @@ async function spawnChromeOnce(userDataDir) {
     "--remote-allow-origins=*",
     `--user-data-dir=${userDataDir}`,
     "about:blank",
-  ], { stdio: ["ignore", "ignore", "ignore"] });
+  ], { detached: detachedProcessGroup, stdio: ["ignore", "ignore", "ignore"] });
   const portFile = join(userDataDir, "DevToolsActivePort");
   let wsUrl = null;
   for (let i = 0; i < 150 && !wsUrl; i++) {
@@ -156,9 +189,7 @@ async function spawnChromeOnce(userDataDir) {
     } catch { /* not ready */ }
   }
   if (!wsUrl) {
-    try {
-      proc.kill("SIGKILL");
-    } catch { /* ignore */ }
+    await stopProcessTree(proc);
     return null;
   }
   await new Promise((r) => setTimeout(r, 300)); // let the endpoint finish coming up before upgrading
@@ -166,34 +197,44 @@ async function spawnChromeOnce(userDataDir) {
     const ws = await connect(wsUrl);
     return { proc, ws };
   } catch {
-    try {
-      proc.kill("SIGKILL");
-    } catch { /* ignore */ }
+    await stopProcessTree(proc);
     return null;
   }
 }
 
-export async function launchChrome() {
-  const userDataDir = join(repoRoot, ".conformance-chrome-profile");
+export async function launchChrome(options = {}) {
+  const userDataDir = options.userDataDir || join(repoRoot, ".conformance-chrome-profile");
+  const resetProfile = options.resetProfile ?? true;
+  const removeProfileOnKill = options.removeProfileOnKill ?? true;
   // Chrome can intermittently fail to expose its endpoint under IO/memory pressure — retry the whole
   // spawn a few times before giving up so the harness is reliable in constrained sandboxes.
   let started = null;
   for (let attempt = 0; attempt < 4 && !started; attempt++) {
-    started = await spawnChromeOnce(userDataDir);
+    started = await spawnChromeOnce(userDataDir, resetProfile);
     if (!started) await new Promise((r) => setTimeout(r, 500));
   }
   if (!started) throw new Error("Chrome did not expose a DevTools endpoint (after retries)");
+  let killPromise = null;
   return {
     proc: started.proc,
     ws: started.ws,
     userDataDir,
-    kill() {
-      try {
-        started.proc.kill("SIGKILL");
-      } catch { /* ignore */ }
-      try {
-        rmSync(userDataDir, { recursive: true, force: true });
-      } catch { /* ignore */ }
+    kill({ removeProfile = removeProfileOnKill } = {}) {
+      if (!killPromise) {
+        try {
+          started.ws.close();
+        } catch { /* ignore */ }
+        signalProcessTree(started.proc);
+        // Keep legacy fire-and-forget callers safe: their profile is removed synchronously even if
+        // they call process.exit() without awaiting the returned process-tree completion promise.
+        if (removeProfile) {
+          try {
+            rmSync(userDataDir, { recursive: true, force: true });
+          } catch { /* ignore */ }
+        }
+        killPromise = stopProcessTree(started.proc);
+      }
+      return killPromise;
     },
   };
 }
