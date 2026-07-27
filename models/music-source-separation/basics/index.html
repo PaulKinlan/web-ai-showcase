@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Basics — song → four stems · Music source separation</title>
+    <meta name="description" content="The fundamental capability: one song in, four stems out — drums, bass, other, vocals — separated on-device." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎚️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Music source separation</a></p>
+    <header>
+      <p class="eyebrow">Basics · audio-to-audio · WASM</p>
+      <h1>One song in, four stems out</h1>
+      <p class="lede">The plain capability: press one button, and Hybrid Transformer Demucs splits a song
+        into <strong>drums</strong>, <strong>bass</strong>, <strong>other</strong> (keys/guitar) and
+        <strong>vocals</strong> — entirely in this tab. Play each stem on its own to hear what the model
+        heard.</p>
+    </header>
+
+    <p class="ms-hint rungs">Demos: <strong>Basics</strong> · <a href="../practical/">Practical</a> ·
+      <a href="../wild/">Wild</a> · <a href="../multi-model/">Multi-model</a></p>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+      <div class="ms-tools">
+        <button class="ms-btn primary" id="sampleBtn" type="button" disabled>Separate the sample song</button>
+        <button class="ms-btn" id="resetBtn" type="button" title="Dispose the engine, terminate its worker, and reload the page fresh">Reset demo</button>
+      </div>
+      <p class="ms-hint ms-credit">Sample: <a href="https://ccmixter.org/files/Loveshadow/29635">“The CC BY Song”</a>
+        by loveshadow, additional lyrics by Victor Stone —
+        <a href="https://creativecommons.org/licenses/by/3.0/">CC BY 3.0</a>, via
+        <a href="https://ccmixter.org/files/Loveshadow/29635">ccMixter</a>. The bundled file is the
+        original upload, <strong>unmodified</strong>; the demo analyzes only the first ~7.8 s (the song
+        sings from the first bar). Full credits:
+        <a href="CREDITS.md">CREDITS.md</a>.</p>
+
+      <div id="result" hidden>
+        <div class="ms-stems" id="stems"></div>
+        <p class="ms-hint" style="margin-top:1rem"><strong>Example 2 — Reconstruction check:</strong>
+          do the four stems sum back to the original segment? The basics of separation is what the
+          model keeps — and what it loses.</p>
+        <div style="display:flex; gap:.5rem; flex-wrap:wrap; margin:.3rem 0">
+          <button class="ms-btn" id="origBtn" type="button">▶ Original segment</button>
+          <button class="ms-btn" id="sumBtn" type="button">▶ Sum of the 4 stems</button>
+        </div>
+        <p class="ms-stat" id="reconCap"></p>
+        <p class="readout" id="readout" hidden>
+          <span>backend <b id="rBackend">–</b></span> · <span>separated in <b id="rMs">–</b></span> ·
+          <span>window <b id="rDur">–</b></span>
+        </p>
+      </div>
+    </section>
+
+    <section aria-labelledby="note-h">
+      <h2 id="note-h">What you're seeing</h2>
+      <p>Demucs is an 80M-parameter hybrid transformer trained to unmix music. Here it runs on the CPU
+        (WASM) inside a Web Worker — about ten seconds for the model's fixed ~7.8-second window. Each card
+        below is one of the model's four real output waveforms under the microscope: its measured energy
+        (RMS, peak, share of the window), the exact window timing, and a plain statement of what the model
+        was trained to assign to that output. Press a stem's play button to hear it alone, download it as
+        a WAV, or “All stems” to hear them sum back into the song. Nothing is uploaded.</p>
+    </section>
+
+    <footer class="byline">Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. <a href="../">← Back to Music source separation</a></footer>
+
+    <script type="module">
+      import {
+        SepEngine, SEP_CSS, STEM_META, SR, SONG,
+        songSegment, StemPlayer, drawWaveform, closeAudioCtx, encodeWav, prettyName, measureStereo, sumStems,
+      } from "../sep.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = SEP_CSS + `
+        .ms-stem { display: block; }
+        .ms-stem-head { display: grid; grid-template-columns: auto 8rem 1fr auto; align-items: center; gap: .6rem; }
+        .ms-stat { font-family: var(--font-mono, monospace); font-size: .74rem; color: var(--muted); margin: .4rem 0 0; }
+        .ms-why { font-size: .82rem; margin: .25rem 0 0; }
+        .ms-why b { font-weight: 600; }
+      `;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new SepEngine();
+      window.__engine = engine; // lets the validator verify genuine disposal
+      const player = new StemPlayer();
+      let ready = false;
+      let lastStems = null;
+
+      function setStatus(msg, err) {
+        $("runStatus").hidden = !msg;
+        $("runStatus").textContent = msg || "";
+        $("runStatus").classList.toggle("err", !!err);
+      }
+      /** What the model was trained to assign to each output — stated plainly, per stem. */
+      const STEM_WHY = {
+        drums: "The drum kit — kick, snare, hi-hats, cymbals. Demucs was trained to route percussion into this output.",
+        bass: "The low melodic foundation — bass guitar or synth bass. Anything below the harmony lands here.",
+        other: "The catch-all: everything harmonic or melodic that isn't drums, bass, or voice — guitars, keys, strings, effects. Demucs has only four outputs, so \u201cother\u201d absorbs the rest.",
+        vocals: "The SUNG voice — lead and backing vocals. The model is trained on singing; spoken word would mostly land in \u201cother\u201d instead.",
+      };
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: {
+          modelId: "MrCitron/demucs-v4-onnx",
+          runtime: "onnxruntime-web",
+          dtype: "fp32",
+          sizeMB: 303,
+          requiresWebGPU: false,
+        },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { ready = true; $("sampleBtn").disabled = false; },
+      });
+
+      // Example 2 controls: hear the original segment vs the sum of the stems (one-shot plays).
+      $("origBtn").addEventListener("click", async () => {
+        if (!player.buffers.__original) return;
+        window.__lastPlayed = ["__original"];
+        await player.play(["__original"]);
+      });
+      $("sumBtn").addEventListener("click", async () => {
+        if (!player.buffers.__sum) return;
+        window.__lastPlayed = ["__sum"];
+        await player.play(["__sum"]);
+      });
+
+      function renderStems(stems, len, offsetSec, seg) {
+        lastStems = stems;
+        window.__lastStems = stems; // lets the validator recompute the displayed measurements
+        // Example 2 (reconstruction check): the original segment and the sample-exact sum of the
+        // stems join the player as two extra pseudo-stems, plus the measured residual.
+        const sum = sumStems(stems, len);
+        player.setStems([...stems, { name: "__original", l: seg.ch0, r: seg.ch1 }, { name: "__sum", l: sum.l, r: sum.r }], len);
+        const rl = new Float32Array(len), rr = new Float32Array(len);
+        for (let i = 0; i < len; i++) {
+          rl[i] = seg.ch0[i] - sum.l[i];
+          rr[i] = seg.ch1[i] - sum.r[i];
+        }
+        const res = measureStereo(rl, rr);
+        $("reconCap").textContent = `Sum vs original: residual RMS ${res.rms.toFixed(3)} — the part of the mix the model could not reconstruct. Separation is lossy; that is the honest measured gap on this window.`;
+        window.__segment = { l: seg.ch0, r: seg.ch1 }; // lets the validator recompute the residual
+        window.__recon = { residualRms: res.rms };
+        const meas = Object.fromEntries(stems.map((s) => [s.name, measureStereo(s.l, s.r)]));
+        const totalE = stems.reduce((t, s) => t + meas[s.name].rms ** 2, 0) || 1;
+        const loudest = stems.reduce((a, b) => meas[a.name].rms >= meas[b.name].rms ? a : b).name;
+        const winA = offsetSec.toFixed(2), winB = (offsetSec + len / SR).toFixed(2);
+        const songLen = `${Math.floor(SONG.durationSec / 60)}:${String(Math.round(SONG.durationSec % 60)).padStart(2, "0")}`;
+        const rows = stems.map((s) => {
+          const row = document.createElement("div");
+          row.className = "ms-stem";
+          row.dataset.name = s.name;
+          const head = document.createElement("div");
+          head.className = "ms-stem-head";
+          const btn = document.createElement("button");
+          btn.className = "ms-btn";
+          btn.type = "button";
+          btn.textContent = "▶";
+          btn.setAttribute("aria-label", "Play " + prettyName(s.name) + " stem");
+          btn.addEventListener("click", async () => {
+            if (player.playing) {
+              player.stop();
+              for (const b of $("stems").querySelectorAll("button")) b.textContent = "▶";
+            } else {
+              await player.play([s.name]);
+              btn.textContent = "■";
+              player.onEnded = () => { btn.textContent = "▶"; };
+            }
+          });
+          const name = document.createElement("span");
+          name.className = "ms-name";
+          name.innerHTML = `<span class="em" aria-hidden="true">${STEM_META[s.name].emoji}</span>${prettyName(s.name)}`;
+          const cvs = document.createElement("canvas");
+          cvs.className = "ms-wave";
+          const dl = document.createElement("a");
+          dl.className = "ms-dl";
+          dl.textContent = "WAV";
+          dl.download = `basics-${s.name}.wav`;
+          dl.href = URL.createObjectURL(encodeWav(s.l, s.r));
+          dl.setAttribute("aria-label", "Download the " + prettyName(s.name) + " stem as a WAV file");
+          head.append(btn, name, cvs, dl);
+          const m = meas[s.name];
+          const share = Math.round((m.rms ** 2 / totalE) * 100);
+          const peakDb = m.peakDb;
+          const stat = document.createElement("p");
+          stat.className = "ms-stat";
+          stat.textContent = `RMS ${m.rms.toFixed(3)} · peak ${peakDb} dB · ${share}% of the window's energy · window ${winA}–${winB} s of the ${songLen} song`;
+          const why = document.createElement("p");
+          why.className = "ms-why";
+          why.innerHTML = `<b>What the model assigned here:</b> ${STEM_WHY[s.name]}` +
+            (s.name === loudest ? " In this window it carries the most energy of the four stems." : "");
+          row.append(head, stat, why);
+          drawWaveform(cvs, s.l);
+          return row;
+        });
+        const all = document.createElement("button");
+        all.className = "ms-btn primary";
+        all.id = "playAllBtn";
+        all.type = "button";
+        all.textContent = "▶ All stems (the mix)";
+        all.addEventListener("click", async () => {
+          if (player.playing) {
+            player.stop();
+            all.textContent = "▶ All stems (the mix)";
+          } else {
+            await player.play(lastStems.map((s) => s.name));
+            all.textContent = "■ Stop";
+            player.onEnded = () => { all.textContent = "▶ All stems (the mix)"; };
+          }
+        });
+        $("stems").replaceChildren(...rows, all);
+        $("result").hidden = false;
+      }
+
+      $("resetBtn").addEventListener("click", async () => {
+        $("resetBtn").disabled = true;
+        setStatus("Resetting — disposing the engine and terminating its worker…");
+        try { player.dispose(); } catch { /* ignore */ }
+        try { await engine.dispose(); } catch { /* ignore */ }
+        try { await closeAudioCtx(); } catch { /* ignore */ }
+        location.reload();
+      });
+
+      $("sampleBtn").addEventListener("click", async () => {
+        if (!ready) return;
+        setStatus("Separating the sample song — this takes about ten seconds…");
+        $("result").hidden = true;
+        player.stop();
+        try {
+          const seg = await songSegment();
+          const r = await engine.separate(seg);
+          renderStems(r.stems, r.len, seg.offsetSec, seg);
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = (r.ms / 1000).toFixed(1) + " s";
+          $("rDur").textContent = (r.len / SR).toFixed(1) + " s";
+          setStatus("");
+        } catch (err) {
+          setStatus("Separation failed: " + err.message, true);
+        }
+      });
+    </script>
+  </body>
+</html>

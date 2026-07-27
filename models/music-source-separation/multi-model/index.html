@@ -1,0 +1,358 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Multi-model — vocals → lyrics · Music source separation</title>
+    <meta name="description" content="Two models in a chain: Demucs separates the vocals stem on-device, then a Whisper ASR worker tries to transcribe it — with the honest result, whatever it is." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎤</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Music source separation</a></p>
+    <header>
+      <p class="eyebrow">Multi-model · Demucs → Whisper ASR · WASM</p>
+      <h1>One model isolates the vocal. Another tries to read the lyrics.</h1>
+      <p class="lede">A real two-model chain: Hybrid Transformer Demucs separates the song and hands the
+        <strong>vocals stem</strong> to a small browser Whisper (<strong>whisper-tiny.en</strong>), which
+        transcribes whatever it hears. The transcript is real and editable — and so is the verdict:
+        for this song Whisper hears <em>no words at all</em>, and the page shows you exactly why, with
+        measurements.</p>
+    </header>
+
+    <p class="ms-hint rungs">Demos: <a href="../basics/">Basics</a> · <a href="../practical/">Practical</a> ·
+      <a href="../wild/">Wild</a> · <strong>Multi-model</strong></p>
+
+    <section class="panel" aria-labelledby="load-h">
+      <h3 id="load-h">The two models</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Step 1</th><td><a href="https://huggingface.co/MrCitron/demucs-v4-onnx" target="_blank" rel="noopener">MrCitron/demucs-v4-onnx</a> — Hybrid Transformer Demucs, fp32 ONNX via onnxruntime-web (~303 MB)</td></tr>
+          <tr><th>Step 2</th><td><a href="https://huggingface.co/onnx-community/whisper-tiny.en" target="_blank" rel="noopener">onnx-community/whisper-tiny.en</a> — Whisper tiny English ASR via transformers.js (~40 MB)</td></tr>
+          <tr><th>Task</th><td>audio source separation → automatic speech recognition (lyrics)</td></tr>
+          <tr><th>Input</th><td>The bundled song's opening ~7.8 s, 44.1 kHz stereo → vocals stem → 16 kHz mono</td></tr>
+        </tbody>
+      </table>
+      <div id="model-loader"></div>
+      <div id="model-loader-2"></div>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run the chain</h3>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+      <div class="ms-tools">
+        <button class="ms-btn primary" id="runBtn" type="button" disabled>Separate, then transcribe the vocal</button>
+        <button class="ms-btn" id="resetBtn" type="button" title="Dispose both engines, terminate both workers, and reload the page fresh">Reset demo</button>
+      </div>
+      <p class="ms-hint ms-credit">Sample: <a href="https://ccmixter.org/files/Loveshadow/29635">“The CC BY Song”</a>
+        by loveshadow, additional lyrics by Victor Stone —
+        <a href="https://creativecommons.org/licenses/by/3.0/">CC BY 3.0</a>, via
+        <a href="https://ccmixter.org/files/Loveshadow/29635">ccMixter</a>. The bundled file is the
+        original upload, <strong>unmodified</strong>; the demo analyzes only the first ~7.8 s (the song
+        sings from the first bar). Full credits:
+        <a href="CREDITS.md">CREDITS.md</a>.</p>
+
+      <div id="result" hidden>
+        <h4>What Whisper heard in the vocals stem</h4>
+        <div class="ms-tools" style="justify-content:flex-start">
+          <button class="ms-btn" id="vocalPlay" type="button">▶ Play the vocals stem (what Whisper heard)</button>
+        </div>
+        <label class="ms-hint" for="transcript" style="display:block;margin-top:.4rem">
+          Transcript — Whisper's real output; edit it if you hear better:</label>
+        <textarea id="transcript" rows="3" spellcheck="false"></textarea>
+        <p class="readout" id="readout">
+          <span>separated in <b id="rSepMs">–</b> (<b id="rSepDev">–</b>)</span> ·
+          <span>transcribed in <b id="rAsrMs">–</b> (<b id="rAsrDev">–</b>)</span> ·
+          <span>words <b id="rWords">–</b></span>
+        </p>
+
+        <h4>The control: Whisper on the original mix</h4>
+        <p class="ms-hint" id="mixVerdict">…</p>
+
+        <div class="panel" id="verdict" role="note">
+          <h4 style="margin-top:0">The honest verdict</h4>
+          <p id="verdictText">…</p>
+        </div>
+      </div>
+    </section>
+
+    <section aria-labelledby="x-h">
+      <h3 id="x-h">Example 2 — a specialist cross-examines the stems</h3>
+      <p class="ms-hint">A second opinion from a second model: the 9-class instrument specialist
+        (<a href="https://huggingface.co/onnx-community/Musical-Instrument-Classification-ONNX" target="_blank" rel="noopener">onnx-community/Musical-Instrument-Classification-ONNX</a>,
+        audio-classification, ~95 MB q8) listens to each separated stem and says which instrument family it
+        hears. It has <em>no voice class</em> — its take on the vocals stem is N/A by design, and
+        inconclusive verdicts are shown honestly, not hidden. Explicit download only.</p>
+      <div id="model-loader-inst"></div>
+      <p><button class="ms-btn" id="run2Btn" type="button" disabled>Cross-examine the stems</button></p>
+      <div class="ms-stems" id="xverdicts"></div>
+    </section>
+
+    <section aria-labelledby="note-h">
+      <h2 id="note-h">What you're seeing</h2>
+      <p>Everything above runs live in this tab: Demucs (an 80M-parameter hybrid transformer) separates
+        the opening window into four stems, the vocals stem is resampled to 16 kHz mono, and a Whisper
+        tiny English worker transcribes it — then, as a control, the same worker transcribes the original
+        mix. Both models load only when YOU press their Download buttons, and the timings shown are the
+        measured wall-clock figures from this run. The chain itself is proven healthy: the same worker
+        transcribes spoken word cleanly. For this song it hears nothing — a small speech-trained ASR
+        model is defeated by melodic singing, and the ONNX export's vocal stem is lossier than the
+        reference PyTorch model on top of that. We show the empty transcript rather than invent lyrics.</p>
+    </section>
+
+    <footer class="byline">Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. <a href="../">← Back to Music source separation</a></footer>
+
+    <script type="module">
+      import {
+        SepEngine, SEP_CSS,
+        songSegment, toMono16k, closeAudioCtx, StemPlayer,
+      } from "../sep.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = SEP_CSS + `
+        #transcript { width: 100%; font: inherit; font-size: .95rem; padding: .5rem .6rem; border-radius: 8px;
+          border: 1px solid var(--border); background: var(--bg-raised); color: var(--color); resize: vertical; }
+        #verdict { border-left: 3px solid var(--accent); margin-top: .8rem; }
+        .xv-ok { color: var(--green, #2e7d32); font-weight: 600; }
+        .xv-weak, .xv-na { color: var(--muted); }
+        .xv-poor { color: var(--red, #b3261e); }
+      `;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new SepEngine();
+      window.__engine = engine; // lets the validator verify genuine disposal
+      const player = new StemPlayer();
+      let sepReady = false, asrReady = false;
+
+      // Tiny engine wrapper for the Whisper ASR worker.
+      const asrWorker = new Worker("./asr-worker.js", { type: "module" });
+      window.__asrWorker = asrWorker;
+      let asrDevice = "wasm";
+      const pending = new Map();
+      let nextId = 1;
+      asrWorker.addEventListener("message", (e) => {
+        const d = e.data;
+        if (d.type === "ready") { asrDevice = d.device; asrWaiter?.(d.device); }
+        else if (d.type === "progress") asrProgress?.(d.p);
+        else if (d.type === "result") { pending.get(d.id)?.(d); pending.delete(d.id); }
+        else if (d.type === "error") { pending.get(d.id)?.(null, d.message); pending.delete(d.id); }
+      });
+      let asrWaiter = null;
+      let asrProgress = null;
+      const asrLoad = (onProgress) => new Promise((res, rej) => {
+        asrWaiter = res;
+        asrProgress = onProgress;
+        asrWorker.addEventListener("error", rej, { once: true });
+        asrWorker.postMessage({ type: "load" });
+      });
+      const asrTranscribe = (pcm) => new Promise((res, rej) => {
+        const id = nextId++;
+        pending.set(id, (d, err) => err ? rej(new Error(err)) : res(d));
+        asrWorker.postMessage({ type: "transcribe", id, audio: pcm }, [pcm.buffer]);
+      });
+      window.__asr = { transcribe: asrTranscribe, isReady: () => asrReady }; // lets the validator health-check
+
+      function setStatus(msg, err) {
+        $("runStatus").hidden = !msg;
+        $("runStatus").textContent = msg || "";
+        $("runStatus").classList.toggle("err", !!err);
+      }
+      const maybeReady = () => { $("runBtn").disabled = !(sepReady && asrReady); };
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: {
+          modelId: "MrCitron/demucs-v4-onnx",
+          runtime: "onnxruntime-web",
+          dtype: "fp32",
+          sizeMB: 303,
+          requiresWebGPU: false,
+        },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { sepReady = true; maybeReady(); },
+      });
+      createModelLoader({
+        mount: $("model-loader-2"),
+        model: {
+          modelId: "onnx-community/whisper-tiny.en",
+          runtime: "transformers.js",
+          dtype: "q8",
+          sizeMB: 40,
+          requiresWebGPU: false,
+        },
+        load: (onProgress) => asrLoad(onProgress),
+        onReady: () => { asrReady = true; maybeReady(); },
+      });
+
+      // ---- Example 2: the instrument specialist cross-examines the separated stems ----
+      const instWorker = new Worker("./instrument-worker.js", { type: "module" });
+      window.__instWorker = instWorker;
+      let instReady = false;
+      let lastStems = null;
+      const instCalls = new Map();
+      let instId = 0;
+      instWorker.addEventListener("message", (e) => {
+        const d = e.data;
+        if (d.type === "result" || d.type === "error") {
+          const c = instCalls.get(d.id);
+          if (c) {
+            instCalls.delete(d.id);
+            d.type === "error" ? c.rej(new Error(d.message)) : c.res(d);
+          }
+        }
+      });
+      function instClassify(pcm) {
+        return new Promise((res, rej) => {
+          const id = ++instId;
+          instCalls.set(id, { res, rej });
+          instWorker.postMessage({ type: "classify", id, pcm }, [pcm.buffer]);
+        });
+      }
+      createModelLoader({
+        mount: $("model-loader-inst"),
+        model: {
+          modelId: "onnx-community/Musical-Instrument-Classification-ONNX",
+          runtime: "transformers.js",
+          dtype: "q8",
+          sizeMB: 95,
+          requiresWebGPU: false,
+        },
+        load: async (onProgress) => {
+          await new Promise((res, rej) => {
+            const onMsg = (e) => {
+              const d = e.data;
+              if (d.type === "progress") onProgress(d.p);
+              else if (d.type === "ready") {
+                instWorker.removeEventListener("message", onMsg);
+                res();
+              } else if (d.type === "error") {
+                instWorker.removeEventListener("message", onMsg);
+                rej(new Error(d.message));
+              }
+            };
+            instWorker.addEventListener("message", onMsg);
+            instWorker.postMessage({ type: "load" });
+          });
+          return instWorker;
+        },
+        onReady: () => {
+          instReady = true;
+          if (lastStems) $("run2Btn").disabled = false;
+        },
+      });
+      $("run2Btn").addEventListener("click", async () => {
+        if (!instReady || !lastStems) return;
+        $("run2Btn").disabled = true;
+        setStatus("The specialist is listening to each stem…");
+        try {
+          const rows = [];
+          const out = [];
+          for (const s of lastStems) {
+            const mono = toMono16k(s.l, s.r, s.l.length);
+            const r = await instClassify(mono);
+            const labels = r.labels || [];
+          const top = labels[0] || { label: "–", score: 0 };
+          // Honest verdict semantics (the same mapping the original specialist demo used): does the
+          // specialist's top guess land in the stem's own instrument family? The confidence % is always
+          // shown — a correct-but-unsure verdict is shown as correct-but-unsure, never inflated.
+          // vocals is N/A by design (the specialist has no voice class).
+          const FAMILY = {
+            drums: ["Drums", "Hi_Hats"],
+            bass: ["Bass_Guitar"],
+            other: ["Acoustic_Guitar", "Electric_Guitar", "Keyboard"],
+          };
+          const fam = FAMILY[s.name] || [];
+          const pct = (x) => Math.round(x * 100);
+          const cls = s.name === "vocals" ? "na"
+            : fam.includes(top.label) ? "ok"
+            : labels.slice(0, 3).some((l) => fam.includes(l.label)) ? "weak"
+            : "poor";
+          const verdict = s.name === "vocals"
+            ? "N/A — the specialist has no voice class (by design)"
+            : cls === "ok"
+            ? `agrees — hears ${top.label} (${pct(top.score)}% sure)`
+            : cls === "weak"
+            ? `unsure — best guess ${top.label} (${pct(top.score)}%); a ${s.name}-family class is only in its top 3`
+            : `disagrees — hears ${top.label} (${pct(top.score)}%), nothing ${s.name}-like in its top 3`;
+            out.push({ name: s.name, cls, top: top.label, score: top.score, device: r.device });
+            const row = document.createElement("div");
+            row.className = "ms-stem";
+            row.innerHTML = `<strong>${s.name}</strong> — <span class="xv-${cls}">${verdict}</span>`;
+            rows.push(row);
+          }
+          $("xverdicts").replaceChildren(...rows);
+          window.__xverdicts = out; // lets the validator verify real measured verdicts
+          setStatus("");
+        } catch (err) {
+          setStatus("Cross-examination failed: " + err.message, true);
+        }
+        $("run2Btn").disabled = false;
+      });
+
+      $("resetBtn").addEventListener("click", async () => {
+        $("resetBtn").disabled = true;
+        try { instWorker.postMessage({ type: "dispose" }); } catch { /* ignore */ }
+        try { instWorker.terminate(); } catch { /* ignore */ }
+        setStatus("Resetting — disposing both engines and terminating both workers…");
+        try { player.dispose(); } catch { /* ignore */ }
+        try { await engine.dispose(); } catch { /* ignore */ }
+        try { asrWorker.postMessage({ type: "dispose" }); } catch { /* ignore */ }
+        try { asrWorker.terminate(); } catch { /* ignore */ }
+        try { await closeAudioCtx(); } catch { /* ignore */ }
+        location.reload();
+      });
+
+      $("runBtn").addEventListener("click", async () => {
+        setStatus("Step 1/2 — Demucs is separating the opening window…");
+        $("result").hidden = true;
+        player.stop();
+        $("vocalPlay").textContent = "▶ Play the vocals stem (what Whisper heard)";
+        try {
+          const r = await engine.separate(await songSegment());
+          window.__lastStems = r.stems;
+          lastStems = r.stems;
+          if (instReady) $("run2Btn").disabled = false;
+          const v = r.stems.find((s) => s.name === "vocals");
+          player.setStems([v], r.len);
+          setStatus("Step 2/2 — Whisper is listening to the vocals stem…");
+          const mono = toMono16k(v.l, v.r, r.len);
+          const tx = await asrTranscribe(mono);
+          // The control: the same worker on the original mix (proves the limitation is not only the stem).
+          const seg2 = await songSegment();
+          const mixMono = toMono16k(seg2.ch0, seg2.ch1, seg2.len);
+          const txMix = await asrTranscribe(mixMono);
+          setStatus("");
+
+          $("transcript").value = tx.text;
+          $("rSepMs").textContent = (r.ms / 1000).toFixed(1) + " s";
+          $("rSepDev").textContent = r.device.toUpperCase();
+          $("rAsrMs").textContent = tx.ms < 1000 ? tx.ms + " ms" : (tx.ms / 1000).toFixed(1) + " s";
+          $("rAsrDev").textContent = tx.device.toUpperCase();
+          $("rWords").textContent = String(tx.text ? tx.text.trim().split(/\s+/).length : 0);
+          $("mixVerdict").textContent = txMix.text
+            ? `In the original mix Whisper hears: “${txMix.text}”`
+            : "In the original mix Whisper also hears no words — the limitation is the ASR on singing, not only the separated stem.";
+          $("verdictText").textContent = tx.text
+            ? `Whisper transcribed the vocals stem (${tx.ms} ms). Treat the words as a draft: the stem from this ONNX export is lossier than the reference model, and whisper-tiny.en is a small speech-trained model, so expect mistakes — that's why the transcript is editable.`
+            : "Whisper heard no words in the vocals stem — and none in the original mix either (both measured live, above). The chain is healthy: the same worker transcribes spoken word cleanly. The honest reasons: whisper-tiny.en is a tiny SPEECH model and melodic singing defeats it, and this ONNX Demucs export's vocals stem is lossier than the reference PyTorch model. We show the empty transcript rather than invent lyrics. Try your own clearly-spoken or strongly a-cappella audio.";
+          $("result").hidden = false;
+        } catch (err) {
+          setStatus("The chain failed: " + err.message, true);
+        }
+      });
+
+      $("vocalPlay").addEventListener("click", async () => {
+        if (player.playing) {
+          player.stop();
+          $("vocalPlay").textContent = "▶ Play the vocals stem (what Whisper heard)";
+        } else {
+          await player.play(["vocals"]);
+          $("vocalPlay").textContent = "■ Stop";
+          player.onEnded = () => { $("vocalPlay").textContent = "▶ Play the vocals stem (what Whisper heard)"; };
+        }
+      });
+    </script>
+  </body>
+</html>

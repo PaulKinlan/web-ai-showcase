@@ -1,7 +1,7 @@
-// Front-end helpers for the Music source separation page. Owns the worker handshake, turns audio into the
-// 44.1 kHz stereo segment Demucs wants, synthesises the built-in "spoken word over a beat" sample, and plays
-// back any mix-and-match of the four stems (uncheck vocals → karaoke; only vocals → acapella). All inference
-// lives in worker.js, off the main thread.
+// Front-end helpers for the Music source separation page. Owns the worker handshake, turns uploaded audio
+// into the 44.1 kHz stereo segment Demucs wants, and plays back any mix-and-match of the four stems (uncheck
+// vocals → karaoke; only vocals → acapella). All inference lives in worker.js, off the main thread.
+// Bundled sample: an actual openly licensed SONG (SONG below); visitors can also upload their own audio.
 
 const WORKER_URL = "/web-ai-showcase/models/music-source-separation/worker.js";
 export const SEG = 343980;
@@ -14,6 +14,43 @@ export const STEM_META = {
   vocals: { emoji: "🎤", hue: 130 },
 };
 
+/** Display name for a stem (shared by every route — do not copy per page). */
+export const prettyName = (n) =>
+  n === "other" ? "Other (keys/guitar)" : n.charAt(0).toUpperCase() + n.slice(1);
+
+/** Measured energy of a stereo pair (shared by every route): RMS, absolute peak, and peak in dBFS
+ *  ("-∞" for digital silence). */
+export function measureStereo(l, r) {
+  let sum = 0, peak = 0;
+  for (let i = 0; i < l.length; i++) {
+    sum += l[i] * l[i] + r[i] * r[i];
+    const a = Math.abs(l[i]), b = Math.abs(r[i]);
+    if (a > peak) peak = a;
+    if (b > peak) peak = b;
+  }
+  return {
+    rms: Math.sqrt(sum / (2 * l.length)),
+    peak,
+    peakDb: peak > 0 ? (20 * Math.log10(peak)).toFixed(1) : "-∞",
+  };
+}
+
+/** Sum stems sample-by-sample with optional per-stem linear gains (a stem missing from `gains` is left
+ *  OUT when a map is given; without a map every stem sums at unity). The same gain maths the live
+ *  GainNodes do — shared by the karaoke/acapella exports and the remix-deck download. */
+export function sumStems(stems, len, gains = null) {
+  const l = new Float32Array(len), r = new Float32Array(len);
+  for (const s of stems) {
+    const g = gains ? (gains[s.name] ?? 0) : 1;
+    if (!g) continue;
+    for (let i = 0; i < len; i++) {
+      l[i] += s.l[i] * g;
+      r[i] += s.r[i] * g;
+    }
+  }
+  return { l, r };
+}
+
 export class SepEngine {
   constructor() {
     this.worker = new Worker(WORKER_URL, { type: "module" });
@@ -23,6 +60,7 @@ export class SepEngine {
     this._loadWaiters = [];
     this._pending = new Map();
     this._id = 0;
+    this._disposed = false;
     this.worker.addEventListener("message", (e) => this._onMessage(e.data));
     this.worker.addEventListener("error", (e) => {
       const err = new Error(e.message || "Worker failed to start");
@@ -55,7 +93,32 @@ export class SepEngine {
       }
     }
   }
+  isDisposed() {
+    return this._disposed === true;
+  }
+  /** GENUINE teardown: reject all pending work, tell the worker to release the ONNX session, terminate
+   *  the worker, and drop the reference. After disposal the engine cannot load or separate again. */
+  async dispose() {
+    if (this._disposed) return true;
+    this._disposed = true;
+    this.ready = false;
+    const err = new Error("engine disposed");
+    for (const w of this._loadWaiters) w.reject(err);
+    this._loadWaiters = [];
+    for (const [, p] of this._pending) p.reject(err);
+    this._pending.clear();
+    try {
+      this.worker.postMessage({ type: "dispose" });
+      await new Promise((r) => setTimeout(r, 150)); // let the worker release the session first
+    } catch { /* worker already gone */ }
+    try {
+      this.worker.terminate();
+    } catch { /* ignore */ }
+    this.worker = null;
+    return true;
+  }
   load(onProgress) {
+    if (this._disposed) return Promise.reject(new Error("engine disposed"));
     if (onProgress) this.onProgress = onProgress;
     if (this.ready) return Promise.resolve(this.device);
     return new Promise((resolve, reject) => {
@@ -65,6 +128,7 @@ export class SepEngine {
   }
   /** Separate a 44.1 kHz stereo segment ({ch0,ch1,len}) → { stems:[{name,l,r}], len, ms, device }. */
   separate({ ch0, ch1, len }) {
+    if (this._disposed || !this.worker) return Promise.reject(new Error("engine disposed"));
     const id = ++this._id;
     const a = ch0.slice(), b = ch1.slice();
     return new Promise((resolve, reject) => {
@@ -83,6 +147,17 @@ export function audioCtx() {
   return _ctx;
 }
 
+/** Close the shared AudioContext + drop the decoded song buffer (genuine resource release). */
+export async function closeAudioCtx() {
+  _songBuf = null;
+  if (_ctx) {
+    try {
+      await _ctx.close();
+    } catch { /* already closed */ }
+    _ctx = null;
+  }
+}
+
 /** Decode any audio ArrayBuffer → 44.1 kHz STEREO, trimmed to the first SEG samples (≈7.8 s). */
 export async function decodeToSegment(arrayBuffer) {
   const decoded = await audioCtx().decodeAudioData(arrayBuffer.slice(0));
@@ -98,33 +173,44 @@ export async function decodeToSegment(arrayBuffer) {
   return { ch0, ch1, len: ch0.length };
 }
 
-/** Build the built-in sample: JFK's (public-domain) spoken voice over a synthesised beat — a first-party,
- *  clean "vocals + backing" mix. (Demucs's vocals stem is trained on SUNG vocals, so a spoken voice lands in
- *  "other" — the page says so; upload a song with singing to isolate real vocals.) */
-export async function makeSampleMix() {
-  const buf = await (await fetch("jfk.wav")).arrayBuffer();
-  const decoded = await audioCtx().decodeAudioData(buf);
-  const off = new OfflineAudioContext(1, SEG, SR);
-  const src = off.createBufferSource();
-  src.buffer = decoded;
-  src.connect(off.destination);
-  src.start();
-  const voice = (await off.startRendering()).getChannelData(0);
-  const mix = new Float32Array(SEG);
-  const spb = 60 / 100; // 100 bpm
-  for (let i = 0; i < SEG; i++) {
-    const t = i / SR;
-    const beat = t / spb, ph = beat - Math.floor(beat), b = Math.floor(beat) % 4;
-    const kick = ph < 0.08
-      ? Math.sin(2 * Math.PI * (60 - 30 * ph) * t) * Math.exp(-ph * 12) * 0.7
-      : 0;
-    const hp = (beat * 2) % 1;
-    const hat = (Math.random() * 2 - 1) * Math.exp(-hp * spb * 50) * 0.1;
-    const bass = Math.sin(2 * Math.PI * (b % 2 ? 98 : 65) * t) * 0.22;
-    mix[i] = (voice[i] || 0) * 0.9 + kick + hat + bass;
+/** The bundled sample song: "The CC BY Song" by loveshadow, additional lyrics by Victor Stone
+ *  (CC BY 3.0, via ccMixter) — an actual openly licensed SONG with sung vocals, fittingly about Creative
+ *  Commons licences. The complete 2:22 track ships UNMODIFIED (the original MP3 upload,
+ *  sha256 9ae38593020674f9f89879f79163031392f00a937b5332365f504be24b2e91aa). The default sample window is
+ *  exposed honestly on the page. Provenance: CREDITS.md. */
+export const SONG = {
+  url: "/web-ai-showcase/models/music-source-separation/song.mp3",
+  title: "The CC BY Song",
+  artist: "loveshadow",
+  license: "CC BY 3.0",
+  source: "https://ccmixter.org/files/Loveshadow/29635",
+  offsetSec: 0,
+  durationSec: 141.67,
+};
+
+let _songBuf = null;
+async function songBuffer() {
+  if (!_songBuf) {
+    const res = await fetch(SONG.url);
+    if (!res.ok) throw new Error(`song fetch failed (${res.status})`);
+    _songBuf = await audioCtx().decodeAudioData(await res.arrayBuffer());
   }
-  const ch = Float32Array.from(mix);
-  return { ch0: ch, ch1: ch.slice(), len: SEG };
+  return _songBuf;
+}
+
+/** A SEG-length window of the bundled song at `offsetSec` (default: the opening at 0.0 s — the song
+ *  sings from the first bar, so no offset is needed). */
+export async function songSegment(offsetSec = SONG.offsetSec) {
+  const buf = await songBuffer();
+  const start = Math.max(0, Math.min(Math.floor(offsetSec * SR), buf.length - SEG));
+  const len = Math.min(SEG, buf.length - start);
+  const ch = (i) => buf.getChannelData(Math.min(i, buf.numberOfChannels - 1));
+  return {
+    ch0: Float32Array.from(ch(0).slice(start, start + len)),
+    ch1: Float32Array.from(ch(1).slice(start, start + len)),
+    len,
+    offsetSec: start / SR,
+  };
 }
 
 /** A little multi-stem player: play any subset of stems together (checkboxes = the live mix). */
@@ -154,7 +240,7 @@ export class StemPlayer {
     this.sources = [];
     this.playing = false;
   }
-  async play(enabledNames) {
+  async play(enabledNames, rate = 1) {
     this.stop();
     if (this.ctx.state === "suspended") await this.ctx.resume();
     const t0 = this.ctx.currentTime + 0.05;
@@ -164,6 +250,7 @@ export class StemPlayer {
       if (!buf) continue;
       const src = this.ctx.createBufferSource();
       src.buffer = buf;
+      src.playbackRate.value = rate; // real resampling playback (practice mode slows a part down)
       src.connect(this.ctx.destination);
       src.start(t0);
       this.sources.push(src);
@@ -177,6 +264,110 @@ export class StemPlayer {
       }, { once: true });
     }
   }
+  /** Stop playback and drop the stem buffers (genuine teardown; the ctx closes via closeAudioCtx). */
+  dispose() {
+    this.stop();
+    this.buffers = {};
+  }
+}
+
+/** A live stem mixer for the Wild demo: loops the separated window with one GainNode per stem, so pads
+ *  can mute/solo stems WHILE the loop plays (a real remix, not re-rendered playback). */
+export class StemMixer {
+  constructor() {
+    this.ctx = audioCtx();
+    this.buffers = {};
+    this.gains = {};
+    this.sources = [];
+    this.playing = false;
+  }
+  setStems(stems, len) {
+    this.stop();
+    this.buffers = {};
+    for (const s of stems) {
+      const buf = this.ctx.createBuffer(2, len, SR);
+      buf.copyToChannel(s.l, 0);
+      buf.copyToChannel(s.r, 1);
+      this.buffers[s.name] = buf;
+    }
+  }
+  /** Fade a stem in/out live (20 ms ramp, no clicks). Works during playback. */
+  setStemOn(name, on) {
+    const g = this.gains[name];
+    if (g) g.gain.setTargetAtTime(on ? 1 : 0, this.ctx.currentTime, 0.02);
+  }
+  /** Set a stem's gain live (20 ms ramp, no clicks). `v` is linear: 1 = unity, >1 boosts, 0 kills. */
+  setStemGain(name, v) {
+    const g = this.gains[name];
+    if (g) g.gain.setTargetAtTime(Math.max(0, v), this.ctx.currentTime, 0.02);
+  }
+  isOn(name) {
+    const g = this.gains[name];
+    return g ? g.gain.value > 0.5 : true;
+  }
+  /** A live AnalyserNode tapped off a stem's gain (for metering / envelope-driven effects like
+   *  auto-ducking). Created lazily; reused across play/stop cycles (the stem gain reconnects on play). */
+  analyserFor(name) {
+    this._analysers ||= {};
+    if (!this._analysers[name]) {
+      const a = this.ctx.createAnalyser();
+      a.fftSize = 2048;
+      this._analysers[name] = a;
+    }
+    // (Re)tap: the gain node is recreated on each play(), so (re)connect if needed.
+    const g = this.gains[name];
+    if (g && this._analysers[name]._tap !== g) {
+      try {
+        g.connect(this._analysers[name]);
+      } catch { /* already connected */ }
+      this._analysers[name]._tap = g;
+    }
+    return this._analysers[name];
+  }
+  stop() {
+    for (const s of this.sources) {
+      try {
+        s.stop();
+      } catch { /* already stopped */ }
+    }
+    this.sources = [];
+    this.gains = {};
+    this.playing = false;
+  }
+  async play() {
+    this.stop();
+    if (this.ctx.state === "suspended") await this.ctx.resume();
+    const t0 = this.ctx.currentTime + 0.05;
+    for (const name of STEMS) {
+      const buf = this.buffers[name];
+      if (!buf) continue;
+      const src = this.ctx.createBufferSource();
+      src.buffer = buf;
+      src.loop = true;
+      const g = this.ctx.createGain();
+      src.connect(g).connect(this.ctx.destination);
+      src.start(t0);
+      this.sources.push(src);
+      this.gains[name] = g;
+    }
+    this.playing = this.sources.length > 0;
+  }
+  /** Stop the loop and drop buffers/gains (genuine teardown; the ctx closes via closeAudioCtx). */
+  dispose() {
+    this.stop();
+    this.buffers = {};
+  }
+}
+
+/** Resample a stereo segment to 16 kHz mono — what the instrument classifier (multi-model demo) wants. */
+export function toMono16k(l, r, len) {
+  const n = Math.max(1, Math.floor((len * 16000) / SR));
+  const out = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const j = Math.min(len - 1, Math.floor((i * SR) / 16000));
+    out[i] = (l[j] + r[j]) * 0.5;
+  }
+  return out;
 }
 
 /** Encode a stereo pair as a 16-bit PCM WAV Blob (for stem download). */

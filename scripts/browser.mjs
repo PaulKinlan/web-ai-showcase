@@ -176,6 +176,10 @@ async function spawnChromeOnce(userDataDir, resetProfile) {
     // Without this the CDP client's WS handshake is closed immediately ("ws error"). Harmless on older
     // Chrome. Required for the harness to run on modern Chrome.
     "--remote-allow-origins=*",
+    // CDP-synthesised clicks are not user gestures, so AudioContext.resume() would hang forever when a
+    // validator exercises a real play button. Allow autoplay in the TEST browser only (shipped pages
+    // still resume on genuine user clicks). Standard practice (Puppeteer/Playwright default).
+    "--autoplay-policy=no-user-gesture-required",
     `--user-data-dir=${userDataDir}`,
     "about:blank",
   ], { detached: detachedProcessGroup, stdio: ["ignore", "ignore", "ignore"] });

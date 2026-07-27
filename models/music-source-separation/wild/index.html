@@ -1,0 +1,330 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Wild — live stem DJ · Music source separation</title>
+    <meta name="description" content="The playful one: remix the song live — punch drums, bass, other and vocals in and out while the separated stems loop, on-device." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎛️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Music source separation</a></p>
+    <header>
+      <p class="eyebrow">Wild · live remix pads · WASM</p>
+      <h1>Be the DJ: remix the stems live</h1>
+      <p class="lede">Demucs separates the sample song into four stems — then the page loops them through
+        one <strong>live gain node per stem</strong>. Ride the faders and pads while it plays: drop the
+        vocals for an instant karaoke break, boost the drums for the club, solo the bass — then
+        <strong>download your recombined mix</strong> as a real WAV. No re-render, no waiting — the mix
+        changes as you move a control.</p>
+    </header>
+
+    <p class="ms-hint rungs">Demos: <a href="../basics/">Basics</a> · <a href="../practical/">Practical</a> ·
+      <strong>Wild</strong> · <a href="../multi-model/">Multi-model</a></p>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+      <div class="ms-tools">
+        <button class="ms-btn primary" id="sampleBtn" type="button" disabled>Separate + open the decks</button>
+        <button class="ms-btn" id="resetBtn" type="button" title="Dispose the engine, terminate its worker, and reload the page fresh">Reset demo</button>
+      </div>
+      <p class="ms-hint ms-credit">Sample: <a href="https://ccmixter.org/files/Loveshadow/29635">“The CC BY Song”</a>
+        by loveshadow, additional lyrics by Victor Stone —
+        <a href="https://creativecommons.org/licenses/by/3.0/">CC BY 3.0</a>, via
+        <a href="https://ccmixter.org/files/Loveshadow/29635">ccMixter</a>. The bundled file is the
+        original upload, <strong>unmodified</strong>; the demo analyzes only the first ~7.8 s (the song
+        sings from the first bar), looped. Full credits:
+        <a href="CREDITS.md">CREDITS.md</a>.</p>
+
+      <div id="result" hidden>
+        <div class="pad-grid" id="pads" role="group" aria-label="Live stem decks"></div>
+        <div class="ms-transport">
+          <button class="ms-btn primary" id="playBtn" type="button">▶ Play the loop</button>
+          <button class="ms-btn" id="soloBtn" type="button">Solo vocals</button>
+          <button class="ms-btn" id="allBtn" type="button">All stems on</button>
+        </div>
+        <div class="ms-transport">
+          <span class="ms-hint" style="margin:0">Presets:</span>
+          <button class="ms-btn" id="presetFlat" type="button">Full mix</button>
+          <button class="ms-btn" id="presetKaraoke" type="button">Karaoke</button>
+          <button class="ms-btn" id="presetClub" type="button">Club boost</button>
+          <button class="ms-btn primary" id="mixDlBtn" type="button" title="Render the current pad + fader positions to a WAV and download it">⬇ Download this mix (WAV)</button>
+        </div>
+        <div class="ms-transport" id="duckRow">
+          <span class="ms-hint" style="margin:0"><strong>Example 2 — Auto-duck:</strong></span>
+          <button class="ms-btn" id="duckBtn" type="button" aria-pressed="false">Auto-duck: off</button>
+          <label>Amount
+            <input id="duckAmt" type="range" min="0" max="100" value="70" aria-label="Duck amount, percent">
+          </label>
+          <span class="ms-hint" style="margin:0" id="duckLive" aria-live="polite">duck ×1.00</span>
+        </div>
+        <p class="ms-hint">Auto-duck is a real envelope follower: an AnalyserNode on the vocals stem pulls
+          the backing gains down while the vocal is loud — the radio-DJ effect, live on the loop. It is a
+          performance effect; “Download this mix” still renders the static pad + fader state.</p>
+        <p class="ms-hint" id="mixState">Mix: all stems on.</p>
+        <p class="readout" id="readout" hidden>
+          <span>backend <b id="rBackend">–</b></span> · <span>separated in <b id="rMs">–</b></span> ·
+          <span>loop <b id="rDur">–</b></span>
+        </p>
+      </div>
+    </section>
+
+    <section aria-labelledby="note-h">
+      <h2 id="note-h">What you're seeing</h2>
+      <p>This is the same four real stem waveforms as the other demos, but instead of bouncing a mix the
+        page routes each stem through its own WebAudio <code>GainNode</code> and loops them in sync. The
+        pads mute, the faders ride the gains continuously (0–150%, 20 ms ramps, no clicks), and the
+        presets just set both at once — measurably. “Download this mix” renders the current pad + fader
+        positions to a real stereo WAV with the same gain maths. Nothing here is decorative: every control
+        moves a real gain on the model's actual stems.</p>
+    </section>
+
+    <footer class="byline">Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. <a href="../">← Back to Music source separation</a></footer>
+
+    <script type="module">
+      import {
+        SepEngine, SEP_CSS, STEMS, STEM_META, SR,
+        songSegment, StemMixer, closeAudioCtx, encodeWav, prettyName, sumStems,
+      } from "../sep.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = SEP_CSS + `
+        .pad-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(7.5rem, 1fr)); gap: .6rem; margin: .7rem 0; }
+        .strip { display: flex; flex-direction: column; gap: .35rem; }
+        .ms-gain { width: 100%; accent-color: var(--accent); }
+        .ms-gainval { font-family: var(--font-mono, monospace); font-size: .72rem; color: var(--muted); text-align: center; }
+        .pad { font: inherit; padding: 1rem .5rem; border-radius: 12px; border: 2px solid var(--border);
+               background: var(--panel); cursor: pointer; text-align: center; }
+        .pad .em { font-size: 1.6rem; display: block; }
+        .pad[aria-pressed="true"] { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, var(--panel)); }
+        .pad[aria-pressed="false"] { opacity: .45; }
+      `;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new SepEngine();
+      window.__engine = engine; // lets the validator verify genuine disposal
+      const mixer = new StemMixer();
+      window.__mixer = mixer; // diagnostics: lets the validator/debugger inspect the live graph
+      window.__mixer = mixer; // lets the validator read the real gain state
+      let ready = false;
+      const padState = Object.fromEntries(STEMS.map((s) => [s, true]));
+      const level = Object.fromEntries(STEMS.map((s) => [s, 1]));
+      const effective = (name) => padState[name] ? level[name] : 0;
+
+      function setStatus(msg, err) {
+        $("runStatus").hidden = !msg;
+        $("runStatus").textContent = msg || "";
+        $("runStatus").classList.toggle("err", !!err);
+      }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: {
+          modelId: "MrCitron/demucs-v4-onnx",
+          runtime: "onnxruntime-web",
+          dtype: "fp32",
+          sizeMB: 303,
+          requiresWebGPU: false,
+        },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { ready = true; $("sampleBtn").disabled = false; },
+      });
+
+      function mixLabel() {
+        const parts = STEMS.map((s) =>
+          padState[s] ? `${prettyName(s)} ${Math.round(level[s] * 100)}%` : `${prettyName(s)} off`
+        );
+        $("mixState").textContent = "Mix: " + parts.join(" + ") + ".";
+      }
+
+      function applyPads() {
+        for (const s of STEMS) mixer.setStemGain(s, effective(s));
+        for (const pad of $("pads").querySelectorAll(".pad")) {
+          pad.setAttribute("aria-pressed", String(padState[pad.dataset.name]));
+        }
+        mixLabel();
+      }
+
+      function renderPads() {
+        const strips = STEMS.map((name) => {
+          const strip = document.createElement("div");
+          strip.className = "strip";
+          const b = document.createElement("button");
+          b.className = "pad";
+          b.type = "button";
+          b.dataset.name = name;
+          b.setAttribute("aria-pressed", "true");
+          b.setAttribute("aria-label", "Toggle " + prettyName(name) + " in the live mix");
+          b.innerHTML = `<span class="em" aria-hidden="true">${STEM_META[name].emoji}</span>${prettyName(name)}`;
+          b.addEventListener("click", () => {
+            padState[name] = !padState[name];
+            applyPads();
+          });
+          const fader = document.createElement("input");
+          fader.type = "range";
+          fader.className = "ms-gain";
+          fader.dataset.name = name;
+          fader.min = "0";
+          fader.max = "1.5";
+          fader.step = "0.01";
+          fader.value = "1";
+          fader.setAttribute("aria-label", prettyName(name) + " level in the live mix");
+          const val = document.createElement("span");
+          val.className = "ms-gainval";
+          val.textContent = "100%";
+          fader.addEventListener("input", () => {
+            level[name] = parseFloat(fader.value);
+            val.textContent = Math.round(level[name] * 100) + "%";
+            mixer.setStemGain(name, effective(name));
+            mixLabel();
+          });
+          strip.append(b, fader, val);
+          return strip;
+        });
+        $("pads").replaceChildren(...strips);
+        $("result").hidden = false;
+        mixLabel();
+      }
+
+      /** A preset sets BOTH the fader positions and the pad mutes — measurably, via the same gains. */
+      function setDeck(levels, mutes) {
+        for (const s of STEMS) {
+          level[s] = levels[s];
+          padState[s] = mutes[s];
+        }
+        for (const f of $("pads").querySelectorAll(".ms-gain")) {
+          f.value = String(level[f.dataset.name]);
+          f.nextElementSibling.textContent = Math.round(level[f.dataset.name] * 100) + "%";
+        }
+        applyPads();
+      }
+
+      $("resetBtn").addEventListener("click", async () => {
+        $("resetBtn").disabled = true;
+        setStatus("Resetting — disposing the engine and terminating its worker…");
+        try { mixer.dispose(); } catch { /* ignore */ }
+        try { await engine.dispose(); } catch { /* ignore */ }
+        try { await closeAudioCtx(); } catch { /* ignore */ }
+        location.reload();
+      });
+
+      $("sampleBtn").addEventListener("click", async () => {
+        if (!ready) return;
+        setStatus("Separating the sample song — this takes about ten seconds…");
+        $("result").hidden = true;
+        mixer.stop();
+        $("playBtn").textContent = "▶ Play the loop";
+        try {
+          const r = await engine.separate(await songSegment());
+          window.__lastStems = r.stems; // lets the validator recompute the rendered mix
+          mixer.setStems(r.stems, r.len);
+          renderPads();
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = (r.ms / 1000).toFixed(1) + " s";
+          $("rDur").textContent = (r.len / SR).toFixed(1) + " s";
+          setStatus("");
+        } catch (err) {
+          setStatus("Separation failed: " + err.message, true);
+        }
+      });
+
+      // Example 2 — auto-duck: the vocals-stem envelope pulls the backing down, live.
+      let duckOn = false, duckAmt = 0.7, duckRaf = 0, duckSmooth = 0;
+      const duckBuf = new Float32Array(2048);
+      window.__duck = { on: false, amount: 0.7, current: 1 }; // lets the validator verify real ducking
+      function duckApply(k) {
+        for (const n of ["drums", "bass", "other"]) mixer.setStemGain(n, effective(n) * k);
+        mixer.setStemGain("vocals", effective("vocals"));
+      }
+      function duckTick() {
+        if (!duckOn || !mixer.playing) return;
+        const an = mixer.analyserFor("vocals");
+        an.getFloatTimeDomainData(duckBuf);
+        let sum = 0;
+        for (let i = 0; i < duckBuf.length; i++) sum += duckBuf[i] * duckBuf[i];
+        const inst = Math.sqrt(sum / duckBuf.length);
+        // Envelope follower with fast attack / slow release (the standard anti-pumping smoothing).
+        duckSmooth = Math.max(inst, duckSmooth * 0.94);
+        const level = duckSmooth;
+        const duck = 1 - duckAmt * Math.min(0.85, level * 8);
+        duckApply(duck);
+        window.__duck.current = duck;
+        window.__duck.level = level;
+        window.__duck.ticks = (window.__duck.ticks || 0) + 1;
+        $("duckLive").textContent = "duck ×" + duck.toFixed(2);
+        duckRaf = requestAnimationFrame(duckTick);
+      }
+      function duckStop() {
+        cancelAnimationFrame(duckRaf);
+        if (mixer.playing) duckApply(1);
+        window.__duck.current = 1;
+        $("duckLive").textContent = "duck ×1.00";
+      }
+      $("duckBtn").addEventListener("click", () => {
+        duckOn = !duckOn;
+        window.__duck.on = duckOn;
+        $("duckBtn").setAttribute("aria-pressed", String(duckOn));
+        $("duckBtn").textContent = "Auto-duck: " + (duckOn ? "on" : "off");
+        if (duckOn) {
+          if (mixer.playing) duckRaf = requestAnimationFrame(duckTick);
+        } else duckStop();
+      });
+      $("duckAmt").addEventListener("input", () => {
+        duckAmt = Number($("duckAmt").value) / 100;
+        window.__duck.amount = duckAmt;
+      });
+
+      $("playBtn").addEventListener("click", async () => {
+        if (mixer.playing) {
+          mixer.stop();
+          duckStop();
+          $("playBtn").textContent = "▶ Play the loop";
+        } else {
+          await mixer.play();
+          applyPads();
+          if (duckOn) duckRaf = requestAnimationFrame(duckTick);
+          $("playBtn").textContent = "■ Stop the loop";
+        }
+      });
+      $("soloBtn").addEventListener("click", () => {
+        for (const s of STEMS) padState[s] = s === "vocals";
+        applyPads();
+      });
+      $("allBtn").addEventListener("click", () => {
+        for (const s of STEMS) padState[s] = true;
+        applyPads();
+      });
+      $("presetFlat").addEventListener("click", () =>
+        setDeck({ drums: 1, bass: 1, other: 1, vocals: 1 }, { drums: true, bass: true, other: true, vocals: true }));
+      $("presetKaraoke").addEventListener("click", () =>
+        setDeck({ drums: 1, bass: 1, other: 1, vocals: 1 }, { drums: true, bass: true, other: true, vocals: false }));
+      $("presetClub").addEventListener("click", () =>
+        setDeck({ drums: 1.25, bass: 1.2, other: 0.75, vocals: 0.85 }, { drums: true, bass: true, other: true, vocals: true }));
+
+      // Render the CURRENT pad + fader state to a real stereo WAV (the same gain maths the GainNodes do)
+      // and download it.
+      $("mixDlBtn").addEventListener("click", () => {
+        const stems = window.__lastStems;
+        if (!stems) return;
+        const len = stems[0].l.length;
+        const gains = Object.fromEntries(STEMS.map((s) => [s, effective(s)]));
+        const { l, r } = sumStems(stems, len, gains); // the same gain maths as the live GainNodes
+        if (window.__lastMixUrl) URL.revokeObjectURL(window.__lastMixUrl);
+        const url = URL.createObjectURL(encodeWav(l, r, SR));
+        window.__lastMixUrl = url; // lets the validator fetch + verify the exact artifact
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "wild-remix.wav";
+        document.body.append(a);
+        a.click();
+        a.remove();
+      });
+    </script>
+  </body>
+</html>

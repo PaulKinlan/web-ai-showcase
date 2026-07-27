@@ -1,0 +1,300 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Practical — karaoke & stem export · Music source separation</title>
+    <meta name="description" content="The practical workflow: separate a song on-device, then download a karaoke mix, the acapella, or any single stem as a WAV." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>💿</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Music source separation</a></p>
+    <header>
+      <p class="eyebrow">Practical · karaoke / acapella / stem WAVs · WASM</p>
+      <h1>Take the stems with you</h1>
+      <p class="lede">The workflow people actually want: drop a song (or use the sample), let Demucs
+        separate it, then <strong>play the backing track</strong> with the vocals gone, flip between
+        <strong>backing and vocal</strong> to compare, and <strong>download a real karaoke WAV</strong> —
+        plus the acapella or any single stem — ready for your DAW, your karaoke night, or your practice
+        loop.</p>
+    </header>
+
+    <p class="ms-hint rungs">Demos: <a href="../basics/">Basics</a> · <strong>Practical</strong> ·
+      <a href="../wild/">Wild</a> · <a href="../multi-model/">Multi-model</a></p>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <div class="ms-drop" id="drop">
+        <p class="ms-hint" style="margin:.2rem 0 .5rem">Drop a song, or:</p>
+        <div class="ms-tools">
+          <button class="ms-btn" id="pickBtn" type="button" disabled>Choose audio</button>
+          <button class="ms-btn" id="sampleBtn" type="button" disabled>Use the sample song</button>
+          <button class="ms-btn" id="resetBtn" type="button" title="Dispose the engine, terminate its worker, and reload the page fresh">Reset demo</button>
+          <input type="file" id="file" accept="audio/*" hidden />
+        </div>
+        <p class="ms-hint ms-credit">Sample: <a href="https://ccmixter.org/files/Loveshadow/29635">“The CC BY Song”</a>
+          by loveshadow, additional lyrics by Victor Stone —
+          <a href="https://creativecommons.org/licenses/by/3.0/">CC BY 3.0</a>, via
+          <a href="https://ccmixter.org/files/Loveshadow/29635">ccMixter</a>. The bundled file is the
+          original upload, <strong>unmodified</strong>; the demo analyzes only the first ~7.8 s (the song
+          sings from the first bar). Your own files never leave
+          the tab. Full credits: <a href="CREDITS.md">CREDITS.md</a>.</p>
+      </div>
+
+      <div id="result" hidden>
+        <h4>Listen &amp; compare</h4>
+        <div class="ms-tools">
+          <button class="ms-btn primary" id="abPlay" type="button">▶ Play</button>
+          <div class="ms-preset" role="group" aria-label="Choose what to hear">
+            <button class="ms-btn" id="abBacking" type="button" aria-pressed="true">🎸 Backing (karaoke)</button>
+            <button class="ms-btn" id="abVocal" type="button" aria-pressed="false">🎤 Vocal (acapella)</button>
+            <button class="ms-btn" id="abFull" type="button" aria-pressed="false">Full mix</button>
+          </div>
+        </div>
+        <div class="ab-waves">
+          <figure>
+            <canvas id="waveBacking" class="ms-wave"></canvas>
+            <figcaption class="ms-stat" id="statBacking"></figcaption>
+          </figure>
+          <figure>
+            <canvas id="waveVocal" class="ms-wave"></canvas>
+            <figcaption class="ms-stat" id="statVocal"></figcaption>
+          </figure>
+        </div>
+
+        <h4>Exports <span class="ms-hint" id="exportFor"></span></h4>
+        <div class="ms-tools" id="exports"></div>
+        <div class="ms-panel" id="practice">
+          <strong>Example 2 — Practice mode:</strong> solo a part and slow it down to learn it.
+          <div class="ms-row">
+            <label>Part
+              <select id="pracStem" aria-label="Part to practise">
+                <option value="drums">Drums</option>
+                <option value="bass">Bass</option>
+                <option value="other">Other (keys/guitar)</option>
+                <option value="vocals" selected>Vocals</option>
+              </select>
+            </label>
+            <div class="seg" role="group" aria-label="Practice speed" id="pracRate">
+              <button class="seg-btn" data-rate="0.5" aria-pressed="false" type="button">50%</button>
+              <button class="seg-btn" data-rate="0.75" aria-pressed="false" type="button">75%</button>
+              <button class="seg-btn" data-rate="1" aria-pressed="true" type="button">100%</button>
+            </div>
+            <button class="ms-btn" id="pracBtn" type="button">▶ Play part</button>
+          </div>
+          <p class="ms-cap">Real resampling playback (playbackRate) of the actual separated stem — the
+            same audio the model produced, slowed down. No re-rendering, no synthesised click track.</p>
+        </div>
+        <p class="ms-hint">Karaoke = drums + bass + other summed (the real model outputs, no phase tricks).
+          Acapella = the vocals stem alone. All WAVs are 44.1 kHz stereo 16-bit.</p>
+        <p class="readout" id="readout" hidden>
+          <span>backend <b id="rBackend">–</b></span> · <span>separated in <b id="rMs">–</b></span> ·
+          <span>window <b id="rDur">–</b></span>
+        </p>
+      </div>
+    </section>
+
+    <section aria-labelledby="note-h">
+      <h2 id="note-h">What you're seeing</h2>
+      <p>Every download is rendered in-page from the model's actual separated waveforms — the karaoke mix
+        is the literal sum of the three non-vocal stems, so what you download is exactly what the model
+        produced. The compare player rides the same real stems through one GainNode per stem: switching
+        between Backing, Vocal and Full mix flips those gains live, so you hear the difference instantly
+        on one timeline. Demucs separates its fixed ~7.8-second window per run (the first verse for the
+        sample, the start of your own file), so playback loops and exports are clips, not whole songs.</p>
+    </section>
+
+    <footer class="byline">Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. <a href="../">← Back to Music source separation</a></footer>
+
+    <script type="module">
+      import {
+        SepEngine, SEP_CSS, SR,
+        decodeToSegment, songSegment, encodeWav, closeAudioCtx, StemMixer, StemPlayer, drawWaveform,
+        measureStereo, sumStems,
+      } from "../sep.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = SEP_CSS + `
+        .ab-waves { display: grid; grid-template-columns: 1fr 1fr; gap: .6rem; margin: .2rem 0 .8rem; }
+        .ab-waves figure { margin: 0; border: 1px solid var(--border); border-radius: 10px; padding: .5rem .7rem;
+          background: var(--bg-raised); }
+        .ab-waves figcaption { font-family: var(--font-mono, monospace); font-size: .74rem; color: var(--muted);
+          margin-top: .35rem; }
+        .ms-btn[aria-pressed="true"] { border-color: var(--accent);
+          background: color-mix(in srgb, var(--accent) 14%, transparent); }
+        @media (max-width: 560px) { .ab-waves { grid-template-columns: 1fr; } }
+      `;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new SepEngine();
+      window.__engine = engine; // lets the validator verify genuine disposal
+      const mixer = new StemMixer();
+      window.__mixer = mixer; // lets the validator read the real gain state
+      let ready = false;
+      let mode = "backing"; // the karaoke maker defaults to the backing track
+
+      const MODES = {
+        backing: { drums: true, bass: true, other: true, vocals: false },
+        vocal: { drums: false, bass: false, other: false, vocals: true },
+        full: { drums: true, bass: true, other: true, vocals: true },
+      };
+      function applyMode() {
+        const on = MODES[mode];
+        for (const n of ["drums", "bass", "other", "vocals"]) mixer.setStemOn(n, on[n]);
+        for (const [id, m] of [["abBacking", "backing"], ["abVocal", "vocal"], ["abFull", "full"]]) {
+          $(id).setAttribute("aria-pressed", String(m === mode));
+        }
+      }
+
+      function setStatus(msg, err) {
+        $("runStatus").hidden = !msg;
+        $("runStatus").textContent = msg || "";
+        $("runStatus").classList.toggle("err", !!err);
+      }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: {
+          modelId: "MrCitron/demucs-v4-onnx",
+          runtime: "onnxruntime-web",
+          dtype: "fp32",
+          sizeMB: 303,
+          requiresWebGPU: false,
+        },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { ready = true; $("pickBtn").disabled = false; $("sampleBtn").disabled = false; },
+      });
+
+
+      function renderExports(stems, len, label) {
+        window.__lastStems = stems; // lets the validator recompute the displayed measurements
+        mixer.setStems(stems, len);
+        prac.setStems(stems, len);
+        const mk = (text, file, l, r) => {
+          const a = document.createElement("a");
+          a.className = "ms-dl";
+          a.textContent = text;
+          a.href = URL.createObjectURL(encodeWav(l, r, SR));
+          a.download = file;
+          return a;
+        };
+        const stem = (n) => stems.find((s) => s.name === n);
+        const karaoke = sumStems(stems, len, { drums: 1, bass: 1, other: 1, vocals: 0 });
+        const totalE = stems.reduce((t, s) => t + measureStereo(s.l, s.r).rms ** 2, 0) || 1;
+        const kRms = measureStereo(karaoke.l, karaoke.r).rms, vRms = measureStereo(stem("vocals").l, stem("vocals").r).rms;
+        drawWaveform($("waveBacking"), karaoke.l);
+        drawWaveform($("waveVocal"), stem("vocals").l);
+        $("statBacking").textContent = `Backing (drums + bass + other) — RMS ${kRms.toFixed(3)} · ${Math.round((kRms ** 2 / totalE) * 100)}% of the window's energy`;
+        $("statVocal").textContent = `Vocal (acapella) — RMS ${vRms.toFixed(3)} · ${Math.round((vRms ** 2 / totalE) * 100)}% — the part karaoke removes`;
+        applyMode();
+        const links = [
+          mk("⬇ Karaoke (no vocals)", "karaoke.wav", karaoke.l, karaoke.r),
+          mk("⬇ Acapella (vocals)", "acapella.wav", stem("vocals").l, stem("vocals").r),
+          ...stems.map((s) => mk(`⬇ ${s.name} stem`, s.name + ".wav", s.l, s.r)),
+        ];
+        $("exportFor").textContent = " — " + label;
+        $("exports").replaceChildren(...links);
+        $("result").hidden = false;
+      }
+
+      async function separate(seg, label) {
+        if (!ready) return;
+        setStatus(`Separating ${label} — this takes about ten seconds…`);
+        $("result").hidden = true;
+        try {
+          const r = await engine.separate(seg);
+          renderExports(r.stems, r.len, label);
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = (r.ms / 1000).toFixed(1) + " s";
+          $("rDur").textContent = (r.len / SR).toFixed(1) + " s";
+          setStatus("");
+        } catch (err) {
+          setStatus("Separation failed: " + err.message, true);
+        }
+      }
+
+      // Example 2 — practice mode: an independent player solos one stem at a chosen rate.
+      const prac = new StemPlayer();
+      let pracRate = 1;
+      $("pracRate").addEventListener("click", (e) => {
+        const b = e.target.closest(".seg-btn");
+        if (!b) return;
+        pracRate = Number(b.dataset.rate);
+        for (const x of $("pracRate").querySelectorAll(".seg-btn")) {
+          x.setAttribute("aria-pressed", String(x === b));
+        }
+      });
+      $("pracBtn").addEventListener("click", async () => {
+        if (prac.playing) {
+          prac.stop();
+          $("pracBtn").textContent = "▶ Play part";
+          return;
+        }
+        if (!prac.buffers[$("pracStem").value]) return; // nothing separated yet
+        const stem = $("pracStem").value;
+        window.__practice = { stem, rate: pracRate }; // lets the validator verify the real rate
+        await prac.play([stem], pracRate);
+        $("pracBtn").textContent = "■ Stop";
+        prac.onEnded = () => { $("pracBtn").textContent = "▶ Play part"; };
+      });
+
+      $("resetBtn").addEventListener("click", async () => {
+        $("resetBtn").disabled = true;
+        setStatus("Resetting — disposing the engine and terminating its worker…");
+        try { prac.dispose(); } catch { /* ignore */ }
+        try { mixer.dispose(); } catch { /* ignore */ }
+        try { await engine.dispose(); } catch { /* ignore */ }
+        try { await closeAudioCtx(); } catch { /* ignore */ }
+        location.reload();
+      });
+
+      $("abPlay").addEventListener("click", async () => {
+        if (mixer.playing) {
+          mixer.stop();
+          $("abPlay").textContent = "▶ Play";
+        } else {
+          await mixer.play();
+          applyMode(); // re-arm the A/B mode on the fresh GainNodes
+          $("abPlay").textContent = "■ Stop";
+        }
+      });
+      for (const [id, m] of [["abBacking", "backing"], ["abVocal", "vocal"], ["abFull", "full"]]) {
+        $(id).addEventListener("click", () => { mode = m; applyMode(); });
+      }
+
+      $("sampleBtn").addEventListener("click", async () => {
+        try { await separate(await songSegment(), "the sample song"); }
+        catch (err) { setStatus("Could not load the sample song: " + err.message, true); }
+      });
+      $("pickBtn").addEventListener("click", () => $("file").click());
+      $("file").addEventListener("change", async () => {
+        const f = $("file").files[0];
+        if (!f) return;
+        try { await separate(await decodeToSegment(await f.arrayBuffer()), f.name); }
+        catch (err) { setStatus("Could not decode audio: " + err.message, true); }
+      });
+      const drop = $("drop");
+      for (const ev of ["dragenter", "dragover"]) {
+        drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); });
+      }
+      for (const ev of ["dragleave", "drop"]) {
+        drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); });
+      }
+      drop.addEventListener("drop", async (e) => {
+        if (!ready) return;
+        const f = e.dataTransfer.files[0];
+        if (f && f.type.startsWith("audio")) {
+          try { await separate(await decodeToSegment(await f.arrayBuffer()), f.name); }
+          catch (err) { setStatus("Could not decode audio: " + err.message, true); }
+        } else setStatus("Please drop an audio file.", true);
+      });
+    </script>
+  </body>
+</html>

@@ -101,6 +101,18 @@ self.addEventListener("message", async (e) => {
   try {
     if (d.type === "load") await ensureLoaded();
     else if (d.type === "separate") await separate(d.id, d.ch0, d.ch1, d.len);
+    else if (d.type === "dispose") {
+      // Genuine release: free the ONNX session, ack, then close the worker from the inside (the main
+      // thread also terminate()s it — belt and braces).
+      if (session) {
+        try {
+          await session.release?.();
+        } catch { /* ignore */ }
+        session = null;
+      }
+      post({ type: "disposed" });
+      self.close();
+    }
   } catch (err) {
     post({ type: "error", id: d?.id, message: String(err?.message ?? err) });
   }
