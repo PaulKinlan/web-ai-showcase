@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AI-text detection — did a machine write this? · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="OpenAI's original GPT-2 output detector — a RoBERTa classifier that scores whether text reads machine-written or human-written — running entirely in your browser. Honest about its limits: a triage signal, never a verdict."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🤖</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">text-classification · text · WASM · ~126 MB</p>
+      <h1>AI-text detection — did a machine write this?</h1>
+      <p class="lede">
+        When OpenAI released GPT-2 in 2019 they shipped a detector alongside it: a <strong>RoBERTa</strong>
+        classifier fine-tuned to tell GPT-2's output apart from human-written web text. This is that original
+        detector, running on-device. Paste text and it answers <strong>“reads machine-written”</strong> vs
+        <strong>“reads human-written”</strong> with a real probability. It is a <em>triage signal, never a
+        verdict</em> — and it is honest about its era: trained on GPT-2, not on today's chat models.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/onnx-community/roberta-base-openai-detector-ONNX" target="_blank" rel="noopener">onnx-community/roberta-base-openai-detector-ONNX</a> (ONNX export of <a href="https://huggingface.co/openai-community/roberta-base-openai-detector" target="_blank" rel="noopener">openai-community/roberta-base-openai-detector</a>)</td></tr>
+          <tr><th>Task / pipeline</th><td><code>text-classification</code> (single-label)</td></tr>
+          <tr><th>Labels</th><td><code>Fake</code> (reads machine-written) vs <code>Real</code> (reads human-written); <strong>softmax</strong> — the two scores sum to 1</td></tr>
+          <tr><th>Architecture</th><td>RoBERTa-base (125M params) fine-tuned on GPT-2 1.5B outputs vs WebText</td></tr>
+          <tr><th>Reported accuracy</th><td>~95% on 510-token GPT-2 1.5B samples (its training distribution) — <strong>not</strong> on ChatGPT-class text</td></tr>
+          <tr><th>Quantization</th><td>q8 (8-bit) ONNX</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (runs anywhere; no WebGPU needed)</td></tr>
+          <tr><th>Download</th><td>~126 MB, cached after first load</td></tr>
+          <tr><th>License</th><td>MIT</td></tr>
+          <tr><th>Web APIs</th><td>WebAssembly, Web Workers — all Baseline widely available</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">Type or paste a passage (a paragraph works best — the detector was evaluated on ~510-token
+        samples). The score re-computes automatically a moment after you stop typing. Above 50% the text reads
+        machine-written <em>to this detector</em>.</p>
+
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
+        A passage of text
+        <textarea id="text" rows="4" disabled>ok so i finally tried that ramen place on 5th everyone keeps going on about and honestly?? overrated. broth was fine i guess but the egg was COLD. like fridge cold. my mate dave loved it though so what do i know lol</textarea>
+      </label>
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.5rem 0">
+        <button class="chip" type="button" data-set="The future of artificial intelligence depends on it,&quot; said Robert Sanger, chief executive of AI innovation, which develops new technologies aimed at helping the computer build an efficient and intelligent machine. &quot;We know the value of this kind of approach, which is a little too">real GPT-2 output ↓</button>
+        <button class="chip" type="button" data-set="When the council meeting finally started, the mayor of Toronto, Jean-Pierre Roi, asked if I would be the one who would pick up the car that would drive them to Quebec City. I did. He told me he'd never be asked to do that again">real GPT-2 output ↓</button>
+        <button class="chip" type="button" data-set="ok so i finally tried that ramen place on 5th everyone keeps going on about and honestly?? overrated. broth was fine i guess but the egg was COLD. like fridge cold. my mate dave loved it though so what do i know lol">human, informal</button>
+        <button class="chip" type="button" data-set="Acme Corporation today announced the general availability of Acme Cloud 3.0, the latest version of its enterprise platform, featuring enhanced security controls, a redesigned administrative console, and expanded regional availability across Europe and Asia-Pacific.">human, polished</button>
+        <button class="chip" type="button" data-set="Sounds good to me.">short text (wavers)</button>
+      </div>
+      <p class="muted" style="font-size:.78rem">The “real GPT-2 output” chips are verbatim completions generated by
+        <a href="/web-ai-showcase/models/gpt2-text-generation/">Xenova/gpt2</a> during this demo's validation — the
+        exact model family this detector was trained to catch.</p>
+
+      <div class="verdict-row" id="verdictRow" hidden>
+        <span class="verdict-label" id="vLabel">–</span>
+        <span class="verdict-conf">confidence <b id="vConf">–</b></span>
+      </div>
+      <div class="ai-meter" id="meter" hidden><span class="ai-fill" id="fill" style="inline-size:50%"></span><span class="ai-mid"></span></div>
+      <div class="meter-labels" id="meterLabels" hidden><span>human-written</span><span>50% threshold</span><span>machine-written</span></div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+        <span>machine-written <b id="rAi">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside — two competing probabilities</h3>
+      <p class="muted">
+        This is the model's <strong>raw softmax</strong>: two numbers, <code>Fake</code> and <code>Real</code>, that
+        sum to 1. RoBERTa reads the whole passage and asks “does this look like the GPT-2 1.5B outputs I was trained
+        on, or like WebText?” — machine text tends to be statistically smoother and more predictable than human
+        writing, and the classifier leans on that gap. Watch what happens with the <em>short text</em> chip: with
+        only four words there is almost no signal, and the bars slide towards a coin flip (or worse, a confident
+        mistake). When the two bars sit near 50/50, that uncertainty <em>is</em> the finding — treat the score as a
+        triage cue, never an accusation.
+      </p>
+      <div class="prob-list" id="probs"></div>
+    </section>
+
+    <section class="panel" aria-labelledby="limits-h">
+      <h3 id="limits-h">What this detector is NOT — read before trusting it</h3>
+      <ul>
+        <li><strong>Not a ChatGPT detector.</strong> It was trained on GPT-2 (2019). OpenAI's own model card warns it “might give inaccurate results” on ChatGPT-generated input, and larger models are harder to detect.</li>
+        <li><strong>Not evidence of misconduct.</strong> OpenAI explicitly says not to use it for “grave allegations of academic misconduct”. A “machine-written” score is a prompt for a human to look closer — nothing more.</li>
+        <li><strong>~95% was measured on its home turf</strong> — 510-token GPT-2 1.5B samples vs WebText. Short texts, non-English prose, paraphrased or edited machine text, and polished modern-LLM output all degrade it (probe this yourself on the <a href="wild/">Wild</a> page).</li>
+        <li><strong>Not a shield against evasion.</strong> OpenAI noted adversaries could use the detector to learn to evade it. Pair automated signals with metadata, human judgment, and education.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        Content-authenticity checks usually mean shipping someone's draft, comment, or essay to a cloud API. A
+        detector that runs <strong>in the tab</strong> flips that: the text never leaves the device, there is no
+        per-call cost, and it works offline. And because this is the <em>original</em> detector — the one the whole
+        “AI or human?” product category descends from — it is the perfect legible specimen for understanding what
+        these tools can and cannot do.
+      </p>
+      <ul>
+        <li><strong>Editorial triage</strong> — flag submissions that read machine-written so a human editor looks twice, without uploading anyone's draft.</li>
+        <li><strong>Comment/forum hygiene</strong> — bulk-score a moderation queue on-device as one signal among many (never the only one).</li>
+        <li><strong>Dataset curation</strong> — pre-filter a corpus into “likely synthetic” vs “likely human” buckets for research on generated text.</li>
+        <li><strong>Media-literacy teaching</strong> — show students exactly where a real detector is strong (GPT-2-style text) and where it falls apart (short, translated, paraphrased, modern-LLM text).</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Paste a passage, get a live machine-vs-human verdict, and compare real GPT-2 output against human writing of the same kinds side by side.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Run a batch of submissions through an on-device authenticity pre-check and triage them — badge “needs human review” with an adjustable threshold, human always in the loop.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Stress-test the detector: short texts, French, obfuscation, human+AI splices, code, and polished modern-LLM-style prose — watch exactly where it wavers and fails.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">Generator vs watchdog: GPT-2 writes a passage in your browser, then its own detector scores it — and a “stealth dial” shows how decoding choices change detectability.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>Binary classification is one call; ask for both scores with <code>top_k</code>:</p>
+      <pre><code>import { pipeline } from "@huggingface/transformers";
+
+const classify = await pipeline(
+  "text-classification",
+  "onnx-community/roberta-base-openai-detector-ONNX",
+  { dtype: "q8" },
+); // downloads + caches ~126 MB once
+
+const out = await classify("ok so i finally tried that ramen place…", { top_k: 2 });
+// → [{ label: "Real", score: 0.9998 }, { label: "Fake", score: 0.0002 }]</code></pre>
+      <p class="muted">
+        A default <code>problem_type</code> means Transformers.js applies a <strong>softmax</strong> over the two
+        classes, so <code>Fake</code> and <code>Real</code> sum to 1. It runs in a Web Worker so typing never
+        janks. The model truncates around 512 tokens — score passages, not whole documents.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/onnx-community/roberta-base-openai-detector-ONNX" target="_blank" rel="noopener">Model card — roberta-base-openai-detector (ONNX, Transformers.js build)</a></li>
+        <li><a href="https://huggingface.co/openai-community/roberta-base-openai-detector" target="_blank" rel="noopener">Model card — the original OpenAI detector (upstream weights)</a></li>
+        <li><a href="https://github.com/openai/gpt-2-output-dataset/tree/master/detector" target="_blank" rel="noopener">OpenAI — GPT-2 output dataset + detector code</a></li>
+        <li><a href="https://d4mucfpksywv.cloudfront.net/papers/GPT_2_Report.pdf" target="_blank" rel="noopener">Paper — GPT-2 report (see “Automated ML-based detection”, p.12+)</a></li>
+        <li><a href="https://arxiv.org/abs/1908.09203" target="_blank" rel="noopener">Paper — Solaiman et al. 2019, Release strategies and the social impacts of language models</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { AIDetectEngine, renderVerdict, escapeHTML, debounce, AIDETECT_CSS } from "./aidetect.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = AIDETECT_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new AIDetectEngine();
+      let loaded = false;
+
+      for (const c of document.querySelectorAll(".chip")) {
+        c.addEventListener("click", () => { $("text").value = c.dataset.set; scheduleScore(); });
+      }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: {
+          modelId: "onnx-community/roberta-base-openai-detector-ONNX",
+          runtime: "transformers.js",
+          dtype: "q8",
+          sizeMB: 126,
+          requiresWebGPU: false,
+        },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("text").disabled = false; loaded = true; score(); },
+      });
+
+      const scheduleScore = debounce(score, 350);
+      $("text").addEventListener("input", scheduleScore);
+
+      function renderProbs(ai) {
+        const rows = [
+          { name: "Fake — machine-written", v: ai, color: "var(--warn)" },
+          { name: "Real — human-written", v: 1 - ai, color: "var(--good)" },
+        ];
+        $("probs").innerHTML = rows.map((r) =>
+          `<div class="prob-row">
+            <span class="prob-name">${r.name}</span>
+            <span class="prob-bar"><span class="prob-fill" style="inline-size:${(r.v * 100).toFixed(1)}%;background:${r.color}"></span></span>
+            <span class="prob-score">${(r.v * 100).toFixed(1)}%</span>
+          </div>`).join("");
+      }
+
+      async function score() {
+        if (!loaded) return;
+        const text = $("text").value.trim();
+        if (!text) { $("verdictRow").hidden = true; $("meter").hidden = true; $("meterLabels").hidden = true; $("probs").innerHTML = ""; return; }
+        try {
+          const r = await engine.classify(text);
+          $("verdictRow").hidden = false; $("meter").hidden = false; $("meterLabels").hidden = false;
+          renderVerdict({ label: $("vLabel"), conf: $("vConf"), fill: $("fill") }, r);
+          renderProbs(r.ai);
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = r.ms + " ms";
+          $("rAi").textContent = (r.ai * 100).toFixed(0) + "%";
+        } catch (err) {
+          $("runStatus").hidden = false;
+          $("runStatus").textContent = "Scoring failed: " + err.message;
+          $("runStatus").classList.add("err");
+        }
+      }
+    </script>
+  </body>
+</html>
