@@ -229,7 +229,11 @@ async function driveRoute(rung, viewport) {
         sessionId,
         `document.querySelector('#gauge p')?.textContent || ''`,
       );
-      mark(parseFloat(gauge2) < 0.6, "unrelated-pair-low-sim", `ja/en unrelated → ${gauge2}`);
+      // E5 embeddings are anisotropic: even genuinely unrelated pairs cluster high.
+      // Measured 2026-07-27 (q8 WASM, real inference): translation pair 0.885, meaning-wall
+      // min 0.866, unrelated ja/en pair 0.756 — unrelated must sit clearly BELOW the related
+      // band (≥0.86), so assert < 0.85 rather than an absolute "near 0" that E5 never produces.
+      mark(parseFloat(gauge2) < 0.85, "unrelated-pair-low-sim", `ja/en unrelated → ${gauge2}`);
     } else if (rung === "practical") {
       await waitFor(
         cdp,
