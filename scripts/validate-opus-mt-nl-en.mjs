@@ -271,7 +271,8 @@ async function driveRoute(rung, viewport) {
         `[...document.querySelectorAll('#trip .rt-card')].map((c) => c.querySelector('.meta').textContent)`,
       );
       mark(
-        cards.some((m) => /Dutch → English/.test(m)) && cards.some((m) => /English → Dutch/.test(m)),
+        cards.some((m) => /Dutch → English/.test(m)) &&
+          cards.some((m) => /English → Dutch/.test(m)),
         "both-hops-rendered",
         cards.join(" | "),
       );
