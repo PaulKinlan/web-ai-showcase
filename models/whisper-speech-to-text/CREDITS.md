@@ -20,4 +20,4 @@
 - **Use here:** Faithfully labelled, neutral historical automatic-speech-recognition and timestamp testing only
 - **SHA-256:** `627f0e49f927ffcd4120ed60a035ff2f8d448e2e7469452c7ecaffed06fe135b`
 
-The former bundled TED sample was removed because its redistribution rights were not established. Upload remains available for visitors’ own audio.
+The rights-unclear TED preset is no longer offered by the Whisper pages. Upload remains available for visitors’ own audio. The legacy asset path is temporarily retained only because two published cross-family routes still depend on it; their migration is tracked separately.
