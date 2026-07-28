@@ -49,7 +49,17 @@
       </p>
 
       <div id="model-loader"></div>
-      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+
+      <div class="run-progress" aria-labelledby="progress-h">
+        <h4 id="progress-h">What’s happening</h4>
+        <ol class="stage-list" id="stages">
+          <li data-stage="audio" data-state="active"><span class="stage-mark" aria-hidden="true"></span><span><strong>Audio input</strong><small>Preparing the sample audio…</small></span></li>
+          <li data-stage="model" data-state="active"><span class="stage-mark" aria-hidden="true"></span><span><strong>On-device model</strong><small>Checking the local validation record…</small></span></li>
+          <li data-stage="inference" data-state="waiting"><span class="stage-mark" aria-hidden="true"></span><span><strong>Transcription</strong><small>Waiting for audio and model</small></span></li>
+          <li data-stage="output" data-state="waiting"><span class="stage-mark" aria-hidden="true"></span><span><strong>Transcript</strong><small>Waiting for transcription</small></span></li>
+        </ol>
+      </div>
+      <p class="status" id="status" role="status" aria-live="polite">Preparing the sample audio and checking the model…</p>
 
       <div class="audio-row">
         <button id="rec" type="button" class="secondary" disabled>● Record</button>
@@ -58,9 +68,10 @@
         <span class="muted" style="font-size:.82rem">or a sample:</span>
         <span class="sample-row" id="samples">
           <button class="chip" type="button" data-src="jfk.wav" data-label="JFK — inaugural (11s)">JFK inaugural</button>
-          <button class="chip" type="button" data-src="ted.wav" data-label="TED talk clip (12s)">TED clip</button>
+          <button class="chip" type="button" data-src="libri-61-70968-0000-16k-mono.wav" data-label="LibriSpeech — Robin Hood (4.9s)">LibriSpeech sample</button>
         </span>
       </div>
+      <p class="muted" style="font-size:.78rem">JFK inaugural excerpt: faithfully labelled historical ASR sample. LibriSpeech: reader Paul-Gabriel Wiener, OpenSLR SLR12, <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener">CC BY 4.0</a> · <a href="CREDITS.md">credits and provenance</a>.</p>
 
       <div id="micFallback" class="fallback" hidden>
         <strong>No microphone available here.</strong>
@@ -80,7 +91,7 @@
       <button id="run" type="button" disabled>Transcribe</button>
 
       <h3>Transcript</h3>
-      <div class="transcript" id="transcript" aria-live="polite">Transcribe a clip to see the text here.</div>
+      <div class="transcript" id="transcript" aria-live="polite" tabindex="-1">Transcribe a clip to see the text here.</div>
       <div class="readout" id="readout" hidden>
         <span>backend <b id="rBackend">–</b></span>
         <span>audio <b id="rDur">–</b></span>
@@ -190,6 +201,21 @@ const out = await transcribe(audio, {
       const engine = new WhisperEngine();
       let pcm = null;        // 16 kHz mono Float32Array for the model
       let lastResult = null;
+      const stageEls = new Map([...document.querySelectorAll("#stages [data-stage]")].map((el) => [el.dataset.stage, el]));
+
+      function setStage(name, state, detail) {
+        const el = stageEls.get(name);
+        if (!el) return;
+        el.dataset.state = state;
+        el.querySelector("small").textContent = detail;
+      }
+
+      function announce(message, kind = "") {
+        const el = $("status");
+        el.textContent = message;
+        el.classList.toggle("err", kind === "error");
+        el.classList.toggle("ok", kind === "ok");
+      }
 
       // --- audio source selection ---
       async function useAudio(url, label, { revoke = false } = {}) {
@@ -198,14 +224,20 @@ const out = await transcribe(audio, {
         $("transcript").textContent = "Transcribe a clip to see the text here.";
         $("readout").hidden = true;
         $("insideWrap").hidden = true; $("insideEmpty").hidden = false;
+        setStage("audio", "active", `Decoding ${label} to 16 kHz mono…`);
+        setStage("inference", "waiting", "Waiting for audio and model");
+        setStage("output", "waiting", "Waiting for transcription");
+        announce(`Decoding ${label} locally…`);
         try {
           const decoded = await urlToMono16k(url);
           pcm = decoded.pcm;
           drawWaveform($("wave"), pcm, 0);
           $("run").disabled = !engine.ready;
+          setStage("audio", "done", `${decoded.duration.toFixed(1)} seconds decoded locally`);
+          announce(engine.ready ? "Audio and model ready. Press Transcribe." : "Audio ready. Preparing the on-device model…");
         } catch (err) {
-          $("status").textContent = "Couldn't decode that audio: " + err.message;
-          $("status").classList.add("err");
+          announce("Couldn't decode that audio: " + err.message, "error");
+          setStage("audio", "error", "Audio decoding failed");
           pcm = null;
         }
         if (revoke) $("player").addEventListener("emptied", () => URL.revokeObjectURL(url), { once: true });
@@ -235,22 +267,21 @@ const out = await transcribe(audio, {
             await mic.start();
           } catch (err) {
             $("micFallback").hidden = false;
-            $("status").textContent = "Microphone unavailable — use a sample or upload.";
-            $("status").classList.add("err");
+            announce("Microphone unavailable — use a sample or upload.", "error");
             return;
           }
           recording = true;
           $("rec").innerHTML = '<span class="rec-dot"></span>Stop';
           $("rec").classList.remove("secondary");
-          $("status").textContent = "Recording… click Stop when done.";
-          $("status").classList.remove("err");
+          announce("Recording… click Stop when done.");
+          setStage("audio", "active", "Recording from your microphone…");
         } else {
           recording = false;
           $("rec").textContent = "● Record";
           $("rec").classList.add("secondary");
           const { url } = await mic.stop();
           await useAudio(url, "Your recording", { revoke: true });
-          $("status").textContent = "Recorded. Hit Transcribe.";
+          announce("Recorded and decoded. Press Transcribe.");
         }
       });
 
@@ -271,15 +302,29 @@ const out = await transcribe(audio, {
         onReady: () => {
           $("rec").disabled = false; $("upload").disabled = false;
           $("run").disabled = !pcm;
+          setStage("model", "done", `Ready on ${engine.device.toUpperCase()}`);
+          announce(pcm ? "Audio and model ready. Press Transcribe." : "Model ready. Choose or record audio.", "ok");
+        },
+        onError: (err) => {
+          setStage("model", "error", err?.message === "needs-webgpu" ? "WebGPU unavailable" : "Model preparation failed");
         },
       });
 
       // --- transcribe ---
       $("run").addEventListener("click", async () => {
-        if (!pcm) { $("status").textContent = "Pick or record some audio first."; return; }
-        $("run").disabled = true; $("status").classList.remove("err"); $("status").textContent = "Transcribing…";
+        if (!pcm) { announce("Pick or record some audio first."); return; }
+        $("run").disabled = true;
+        const started = performance.now();
+        setStage("inference", "active", `Starting Whisper on ${(pcm.length / 16000).toFixed(1)} seconds of audio…`);
+        setStage("output", "waiting", "Waiting for Whisper's decoder");
+        $("transcript").textContent = "Whisper is transcribing locally…";
+        announce("Transcribing locally. Timing depends on your device; the page remains usable.");
+        const elapsed = setInterval(() => {
+          const seconds = Math.max(1, Math.round((performance.now() - started) / 1000));
+          setStage("inference", "active", `Whisper is running locally · ${seconds} s elapsed`);
+        }, 1000);
         try {
-          const r = await engine.transcribe(pcm);
+          const r = await engine.transcribe(pcm, {}, (message) => setStage("inference", "active", message));
           lastResult = r;
           $("transcript").textContent = r.text || "(no speech detected)";
           $("readout").hidden = false;
@@ -289,11 +334,17 @@ const out = await transcribe(audio, {
           $("rTok").textContent = r.tokens ?? "–";
           $("rTps").textContent = r.tokPerSec ? r.tokPerSec.toFixed(1) : "–";
           renderInside(r);
-          $("status").textContent = "Done."; $("status").classList.add("ok");
+          setStage("inference", "done", `Completed in ${(r.ms / 1000).toFixed(1)} seconds on ${r.device.toUpperCase()}`);
+          setStage("output", "done", r.text ? `${r.text.length} characters shown below` : "No speech detected");
+          announce("Transcription complete. The transcript is shown below.", "ok");
+          $("transcript").focus();
         } catch (err) {
-          $("status").textContent = "Transcription failed: " + err.message;
-          $("status").classList.add("err");
+          $("transcript").textContent = "No transcript was produced.";
+          setStage("inference", "error", "Whisper could not complete the transcription");
+          setStage("output", "error", "No transcript produced");
+          announce("Transcription failed: " + err.message, "error");
         } finally {
+          clearInterval(elapsed);
           $("run").disabled = false;
         }
       });

@@ -32,6 +32,8 @@ export class WhisperEngine {
       this.device = msg.device;
       for (const w of this._loadWaiters) w.resolve(msg.device);
       this._loadWaiters = [];
+    } else if (msg.type === "stage") {
+      this._pending.get(msg.id)?.onStage?.(msg.message);
     } else if (msg.type === "result") {
       const p = this._pending.get(msg.id);
       if (p) {
@@ -60,10 +62,10 @@ export class WhisperEngine {
   }
 
   /** Transcribe a 16 kHz mono Float32Array. Returns { text, words, segments, tokens, tokPerSec, ms }. */
-  transcribe(audio, opts) {
+  transcribe(audio, opts, onStage) {
     const id = ++this._id;
     return new Promise((resolve, reject) => {
-      this._pending.set(id, { resolve, reject });
+      this._pending.set(id, { resolve, reject, onStage });
       this.worker.postMessage({ type: "run", id, audio, opts });
     });
   }
@@ -216,4 +218,17 @@ export const WHISPER_CSS = `
 .field-row { display:flex; flex-wrap:wrap; gap:.6rem; align-items:flex-start; margin:.6rem 0; }
 .fallback { border:1px solid var(--warn); border-radius:var(--radius); background:var(--bg-raised); padding:1rem; }
 .fallback code { background:var(--bg-secondary); padding:.05rem .3rem; border-radius:4px; }
+.run-progress { margin:.8rem 0; padding:.8rem 1rem; border:1px solid var(--border); border-radius:var(--radius); background:var(--bg-raised); }
+.run-progress h4 { margin:0 0 .55rem; }
+.stage-list { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:.65rem; margin:0; padding:0; list-style:none; }
+.stage-list li { display:grid; grid-template-columns:.8rem 1fr; gap:.45rem; min-inline-size:0; color:var(--muted); }
+.stage-list strong, .stage-list small { display:block; }
+.stage-list strong { color:var(--color); font-size:.84rem; }
+.stage-list small { margin-top:.15rem; font-size:.75rem; line-height:1.35; overflow-wrap:anywhere; }
+.stage-mark { inline-size:.65rem; block-size:.65rem; margin-top:.25rem; border:2px solid var(--border); border-radius:50%; background:var(--bg); }
+.stage-list li[data-state="active"] .stage-mark { border-color:var(--accent); background:var(--accent); }
+.stage-list li[data-state="done"] .stage-mark { border-color:var(--good); background:var(--good); }
+.stage-list li[data-state="error"] .stage-mark { border-color:var(--bad); background:var(--bad); }
+@media (max-width:700px) { .stage-list { grid-template-columns:1fr 1fr; } }
+@media (max-width:420px) { .stage-list { grid-template-columns:1fr; } }
 `;

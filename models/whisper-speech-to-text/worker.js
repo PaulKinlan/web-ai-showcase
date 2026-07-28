@@ -11,7 +11,6 @@ import { loadPipeline } from "/web-ai-showcase/lib/webai.js";
 
 // whisper-base, exported with cross-attentions so Transformers.js can extract real WORD-level
 // timestamps (the plain onnx-community/whisper-base build only supports segment timestamps).
-const MODEL = "onnx-community/whisper-base_timestamped";
 const TASK = "automatic-speech-recognition";
 
 let pipe = null;
@@ -41,7 +40,7 @@ async function ensureLoaded(preferred) {
   try {
     const loaded = await loadPipeline({
       task: TASK,
-      model: MODEL,
+      model: "onnx-community/whisper-base_timestamped",
       backend: want,
       dtype: "q8",
       onProgress: (p) => post({ type: "progress", p }),
@@ -53,7 +52,7 @@ async function ensureLoaded(preferred) {
       post({ type: "progress", p: { status: "initiate", file: "retrying on WASM…" } });
       const loaded = await loadPipeline({
         task: TASK,
-        model: MODEL,
+        model: "onnx-community/whisper-base_timestamped",
         backend: "wasm",
         dtype: "q8",
         onProgress: (p) => post({ type: "progress", p }),
@@ -93,13 +92,21 @@ function toSegments(words) {
 async function run(id, audio, opts) {
   await ensureLoaded(opts?.device);
   const t0 = performance.now();
-  // Word-level timestamps give us both the karaoke word stream and (grouped) segments.
+  post({
+    type: "stage",
+    id,
+    message: "Preparing audio features and decoding speech tokens locally…",
+  });
+  // Word-level timestamps give us both the karaoke word stream and (grouped) segments. The runtime
+  // does not expose a trustworthy percentage for this inference, so the page shows elapsed time rather
+  // than fabricating one.
   const output = await pipe(audio, {
     return_timestamps: "word",
     chunk_length_s: 30,
     stride_length_s: 5,
   });
   const ms = Math.round(performance.now() - t0);
+  post({ type: "stage", id, message: "Formatting the transcript and timestamps…" });
 
   const text = (output.text || "").trim();
   const words = (output.chunks || []).map((c) => ({

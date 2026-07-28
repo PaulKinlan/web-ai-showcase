@@ -83,24 +83,27 @@ const DRIVER = `
     (e)=>{ e({status:"progress",progress:0}); e({status:"progress",progress:45}); },
     (e)=>{ e({status:"progress",progress:100}); });
 
-  // A browser Cache Storage operation can remain pending indefinitely (observed in real navigation).
-  // The shared loader must leave "checking", explain uncertainty, and offer recovery instead of hanging.
-  const realCacheKeys = caches.keys.bind(caches);
-  Object.defineProperty(caches, "keys", { configurable: true, value: () => new Promise(() => {}) });
+  // A browser local-validation operation can remain pending indefinitely (observed in real navigation).
+  // The shared loader must leave "checking" in under half a second, explain uncertainty, and offer
+  // recovery instead of hanging. Cache Storage enumeration is deliberately NOT part of this fast path.
+  const realIdbOpen = indexedDB.open.bind(indexedDB);
+  Object.defineProperty(indexedDB, "open", { configurable: true, value: () => ({}) });
   const timeoutMount = document.createElement("div"); main.appendChild(timeoutMount);
+  const timeoutStarted = performance.now();
   createModelLoader({
     mount: timeoutMount,
     model: { modelId: uid(), runtime: "transformers.js", dtype: "q8", sizeMB: 42 },
     load: async () => ({}),
     onReady: () => {}, onError: () => {},
   });
-  await sleep(7300);
+  for (let i=0;i<30 && timeoutMount.querySelector(".model-loader")?.dataset.state === "checking";i++) await sleep(25);
   report.timeout = {
+    elapsedMs: Math.round(performance.now() - timeoutStarted),
     state: timeoutMount.querySelector(".model-loader")?.dataset.state,
     status: timeoutMount.querySelector(".status")?.textContent || "",
     buttons: [...timeoutMount.querySelectorAll("button")].map((b) => b.textContent.trim()),
   };
-  Object.defineProperty(caches, "keys", { configurable: true, value: realCacheKeys });
+  Object.defineProperty(indexedDB, "open", { configurable: true, value: realIdbOpen });
   timeoutMount.querySelector("button")?.click();
   for (let i=0;i<30 && timeoutMount.querySelector(".model-loader")?.dataset.state === "checking";i++) await sleep(50);
   report.timeout.retryState = timeoutMount.querySelector(".model-loader")?.dataset.state;
@@ -141,12 +144,13 @@ try {
   rec(
     "Hung local-cache API exits checking with honest recovery controls",
     r.timeout.state === "check-timeout" &&
+      r.timeout.elapsedMs < 650 &&
       r.timeout.buttons.some((x) => /Retry local check/.test(x)) &&
       r.timeout.buttons.some((x) => /may download ~42 MB/.test(x)),
     JSON.stringify(r.timeout),
   );
   rec(
-    "Retry recovers after the Cache Storage API responds",
+    "Retry recovers after the local validation store responds",
     r.timeout.retryState === "download-required",
     `state=${r.timeout.retryState}`,
   );
