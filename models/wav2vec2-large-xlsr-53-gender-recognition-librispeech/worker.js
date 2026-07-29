@@ -12,6 +12,38 @@ const SR = 16000;
 const MODEL_SAMPLES = SR * 5;
 let pipe = null;
 let device = "wasm";
+let observedQ8Request = null;
+
+// Validate what the library ACTUALLY requests. This wrapper does not construct model URLs; it
+// observes Transformers.js fetches, rejects mutable `/main` requests for this repo, and validates
+// the q8 response's declared byte length before the runtime can consume it.
+const nativeFetch = self.fetch.bind(self);
+self.fetch = async (input, init) => {
+  const requestedUrl = String(input instanceof Request ? input.url : input);
+  const isThisModel = requestedUrl.includes(
+    "Xenova/wav2vec2-large-xlsr-53-gender-recognition-librispeech/resolve/",
+  );
+  if (isThisModel && !requestedUrl.includes(`/resolve/${RUNTIME_REVISION}/`)) {
+    throw new Error(`Refusing unpinned model request: ${requestedUrl}`);
+  }
+  const response = await nativeFetch(input, init);
+  if (isThisModel && requestedUrl.endsWith(`/${Q8_FILE}`)) {
+    const contentLength = Number(
+      response.headers.get("content-length") || response.headers.get("x-linked-size") || 0,
+    );
+    if (!response.ok) throw new Error(`Pinned q8 request failed with HTTP ${response.status}`);
+    if (contentLength !== Q8_BYTES) {
+      throw new Error(`Pinned q8 byte length ${contentLength}; expected ${Q8_BYTES}`);
+    }
+    observedQ8Request = {
+      requestedUrl,
+      responseUrl: response.url,
+      status: response.status,
+      contentLength,
+    };
+  }
+  return response;
+};
 
 async function webgpuUsable() {
   if (typeof navigator === "undefined" || !("gpu" in navigator)) return false;
@@ -109,6 +141,7 @@ async function classify(payload, { signal, onProgress }) {
       canonicalRevision: CANONICAL_REVISION,
       q8File: Q8_FILE,
       q8Bytes: Q8_BYTES,
+      observedQ8Request,
     },
   };
 }
@@ -123,6 +156,7 @@ serveWorker({
         canonicalRevision: CANONICAL_REVISION,
         q8File: Q8_FILE,
         q8Bytes: Q8_BYTES,
+        observedQ8Request,
       };
     },
     classify,

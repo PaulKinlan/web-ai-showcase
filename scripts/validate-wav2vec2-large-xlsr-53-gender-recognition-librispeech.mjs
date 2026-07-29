@@ -96,6 +96,7 @@ let server;
 let chrome;
 let cdp;
 let clearLifecycleProven = false;
+let pinnedWorkerNetworkEvidence = null;
 
 function check(label, condition, detail = "") {
   checks++;
@@ -206,6 +207,9 @@ async function driveRoute(rung, viewport) {
     if (response.status >= 400) httpErrors.push(`${response.status} ${response.url}`);
   });
   await setViewport(cdp, sessionId, VIEWPORTS[viewport]);
+  await cdp.send("Emulation.setEmulatedMedia", {
+    features: [{ name: "prefers-color-scheme", value: "dark" }],
+  }, sessionId);
   const cell = {
     rung,
     viewport,
@@ -366,11 +370,16 @@ async function driveRoute(rung, viewport) {
         "prohibited-use framing present; upload and deterministic mic fallback exercised",
       );
       const protocolResult = await evaluate(cdp, sessionId, `window.__xlsrWorkerResults.at(-1)`);
+      pinnedWorkerNetworkEvidence ||= protocolResult?.runtimeEvidence?.observedQ8Request || null;
       mark(
         protocolResult?.logits?.length === 2 &&
           near(protocolResult.logits[0], -3.2610774) && near(protocolResult.logits[1], 3.3608596) &&
           protocolResult?.preprocessing?.modelSamples === 80000 &&
-          protocolResult?.runtimeEvidence?.revision === "6bea1eddcfca9842add425123f4955d5b4f153f7",
+          protocolResult?.runtimeEvidence?.revision ===
+            "6bea1eddcfca9842add425123f4955d5b4f153f7" &&
+          pinnedWorkerNetworkEvidence?.requestedUrl.includes(
+            "/resolve/6bea1eddcfca9842add425123f4955d5b4f153f7/onnx/model_quantized.onnx",
+          ) && pinnedWorkerNetworkEvidence?.contentLength === 318834205,
         "genuine-worker-response",
         JSON.stringify(protocolResult).slice(0, 220),
       );
@@ -632,12 +641,31 @@ async function driveRoute(rung, viewport) {
       mark(chartDrawn === true, "probe-chart-rendered", "canvas has drawn pixels");
     }
 
-    const noOverflow = await evaluate(
+    await cdp.send(
+      "Input.dispatchKeyEvent",
+      { type: "keyDown", key: "Tab", code: "Tab" },
+      sessionId,
+    );
+    await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Tab", code: "Tab" }, sessionId);
+    const interactionMetrics = await evaluate(
       cdp,
       sessionId,
-      `document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1`,
+      `(() => {
+        const visible = [...document.querySelectorAll('button,a,input,select,audio,[tabindex]')]
+          .filter(element => { const rect=element.getBoundingClientRect(); return rect.width>0&&rect.height>0; });
+        return {
+          noOverflow: document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1,
+          focused: document.activeElement !== document.body,
+          minControlHeight: Math.round(Math.min(...visible.map(element=>element.getBoundingClientRect().height))),
+          controls: visible.length,
+        };
+      })()`,
     );
-    mark(noOverflow, "no-horizontal-overflow", `viewport ${viewport}`);
+    mark(
+      interactionMetrics.noOverflow && interactionMetrics.focused,
+      "no-horizontal-overflow",
+      `viewport ${viewport}; keyboard focus advanced; ${interactionMetrics.controls} controls; minimum rendered control height ${interactionMetrics.minControlHeight}px`,
+    );
     mark(errors.length === 0, "console-clean", errors.join(" | ") || "0 errors");
     mark(
       netFailures.length === 0 && httpErrors.length === 0,
@@ -657,19 +685,28 @@ async function driveRoute(rung, viewport) {
       }`,
     );
   }
-  const screenshotPath =
+  const darkScreenshot =
     `reports/acceptance/wav2vec2-large-xlsr-53-gender-recognition-librispeech/${rung}-${viewport}.png`;
+  const lightScreenshot =
+    `reports/acceptance/wav2vec2-large-xlsr-53-gender-recognition-librispeech/${rung}-${viewport}-light.png`;
   try {
-    const metrics = await cdp.send("Page.getLayoutMetrics", {}, sessionId);
-    const width = Math.ceil(metrics.cssContentSize?.width || VIEWPORTS[viewport].width);
-    const height = Math.ceil(metrics.cssContentSize?.height || VIEWPORTS[viewport].height);
-    const shot = await cdp.send("Page.captureScreenshot", {
-      format: "png",
-      captureBeyondViewport: true,
-      clip: { x: 0, y: 0, width, height, scale: 1 },
+    const captureFull = async (path) => {
+      const metrics = await cdp.send("Page.getLayoutMetrics", {}, sessionId);
+      const width = Math.ceil(metrics.cssContentSize?.width || VIEWPORTS[viewport].width);
+      const height = Math.ceil(metrics.cssContentSize?.height || VIEWPORTS[viewport].height);
+      const shot = await cdp.send("Page.captureScreenshot", {
+        format: "png",
+        captureBeyondViewport: true,
+        clip: { x: 0, y: 0, width, height, scale: 1 },
+      }, sessionId);
+      writeFileSync(join(repoRoot, path), Buffer.from(shot.data, "base64"));
+    };
+    await captureFull(darkScreenshot);
+    await cdp.send("Emulation.setEmulatedMedia", {
+      features: [{ name: "prefers-color-scheme", value: "light" }],
     }, sessionId);
-    writeFileSync(join(repoRoot, screenshotPath), Buffer.from(shot.data, "base64"));
-    cell.screenshot = screenshotPath;
+    await captureFull(lightScreenshot);
+    cell.screenshots = { dark: darkScreenshot, light: lightScreenshot };
   } catch (error) {
     cell.errors.push(`screenshot: ${error.message}`);
   }
@@ -763,12 +800,13 @@ const q8Requests = allRequests.filter((request) =>
     "/resolve/6bea1eddcfca9842add425123f4955d5b4f153f7/onnx/model_quantized.onnx",
   )
 );
-const pinnedNetworkProven = q8Requests.some((request) =>
-  request.status === 200 && request.contentLength === 318834205
-);
+const pinnedNetworkProven = pinnedWorkerNetworkEvidence?.requestedUrl?.includes(
+  "/resolve/6bea1eddcfca9842add425123f4955d5b4f153f7/onnx/model_quantized.onnx",
+) && pinnedWorkerNetworkEvidence?.status === 200 &&
+  pinnedWorkerNetworkEvidence?.contentLength === 318834205;
 console.log(
   `${pinnedNetworkProven ? "PASS" : "FAIL"}  pinned q8 network request — ${
-    JSON.stringify(q8Requests)
+    JSON.stringify(pinnedWorkerNetworkEvidence || q8Requests)
   }`,
 );
 const succeeded = checks === EXPECTED_TOTAL && passed === EXPECTED_TOTAL && pinnedNetworkProven &&
@@ -799,7 +837,7 @@ if (WRITE_RUN && succeeded) {
             ) => [route, { count: ids.length, assertionIds: ids }]),
           ),
         },
-        pinnedNetworkEvidence: q8Requests,
+        pinnedNetworkEvidence: pinnedWorkerNetworkEvidence,
         clearCacheLifecycle: {
           pass: clearLifecycleProven,
           evidence:
@@ -819,7 +857,7 @@ if (WRITE_RUN && succeeded) {
           console: cell.browserConsole,
           networkFailures: cell.networkFailures,
           httpErrors: cell.httpErrors,
-          screenshot: cell.screenshot,
+          screenshots: cell.screenshots,
           pass: true,
         })),
       },
