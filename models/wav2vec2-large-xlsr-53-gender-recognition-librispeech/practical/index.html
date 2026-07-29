@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Practical — catalogue QA triage with the XLS-R voice-label classifier · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="A real developer workflow: batch-check a set of recordings against your own voice-talent metadata with the on-device binary acoustic voice-label checkpoint, flag mismatches and low-margin clips for HUMAN review, and export the triage table as CSV."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎙</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">← XLS-R voice-label classifier</a></p>
+
+    <header>
+      <p class="eyebrow">practical · audio-classification · WASM · ~319 MB</p>
+      <h1>Practical — recording-catalogue QA triage (human-in-the-loop)</h1>
+      <p class="lede">
+        You maintain a library of voice recordings and its metadata says who recorded what. This
+        tool batch-runs the checkpoint over a clip set, compares each acoustic read against
+        <strong>expectations you supply from your own records</strong>, and flags mismatches and
+        low-margin clips — so a person reviews them. It never decides anything by itself.
+      </p>
+    </header>
+
+    <section class="panel ethics" aria-labelledby="ethics-h">
+      <h3 id="ethics-h">Triage, not verdicts</h3>
+      <p>
+        The labels here are <strong>binary acoustic voice labels</strong> from LibriSpeech training
+        data — how a clip sounds, not who the speaker is. A “mismatch” flag means “the audio doesn't
+        sound like your metadata says, have a human look”: the metadata can be wrong, the recording
+        can be mislabelled, the voice can be out-of-distribution for this model, or the model can
+        simply be wrong. Never use this output to infer a person's gender or identity, and never for
+        employment, access, safety, or any other consequential decision about a person.
+      </p>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">
+        Four bundled rights-safe audiobook clips act as the catalogue batch. Optionally set the
+        acoustic label <strong>your records expect</strong> for each clip (default: skip — no
+        comparison), set a review-margin bar, then run the batch. First use downloads
+        <strong>~319 MB</strong>; each clip then takes a few seconds on WASM.
+      </p>
+
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <div class="field-row">
+        <label for="threshP">Flag margin below: <output id="threshPVal" for="threshP">50%</output></label>
+        <input type="range" id="threshP" min="0" max="100" step="5" value="50" />
+        <button id="batch" type="button" disabled>Run the batch (4 clips)</button>
+        <button id="csv" type="button" class="secondary" disabled>Export CSV</button>
+      </div>
+
+      <div class="batch-table">
+        <table>
+          <thead>
+            <tr>
+              <th>Clip</th>
+              <th>Play</th>
+              <th>Expected (your records)</th>
+              <th>Model label</th>
+              <th>Confidence</th>
+              <th>Margin</th>
+              <th>Latency</th>
+              <th>Flag</th>
+            </tr>
+          </thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+      <p class="muted" id="batchEmpty" style="font-size:.82rem">Run the batch to fill the table — every row is a real on-device inference.</p>
+
+      <pre id="csvPre" hidden style="font-size:.75rem;overflow-x:auto"></pre>
+    </section>
+
+    <section aria-labelledby="how-h">
+      <h2 id="how-h">How a team would use this</h2>
+      <ul>
+        <li><strong>Metadata drift checks</strong> — after a migration or bulk import, spot-check that voice-talent fields still match the audio; mismatches go to a human queue with the clip attached.</li>
+        <li><strong>Low-margin = automatic escalation</strong> — clips under the margin bar are flagged regardless of agreement, because a coin-flip acoustic read is never evidence.</li>
+        <li><strong>Everything stays local</strong> — catalogue audio (often contractual or personal) never leaves the machine; the CSV is generated in the page.</li>
+        <li><strong>Documented limits</strong> — the model was trained on English audiobook narration; non-English, noisy, or very short clips will produce weaker margins, which is exactly why the margin column exists.</li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      <p class="provenance">
+        Clips: A — Sienkiewicz, “Za chlebem” (LibriVox, Public Domain) · B — Collodi, “Le avventure
+        di Pinocchio” (LibriVox, Public Domain) · C — Bécquer, “Rimas” (LibriVox, Public Domain) ·
+        D — Google FLEURS cmn_hans_cn (CC-BY 4.0). Model:
+        <a href="https://huggingface.co/alefiury/wav2vec2-large-xlsr-53-gender-recognition-librispeech" target="_blank" rel="noopener">alefiury/wav2vec2-large-xlsr-53-gender-recognition-librispeech</a>
+        (Apache-2.0) via the Xenova ONNX mirror.
+      </p>
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>.
+      <a href="../">Back to the model page →</a>
+    </footer>
+
+    <script type="module">
+      import { GenderEngine, urlToMono16k, GENDER_CSS, escapeHTML } from "../gender.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = GENDER_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const CLIPS = [
+        { name: "A — Polish audiobook (LibriVox, PD)", url: "../sample-voice-a.wav" },
+        { name: "B — Italian audiobook (LibriVox, PD)", url: "../sample-voice-b.wav" },
+        { name: "C — Spanish audiobook (LibriVox, PD)", url: "../sample-voice-c.wav" },
+        { name: "D — Mandarin speech (FLEURS, CC-BY 4.0)", url: "../sample-voice-d.wav" },
+      ];
+      let engine = null, ready = false, running = false;
+      const results = new Array(CLIPS.length).fill(null); // {label,score,margin,ms} per clip
+
+      function setStatus(msg, cls) {
+        $("status").textContent = msg;
+        $("status").classList.remove("err", "ok");
+        if (cls) $("status").classList.add(cls);
+      }
+
+      // Build the table shell (expectation selectors live in the page, defaults "skip").
+      function renderShell() {
+        $("rows").replaceChildren(...CLIPS.map((c, i) => {
+          const tr = document.createElement("tr");
+          tr.id = `row-${i}`;
+          tr.innerHTML =
+            `<td>${escapeHTML(c.name)}</td>` +
+            `<td><audio controls preload="none" src="${c.url}" style="block-size:30px;max-inline-size:180px"></audio></td>` +
+            `<td><select id="exp-${i}" aria-label="Expected acoustic label for ${escapeHTML(c.name)}">` +
+            `<option value="">skip</option><option value="female">“female”</option><option value="male">“male”</option>` +
+            `</select></td>` +
+            `<td class="m-label">–</td><td class="m-conf">–</td><td class="m-margin">–</td>` +
+            `<td class="m-ms">–</td><td class="m-flag">–</td>`;
+          return tr;
+        }));
+        for (let i = 0; i < CLIPS.length; i++) {
+          $(`exp-${i}`).addEventListener("change", () => renderFlags());
+        }
+      }
+
+      function renderFlags() {
+        const threshold = Number($("threshP").value) / 100;
+        let any = false;
+        for (let i = 0; i < CLIPS.length; i++) {
+          const r = results[i];
+          const tr = $(`row-${i}`);
+          if (!r) continue;
+          any = true;
+          const exp = $(`exp-${i}`).value;
+          const flagCell = tr.querySelector(".m-flag");
+          const flags = [];
+          if (r.margin < threshold) flags.push("LOW MARGIN");
+          if (exp && r.label !== exp) flags.push("MISMATCH vs your records");
+          flagCell.textContent = flags.length ? `REVIEW — ${flags.join(" + ")}` : "ok";
+          flagCell.classList.toggle("flag", flags.length > 0);
+        }
+        $("csv").disabled = !any;
+      }
+
+      $("threshP").addEventListener("input", () => {
+        $("threshPVal").textContent = $("threshP").value + "%";
+        renderFlags();
+      });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: {
+          modelId: "Xenova/wav2vec2-large-xlsr-53-gender-recognition-librispeech",
+          runtime: "transformers.js",
+          dtype: "q8",
+          sizeMB: 319,
+          requiresWebGPU: false,
+        },
+        load: async (onProgress) => {
+          engine = new GenderEngine();
+          await engine.load(onProgress);
+          return engine;
+        },
+        onReady: () => { ready = true; $("batch").disabled = false; },
+        dispose: (e) => e.worker.terminate(),
+        onDispose: () => {
+          ready = false; engine = null;
+          $("batch").disabled = true; $("csv").disabled = true;
+        },
+      });
+
+      renderShell();
+
+      $("batch").addEventListener("click", async () => {
+        if (!ready || !engine || running) return;
+        running = true;
+        $("batch").disabled = true;
+        $("csv").disabled = true;
+        $("csvPre").hidden = true;
+        try {
+          for (let i = 0; i < CLIPS.length; i++) {
+            const tr = $(`row-${i}`);
+            setStatus(`Clip ${i + 1}/${CLIPS.length}: decoding ${CLIPS[i].name}…`);
+            const { pcm } = await urlToMono16k(CLIPS[i].url);
+            setStatus(`Clip ${i + 1}/${CLIPS.length}: classifying…`);
+            const r = await engine.classify(pcm);
+            results[i] = { label: r.labels[0].label, score: r.labels[0].score, margin: r.margin, ms: r.ms };
+            tr.querySelector(".m-label").textContent = `“${r.labels[0].label}”`;
+            tr.querySelector(".m-conf").textContent = (r.labels[0].score * 100).toFixed(1) + "%";
+            tr.querySelector(".m-margin").textContent = (r.margin * 100).toFixed(1) + "%";
+            tr.querySelector(".m-ms").textContent = r.ms + " ms";
+            renderFlags();
+          }
+          $("batchEmpty").hidden = true;
+          setStatus("Batch done — review any flagged rows with a human before touching metadata.", "ok");
+        } catch (e) {
+          setStatus("Batch failed: " + e.message, "err");
+        } finally {
+          running = false;
+          $("batch").disabled = !ready;
+        }
+      });
+
+      $("csv").addEventListener("click", () => {
+        const threshold = Number($("threshP").value) / 100;
+        const head = "clip,expected_from_your_records,model_acoustic_label,confidence,margin,latency_ms,flag";
+        const lines = [head];
+        for (let i = 0; i < CLIPS.length; i++) {
+          const r = results[i];
+          if (!r) continue;
+          const exp = $(`exp-${i}`).value;
+          const flags = [];
+          if (r.margin < threshold) flags.push("LOW_MARGIN");
+          if (exp && r.label !== exp) flags.push("MISMATCH");
+          lines.push([
+            `"${CLIPS[i].name}"`, exp || "skip", r.label,
+            r.score.toFixed(4), r.margin.toFixed(4), r.ms,
+            flags.length ? flags.join("+") : "ok",
+          ].join(","));
+        }
+        const csv = lines.join("\n");
+        $("csvPre").hidden = false;
+        $("csvPre").textContent = csv;
+        const blob = new Blob([csv], { type: "text/csv" });
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = "voice-label-triage.csv";
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+      });
+    </script>
+  </body>
+</html>
