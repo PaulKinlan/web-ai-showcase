@@ -279,17 +279,17 @@ for (const m of built) {
     gated: false,
     reviewed: !!(reviewed[m.hfId] && !reviewed[m.hfId].error),
     canonicalFamily: (m.family || m.task).toLowerCase(),
-    base_model: null,
-    baseRoot: null,
-    relationship: "canonical",
+    base_model: m.baseModel || null,
+    baseRoot: m.baseModel || null,
+    relationship: m.lineageRelationship || "canonical",
     specialization: [],
     catalogueStatus: "built",
     sourceRepo: m.hfId ? `https://huggingface.co/${m.hfId}` : null,
     evidence: {
-      proven: [],
+      proven: Array.isArray(m.lineageEvidence) ? m.lineageEvidence : [],
       inferred: ["built demo — value evidence from models.json + validation"],
     },
-    confidence: "medium",
+    confidence: m.lineageEvidence?.length ? "high" : "medium",
   };
   valueRecords.push(buildValueRecord(rec, m, true));
   seen.add(rec.id);

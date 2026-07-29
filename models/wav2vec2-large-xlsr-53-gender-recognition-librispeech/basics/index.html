@@ -20,8 +20,8 @@
       <p class="lede">
         The whole capability in one interaction: play a voice into the checkpoint and read its two
         acoustic labels, their probabilities, and — most importantly — <strong>how close the call
-        was</strong>. A confident acoustic read and a coin-flip look identical if you only show the
-        winning label; the margin is what keeps you honest.
+        was</strong>. A large score gap and a near-tie look identical if only the top label is shown;
+        the margin exposes that difference but is not calibrated confidence.
       </p>
     </header>
 
@@ -39,19 +39,16 @@
     <section class="panel" aria-labelledby="run-h">
       <h3 id="run-h">Run it</h3>
       <p class="muted">
-        Pick a bundled sample (all rights-safe, attributed below), drop a file, or record up to 10 s
-        of your own voice. First use downloads <strong>~319 MB</strong> with real progress; after that
-        the cached model starts automatically.
+        Use the rights-reviewed LibriSpeech recording, upload audio, or record up to 10 s. Every
+        source is deterministically cropped or zero-padded to exactly <strong>5.000 s at 16 kHz
+        mono</strong>, matching the model card. First use downloads <strong>~319 MB</strong>.
       </p>
 
       <div id="model-loader"></div>
       <p class="status" id="status" role="status" aria-live="polite"></p>
 
-      <div class="sample-row" id="samples" aria-label="Bundled rights-safe speech samples" role="group">
-        <button class="chip" type="button" data-src="../sample-voice-a.wav" aria-pressed="true">Sample A — Polish audiobook (LibriVox, PD, 13s)</button>
-        <button class="chip" type="button" data-src="../sample-voice-b.wav" aria-pressed="false">Sample B — Italian audiobook (LibriVox, PD, 12s)</button>
-        <button class="chip" type="button" data-src="../sample-voice-c.wav" aria-pressed="false">Sample C — Spanish audiobook (LibriVox, PD, 12s)</button>
-        <button class="chip" type="button" data-src="../sample-voice-d.wav" aria-pressed="false">Sample D — Mandarin speech (FLEURS, CC-BY 4.0, 10s)</button>
+      <div class="sample-row" id="samples" aria-label="Bundled rights-reviewed speech sample" role="group">
+        <button class="chip" type="button" data-src="../libri-61-70968-0000-16k-mono.wav" aria-pressed="true">LibriSpeech 61-70968-0000 — 4.91 s</button>
       </div>
 
       <div id="capFile"></div>
@@ -85,20 +82,14 @@
       <h2 id="learn-h">What to notice</h2>
       <ul>
         <li><strong>Both labels always show.</strong> A binary classifier's answer is only meaningful next to the runner-up — 99.9% / 0.1% and 51% / 49% are very different statements.</li>
-        <li><strong>The margin is the honest signal.</strong> Confident clips have margins near 100%; anything low should go to a human, which is exactly what the threshold encodes.</li>
-        <li><strong>The label follows the sound, not the speaker.</strong> These four samples come from different languages and readers; the model still assigns acoustic labels from pitch/timbre. Try your own voice at different pitches and watch it move.</li>
-        <li><strong>Non-English speech still gets labelled.</strong> The checkpoint was trained on English audiobooks; out-of-distribution clips (Polish, Italian, Spanish, Mandarin) get whatever acoustic read its training says — a bias to remember, not a fact about the reader.</li>
+        <li><strong>The margin is only a score gap.</strong> It is useful for showing near-ties, but it is not calibrated confidence or evidence about a person.</li>
+        <li><strong>Five seconds means five seconds.</strong> The worker reports exactly how many source samples were copied, cropped, or zero-padded.</li>
+        <li><strong>The checkpoint always emits its two configured labels.</strong> That forced binary output is a model limitation, not a fact about the reader.</li>
       </ul>
     </section>
 
     <footer class="byline">
-      <p class="provenance">
-        Samples: A — Sienkiewicz, “Za chlebem” (LibriVox, Public Domain) · B — Collodi, “Le avventure
-        di Pinocchio” (LibriVox, Public Domain) · C — Bécquer, “Rimas” (LibriVox, Public Domain) ·
-        D — Google FLEURS cmn_hans_cn (CC-BY 4.0). Model:
-        <a href="https://huggingface.co/alefiury/wav2vec2-large-xlsr-53-gender-recognition-librispeech" target="_blank" rel="noopener">alefiury/wav2vec2-large-xlsr-53-gender-recognition-librispeech</a>
-        (Apache-2.0) via the Xenova ONNX mirror.
-      </p>
+      <p class="provenance"><strong>Audio attribution:</strong> LibriSpeech <code>test-clean</code> utterance <code>61-70968-0000</code>, reader Paul-Gabriel Wiener reading <em>Robin Hood</em>, chapter 4; corpus by Vassil Panayotov, Guoguo Chen, Daniel Povey and Sanjeev Khudanpur. <a href="https://www.openslr.org/12" target="_blank" rel="noopener">OpenSLR SLR12</a> · <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener">CC BY 4.0</a> · lossless FLAC→16 kHz mono WAV · SHA-256 <code>1fb553adb5a6389eef5b7ebdbf9ed2a6082518a646ce9bf872bf33b964eedc14</code> · <a href="../CREDITS.md">complete provenance</a>.</p>
       Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>.
       <a href="../">Back to the model page →</a>
     </footer>
@@ -117,8 +108,8 @@
       injectOnce("capture-ux-css", CAPTURE_CSS);
 
       const $ = (id) => document.getElementById(id);
-      const MAX_SECONDS = 30;
-      let engine = null, pcm = null, ready = false;
+      let engine = null, pcm = null, ready = false, busy = false;
+      let audioGeneration = 0;
 
       function setStatus(msg, cls) {
         $("status").textContent = msg;
@@ -126,26 +117,27 @@
         if (cls) $("status").classList.add(cls);
       }
 
-      async function useAudio(pcmData, url) {
-        if (pcmData.length > MAX_SECONDS * 16000) pcmData = pcmData.slice(0, MAX_SECONDS * 16000);
+      async function useAudio(pcmData, url, generation) {
+        if (generation !== audioGeneration) return false;
         pcm = pcmData;
         $("scores").replaceChildren();
         $("logitLine").hidden = true;
         $("readout").hidden = true;
         drawWaveform($("wave"), pcm);
         if (url) $("player").src = url;
-        $("run").disabled = !ready;
+        $("run").disabled = !ready || busy;
+        return true;
       }
 
       async function pickSample(btn) {
+        const generation = ++audioGeneration;
         for (const b of $("samples").children) b.setAttribute("aria-pressed", String(b === btn));
         setStatus("Decoding sample…");
         try {
           const { pcm: p } = await urlToMono16k(btn.dataset.src);
-          await useAudio(p, btn.dataset.src);
-          setStatus("Sample ready — hit Classify.");
+          if (await useAudio(p, btn.dataset.src, generation)) setStatus("Sample ready — run the fixed 5-second input.");
         } catch (e) {
-          setStatus("Could not decode the sample: " + e.message, "err");
+          if (generation === audioGeneration) setStatus("Could not decode the sample: " + e.message, "err");
         }
       }
       for (const btn of $("samples").children) {
@@ -153,14 +145,14 @@
       }
 
       const onCapture = async (r) => {
+        const generation = ++audioGeneration;
         for (const b of $("samples").children) b.setAttribute("aria-pressed", "false");
         setStatus("Decoding audio…");
         try {
           const { pcm: p } = await blobToMono16k(r.blob);
-          await useAudio(p, r.url);
-          setStatus("Audio ready — hit Classify.");
+          if (await useAudio(p, r.url, generation)) setStatus("Audio ready — worker will crop/pad to 5.000 s.");
         } catch (e) {
-          setStatus("Could not decode that audio: " + e.message, "err");
+          if (generation === audioGeneration) setStatus("Could not decode that audio: " + e.message, "err");
         }
       };
       createCapture({
@@ -175,7 +167,7 @@
         kind: "audio",
         maxDurationMs: 10000,
         rationale: "Record up to 10 s of your own voice. It never leaves this browser tab.",
-        fallback: { label: "Use a bundled sample instead", url: "../sample-voice-a.wav" },
+        fallback: { label: "Use the approved LibriSpeech sample", url: "../libri-61-70968-0000-16k-mono.wav" },
         onResult: onCapture,
       });
 
@@ -189,16 +181,23 @@
           modelId: "Xenova/wav2vec2-large-xlsr-53-gender-recognition-librispeech",
           runtime: "transformers.js",
           dtype: "q8",
+          revision: "6bea1eddcfca9842add425123f4955d5b4f153f7",
           sizeMB: 319,
           requiresWebGPU: false,
         },
         load: async (onProgress) => {
-          engine = new GenderEngine();
-          await engine.load(onProgress);
-          return engine;
+          const candidate = new GenderEngine();
+          try {
+            await candidate.load(onProgress);
+            engine = candidate;
+            return candidate;
+          } catch (error) {
+            await candidate.dispose("Model load failed");
+            throw error;
+          }
         },
-        onReady: () => { ready = true; $("run").disabled = !pcm; },
-        dispose: (e) => e.worker.terminate(),
+        onReady: () => { ready = true; $("run").disabled = !pcm || busy; },
+        dispose: (e, reason) => e.dispose(reason),
         onDispose: () => { ready = false; engine = null; $("run").disabled = true; },
       });
 
@@ -207,10 +206,13 @@
       $("run").addEventListener("click", async () => {
         if (!pcm) { setStatus("Pick or record some audio first."); return; }
         if (!ready || !engine) { setStatus("The model is not ready yet.", "err"); return; }
+        const generation = audioGeneration;
+        busy = true;
         $("run").disabled = true;
-        setStatus("Listening…");
+        setStatus("Running the fixed 5-second input…");
         try {
           const r = await engine.classify(pcm);
+          if (generation !== audioGeneration || !ready) return;
           const threshold = Number($("thresh").value) / 100;
           renderScoreBars($("scores"), r.labels, threshold);
           $("logitLine").hidden = false;
@@ -224,9 +226,10 @@
           $("readout").hidden = false;
           setStatus("Done — margin " + (r.margin * 100).toFixed(1) + "%.", "ok");
         } catch (e) {
-          setStatus("Classification failed: " + e.message, "err");
+          if (generation === audioGeneration && ready) setStatus("Classification failed: " + e.message, "err");
         } finally {
-          $("run").disabled = false;
+          busy = false;
+          $("run").disabled = !ready || !pcm;
         }
       });
     </script>

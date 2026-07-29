@@ -3,71 +3,79 @@
 // the waveform, and renders the two-class score bars + decision margin. All inference lives in
 // worker.js (off the main thread).
 
+import { WorkerClient } from "/web-ai-showcase/lib/worker-protocol.js";
+
 const WORKER_URL =
   "/web-ai-showcase/models/wav2vec2-large-xlsr-53-gender-recognition-librispeech/worker.js";
 const TARGET_RATE = 16000;
 
 export class GenderEngine {
   constructor() {
-    this.worker = new Worker(WORKER_URL, { type: "module" });
     this.ready = false;
     this.device = "wasm";
-    this.onProgress = null;
-    this._loadWaiters = [];
-    this._pending = new Map();
-    this._id = 0;
-    this.worker.addEventListener("message", (e) => this._onMessage(e.data));
-    this.worker.addEventListener("error", (e) => {
-      const err = new Error(e.message || "Worker failed to start");
-      for (const w of this._loadWaiters) w.reject(err);
-      this._loadWaiters = [];
-      for (const [, p] of this._pending) p.reject(err);
-      this._pending.clear();
+    this._controller = null;
+    this.client = new WorkerClient({
+      url: WORKER_URL,
+      name: "xlsr-acoustic-label",
+      maxInFlight: 1,
+      maxQueue: 0,
+      disposeGraceMs: 300,
     });
+    // Kept as a read-only compatibility handle for diagnostics; callers must use dispose().
+    this.worker = this.client.worker;
   }
 
-  _onMessage(msg) {
-    if (msg.type === "progress") {
-      this.onProgress?.(msg.p);
-    } else if (msg.type === "ready") {
-      this.ready = true;
-      this.device = msg.device;
-      for (const w of this._loadWaiters) w.resolve(msg.device);
-      this._loadWaiters = [];
-    } else if (msg.type === "result") {
-      const p = this._pending.get(msg.id);
-      if (p) {
-        this._pending.delete(msg.id);
-        p.resolve(msg);
-      }
-    } else if (msg.type === "error") {
-      if (msg.id != null && this._pending.has(msg.id)) {
-        this._pending.get(msg.id).reject(new Error(msg.message));
-        this._pending.delete(msg.id);
-      } else {
-        const err = new Error(msg.message);
-        for (const w of this._loadWaiters) w.reject(err);
-        this._loadWaiters = [];
-      }
+  async load(onProgress, device) {
+    await this.client.ready;
+    const { result } = await this.client.request("load", { device }, {
+      channel: "load",
+      onProgress,
+    });
+    this.ready = true;
+    this.device = result.device;
+    this.runtimeEvidence = result;
+    return result.device;
+  }
+
+  /**
+   * Classify one waveform. A private copy is transferred (not cloned), so the page may safely reuse
+   * its selected clip. Single-flight backpressure rejects overlapping runs deterministically.
+   */
+  async classify(audio, opts = {}) {
+    if (!this.ready) throw new Error("Model worker is not ready");
+    const transferred = audio.slice();
+    this._controller = new AbortController();
+    try {
+      const { result } = await this.client.request(
+        "classify",
+        { audio: transferred.buffer, device: opts.device },
+        {
+          transfer: [transferred.buffer],
+          signal: this._controller.signal,
+          channel: opts.channel || "inference",
+        },
+      );
+      // Inspectable acceptance/debug signal bound to the genuine versioned-worker response. It
+      // contains raw logits + pinned runtime evidence, never a synthetic UI-only reconstruction.
+      globalThis.dispatchEvent?.(new CustomEvent("xlsr-worker-result", { detail: result }));
+      return result;
+    } finally {
+      this._controller = null;
     }
   }
 
-  load(onProgress, device) {
-    if (onProgress) this.onProgress = onProgress;
-    if (this.ready) return Promise.resolve(this.device);
-    return new Promise((resolve, reject) => {
-      this._loadWaiters.push({ resolve, reject });
-      this.worker.postMessage({ type: "load", device });
-    });
+  cancel(reason = "Inference cancelled") {
+    this._controller?.abort(new DOMException(reason, "AbortError"));
   }
 
-  /** Classify a 16 kHz mono Float32Array. Returns { labels, logits, margin, ms, device, durationS }. */
-  classify(audio, opts) {
-    const id = ++this._id;
-    return new Promise((resolve, reject) => {
-      this._pending.set(id, { resolve, reject });
-      this.worker.postMessage({ type: "run", id, audio, opts });
-    });
+  async dispose(reason = "Model worker disposed") {
+    this.ready = false;
+    this.cancel(reason);
+    await this.client.terminate(new Error(reason));
+  }
+
+  get pending() {
+    return this.client.pending;
   }
 }
 
@@ -105,8 +113,8 @@ export async function blobToMono16k(blob) {
 /**
  * Re-render a decoded clip at a different playback rate (pitch AND tempo shift together — the
  * classic "chipmunk / slow-mo" resampling), returned as a 16 kHz mono Float32Array. Used by the
- * Wild page to probe how the acoustic label tracks pitch/timbre. Honest: this is rate resynthesis,
- * not a formant-preserving pitch shifter.
+ * Wild page sensitivity probe. Rate resampling changes pitch, spectrum/formants, tempo, duration,
+ * and temporal structure together; it isolates neither pitch nor timbre.
  */
 export async function renderAtRate(pcm, rate) {
   const src = new OfflineAudioContext(1, pcm.length, TARGET_RATE);
@@ -131,7 +139,7 @@ export function escapeHTML(s) {
 /** Draw a mono waveform into a <canvas>, matching the design system's accent colour. */
 export function drawWaveform(canvas, pcm) {
   const cs = getComputedStyle(document.body);
-  const accent = cs.getPropertyValue("--accent").trim() || "#4b3aff";
+  const accent = cs.getPropertyValue("--accent").trim();
   const dpr = self.devicePixelRatio || 1;
   const w = canvas.clientWidth || 600, h = canvas.clientHeight || 80;
   canvas.width = w * dpr;
@@ -160,7 +168,7 @@ export function drawWaveform(canvas, pcm) {
 
 /**
  * Render the checkpoint's two acoustic voice labels as accessible score bars (BOTH classes always,
- * most confident first), plus the decision margin. `threshold` (0..1) is the abstention bar: when
+ * highest score first), plus the score margin. `threshold` (0..1) is the abstention bar: when
  * the winning margin is below it the verdict line says so instead of naming a label.
  */
 export function renderScoreBars(container, labels, threshold = 0) {
@@ -180,9 +188,11 @@ export function renderScoreBars(container, labels, threshold = 0) {
   verdict.className = "verdict";
   if (threshold > 0 && margin < threshold) {
     verdict.classList.add("abstain");
-    verdict.textContent = `Below the review threshold — margin ${(margin * 100).toFixed(1)}% < ${
+    verdict.textContent = `Below the display threshold — score margin ${
+      (margin * 100).toFixed(1)
+    }% < ${
       (threshold * 100).toFixed(0)
-    }%. A human would need to look at this one; the model is not confident enough to label it.`;
+    }%. The page abstains because the two uncalibrated scores are too close.`;
   } else {
     verdict.textContent =
       `Acoustic voice label: “${labels[0].label}” — margin ${(margin * 100).toFixed(1)}%. ` +
@@ -208,12 +218,12 @@ export const GENDER_CSS = `
 .score-fill { display:block; block-size:100%; background:var(--accent); border-radius:999px; }
 .score-val { font-family:var(--font-mono); font-size:.78rem; color:var(--muted); text-align:right; }
 .verdict { font-size:.88rem; margin:.5rem 0 0; }
-.verdict.abstain { color:var(--warn, #b45309); font-weight:600; }
+.verdict.abstain { color:var(--warn); font-weight:600; }
 .readout { display:flex; flex-wrap:wrap; gap:1rem; font-family:var(--font-mono); font-size:.78rem;
   color:var(--muted); margin-top:.6rem; }
 .readout b { color:var(--color); font-weight:600; overflow-wrap:anywhere; }
 .field-row { display:flex; flex-wrap:wrap; gap:.6rem; align-items:center; margin:.6rem 0; }
-.ethics { border:1px solid var(--warn, #b45309); border-inline-start-width:4px; border-radius:var(--radius);
+.ethics { border:1px solid var(--warn); border-inline-start-width:4px; border-radius:var(--radius);
   background:var(--bg-raised); padding:.8rem 1rem; }
 .ethics h2, .ethics h3 { margin-top:0; }
 .inside-table { inline-size:100%; border-collapse:collapse; font-size:.82rem; margin-top:.5rem; }
@@ -227,8 +237,9 @@ export const GENDER_CSS = `
 .batch-table th, .batch-table td { text-align:left; padding:.35rem .5rem; border-bottom:1px solid var(--border);
   white-space:nowrap; }
 .batch-table th { color:var(--muted); font-weight:600; }
-.batch-table .flag { color:var(--warn, #b45309); font-weight:700; }
+.batch-table .flag { color:var(--warn); font-weight:700; }
 .sweep-chart { inline-size:100%; block-size:auto; display:block; background:var(--bg-raised);
   border:1px solid var(--border); border-radius:var(--radius); margin-top:.5rem; }
 .provenance { font-size:.8rem; color:var(--muted); }
+.provenance code, .inside-table code { overflow-wrap:anywhere; word-break:break-all; }
 `;
