@@ -325,7 +325,11 @@ async function main() {
   const agg = aggregate(merged);
   writeFileSync(
     resultsPath,
-    JSON.stringify({ generatedAt: NOW, suites: merged.length, aggregate: agg, runs: merged }, null, 2) + "\n",
+    JSON.stringify(
+      { generatedAt: NOW, suites: merged.length, aggregate: agg, runs: merged },
+      null,
+      2,
+    ) + "\n",
   );
   writeFileSync(join(outDir, "index.html"), renderRollup(merged));
 

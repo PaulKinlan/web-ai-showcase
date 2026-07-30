@@ -113,7 +113,13 @@ serveWorker({
           const d2 = vecs.map((v) => Math.min(...centroids.map((c) => 1 - cos(v, c))));
           const sum = d2.reduce((a, b) => a + b, 0) || 1;
           let r = rnd() * sum, pick = 0;
-          for (let i = 0; i < n; i++) { r -= d2[i]; if (r <= 0) { pick = i; break; } }
+          for (let i = 0; i < n; i++) {
+            r -= d2[i];
+            if (r <= 0) {
+              pick = i;
+              break;
+            }
+          }
           centroids.push(vecs[pick].slice());
         }
         let assign = new Array(n).fill(0);
@@ -121,11 +127,21 @@ serveWorker({
           let moved = false;
           for (let i = 0; i < n; i++) {
             let best = 0, bs = -Infinity;
-            for (let g = 0; g < kk; g++) { const s = cos(vecs[i], centroids[g]); if (s > bs) { bs = s; best = g; } }
-            if (assign[i] !== best) { assign[i] = best; moved = true; }
+            for (let g = 0; g < kk; g++) {
+              const s = cos(vecs[i], centroids[g]);
+              if (s > bs) {
+                bs = s;
+                best = g;
+              }
+            }
+            if (assign[i] !== best) {
+              assign[i] = best;
+              moved = true;
+            }
           }
           for (let g = 0; g < kk; g++) {
-            const members = []; for (let i = 0; i < n; i++) if (assign[i] === g) members.push(i);
+            const members = [];
+            for (let i = 0; i < n; i++) if (assign[i] === g) members.push(i);
             if (!members.length) continue;
             const c = new Float64Array(dim);
             for (const i of members) for (let j = 0; j < dim; j++) c[j] += vecs[i][j];
@@ -151,7 +167,11 @@ serveWorker({
       for (let g = 0; g < kk; g++) {
         const members = [];
         for (let i = 0; i < n; i++) if (a1[i] === g) members.push(i);
-        if (!members.length) { centroids.push(null); central.push(-1); continue; }
+        if (!members.length) {
+          centroids.push(null);
+          central.push(-1);
+          continue;
+        }
         const c = new Float64Array(dim);
         for (const i of members) for (let j = 0; j < dim; j++) c[j] += vecs[i][j];
         const norm = Math.sqrt(c.reduce((a, x) => a + x * x, 0)) || 1;
@@ -159,11 +179,20 @@ serveWorker({
         centroids.push(c);
         // most-central member = highest cosine to the centroid.
         let bestI = members[0], bestS = -Infinity;
-        for (const i of members) { const s = cos(vecs[i], c); if (s > bestS) { bestS = s; bestI = i; } }
+        for (const i of members) {
+          const s = cos(vecs[i], c);
+          if (s > bestS) {
+            bestS = s;
+            bestI = i;
+          }
+        }
         central.push(bestI);
         // intra-cluster pairwise cosine for cohesion.
         for (let x = 0; x < members.length; x++) {
-          for (let y = x + 1; y < members.length; y++) { cohSum += cos(vecs[members[x]], vecs[members[y]]); cohCount++; }
+          for (let y = x + 1; y < members.length; y++) {
+            cohSum += cos(vecs[members[x]], vecs[members[y]]);
+            cohCount++;
+          }
         }
       }
       const cohesion = cohCount ? cohSum / cohCount : 1;
