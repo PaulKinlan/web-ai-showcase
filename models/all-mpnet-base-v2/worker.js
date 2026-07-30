@@ -57,7 +57,12 @@ serveWorker({
       const t0 = performance.now();
       // pooling:"mean" → mask-aware average of the per-token vectors (MPNet's trained representation).
       // normalize:false → we normalize ourselves so "See inside" can show the real magnitude.
-      const out = await pipe(texts, { pooling: "mean", normalize: false });
+      const out = await pipe(texts, {
+        pooling: "mean",
+        normalize: false,
+        truncation: true,
+        max_length: 384,
+      });
       // Cooperative cancellation checkpoint after the long inference step.
       if (signal.aborted) {
         throw signal.reason ?? new DOMException("Aborted", "AbortError");
@@ -88,7 +93,12 @@ serveWorker({
       if (!pipe) throw new Error("Model not loaded");
       if (signal.aborted) throw signal.reason ?? new DOMException("Aborted", "AbortError");
       const t0 = performance.now();
-      const out = await pipe(texts, { pooling: "mean", normalize: true });
+      const out = await pipe(texts, {
+        pooling: "mean",
+        normalize: true,
+        truncation: true,
+        max_length: 384,
+      });
       if (signal.aborted) throw signal.reason ?? new DOMException("Aborted", "AbortError");
       const dim = out.dims[out.dims.length - 1];
       const src = out.data;

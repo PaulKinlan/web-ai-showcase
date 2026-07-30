@@ -168,9 +168,9 @@ export function pca2d(embeddings) {
     }
   }
 
-  const [u1, l1, r1] = topEigen(G, n);
+  const [u1, l1, r1] = topEigen(G, n, 1);
   deflate(G, u1, l1, n);
-  const [u2, l2, r2] = topEigen(G, n);
+  const [u2, l2, r2] = topEigen(G, n, 2);
   // Deterministic sign: flip each axis so its largest-magnitude component is positive.
   fixSign(u1, n);
   fixSign(u2, n);
@@ -183,33 +183,40 @@ export function pca2d(embeddings) {
   return { points, explained, residual: Math.max(r1, r2) };
 }
 
-function topEigen(M, n) {
-  // Deterministic start vector (all-equal then normalize) instead of Math.random() → reproducible.
-  let v = new Array(n).fill(1);
+function topEigen(M, n, seed) {
+  // A centered Gram matrix annihilates the all-ones vector, so an all-equal deterministic start is
+  // invalid. Use a deterministic, centered non-uniform seed for each axis instead.
+  let v = Array.from(
+    { length: n },
+    (_, i) => Math.sin((i + 1) * (seed + 0.5)) + 0.05 * (i + 1) * seed,
+  );
+  const mean = v.reduce((sum, value) => sum + value, 0) / n;
+  v = v.map((value) => value - mean);
   normalizeVec(v);
   let lambda = 0;
-  let residual = 0;
+  let residual = Infinity;
   for (let iter = 0; iter < 300; iter++) {
-    const w = new Array(n).fill(0);
+    const y = new Array(n).fill(0);
     for (let i = 0; i < n; i++) {
-      let s = 0;
-      for (let j = 0; j < n; j++) s += M[i][j] * v[j];
-      w[i] = s;
+      for (let j = 0; j < n; j++) y[i] += M[i][j] * v[j];
     }
-    const norm = Math.sqrt(w.reduce((a, x) => a + x * x, 0));
-    if (norm < 1e-12) break;
-    for (let i = 0; i < n; i++) w[i] /= norm;
-    // residual ‖Mv − λv‖ / ‖Mv‖ : convergence check (≈0 ⇒ eigenvector found).
-    let res = 0;
+    const norm = Math.sqrt(y.reduce((sum, value) => sum + value * value, 0));
+    if (norm < 1e-12) return [new Array(n).fill(0), 0, 0];
+    const w = y.map((value) => value / norm);
+    fixSign(w, n);
+
+    const mw = new Array(n).fill(0);
     for (let i = 0; i < n; i++) {
-      let mv = 0;
-      for (let j = 0; j < n; j++) mv += M[i][j] * w[j];
-      res += Math.abs(mv - norm * w[i]);
+      for (let j = 0; j < n; j++) mw[i] += M[i][j] * w[j];
     }
-    residual = res / (norm * n || 1);
+    lambda = w.reduce((sum, value, i) => sum + value * mw[i], 0);
+    const residualNorm = Math.sqrt(
+      mw.reduce((sum, value, i) => sum + (value - lambda * w[i]) ** 2, 0),
+    );
+    residual = residualNorm / Math.max(Math.abs(lambda), 1e-12);
+    const delta = Math.sqrt(w.reduce((sum, value, i) => sum + (value - v[i]) ** 2, 0));
     v = w;
-    lambda = norm;
-    if (residual < 1e-9 && iter > 0) break;
+    if (residual < 1e-9 && delta < 1e-8) break;
   }
   return [v, lambda, residual];
 }

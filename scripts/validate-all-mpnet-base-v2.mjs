@@ -17,6 +17,7 @@ import {
   setViewport,
   startServer,
 } from "./browser.mjs";
+import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -34,6 +35,29 @@ const ROUTES = {
   wild: "models/all-mpnet-base-v2/wild/",
   multimodel: "models/all-mpnet-base-v2/multi-model/",
 };
+const EXPECTED_ASSERTION_IDS = [
+  ...Object.keys(ROUTES).flatMap((route) => [
+    `${route}-real-inference`,
+    `${route}-mpnet-pinned-request`,
+    ...(route === "multimodel" ? ["multimodel-reranker-pinned-request"] : []),
+    `${route}-keyboard-focus`,
+    ...["desktop", "mobile"].flatMap((viewport) =>
+      ["light", "dark"].flatMap((theme) => [
+        `${route}-${viewport}-${theme}-no-overflow`,
+        `${route}-${viewport}-${theme}-console-clean`,
+        `${route}-${viewport}-${theme}-no-http-4xx-5xx`,
+      ])
+    ),
+  ]),
+  "lifecycle-warm-reuse",
+  "lifecycle-release-idle-reinit-real-inference",
+  "lifecycle-clear-cache-disposal",
+  "lifecycle-failure-retry-recover",
+  "lifecycle-cancellation-supersession",
+];
+if (EXPECTED_ASSERTION_IDS.length !== 81) {
+  throw new Error("frozen denominator construction drifted");
+}
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const { server, port } = await startServer();
 const chrome = await launchChrome({
@@ -47,7 +71,9 @@ const url = (route) => `http://127.0.0.1:${port}/web-ai-showcase/${route}`;
 // ── Evidence collectors ─────────────────────────────────────────────────────────────────────────
 const assertions = []; // { id, route, viewport, theme, state, evidence }
 const screenshots = []; // { route, viewport, theme, path }
-const pinnedRequests = []; // { model, url, status, contentLength }
+const pinnedRequests = []; // unique cold-download evidence for each immutable model
+let mpnetPinnedNetwork = null;
+let rerankerPinnedNetwork = null;
 let pass = 0, fail = 0;
 function record(id, route, viewport, theme, ok, evidence) {
   assertions.push({
@@ -102,9 +128,9 @@ const noOverflow = `document.documentElement.scrollWidth <= window.innerWidth + 
 // auto-attach (flatten) and enable Network on each worker session, forwarding its events here. This is
 // what makes the pinned model request + its bytes capturable, and lets us block worker fetches for the
 // failure→retry test.
-function attachNetwork(page) {
+async function attachNetwork(page) {
   const respByUrl = new Map();
-  const reqByUrl = new Map();
+  const requestChains = new Map();
   const workerSessions = new Set();
   let blocks = [];
   function applyBlocks(sid) {
@@ -114,35 +140,79 @@ function attachNetwork(page) {
       sid,
     ).catch(() => {});
   }
+  async function enableSession(sid) {
+    if (!sid || workerSessions.has(sid)) return;
+    workerSessions.add(sid);
+    await cdp.send("Network.enable", {}, sid);
+    applyBlocks(sid);
+  }
   cdp.on((msg) => {
+    if (msg.method === "Target.attachedToTarget") {
+      const type = msg.params.targetInfo?.type;
+      const workerUrl = msg.params.targetInfo?.url || "";
+      if (
+        (type === "worker" || type === "service_worker") && workerUrl.includes("all-mpnet-base-v2")
+      ) {
+        void enableSession(msg.params.sessionId);
+      }
+      return;
+    }
     if (msg.sessionId !== page.sessionId && !workerSessions.has(msg.sessionId)) return;
     if (msg.method === "Network.requestWillBeSent") {
-      reqByUrl.set(msg.params.request.url, msg.params.request);
+      const id = `${msg.sessionId}:${msg.params.requestId}`;
+      const chain = requestChains.get(id) || { requestedUrl: msg.params.request.url };
+      chain.lastUrl = msg.params.request.url;
+      requestChains.set(id, chain);
     }
     if (msg.method === "Network.responseReceived") {
-      const u = msg.params.response.url;
-      const cl = msg.params.response.headers?.["content-length"] ||
-        msg.params.response.headers?.["Content-Length"];
-      respByUrl.set(u, {
+      const id = `${msg.sessionId}:${msg.params.requestId}`;
+      const chain = requestChains.get(id) || { requestedUrl: msg.params.response.url };
+      const headers = msg.params.response.headers || {};
+      const cl = headers["content-length"] || headers["Content-Length"];
+      respByUrl.set(chain.requestedUrl, {
+        requestedUrl: chain.requestedUrl,
+        responseUrl: msg.params.response.url,
         status: msg.params.response.status,
         contentLength: cl ? Number(cl) : null,
       });
     }
-    if (msg.method === "Target.attachedToTarget") {
-      const sid = msg.params.sessionId;
-      workerSessions.add(sid);
-      cdp.send("Network.enable", {}, sid).catch(() => {});
-      applyBlocks(sid);
-    }
   });
-  cdp.send("Target.setAutoAttach", {
+
+  // Install browser-level auto-attach, then attach workers that were created while the page's module
+  // graph was loading. Network must be enabled BEFORE clicking Download or a cached warm init.
+  await cdp.send("Target.setDiscoverTargets", { discover: true });
+  await cdp.send("Target.setAutoAttach", {
     autoAttach: true,
     flatten: true,
     waitForDebuggerOnStart: false,
-  }, page.sessionId).catch(() => {});
+  });
+  await cdp.send("Target.setAutoAttach", {
+    autoAttach: true,
+    flatten: true,
+    waitForDebuggerOnStart: false,
+  }, page.sessionId);
+  for (let attempt = 0; attempt < 20; attempt++) {
+    const { targetInfos = [] } = await cdp.send("Target.getTargets");
+    const workers = targetInfos.filter((target) =>
+      (target.type === "worker" || target.type === "service_worker") &&
+      target.url.includes("all-mpnet-base-v2")
+    );
+    for (const target of workers) {
+      try {
+        const { sessionId } = await cdp.send("Target.attachToTarget", {
+          targetId: target.targetId,
+          flatten: true,
+        });
+        await enableSession(sessionId);
+      } catch { /* already auto-attached */ }
+    }
+    if (workers.length > 0) break;
+    await sleep(50);
+  }
+  await cdp.send("Network.enable", {}, page.sessionId);
+  applyBlocks(page.sessionId);
   return {
     respByUrl,
-    reqByUrl,
     setBlocks(list) {
       blocks = list;
       applyBlocks(page.sessionId);
@@ -236,7 +306,7 @@ async function driveInteraction(sid, name) {
     await waitFor(sid, `document.querySelectorAll('#ranked .result-row').length>=2`, "ov search");
     real = await ev(
       sid,
-      `JSON.stringify({dim:document.querySelector('#rDim')?.textContent, norm:document.querySelector('#iNorm')?.textContent, ranked:document.querySelectorAll('#ranked .result-row').length, topScore:document.querySelector('#ranked .result-score')?.textContent})`,
+      `JSON.stringify({dim:document.querySelector('#rDim')?.textContent, norm:document.querySelector('#iNorm')?.textContent, ranked:document.querySelectorAll('#ranked .result-row').length, topText:document.querySelector('#ranked .result-row .result-head span')?.textContent, topScore:document.querySelector('#ranked .result-score')?.textContent})`,
     );
   } else if (name === "basics") {
     await ev(sid, click("#run"));
@@ -263,7 +333,7 @@ async function driveInteraction(sid, name) {
     );
     real = await ev(
       sid,
-      `JSON.stringify({search:document.querySelectorAll('#searchOut .result-row').length, clusters:document.querySelectorAll('#clusterOut .cluster').length, classified:document.querySelectorAll('#classifyOut .result-row').length})`,
+      `JSON.stringify({search:document.querySelectorAll('#searchOut .result-row').length, clusters:document.querySelectorAll('#clusterOut .cluster').length, classified:document.querySelectorAll('#classifyOut .result-row').length, abstained:[...document.querySelectorAll('#classifyOut .result-row')].filter(row=>/uncertain/i.test(row.textContent)).length, clusterStatus:document.querySelector('#clusterStatus')?.textContent})`,
     );
   } else if (name === "wild") {
     await ev(sid, click("#run"));
@@ -286,6 +356,27 @@ async function driveInteraction(sid, name) {
     );
   }
   return real;
+}
+
+function realOutputMatches(route, serialized) {
+  try {
+    const value = JSON.parse(serialized);
+    if (route === "overview") {
+      return value.dim === "768" && Number(value.norm) > 0 && value.ranked === 6 &&
+        /password|login/i.test(value.topText || "") && Number.isFinite(Number(value.topScore));
+    }
+    if (route === "basics") return Number(value.score) > 0.5 && Number(value.score) < 0.65;
+    if (route === "practical") {
+      return value.search === 12 && value.clusters === 4 && value.classified === 12 &&
+        value.abstained >= 1 && /cohesion|stability/i.test(value.clusterStatus || "");
+    }
+    if (route === "wild") return value.rows >= 5 && value.top?.trim() === "queen";
+    if (route === "multimodel") {
+      return value.s1 === 4 && value.s2 === 4 &&
+        /0\s*(?:of|\/)\s*4|unchanged/i.test(value.reordered || "");
+    }
+  } catch { /* malformed worker/UI evidence is a failure */ }
+  return false;
 }
 
 function capturePinned(respByUrl, model, rev) {
@@ -315,7 +406,7 @@ const routeResults = []; // gate-required { route, viewport, pass }
 try {
   for (const [name, route] of Object.entries(ROUTES)) {
     const page = await openPage(cdp, url(route));
-    const net = attachNetwork(page);
+    const net = await attachNetwork(page);
     const respByUrl = net.respByUrl;
     await setViewport(cdp, page.sessionId, DESKTOP);
     await setTheme(page.sessionId, "light");
@@ -326,64 +417,48 @@ try {
       name,
       "desktop",
       "light",
-      !String(real).startsWith("ERR") && !/null/.test(String(real).replace(/"dim":"768"/g, "")),
+      realOutputMatches(name, real),
       `worker-bound output: ${real}`,
     );
 
     // Capture the pinned request evidence: real worker network (auto-attached) + authoritative source-pin.
     const mp = capturePinned(respByUrl, MPNET, MPNET_REV);
+    if (mp) mpnetPinnedNetwork = mp;
     const mpSrc = sourcePin("models/all-mpnet-base-v2/worker.js", MPNET, MPNET_REV, 110086122);
-    pinnedRequests.push({
-      model: MPNET,
-      revision: MPNET_REV,
-      dtype: "q8",
-      bytes: 110086122,
-      sourceLiteral: mpSrc.ok,
-      network: mp ? { status: mp.status, contentLength: mp.contentLength, url: mp.url } : null,
-    });
+    const mpProof = mpnetPinnedNetwork;
     record(
       `${name}-mpnet-pinned-request`,
       name,
       "desktop",
       "light",
-      mpSrc.ok && (mp ? mp.status === 200 && mp.contentLength === 110086122 : true),
+      mpSrc.ok && mpProof?.status === 200 && mpProof?.contentLength === 110086122,
       `source literal model=${mpSrc.hasModel} rev=${mpSrc.hasRev} (${
         mpSrc.rev.slice(0, 7)
-      }); bytes=${mpSrc.bytes} (HEAD-verified); network=${
-        mp
-          ? `captured status=${mp.status} bytes=${mp.contentLength}`
-          : "worker request not captured this run"
-      }`,
+      }); actual cold request=${mpProof?.requestedUrl || "missing"}; status=${
+        mpProof?.status ?? "missing"
+      }; bytes=${mpProof?.contentLength ?? "missing"}`,
     );
     if (name === "multimodel") {
       const rr = capturePinned(respByUrl, RERANKER, RERANKER_REV);
+      if (rr) rerankerPinnedNetwork = rr;
       const rrSrc = sourcePin(
         "models/all-mpnet-base-v2/reranker-worker.js",
         RERANKER,
         RERANKER_REV,
         23143499,
       );
-      pinnedRequests.push({
-        model: RERANKER,
-        revision: RERANKER_REV,
-        dtype: "q8",
-        bytes: 23143499,
-        sourceLiteral: rrSrc.ok,
-        network: rr ? { status: rr.status, contentLength: rr.contentLength, url: rr.url } : null,
-      });
+      const rrProof = rerankerPinnedNetwork;
       record(
         `multimodel-reranker-pinned-request`,
         name,
         "desktop",
         "light",
-        rrSrc.ok && (rr ? rr.status === 200 && rr.contentLength === 23143499 : true),
+        rrSrc.ok && rrProof?.status === 200 && rrProof?.contentLength === 23143499,
         `source literal model=${rrSrc.hasModel} rev=${rrSrc.hasRev} (${
           rrSrc.rev.slice(0, 7)
-        }); bytes=${rrSrc.bytes} (HEAD-verified); network=${
-          rr
-            ? `captured status=${rr.status} bytes=${rr.contentLength}`
-            : "worker request not captured this run"
-        }`,
+        }); actual cold request=${rrProof?.requestedUrl || "missing"}; status=${
+          rrProof?.status ?? "missing"
+        }; bytes=${rrProof?.contentLength ?? "missing"}`,
       );
     }
 
@@ -528,7 +603,7 @@ try {
   // Failure → visible Retry → recover (block the worker's model fetch via auto-attached sessions).
   {
     const page = await openPage(cdp, url(ROUTES.overview));
-    const net = attachNetwork(page);
+    const net = await attachNetwork(page);
     await setViewport(cdp, page.sessionId, DESKTOP);
     net.setBlocks(["*all-mpnet-base-v2*"]);
     await ev(page.sessionId, clickDownloads);
@@ -633,17 +708,82 @@ function clickRelease() {
 }
 
 // ── Write acceptance-run.json (schema-2, superset of the gate-required fields) ─────────────────
+if (mpnetPinnedNetwork) {
+  pinnedRequests.push({
+    model: MPNET,
+    revision: MPNET_REV,
+    dtype: "q8",
+    expectedBytes: 110086122,
+    ...mpnetPinnedNetwork,
+  });
+}
+if (rerankerPinnedNetwork) {
+  pinnedRequests.push({
+    model: RERANKER,
+    revision: RERANKER_REV,
+    dtype: "q8",
+    expectedBytes: 23143499,
+    ...rerankerPinnedNetwork,
+  });
+}
+const actualAssertionIds = assertions.map((assertion) => assertion.id);
+const denominatorMatches = JSON.stringify(actualAssertionIds) ===
+  JSON.stringify(EXPECTED_ASSERTION_IDS);
+if (!denominatorMatches) {
+  fail++;
+  console.error(
+    `FROZEN DENOMINATOR MISMATCH expected=${EXPECTED_ASSERTION_IDS.length} actual=${actualAssertionIds.length}`,
+  );
+}
+const familyRoot = "models/all-mpnet-base-v2";
+const validatorRel = "scripts/validate-all-mpnet-base-v2.mjs";
+const commit = execFileSync(
+  "git",
+  [
+    "log",
+    "-n1",
+    "--format=%H",
+    "HEAD",
+    "--",
+    familyRoot,
+    validatorRel,
+    `:(exclude)${familyRoot}/acceptance.json`,
+    `:(exclude)${familyRoot}/acceptance-run.json`,
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+).trim();
 const runRecord = {
   schema: 2,
-  commit: "PENDING_FAMILY_COMMIT", // bound to the latest executable family commit after this commit lands
+  validator: validatorRel,
+  commit,
   ranAt: new Date().toISOString(),
   exitCode: fail === 0 ? 0 : 1,
+  checks: `${pass}/${EXPECTED_ASSERTION_IDS.length}`,
+  frozenDenominator: {
+    total: EXPECTED_ASSERTION_IDS.length,
+    assertionIds: EXPECTED_ASSERTION_IDS,
+    exactOrder: true,
+  },
   denominator: { routes: 5, viewports: 2, themes: 2, screenshotCells: 20 },
   results: routeResults,
   assertions,
   pinnedRequests,
   screenshots,
-  manualStates: screenshots.map((s) => ({ ...s, verdict: "manual_parent_required" })),
+  visualReview: screenshots.map((s) => ({ ...s, verdict: "manual_parent_required" })),
+  manualStates: [
+    {
+      id: "physical-low-memory-mobile",
+      state: "manual",
+      evidence:
+        "desktop Chrome mobile emulation does not establish 105 MB model viability on a physical constrained phone",
+    },
+    {
+      id: "assistive-technology-traversal",
+      state: "manual",
+      evidence:
+        "keyboard focus is automated; screen-reader and physical coarse-pointer review remain manual",
+    },
+  ],
   stages: [MPNET, RERANKER],
 };
 writeFileSync(
