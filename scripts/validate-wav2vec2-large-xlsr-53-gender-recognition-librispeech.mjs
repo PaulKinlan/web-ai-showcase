@@ -819,7 +819,7 @@ if (WRITE_RUN && succeeded) {
   // wrapper commit. This mirrors check-portfolio-acceptance.mjs and remains valid after cherry-picks:
   // committing acceptance-run.json/screenshots must not move the code target, while any later route,
   // worker, critique, conformance, or validator edit does.
-  const familyRoot = `models/${SLUG}`;
+  const familyRoot = "models/wav2vec2-large-xlsr-53-gender-recognition-librispeech";
   const validatorRel = "scripts/validate-wav2vec2-large-xlsr-53-gender-recognition-librispeech.mjs";
   const commit = execFileSync(
     "git",
