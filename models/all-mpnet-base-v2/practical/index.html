@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>all-mpnet-base-v2 — Practical: search, cluster, classify · Web AI Showcase</title>
-    <meta name="description" content="Three shippable embedding jobs over your own text, all in the browser with MPNet: semantic search, k-means clustering, and classify-by-nearest-label with zero training." />
+    <meta name="description" content="Three shippable embedding jobs over your own text, all in the browser with MPNet: semantic search, exploratory clustering with measured cohesion, and classify-by-nearest-label with abstention." />
     <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🧲</text></svg>" />
   </head>
@@ -17,8 +17,8 @@
       <p class="lede">
         Once text is a vector, whole product features become a few lines of arithmetic. Here are three,
         running entirely on your device with all-mpnet-base-v2: <strong>semantic search</strong>,
-        <strong>clustering</strong>, and <strong>classification by nearest label</strong> — the last one
-        needs no training data at all.
+        <strong>exploratory clustering</strong>, and <strong>classification by nearest label</strong> (with
+        abstention) — the last one needs no training data at all.
       </p>
     </header>
 
@@ -27,7 +27,7 @@
     <section class="panel" aria-labelledby="corpus-h">
       <h3 id="corpus-h">Your text (one item per line)</h3>
       <p class="muted">Everything below runs on these lines. Edit them, or keep the mixed support/topic sample.</p>
-      <textarea id="corpus" rows="10" disabled>My password reset email never arrived.
+      <textarea id="corpus" class="corpus-area" rows="10" disabled>My password reset email never arrived.
 I can't log into my account.
 Two-factor authentication is blocking me.
 How do I get a refund for my order?
@@ -43,7 +43,8 @@ Great product, works exactly as advertised.</textarea>
 
     <section class="panel" aria-labelledby="search-h">
       <h3 id="search-h">1 · Semantic search</h3>
-      <p class="muted">Rank every line by meaning against a query — no keyword overlap required.</p>
+      <p class="muted">Rank every line by meaning against a query — no keyword overlap required. Scores are
+        this model’s uncalibrated cosine relatedness.</p>
       <div style="display:flex;gap:.4rem;flex-wrap:wrap;align-items:center;margin:.4rem 0">
         <input id="q" type="text" value="I'm locked out and can't sign in" style="flex:1;min-inline-size:14rem" disabled />
         <button id="searchBtn" type="button" disabled>Search</button>
@@ -52,22 +53,29 @@ Great product, works exactly as advertised.</textarea>
     </section>
 
     <section class="panel" aria-labelledby="cluster-h">
-      <h3 id="cluster-h">2 · Clustering (k-means)</h3>
-      <p class="muted">Group the lines into <em>k</em> unlabeled clusters by embedding proximity. The support
-        tickets, refund requests, bug reports and praise should fall out on their own.</p>
+      <h3 id="cluster-h">2 · Exploratory clustering (k-means)</h3>
+      <p class="muted">An <em>exploratory</em> grouping into <em>k</em> unlabeled clusters by embedding
+        proximity — not a guaranteed taxonomy. We report the measured <strong>cohesion</strong> (mean
+        intra-cluster cosine) and <strong>stability</strong> (how many points keep their cluster across two
+        differently-seeded runs) so you can judge how much to trust the partition. Clustering runs off the
+        main thread.</p>
       <div style="display:flex;gap:.6rem;flex-wrap:wrap;align-items:center;margin:.4rem 0">
         <label style="font-size:.82rem">Clusters (k) <span class="val" id="kVal" style="font-family:var(--font-mono)">4</span>
           <input type="range" id="k" min="2" max="6" step="1" value="4" style="vertical-align:middle" />
         </label>
         <button id="clusterBtn" type="button" disabled>Cluster</button>
       </div>
+      <p class="status" id="clusterStatus" role="status" aria-live="polite" hidden></p>
       <div id="clusterOut" aria-live="polite"></div>
     </section>
 
     <section class="panel" aria-labelledby="classify-h">
-      <h3 id="classify-h">3 · Classify by nearest label (zero training)</h3>
+      <h3 id="classify-h">3 · Classify by nearest label (zero training, with abstention)</h3>
       <p class="muted">Embed a handful of label <em>names</em> once, then tag every line by whichever label
-        vector it sits closest to. Change the labels and everything re-tags instantly — no retraining.</p>
+        vector it sits closest to. Each tag shows its top score and the <strong>margin</strong> to the
+        runner-up; if the best score is below <code>0.30</code> or the margin below <code>0.04</code> we
+        <strong>abstain</strong> (“uncertain”) rather than force a low-confidence label. These thresholds are
+        honest, model-specific choices — change the labels and everything re-tags instantly, no retraining.</p>
       <div style="display:flex;gap:.4rem;flex-wrap:wrap;align-items:center;margin:.4rem 0">
         <input id="labels" type="text" value="login problem, refund request, bug report, positive feedback" style="flex:1;min-inline-size:16rem" disabled />
         <button id="classifyBtn" type="button" disabled>Classify</button>
@@ -89,32 +97,37 @@ Great product, works exactly as advertised.</textarea>
       import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
 
       const style = document.createElement("style");
-      style.textContent = EMBEDDING_CSS + `
-        .cluster { border:1px solid var(--border); border-inline-start:4px solid var(--accent); border-radius:8px;
-          background:var(--bg-raised); padding:.5rem .7rem; margin:.5rem 0; }
-        .cluster h4 { margin:.1rem 0 .3rem; font-family:var(--font-mono); font-size:.8rem; color:var(--muted); }
-        .cluster ul { margin:.2rem 0; padding-inline-start:1.1rem; } .cluster li { margin:.15rem 0; }
-      `;
+      style.textContent = EMBEDDING_CSS;
       document.head.append(style);
 
       const $ = (id) => document.getElementById(id);
       const engine = new MpNetEngine();
-      let corpusCache = null; // { texts, embeddings }
+      let corpusCache = null; // { key, texts, embeddings }
+      // Disclosed, honest abstention thresholds for nearest-label classification (model-specific).
+      const ABSTAIN_SCORE = 0.30;
+      const ABSTAIN_MARGIN = 0.04;
 
       $("k").addEventListener("input", () => { $("kVal").textContent = $("k").value; });
+
+      function setControlsDisabled(disabled) {
+        for (const id of ["q", "searchBtn", "k", "clusterBtn", "labels", "classifyBtn", "corpus"]) {
+          $(id).disabled = disabled || (id !== "corpus" && !engine.client);
+        }
+        // The corpus textarea is editable only when idle.
+        $("corpus").disabled = disabled;
+      }
 
       createModelLoader({
         mount: $("model-loader"),
         model: { modelId: "Xenova/all-mpnet-base-v2", runtime: "transformers.js", dtype: "q8", sizeMB: 105, requiresWebGPU: false, revision: "e086c5e0b3a57b0ce46dd6d9c0662948860b35f3" },
         load: async (onProgress) => { await engine.load(onProgress); return engine; },
-        onReady: () => {
-          for (const id of ["corpus", "q", "searchBtn", "k", "clusterBtn", "labels", "classifyBtn"]) $(id).disabled = false;
-        },
+        onReady: () => setControlsDisabled(false),
+        dispose: (e) => e.close(),
+        onDispose: () => { corpusCache = null; setControlsDisabled(true); },
       });
 
       async function embedCorpus() {
         const texts = parseLines($("corpus").value);
-        // Cache keyed on the exact corpus text so repeated ops don't re-embed.
         if (corpusCache && corpusCache.key === $("corpus").value) return corpusCache;
         const r = await engine.embed(texts);
         corpusCache = { key: $("corpus").value, texts: r.texts, embeddings: r.embeddings, device: r.device, ms: r.ms };
@@ -124,7 +137,7 @@ Great product, works exactly as advertised.</textarea>
       function showReadout(device, ms) { $("readout").hidden = false; $("rBackend").textContent = device.toUpperCase(); $("rMs").textContent = ms + " ms"; }
 
       $("searchBtn").addEventListener("click", async () => {
-        $("searchBtn").disabled = true;
+        setControlsDisabled(true);
         try {
           const c = await embedCorpus();
           const qr = await engine.embed([$("q").value.trim() || "help"]);
@@ -132,84 +145,64 @@ Great product, works exactly as advertised.</textarea>
             .sort((a, b) => b.score - a.score);
           renderRanked($("searchOut"), hits);
         } catch (e) { $("searchOut").textContent = "Failed: " + e.message; }
-        finally { $("searchBtn").disabled = false; }
+        finally { setControlsDisabled(false); }
       });
 
       $("clusterBtn").addEventListener("click", async () => {
-        $("clusterBtn").disabled = true;
+        setControlsDisabled(true);
+        $("clusterStatus").hidden = false;
+        $("clusterStatus").classList.remove("err");
+        $("clusterStatus").textContent = "Clustering off the main thread…";
         try {
-          const c = await embedCorpus();
+          const texts = parseLines($("corpus").value);
           const k = +$("k").value;
-          const { assign, centroids } = kmeans(c.embeddings, k);
-          // Order clusters by size for a stable display; name each by its most-central member.
-          const groups = Array.from({ length: k }, () => []);
-          assign.forEach((g, i) => groups[g].push(i));
+          // k-means runs in the worker (off-main-thread) and returns cohesion + stability.
+          const res = await engine.cluster(texts, k);
+          const groups = Array.from({ length: res.k }, () => []);
+          res.assign.forEach((g, i) => groups[g]?.push(i));
           const html = groups.map((idxs, g) => {
-            if (!idxs.length) return "";
-            const central = idxs.slice().sort((a, b) => cosine(c.embeddings[b], centroids[g]) - cosine(c.embeddings[a], centroids[g]))[0];
-            const items = idxs.map((i) => `<li>${escapeHtml(c.texts[i])}</li>`).join("");
-            return `<div class="cluster"><h4>Cluster ${g + 1} · ${idxs.length} item(s) · theme ≈ “${escapeHtml(c.texts[central])}”</h4><ul>${items}</ul></div>`;
+            if (!idxs || !idxs.length) return "";
+            const central = res.central[g];
+            const items = idxs.map((i) => `<li>${escapeHtml(texts[i])}</li>`).join("");
+            return `<div class="cluster"><h4>Cluster ${g + 1} · ${idxs.length} item(s) · central ≈ “${escapeHtml(texts[central] ?? "")}”</h4><ul>${items}</ul></div>`;
           }).join("");
           $("clusterOut").innerHTML = html;
-        } catch (e) { $("clusterOut").textContent = "Failed: " + e.message; }
-        finally { $("clusterBtn").disabled = false; }
+          showReadout(res.device, res.ms);
+          $("clusterStatus").textContent =
+            `Exploratory partition — cohesion ${res.cohesion.toFixed(3)} (mean intra-cluster cosine), stability ${(res.stability * 100).toFixed(0)}% (agreement across two seeds). Treat as a hint, not a taxonomy.`;
+          $("clusterStatus").classList.add("ok");
+        } catch (e) { $("clusterOut").textContent = "Failed: " + e.message; $("clusterStatus").textContent = ""; }
+        finally { setControlsDisabled(false); }
       });
 
       $("classifyBtn").addEventListener("click", async () => {
-        $("classifyBtn").disabled = true;
+        setControlsDisabled(true);
         try {
           const c = await embedCorpus();
           const labels = $("labels").value.split(",").map((s) => s.trim()).filter(Boolean);
           if (labels.length < 2) { $("classifyOut").textContent = "Give at least two comma-separated labels."; return; }
           const lr = await engine.embed(labels);
           const tagged = c.texts.map((text, i) => {
-            let best = 0, bestScore = -Infinity;
-            labels.forEach((_, li) => { const s = cosine(c.embeddings[i], lr.embeddings[li]); if (s > bestScore) { bestScore = s; best = li; } });
-            return { text, score: bestScore, label: labels[best] };
+            const scores = labels.map((_, li) => cosine(c.embeddings[i], lr.embeddings[li]));
+            const ranked = scores.map((s, li) => ({ s, li })).sort((a, b) => b.s - a.s);
+            const top = ranked[0], second = ranked[1];
+            const margin = top.s - (second ? second.s : 0);
+            const abstain = top.s < ABSTAIN_SCORE || margin < ABSTAIN_MARGIN;
+            return {
+              text,
+              score: top.s,
+              margin,
+              label: abstain ? "uncertain" : labels[top.li],
+              abstain,
+            };
           });
           renderRanked($("classifyOut"), tagged.map((t) => ({ text: t.text, score: t.score })),
-            { tags: tagged.map((t) => t.label) });
+            { tags: tagged.map((t) => `${t.label} · Δ${t.margin.toFixed(2)}`), tagClass: tagged.map((t) => t.abstain ? "tone-abstain" : "tone-pos") });
         } catch (e) { $("classifyOut").textContent = "Failed: " + e.message; }
-        finally { $("classifyBtn").disabled = false; }
+        finally { setControlsDisabled(false); }
       });
 
       function escapeHtml(s) { return String(s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c])); }
-
-      // --- Tiny k-means over unit vectors (cosine ~ Euclidean on the sphere). Deterministic seed via k-means++. ---
-      function kmeans(vecs, k, iters = 25) {
-        const n = vecs.length; const d = vecs[0].length;
-        k = Math.min(k, n);
-        // k-means++ init with a fixed pseudo-random stream so results are stable across clicks.
-        let seed = 42; const rnd = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
-        const centroids = [vecs[Math.floor(rnd() * n)].slice()];
-        while (centroids.length < k) {
-          const d2 = vecs.map((v) => Math.min(...centroids.map((csd) => 1 - cosine(v, csd))));
-          const sum = d2.reduce((a, b) => a + b, 0) || 1;
-          let r = rnd() * sum, pick = 0;
-          for (let i = 0; i < n; i++) { r -= d2[i]; if (r <= 0) { pick = i; break; } }
-          centroids.push(vecs[pick].slice());
-        }
-        let assign = new Array(n).fill(0);
-        for (let it = 0; it < iters; it++) {
-          let moved = false;
-          for (let i = 0; i < n; i++) {
-            let best = 0, bs = -Infinity;
-            for (let g = 0; g < k; g++) { const s = cosine(vecs[i], centroids[g]); if (s > bs) { bs = s; best = g; } }
-            if (assign[i] !== best) { assign[i] = best; moved = true; }
-          }
-          for (let g = 0; g < k; g++) {
-            const members = []; for (let i = 0; i < n; i++) if (assign[i] === g) members.push(i);
-            if (!members.length) continue;
-            const c = new Array(d).fill(0);
-            for (const i of members) for (let j = 0; j < d; j++) c[j] += vecs[i][j];
-            let norm = Math.sqrt(c.reduce((a, x) => a + x * x, 0)) || 1;
-            for (let j = 0; j < d; j++) c[j] /= norm;
-            centroids[g] = c;
-          }
-          if (!moved && it > 0) break;
-        }
-        return { assign, centroids };
-      }
     </script>
   </body>
 </html>

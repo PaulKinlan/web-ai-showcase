@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>all-mpnet-base-v2 — Multi-model: retrieve then rerank · Web AI Showcase</title>
-    <meta name="description" content="Two-stage search in the browser: MPNet embeddings retrieve a shortlist fast, then a MS MARCO cross-encoder reranker re-scores the top hits by reading each query–passage pair together. Watch the ranking change." />
+    <meta name="description" content="Two-stage search in the browser: MPNet embeddings retrieve a shortlist fast, then a pinned MS MARCO cross-encoder reranker re-scores the top hits by reading each query–passage pair together." />
     <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🧲</text></svg>" />
   </head>
@@ -17,9 +17,10 @@
       <p class="lede">
         This is how real search works. Stage one: all-mpnet-base-v2 embeds the query and every passage
         independently and ranks by cosine — fast, cheap, scales to millions. Stage two: a
-        <a href="/web-ai-showcase/models/ms-marco-reranker/">MS MARCO cross-encoder</a> reads the query and
-        each shortlisted passage <em>together</em> and re-scores them — slower, but far more precise. Both
-        models run locally. Watch the order change between the two stages.
+        <strong>pinned</strong> MS MARCO cross-encoder (<code>Xenova/ms-marco-MiniLM-L-6-v2</code> @
+        <code>a09144355</code>, q8, 23,143,499 bytes) reads the query and each shortlisted passage
+        <em>together</em> and re-scores them — slower, but can be more precise. Both models run locally. The
+        order <strong>may</strong> change between the two stages — and when it does not, we say so plainly.
       </p>
     </header>
 
@@ -30,7 +31,7 @@
 
       <label style="display:flex;flex-direction:column;gap:.3rem;font-size:.82rem;margin-top:.6rem">
         Passages (one per line)
-        <textarea id="corpus" rows="9" disabled>The mitochondrion is the powerhouse of the cell, producing ATP.
+        <textarea id="corpus" class="corpus-area" rows="9" disabled>The mitochondrion is the powerhouse of the cell, producing ATP.
 Photosynthesis lets plants convert sunlight into chemical energy.
 To reset your password, click "Forgot password" on the login screen.
 Our return policy allows refunds within 30 days of delivery.
@@ -56,15 +57,17 @@ The invoice is generated automatically after each successful payment.</textarea>
           <div class="sent-list" id="stage2"></div>
         </div>
       </div>
-      <div class="readout" id="readout" hidden><span>retrieve <b id="rGte">–</b></span><span>rerank <b id="rRr">–</b></span><span>backend <b id="rBackend">–</b></span></div>
+      <div class="readout" id="readout" hidden><span>retrieve <b id="rGte">–</b></span><span>rerank <b id="rRr">–</b></span><span>backend <b id="rBackend">–</b></span><span>reordered <b id="rReorder">–</b></span></div>
     </section>
 
     <section aria-labelledby="why-h">
       <h2 id="why-h">Why two stages</h2>
       <p class="muted">A bi-encoder (MPNet) turns every document into a vector <em>once</em>, so retrieval is
         just nearest-neighbour math — it scales, but the query and document never "see" each other. A
-        cross-encoder attends across the pair, catching relevance a cosine misses, but it must run the model
-        for every candidate — too slow for a whole corpus. Retrieve wide and cheap, rerank narrow and sharp.</p>
+        cross-encoder attends across the pair, catching relevance a cosine can miss, but it must run the
+        model for every candidate — too slow for a whole corpus. Retrieve wide and cheap, rerank narrow and
+        sharp. When the two methods agree, the order is unchanged; when they disagree, the cross-encoder
+        reorders the shortlist.</p>
     </section>
 
     <footer class="byline">
@@ -73,8 +76,7 @@ The invoice is generated automatically after each successful payment.</textarea>
     </footer>
 
     <script type="module">
-      import { MpNetEngine, cosine, parseLines, EMBEDDING_CSS } from "../mpnet.js";
-      import { RerankEngine } from "/web-ai-showcase/models/ms-marco-reranker/rerank.js";
+      import { MpNetEngine, PinnedRerankEngine, cosine, parseLines, EMBEDDING_CSS } from "../mpnet.js";
       import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
 
       const style = document.createElement("style");
@@ -83,31 +85,39 @@ The invoice is generated automatically after each successful payment.</textarea>
       document.head.append(style);
 
       const $ = (id) => document.getElementById(id);
-      const mpnet = new MpNetEngine();
-      const rr = new RerankEngine();
-      let mpnetReady = false, rrReady = false;
+      // Fresh engines are built inside each loader's `load` so release/reinit creates a new worker pair.
+      let mpnet = null, reranker = null;
+      let mpnetReady = false, rerankerReady = false;
 
       $("k").addEventListener("input", () => { $("kVal").textContent = $("k").value; });
-      function maybeEnable() { if (mpnetReady && rrReady) { for (const id of ["corpus", "q", "run"]) $(id).disabled = false; } }
+
+      function setControlsDisabled(disabled) {
+        for (const id of ["corpus", "q", "run"]) $(id).disabled = disabled || !(mpnetReady && rerankerReady);
+      }
+      function maybeEnable() { if (mpnetReady && rerankerReady) setControlsDisabled(false); }
 
       createModelLoader({
         mount: $("loaderGte"),
         model: { modelId: "Xenova/all-mpnet-base-v2", runtime: "transformers.js", dtype: "q8", sizeMB: 105, requiresWebGPU: false, revision: "e086c5e0b3a57b0ce46dd6d9c0662948860b35f3" },
-        load: async (onProgress) => { await mpnet.load(onProgress); return mpnet; },
+        load: async (onProgress) => { mpnet = new MpNetEngine(); await mpnet.load(onProgress); return mpnet; },
         onReady: () => { mpnetReady = true; maybeEnable(); },
+        dispose: (e) => e.close(),
+        onDispose: () => { mpnetReady = false; mpnet = null; setControlsDisabled(true); },
       });
       createModelLoader({
         mount: $("loaderRerank"),
-        model: { modelId: "Xenova/ms-marco-MiniLM-L-6-v2", runtime: "transformers.js", dtype: "q8", sizeMB: 90, requiresWebGPU: false },
-        load: async (onProgress) => { await rr.load(onProgress); return rr; },
-        onReady: () => { rrReady = true; maybeEnable(); },
+        model: { modelId: "Xenova/ms-marco-MiniLM-L-6-v2", runtime: "transformers.js", dtype: "q8", sizeMB: 23, requiresWebGPU: false, revision: "a09144355adeed5f58c8ed011d209bf8ee5a1fec" },
+        load: async (onProgress) => { reranker = new PinnedRerankEngine(); await reranker.load(onProgress); return reranker; },
+        onReady: () => { rerankerReady = true; maybeEnable(); },
+        dispose: (e) => e.close(),
+        onDispose: () => { rerankerReady = false; reranker = null; setControlsDisabled(true); },
       });
 
       $("run").addEventListener("click", async () => {
         const query = $("q").value.trim();
         const passages = parseLines($("corpus").value);
         if (!query || passages.length < 2) { $("status").hidden = false; $("status").textContent = "Give a query and at least two passages."; return; }
-        $("run").disabled = true; $("status").hidden = false; $("status").classList.remove("err"); $("status").textContent = "Stage 1: retrieving with MPNet…";
+        setControlsDisabled(true); $("status").hidden = false; $("status").classList.remove("err"); $("status").textContent = "Stage 1: retrieving with MPNet…";
         try {
           const [qr, dr] = await Promise.all([mpnet.embed([query]), mpnet.embed(passages)]);
           const scored = passages.map((text, i) => ({ text, score: cosine(qr.embeddings[0], dr.embeddings[i]) }))
@@ -117,20 +127,29 @@ The invoice is generated automatically after each successful payment.</textarea>
           renderStage($("stage1"), shortlist.map((h) => ({ text: h.text, score: h.score })), null);
 
           $("status").textContent = "Stage 2: reranking the shortlist with the cross-encoder…";
-          const rres = await rr.rerank(query, shortlist.map((h) => h.text));
-          // Map stage-1 rank positions to compute movement.
+          const rres = await reranker.rerank(query, shortlist.map((h) => h.text));
+          // Map stage-1 rank positions to compute movement + an honest reorder count.
           const s1pos = new Map(shortlist.map((h, i) => [h.text, i]));
-          const stage2 = rres.results.map((r, i) => ({ text: r.passage, score: r.logit, move: s1pos.get(r.passage) - i }));
+          let reordered = 0;
+          const stage2 = rres.results.map((r, i) => {
+            const move = s1pos.get(r.passage) - i;
+            if (move !== 0) reordered++;
+            return { text: r.passage, score: r.logit, move };
+          });
           renderStage($("stage2"), stage2, true);
 
           $("results").hidden = false; $("readout").hidden = false;
           $("rGte").textContent = (qr.ms + dr.ms) + " ms";
           $("rRr").textContent = rres.ms + " ms";
           $("rBackend").textContent = dr.device.toUpperCase();
-          $("status").textContent = "Done — compare the two orders.";
+          $("rReorder").textContent = `${reordered}/${k}`;
+          // HONEST: explicitly state whether the order changed.
+          $("status").textContent = reordered === 0
+            ? "Done — the cross-encoder did not change the order this time."
+            : `Done — the cross-encoder reordered ${reordered} of ${k} passages.`;
           $("status").classList.add("ok");
         } catch (err) { $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
-        finally { $("run").disabled = false; }
+        finally { setControlsDisabled(false); }
       });
 
       function renderStage(container, hits, isLogit) {

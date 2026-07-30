@@ -309,17 +309,29 @@ async function main() {
     server.close();
   }
 
-  const agg = aggregate(runs);
+  // Merge-by-slug: targeted (`--slug`) runs UPDATE that slug's entry in the existing committed
+  // rollup rather than destructively replacing the whole aggregate, so historical runs for other
+  // suites are preserved. `--all` re-runs every slug, so its merge is effectively a full regen.
   const resultsPath = join(outDir, "results.json");
+  let merged = runs;
+  try {
+    const prev = JSON.parse(readFileSync(resultsPath, "utf8"));
+    if (prev && Array.isArray(prev.runs)) {
+      const bySlug = new Map(prev.runs.map((r) => [r.slug, r]));
+      for (const r of runs) bySlug.set(r.slug, r); // replace/add this run; keep all others
+      merged = [...bySlug.values()];
+    }
+  } catch { /* no prior rollup — write fresh */ }
+  const agg = aggregate(merged);
   writeFileSync(
     resultsPath,
-    JSON.stringify({ generatedAt: NOW, suites: runs.length, aggregate: agg, runs }, null, 2) + "\n",
+    JSON.stringify({ generatedAt: NOW, suites: merged.length, aggregate: agg, runs: merged }, null, 2) + "\n",
   );
-  writeFileSync(join(outDir, "index.html"), renderRollup(runs));
+  writeFileSync(join(outDir, "index.html"), renderRollup(merged));
 
   console.log("\n=== CONFORMANCE RESULTS ===");
-  console.log(`suites: ${runs.length}`);
-  for (const r of runs) {
+  console.log(`suites: ${merged.length} (rollup, merge-by-slug)`);
+  for (const r of merged) {
     console.log(
       `  ${r.slug.padEnd(28)} ${String(r.pass).padStart(2)}✓ ${String(r.fail).padStart(2)}✗ ` +
         `${String(r.blocked).padStart(2)}▨ ${String(r.manual).padStart(2)}◍ / ${r.total}`,

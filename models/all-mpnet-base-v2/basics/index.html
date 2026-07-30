@@ -17,9 +17,10 @@
       <p class="lede">
         The fundamental capability, felt directly: MPNet turns each sentence into a 768-d unit vector, and
         cosine similarity — the dot product of those vectors — is one number from −1 to 1 that says how close
-        in meaning they are. all-mpnet-base-v2’s geometry is notably sharp: paraphrases sit near 0.8–0.95
-        while genuinely unrelated lines fall close to zero. Edit either line, compare it again, and watch the
-        real score move.
+        in meaning they are. <strong>This cosine is an uncalibrated, model-specific relatedness score</strong>
+        (higher = more similar): it is not a calibrated probability or a universal threshold, so read the
+        number rather than trusting a fixed band. Edit either line, compare it again, and watch the real
+        score move.
       </p>
     </header>
 
@@ -65,7 +66,7 @@
     </footer>
 
     <script type="module">
-      import { MpNetEngine, cosine, EMBEDDING_CSS } from "../mpnet.js";
+      import { MpNetEngine, cosine, uncalibratedNote, EMBEDDING_CSS } from "../mpnet.js";
       import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
 
       const style = document.createElement("style");
@@ -77,7 +78,8 @@
       document.head.append(style);
 
       const $ = (id) => document.getElementById(id);
-      const engine = new MpNetEngine();
+      let engine = null;
+      function setBusy(busy) { $("a").disabled = busy || !engine; $("b").disabled = busy || !engine; $("run").disabled = busy || !engine; }
 
       for (const c of document.querySelectorAll(".chip")) {
         c.addEventListener("click", () => { $("a").value = c.dataset.a; $("b").value = c.dataset.b; });
@@ -86,34 +88,29 @@
       createModelLoader({
         mount: $("model-loader"),
         model: { modelId: "Xenova/all-mpnet-base-v2", runtime: "transformers.js", dtype: "q8", sizeMB: 105, requiresWebGPU: false, revision: "e086c5e0b3a57b0ce46dd6d9c0662948860b35f3" },
-        load: async (onProgress) => { await engine.load(onProgress); return engine; },
-        onReady: () => { $("a").disabled = false; $("b").disabled = false; $("run").disabled = false; },
+        load: async (onProgress) => { engine = new MpNetEngine(); await engine.load(onProgress); return engine; },
+        onReady: () => setBusy(false),
+        dispose: (e) => e.close(),
+        onDispose: () => { engine = null; setBusy(true); },
       });
-
-      function verdict(s) {
-        if (s >= 0.85) return "— nearly identical meaning";
-        if (s >= 0.7) return "— clearly related";
-        if (s >= 0.5) return "— loosely related";
-        if (s >= 0.3) return "— weakly related";
-        return "— unrelated";
-      }
 
       $("run").addEventListener("click", async () => {
         const a = $("a").value.trim(), b = $("b").value.trim();
         if (!a || !b) { $("status").textContent = "Fill in both lines."; return; }
-        $("run").disabled = true; $("status").classList.remove("err"); $("status").textContent = "Embedding…";
+        setBusy(true); $("status").classList.remove("err"); $("status").textContent = "Embedding…";
         try {
           const r = await engine.embed([a, b]);
           const s = cosine(r.embeddings[0], r.embeddings[1]);
           $("scoreWrap").hidden = false;
           $("score").textContent = s.toFixed(3);
-          $("verdict").textContent = verdict(s);
+          // HONEST: label the score as uncalibrated/model-specific — no universal threshold bands.
+          $("verdict").textContent = uncalibratedNote(s);
           $("gaugeMark").style.left = `${Math.max(0, Math.min(1, (s + 1) / 2)) * 100}%`;
           $("rBackend").textContent = r.device.toUpperCase();
           $("rMs").textContent = r.ms + " ms";
           $("status").textContent = "";
         } catch (err) { $("status").textContent = "Failed: " + err.message; $("status").classList.add("err"); }
-        finally { $("run").disabled = false; }
+        finally { setBusy(false); }
       });
 
     </script>
