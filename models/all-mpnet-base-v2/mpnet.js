@@ -6,7 +6,7 @@
 // The pooled 768-d vectors come back as a TRANSFERRED Float64Array (ownership moves, no clone).
 // All inference + k-means clustering runs off the main thread so INP stays low.
 
-import { WorkerClient, SupersededError } from "/web-ai-showcase/lib/worker-protocol.js";
+import { SupersededError, WorkerClient } from "/web-ai-showcase/lib/worker-protocol.js";
 
 const WORKER = "/web-ai-showcase/models/all-mpnet-base-v2/worker.js";
 const RERANKER_WORKER = "/web-ai-showcase/models/all-mpnet-base-v2/reranker-worker.js";
@@ -216,8 +216,13 @@ function topEigen(M, n) {
 
 function fixSign(v, n) {
   let bi = 0, bm = 0;
-  for (let i = 0; i < n; i++) if (Math.abs(v[i]) > bm) { bm = Math.abs(v[i]); bi = i; }
-  if (v[bi] < 0) for (let i = 0; i < n; i++) v[i] = -v[i];
+  for (let i = 0; i < n; i++) {
+    if (Math.abs(v[i]) > bm) {
+      bm = Math.abs(v[i]);
+      bi = i;
+    }
+  }
+  if (v[bi] < 0) { for (let i = 0; i < n; i++) v[i] = -v[i]; }
 }
 
 function deflate(M, u, lambda, n) {
@@ -311,17 +316,32 @@ export function renderProjection(container, points, { groups = null } = {}) {
   const spanX = maxX - minX || 1, spanY = maxY - minY || 1;
   const sx = (x) => pad + ((x - minX) / spanX) * (W - 2 * pad);
   const sy = (y) => H - pad - ((y - minY) / spanY) * (H - 2 * pad);
-  const palette = ["var(--accent)", "var(--good)", "var(--bad)", "var(--warn)", "var(--accent)", "var(--good)", "var(--bad)", "var(--warn)"];
+  const palette = [
+    "var(--accent)",
+    "var(--good)",
+    "var(--bad)",
+    "var(--warn)",
+    "var(--accent)",
+    "var(--good)",
+    "var(--bad)",
+    "var(--warn)",
+  ];
   const dots = points.map((p, i) => {
     const cx = sx(p.x), cy = sy(p.y);
     const fill = groups ? palette[groups[i] % palette.length] : "var(--accent)";
-    return `<g><circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="6" fill="${fill}"></circle><text x="${(cx + 10).toFixed(1)}" y="${(cy + 4).toFixed(1)}" class="proj-label">S${i + 1}</text></g>`;
+    return `<g><circle cx="${cx.toFixed(1)}" cy="${
+      cy.toFixed(1)
+    }" r="6" fill="${fill}"></circle><text x="${(cx + 10).toFixed(1)}" y="${
+      (cy + 4).toFixed(1)
+    }" class="proj-label">S${i + 1}</text></g>`;
   }).join("");
   container.innerHTML =
     `<svg viewBox="0 0 ${W} ${H}" class="proj-svg" role="img" aria-label="2D PCA projection of the sentence embeddings (numbered points; see legend)">
       <line x1="${pad}" y1="${H - pad}" x2="${W - pad}" y2="${H - pad}" class="proj-axis"></line>
       <line x1="${pad}" y1="${pad}" x2="${pad}" y2="${H - pad}" class="proj-axis"></line>
-      <text x="${W - pad}" y="${H - pad + 20}" text-anchor="end" class="proj-axis-label">PC1 →</text>
+      <text x="${W - pad}" y="${
+      H - pad + 20
+    }" text-anchor="end" class="proj-axis-label">PC1 →</text>
       <text x="${pad - 6}" y="${pad - 10}" class="proj-axis-label">PC2 ↑</text>
       ${dots}
     </svg>`;
@@ -329,7 +349,16 @@ export function renderProjection(container, points, { groups = null } = {}) {
 
 /** Render the numbered legend that accompanies the PCA scatter (S1… → full text). */
 export function renderLegend(container, labels, { groups = null, groupNames = null } = {}) {
-  const palette = ["var(--accent)", "var(--good)", "var(--bad)", "var(--warn)", "var(--accent)", "var(--good)", "var(--bad)", "var(--warn)"];
+  const palette = [
+    "var(--accent)",
+    "var(--good)",
+    "var(--bad)",
+    "var(--warn)",
+    "var(--accent)",
+    "var(--good)",
+    "var(--bad)",
+    "var(--warn)",
+  ];
   container.replaceChildren(
     ...labels.map((label, i) => {
       const row = document.createElement("div");
@@ -350,7 +379,11 @@ export function renderLegend(container, labels, { groups = null, groupNames = nu
 
 /** Render a ranked semantic-search result list into `container`. `hits` = [{text, score, group?}].
  *  `tags` (if provided) sets a per-row tag; an explicit `tagClass` makes abstention visible. */
-export function renderRanked(container, hits, { showBar = true, tags = null, tagClass = null } = {}) {
+export function renderRanked(
+  container,
+  hits,
+  { showBar = true, tags = null, tagClass = null } = {},
+) {
   container.replaceChildren(
     ...hits.map((h, rank) => {
       const row = document.createElement("div");
