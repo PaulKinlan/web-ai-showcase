@@ -333,29 +333,47 @@ export function renderProjection(container, points, { groups = null } = {}) {
     "var(--bad)",
     "var(--warn)",
   ];
+  const markerPositions = points.map((point) => ({ x: sx(point.x), y: sy(point.y) }));
   const placedLabels = [];
   const offsets = [[10, 4], [-10, 4], [10, -10], [-10, -10], [0, 18], [0, -14]];
+  const boxesOverlap = (a, b, gap = 2) =>
+    a.left < b.right + gap && a.right + gap > b.left &&
+    a.top < b.bottom + gap && a.bottom + gap > b.top;
   const dots = points.map((p, i) => {
     const cx = sx(p.x), cy = sy(p.y);
     const fill = groups ? palette[groups[i] % palette.length] : "var(--accent)";
-    const chosen = offsets
-      .map(([dx, dy]) => ({
-        x: Math.max(pad + 10, Math.min(W - pad - 10, cx + dx)),
-        y: Math.max(pad + 10, Math.min(H - pad - 10, cy + dy)),
-        dx,
-      }))
-      .find((candidate) =>
-        placedLabels.every((label) =>
-          Math.hypot(candidate.x - label.x, candidate.y - label.y) >= 22
-        )
-      ) || { x: cx, y: Math.max(pad + 10, Math.min(H - pad - 10, cy + 18)), dx: 0 };
+    const candidates = offsets.map(([dx, dy]) => {
+      const x = Math.max(pad + 8, Math.min(W - pad - 8, cx + dx));
+      const y = Math.max(pad + 10, Math.min(H - pad - 6, cy + dy));
+      const relative = x - cx;
+      const anchor = relative <= 0 ? "end" : "start";
+      const width = 16;
+      const box = {
+        left: anchor === "end" ? x - width : x,
+        right: anchor === "end" ? x : x + width,
+        top: y - 10,
+        bottom: y + 3,
+      };
+      return { x, y, anchor, box };
+    });
+    const chosen = candidates.find((candidate) => {
+      const clearsLabels = placedLabels.every((label) => !boxesOverlap(candidate.box, label.box));
+      const clearsMarkers = markerPositions.every((marker) =>
+        !boxesOverlap(candidate.box, {
+          left: marker.x - 7,
+          right: marker.x + 7,
+          top: marker.y - 7,
+          bottom: marker.y + 7,
+        }, 1)
+      );
+      return clearsLabels && clearsMarkers;
+    }) || candidates[candidates.length - 1];
     placedLabels.push(chosen);
-    const anchor = chosen.dx < 0 ? "end" : chosen.dx === 0 ? "middle" : "start";
     return `<g><circle cx="${cx.toFixed(1)}" cy="${
       cy.toFixed(1)
     }" r="6" fill="${fill}"></circle><text x="${chosen.x.toFixed(1)}" y="${
       chosen.y.toFixed(1)
-    }" text-anchor="${anchor}" class="proj-label">S${i + 1}</text></g>`;
+    }" text-anchor="${chosen.anchor}" class="proj-label">S${i + 1}</text></g>`;
   }).join("");
   container.innerHTML =
     `<svg viewBox="0 0 ${W} ${H}" class="proj-svg" role="img" aria-label="2D PCA projection of the sentence embeddings (numbered points; see legend)">

@@ -75,7 +75,7 @@ const pinnedRequests = []; // unique cold-download evidence for each immutable m
 let mpnetPinnedNetwork = null;
 let rerankerPinnedNetwork = null;
 let pass = 0, fail = 0;
-function record(id, route, viewport, theme, ok, evidence) {
+function record(id, route, viewport, theme, ok, evidence, details = undefined) {
   assertions.push({
     id,
     route,
@@ -83,6 +83,7 @@ function record(id, route, viewport, theme, ok, evidence) {
     theme,
     state: ok ? "pass" : "fail",
     evidence: String(evidence).slice(0, 300),
+    ...(details === undefined ? {} : { details }),
   });
   if (ok) pass++;
   else fail++;
@@ -321,9 +322,10 @@ async function driveInteraction(sid, name) {
       `document.querySelectorAll('#ranked .result-row').length>=2&&!document.querySelector('#search')?.disabled`,
       "ov search",
     );
-    const resetWorked = await ev(
+    const editedOverview = await ev(
       sid,
-      `(()=>{document.querySelector('#sentences').value='changed';document.querySelector('#reset').click();return /password/i.test(document.querySelector('#sentences').value)})()`,
+      `(async()=>{const s=document.querySelector('#sentences');s.value='A browser caches files locally.\\nA service worker can answer offline.\\nA cache stores reusable responses.';s.dispatchEvent(new Event('input',{bubbles:true}));document.querySelector('#run').click();while(document.querySelector('#run').disabled)await new Promise(r=>setTimeout(r,25));const edited={sentences:Number(document.querySelector('#rN').textContent),dim:Number(document.querySelector('#rDim').textContent),matrixRows:document.querySelectorAll('#matrix tbody tr').length};document.querySelector('#reset').click();const resetWorked=/password/i.test(s.value);document.querySelector('#run').click();while(document.querySelector('#run').disabled)await new Promise(r=>setTimeout(r,25));return JSON.stringify({...edited,resetWorked,restoredSentences:Number(document.querySelector('#rN').textContent)})})()`,
+      180000,
     );
     await ev(
       sid,
@@ -345,7 +347,7 @@ async function driveInteraction(sid, name) {
     );
     real = await ev(
       sid,
-      `JSON.stringify({dim:document.querySelector('#rDim')?.textContent, norm:document.querySelector('#iNorm')?.textContent, ranked:document.querySelectorAll('#ranked .result-row').length, topText:document.querySelector('#ranked .result-row .result-head span')?.textContent, topScore:document.querySelector('#ranked .result-score')?.textContent, resetWorked:${resetWorked}, controls:['sentences','run','reset','query','search','pick']})`,
+      `JSON.stringify({dim:document.querySelector('#rDim')?.textContent, norm:document.querySelector('#iNorm')?.textContent, ranked:document.querySelectorAll('#ranked .result-row').length, topText:document.querySelector('#ranked .result-row .result-head span')?.textContent, topScore:document.querySelector('#ranked .result-score')?.textContent, edited:${editedOverview}})`,
     );
   } else if (name === "basics") {
     await ev(sid, click("#run"));
@@ -362,58 +364,60 @@ async function driveInteraction(sid, name) {
     );
     real = JSON.stringify({ defaultScore, ...JSON.parse(presets) });
   } else if (name === "practical") {
-    await ev(
+    const editedPractical = await ev(
       sid,
-      `(()=>{const q=document.querySelector('#q');q.value="I'm locked out and can't sign in";q.dispatchEvent(new Event('input',{bubbles:true}));const k=document.querySelector('#k');k.value='3';k.dispatchEvent(new Event('input',{bubbles:true}));k.value='4';k.dispatchEvent(new Event('input',{bubbles:true}));const l=document.querySelector('#labels');l.dispatchEvent(new Event('input',{bubbles:true}));return true})()`,
+      `(async()=>{const corpus=document.querySelector('#corpus'),q=document.querySelector('#q'),k=document.querySelector('#k'),labels=document.querySelector('#labels');const original={corpus:corpus.value,q:q.value,k:k.value,labels:labels.value};corpus.value+='\\nThe invoice is generated after a successful payment.';q.value='Where is my payment invoice?';k.value='3';labels.value='account access, billing invoice, product defect';for(const el of [corpus,q,k,labels])el.dispatchEvent(new Event('input',{bubbles:true}));document.querySelector('#searchBtn').click();while(document.querySelector('#searchBtn').disabled)await new Promise(r=>setTimeout(r,25));const editedTop=document.querySelector('#searchOut .result-row .result-head span')?.textContent;const editedSearch=document.querySelectorAll('#searchOut .result-row').length;document.querySelector('#clusterBtn').click();while(document.querySelector('#clusterBtn').disabled)await new Promise(r=>setTimeout(r,25));const editedClusters=document.querySelectorAll('#clusterOut .cluster').length;document.querySelector('#classifyBtn').click();while(document.querySelector('#classifyBtn').disabled)await new Promise(r=>setTimeout(r,25));const editedClassified=document.querySelectorAll('#classifyOut .result-row').length;Object.assign(corpus,{value:original.corpus});Object.assign(q,{value:original.q});Object.assign(k,{value:original.k});Object.assign(labels,{value:original.labels});for(const el of [corpus,q,k,labels])el.dispatchEvent(new Event('input',{bubbles:true}));return JSON.stringify({editedTop,editedSearch,editedClusters,editedClassified,kUsed:3,labelCount:3,corpusRows:13})})()`,
+      240000,
     );
     await ev(sid, click("#searchBtn"));
     await waitFor(
       sid,
-      `document.querySelectorAll('#searchOut .result-row').length>=10&&!document.querySelector('#searchBtn')?.disabled`,
+      `document.querySelectorAll('#searchOut .result-row').length===12&&!document.querySelector('#searchBtn')?.disabled`,
       "p search",
     );
     await ev(sid, click("#clusterBtn"));
     await waitFor(
       sid,
-      `document.querySelectorAll('#clusterOut .cluster').length>=2&&!document.querySelector('#clusterBtn')?.disabled`,
+      `document.querySelectorAll('#clusterOut .cluster').length===4&&!document.querySelector('#clusterBtn')?.disabled`,
       "p cluster",
     );
     await ev(sid, click("#classifyBtn"));
     await waitFor(
       sid,
-      `document.querySelectorAll('#classifyOut .result-row').length>=10&&!document.querySelector('#classifyBtn')?.disabled`,
+      `document.querySelectorAll('#classifyOut .result-row').length===12&&!document.querySelector('#classifyBtn')?.disabled`,
       "p classify",
     );
     real = await ev(
       sid,
-      `JSON.stringify({search:document.querySelectorAll('#searchOut .result-row').length, clusters:document.querySelectorAll('#clusterOut .cluster').length, classified:document.querySelectorAll('#classifyOut .result-row').length, abstained:[...document.querySelectorAll('#classifyOut .result-row')].filter(row=>/uncertain/i.test(row.textContent)).length, clusterStatus:document.querySelector('#clusterStatus')?.textContent, controls:['corpus','q','searchBtn','k','clusterBtn','labels','classifyBtn']})`,
+      `JSON.stringify({search:document.querySelectorAll('#searchOut .result-row').length, clusters:document.querySelectorAll('#clusterOut .cluster').length, classified:document.querySelectorAll('#classifyOut .result-row').length, abstained:[...document.querySelectorAll('#classifyOut .result-row')].filter(row=>/uncertain/i.test(row.textContent)).length, clusterStatus:document.querySelector('#clusterStatus')?.textContent, edited:${editedPractical}})`,
     );
   } else if (name === "wild") {
-    const presetJson = await ev(
+    const wildStates = await ev(
       sid,
-      `(async()=>{const out=[];for(const chip of document.querySelectorAll('.chip')){chip.click();document.querySelector('#run').click();while(document.querySelector('#run').disabled)await new Promise(r=>setTimeout(r,25));out.push({label:chip.textContent.trim(),top:document.querySelector('#out .result-row .result-head span')?.textContent})}const x=document.querySelector('#excl');x.click();x.click();document.querySelector('.chip').click();document.querySelector('#run').click();while(document.querySelector('#run').disabled)await new Promise(r=>setTimeout(r,25));return JSON.stringify(out)})()`,
-      180000,
+      `(async()=>{const out=[];const run=async()=>{document.querySelector('#run').click();while(document.querySelector('#run').disabled)await new Promise(r=>setTimeout(r,25));return {top:document.querySelector('#out .result-row .result-head span')?.textContent,rows:document.querySelectorAll('#out .result-row').length,text:document.querySelector('#out').textContent}};for(const chip of document.querySelectorAll('.chip')){chip.click();out.push({label:chip.textContent.trim(),...await run()})}document.querySelector('.chip').click();const x=document.querySelector('#excl'),v=document.querySelector('#vocab');v.value+=', king, man, woman';v.dispatchEvent(new Event('input',{bubbles:true}));x.checked=false;x.dispatchEvent(new Event('change',{bubbles:true}));const included=await run();x.checked=true;x.dispatchEvent(new Event('change',{bubbles:true}));const excluded=await run();const a=document.querySelector('#a'),b=document.querySelector('#b'),c=document.querySelector('#c');a.value='Paris';b.value='France';c.value='Japan';v.value='Tokyo, Paris, France, Japan, Berlin, Rome';for(const el of [a,b,c,v])el.dispatchEvent(new Event('input',{bubbles:true}));const custom=await run();document.querySelector('.chip').click();x.checked=true;x.dispatchEvent(new Event('change',{bubbles:true}));await run();return JSON.stringify({presets:out,included:{...included,hasInput:['king','man','woman'].some(term=>included.text.toLowerCase().includes(term))},excluded:{...excluded,hasInput:['king','man','woman'].some(term=>excluded.text.toLowerCase().includes(term))},custom})})()`,
+      240000,
     );
     await waitFor(sid, `document.querySelectorAll('#out .result-row').length>=5`, "wild");
     real = await ev(
       sid,
-      `JSON.stringify({rows:document.querySelectorAll('#out .result-row').length, top:document.querySelector('#out .result-row .result-head span')?.textContent, status:document.querySelector('#status')?.textContent, presets:${presetJson}, controls:['preset chips','a','b','c','run','vocab','excl']})`,
+      `JSON.stringify({rows:document.querySelectorAll('#out .result-row').length, top:document.querySelector('#out .result-row .result-head span')?.textContent, status:document.querySelector('#status')?.textContent, states:${wildStates}})`,
     );
   } else if (name === "multimodel") {
-    await ev(
+    const editedMulti = await ev(
       sid,
-      `(()=>{const q=document.querySelector('#q');q.dispatchEvent(new Event('input',{bubbles:true}));const k=document.querySelector('#k');k.value='3';k.dispatchEvent(new Event('input',{bubbles:true}));k.value='4';k.dispatchEvent(new Event('input',{bubbles:true}));document.querySelector('#corpus').dispatchEvent(new Event('input',{bubbles:true}));return true})()`,
+      `(async()=>{const corpus=document.querySelector('#corpus'),q=document.querySelector('#q'),k=document.querySelector('#k');const original={corpus:corpus.value,q:q.value,k:k.value};corpus.value+='\\nThe invoice is generated after a successful payment.';q.value='Where is my invoice?';k.value='2';for(const el of [corpus,q,k])el.dispatchEvent(new Event('input',{bubbles:true}));document.querySelector('#run').click();while(document.querySelector('#run').disabled)await new Promise(r=>setTimeout(r,25));const edited={s1:document.querySelectorAll('#stage1 .result-row').length,s2:document.querySelectorAll('#stage2 .result-row').length,top1:document.querySelector('#stage1 .result-row .result-head span')?.textContent,top2:document.querySelector('#stage2 .result-row .result-head span')?.textContent,kUsed:2,corpusRows:9};corpus.value=original.corpus;q.value=original.q;k.value=original.k;for(const el of [corpus,q,k])el.dispatchEvent(new Event('input',{bubbles:true}));return JSON.stringify(edited)})()`,
+      9 * 60000,
     );
     await ev(sid, click("#run"));
     await waitFor(
       sid,
-      `document.querySelectorAll('#stage1 .result-row').length>=2&&document.querySelectorAll('#stage2 .result-row').length>=2&&!document.querySelector('#run')?.disabled`,
+      `document.querySelectorAll('#stage1 .result-row').length===4&&document.querySelectorAll('#stage2 .result-row').length===4&&!document.querySelector('#run')?.disabled`,
       "mm",
       9 * 60000,
     );
     real = await ev(
       sid,
-      `JSON.stringify({s1:document.querySelectorAll('#stage1 .result-row').length, s2:document.querySelectorAll('#stage2 .result-row').length, reordered:document.querySelector('#rReorder')?.textContent, controls:['corpus','q','k','run'], stages:['mpnet','cross-encoder']})`,
+      `JSON.stringify({s1:document.querySelectorAll('#stage1 .result-row').length, s2:document.querySelectorAll('#stage2 .result-row').length, reordered:document.querySelector('#rReorder')?.textContent, edited:${editedMulti}})`,
     );
   }
   return real;
@@ -425,7 +429,9 @@ function realOutputMatches(route, serialized) {
     if (route === "overview") {
       return value.dim === "768" && Number(value.norm) > 0 && value.ranked === 6 &&
         /password|login/i.test(value.topText || "") && Number.isFinite(Number(value.topScore)) &&
-        value.resetWorked === true && value.controls?.length === 6;
+        value.edited?.sentences === 3 && value.edited?.matrixRows === 3 &&
+        value.edited?.dim === 768 &&
+        value.edited?.resetWorked === true && value.edited?.restoredSentences === 6;
     }
     if (route === "basics") {
       return Number(value.defaultScore) > 0.5 && Number(value.defaultScore) < 0.65 &&
@@ -437,17 +443,22 @@ function realOutputMatches(route, serialized) {
     if (route === "practical") {
       return value.search === 12 && value.clusters === 4 && value.classified === 12 &&
         value.abstained >= 1 && /cohesion|stability/i.test(value.clusterStatus || "") &&
-        value.controls?.length === 7;
+        value.edited?.editedSearch === 13 && value.edited?.editedClusters === 3 &&
+        value.edited?.editedClassified === 13 && value.edited?.kUsed === 3 &&
+        value.edited?.labelCount === 3 && /invoice/i.test(value.edited?.editedTop || "");
     }
     if (route === "wild") {
       return value.rows >= 5 && /(?:^|\.\s*)queen$/i.test(value.top?.trim() || "") &&
-        value.presets?.length === 4 && value.presets.every((preset) => preset.top) &&
-        value.controls?.length === 7;
+        value.states?.presets?.length === 4 && value.states.presets.every((preset) => preset.top) &&
+        value.states?.included?.rows === 8 && value.states?.included?.hasInput === true &&
+        value.states?.excluded?.rows === 8 && value.states?.excluded?.hasInput === false &&
+        /Tokyo/i.test(value.states?.custom?.text || "");
     }
     if (route === "multimodel") {
       return value.s1 === 4 && value.s2 === 4 &&
         /0\s*(?:of|\/)\s*4|unchanged/i.test(value.reordered || "") &&
-        value.controls?.length === 4 && value.stages?.length === 2;
+        value.edited?.s1 === 2 && value.edited?.s2 === 2 && value.edited?.kUsed === 2 &&
+        /invoice/i.test(value.edited?.top1 || "") && /invoice/i.test(value.edited?.top2 || "");
     }
   } catch { /* malformed worker/UI evidence is a failure */ }
   return false;
@@ -492,7 +503,8 @@ try {
       "desktop",
       "light",
       realOutputMatches(name, real),
-      `worker-bound output: ${real}`,
+      `worker-bound output captured for ${name}`,
+      JSON.parse(real),
     );
 
     // Capture the pinned request evidence: real worker network (auto-attached) + authoritative source-pin.
@@ -639,7 +651,9 @@ try {
       released,
       loaders: busy?.loaders,
       releasedCount: busy?.released,
+      readyAfterReinit: true,
       postOk,
+      postOutput: JSON.parse(post),
     });
     await closePage(cdp, page.targetId);
   }
@@ -652,7 +666,8 @@ try {
       releaseEvidence.every((item) =>
         item.busy && item.released && item.releasedCount === item.loaders && item.postOk
       ),
-    JSON.stringify(releaseEvidence),
+    `busy release → all loaders released → reinit → discriminating real inference on ${releaseEvidence.length} routes`,
+    releaseEvidence,
   );
 
   // Exercise busy clear-cache, redownload/reinit, and real inference on every route and both Multi-model stages.
@@ -683,7 +698,9 @@ try {
       downloadShown,
       loaders: busy?.loaders,
       clearedCount: busy?.cleared,
+      readyAfterRedownload: true,
       postOk,
+      postOutput: JSON.parse(post),
     });
     await closePage(cdp, page.targetId);
   }
@@ -696,7 +713,8 @@ try {
       clearEvidence.every((item) =>
         item.busy && item.downloadShown && item.clearedCount === item.loaders && item.postOk
       ),
-    JSON.stringify(clearEvidence),
+    `busy clear → every cache removed → redownload/reinit → discriminating real inference on ${clearEvidence.length} routes`,
+    clearEvidence,
   );
 
   // Failure → visible Retry → recover (block the worker's model fetch via auto-attached sessions).
