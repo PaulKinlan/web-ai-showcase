@@ -333,14 +333,29 @@ export function renderProjection(container, points, { groups = null } = {}) {
     "var(--bad)",
     "var(--warn)",
   ];
+  const placedLabels = [];
+  const offsets = [[10, 4], [-10, 4], [10, -10], [-10, -10], [0, 18], [0, -14]];
   const dots = points.map((p, i) => {
     const cx = sx(p.x), cy = sy(p.y);
     const fill = groups ? palette[groups[i] % palette.length] : "var(--accent)";
+    const chosen = offsets
+      .map(([dx, dy]) => ({
+        x: Math.max(pad + 10, Math.min(W - pad - 10, cx + dx)),
+        y: Math.max(pad + 10, Math.min(H - pad - 10, cy + dy)),
+        dx,
+      }))
+      .find((candidate) =>
+        placedLabels.every((label) =>
+          Math.hypot(candidate.x - label.x, candidate.y - label.y) >= 22
+        )
+      ) || { x: cx, y: Math.max(pad + 10, Math.min(H - pad - 10, cy + 18)), dx: 0 };
+    placedLabels.push(chosen);
+    const anchor = chosen.dx < 0 ? "end" : chosen.dx === 0 ? "middle" : "start";
     return `<g><circle cx="${cx.toFixed(1)}" cy="${
       cy.toFixed(1)
-    }" r="6" fill="${fill}"></circle><text x="${(cx + 10).toFixed(1)}" y="${
-      (cy + 4).toFixed(1)
-    }" class="proj-label">S${i + 1}</text></g>`;
+    }" r="6" fill="${fill}"></circle><text x="${chosen.x.toFixed(1)}" y="${
+      chosen.y.toFixed(1)
+    }" text-anchor="${anchor}" class="proj-label">S${i + 1}</text></g>`;
   }).join("");
   container.innerHTML =
     `<svg viewBox="0 0 ${W} ${H}" class="proj-svg" role="img" aria-label="2D PCA projection of the sentence embeddings (numbered points; see legend)">
@@ -472,10 +487,14 @@ export const EMBEDDING_CSS = `
 .cmp-table th:first-child, .cmp-table td:first-child { text-align: start; }
 .cmp-table thead th { background: var(--bg-raised); color: var(--muted); }
 .cmp-pair { color: var(--color); }
-/* Coarse-pointer-friendly tap targets (~44px). */
+/* Coarse-pointer-friendly tap targets. */
 .chip { font: inherit; font-size: .8rem; padding: .45rem .7rem; border-radius: 999px; border: 1px solid var(--border);
   background: var(--bg-raised); color: var(--color); cursor: pointer; min-block-size: 40px; display: inline-flex;
   align-items: center; }
+@media (pointer: coarse) {
+  .chip, button, input, textarea, select { min-block-size: 44px; }
+  input[type="checkbox"], input[type="radio"] { min-inline-size: 24px; }
+}
 .chip:hover { border-color: var(--accent); }
 .corpus-area { inline-size: 100%; box-sizing: border-box; }
 .cluster { border:1px solid var(--border); border-inline-start:4px solid var(--accent); border-radius:8px;
