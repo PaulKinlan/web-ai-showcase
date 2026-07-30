@@ -9,9 +9,10 @@
 
 import { loadPipeline } from "/web-ai-showcase/lib/webai.js";
 
-const MODEL_ID = "Xenova/all-mpnet-base-v2";
-// Immutable pinned revision — verified in-browser. Pinning means there is no mutable "latest" to drift to.
-const REVISION = "e086c5e0b3a57b0ce46dd6d9c0662948860b35f3";
+// Loads Xenova/all-mpnet-base-v2 (the browser-ready ONNX export of
+// sentence-transformers/all-mpnet-base-v2) pinned to an immutable revision — verified in-browser.
+// The model id and revision are inlined as literals at the call site so stages are statically
+// extractable (repo convention); pinning means there is no mutable "latest" to drift to.
 
 let pipe = null;
 let device = "wasm";
@@ -24,10 +25,10 @@ async function ensureLoaded() {
   if (pipe) return;
   const loaded = await loadPipeline({
     task: "feature-extraction",
-    model: MODEL_ID,
+    model: "Xenova/all-mpnet-base-v2",
     backend: "wasm",
     dtype: "q8",
-    revision: REVISION,
+    revision: "e086c5e0b3a57b0ce46dd6d9c0662948860b35f3",
     onProgress: (p) => post({ type: "progress", p }),
   });
   pipe = loaded.pipe;
