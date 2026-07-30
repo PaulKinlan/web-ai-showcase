@@ -815,10 +815,27 @@ const succeeded = checks === EXPECTED_TOTAL && passed === EXPECTED_TOTAL && pinn
     c.checks === EXPECTED_PER_CELL[c.rung].length && c.checks === c.passed && c.errors.length === 0
   );
 if (WRITE_RUN && succeeded) {
-  const commit = execFileSync("git", ["rev-parse", "HEAD"], {
-    cwd: repoRoot,
-    encoding: "utf8",
-  }).trim();
+  // Bind to the latest commit that changed executable family evidence, not an acceptance-artifact
+  // wrapper commit. This mirrors check-portfolio-acceptance.mjs and remains valid after cherry-picks:
+  // committing acceptance-run.json/screenshots must not move the code target, while any later route,
+  // worker, critique, conformance, or validator edit does.
+  const familyRoot = `models/${SLUG}`;
+  const validatorRel = "scripts/validate-wav2vec2-large-xlsr-53-gender-recognition-librispeech.mjs";
+  const commit = execFileSync(
+    "git",
+    [
+      "log",
+      "-n1",
+      "--format=%H",
+      "HEAD",
+      "--",
+      familyRoot,
+      validatorRel,
+      `:(exclude)${familyRoot}/acceptance.json`,
+      `:(exclude)${familyRoot}/acceptance-run.json`,
+    ],
+    { cwd: repoRoot, encoding: "utf8" },
+  ).trim();
   writeFileSync(
     RUN_RECORD,
     JSON.stringify(
