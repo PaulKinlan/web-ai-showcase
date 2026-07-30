@@ -83,6 +83,44 @@ const DRIVER = `
     (e)=>{ e({status:"progress",progress:0}); e({status:"progress",progress:45}); },
     (e)=>{ e({status:"progress",progress:100}); });
 
+  // Regression: existing unpinned families recorded a historical three-part cache key. Seed that exact
+  // shape and prove a returning user auto-initialises without seeing a second Download prompt.
+  const legacyId = uid();
+  const legacyKey = "transformers.js::" + legacyId + "::q8";
+  await new Promise((resolve, reject) => {
+    const open = indexedDB.open("web-ai-showcase", 1);
+    open.onerror = () => reject(open.error);
+    open.onsuccess = () => {
+      const tx = open.result.transaction("model-validations", "readwrite");
+      tx.objectStore("model-validations").put({
+        key: legacyKey,
+        modelId: legacyId,
+        runtime: "transformers.js",
+        dtype: "q8",
+        files: [],
+        revision: null,
+        validatedAt: new Date().toISOString(),
+      });
+      tx.oncomplete = resolve;
+      tx.onerror = () => reject(tx.error);
+    };
+  });
+  const legacyMount = document.createElement("div"); main.appendChild(legacyMount);
+  let legacyLoads = 0;
+  createModelLoader({
+    mount: legacyMount,
+    model: { modelId: legacyId, runtime: "transformers.js", dtype: "q8", sizeMB: 9 },
+    load: async () => { legacyLoads++; return {}; },
+    onReady: () => {}, onError: () => {},
+  });
+  for (let i=0;i<40 && legacyMount.querySelector(".model-loader")?.dataset.state !== "ready";i++) await sleep(50);
+  report.legacyKey = {
+    state: legacyMount.querySelector(".model-loader")?.dataset.state,
+    loads: legacyLoads,
+    buttons: [...legacyMount.querySelectorAll("button")].map((button) => button.textContent.trim()),
+  };
+  legacyMount.remove();
+
   // A browser local-validation operation can remain pending indefinitely (observed in real navigation).
   // The shared loader must leave "checking" in under half a second, explain uncertainty, and offer
   // recovery instead of hanging. Cache Storage enumeration is deliberately NOT part of this fast path.
@@ -153,6 +191,12 @@ try {
     "Retry recovers after the local validation store responds",
     r.timeout.retryState === "download-required",
     `state=${r.timeout.retryState}`,
+  );
+  rec(
+    "Legacy three-part cache identity auto-initialises without another Download",
+    r.legacyKey.state === "ready" && r.legacyKey.loads === 1 &&
+      !r.legacyKey.buttons.some((button) => /Download model/.test(button)),
+    JSON.stringify(r.legacyKey),
   );
 
   // WebLLM

@@ -20,6 +20,9 @@ export class GenderEngine {
       maxInFlight: 1,
       maxQueue: 0,
       disposeGraceMs: 300,
+      onState: (state) => {
+        if (state === "error" || state === "terminated") this.ready = false;
+      },
     });
     // Kept as a read-only compatibility handle for diagnostics; callers must use dispose().
     this.worker = this.client.worker;
