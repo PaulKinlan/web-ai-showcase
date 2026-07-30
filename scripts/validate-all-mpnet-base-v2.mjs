@@ -143,8 +143,14 @@ async function attachNetwork(page) {
   async function enableSession(sid) {
     if (!sid || workerSessions.has(sid)) return;
     workerSessions.add(sid);
-    await cdp.send("Network.enable", {}, sid);
-    applyBlocks(sid);
+    try {
+      await cdp.send("Network.enable", {}, sid);
+      applyBlocks(sid);
+    } catch {
+      // A short-lived worker may disappear between Target attachment and Network.enable. It cannot
+      // contribute request evidence after detaching, so remove it without creating an unhandled rejection.
+      workerSessions.delete(sid);
+    }
   }
   cdp.on((msg) => {
     if (msg.method === "Target.attachedToTarget") {
@@ -370,7 +376,9 @@ function realOutputMatches(route, serialized) {
       return value.search === 12 && value.clusters === 4 && value.classified === 12 &&
         value.abstained >= 1 && /cohesion|stability/i.test(value.clusterStatus || "");
     }
-    if (route === "wild") return value.rows >= 5 && /(?:^|\.\s*)queen$/i.test(value.top?.trim() || "");
+    if (route === "wild") {
+      return value.rows >= 5 && /(?:^|\.\s*)queen$/i.test(value.top?.trim() || "");
+    }
     if (route === "multimodel") {
       return value.s1 === 4 && value.s2 === 4 &&
         /0\s*(?:of|\/)\s*4|unchanged/i.test(value.reordered || "");
