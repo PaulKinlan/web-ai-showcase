@@ -109,7 +109,7 @@ export function renderScores(container, result) {
 export const DEMO_CSS = `
 .demo-grid{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(16rem,.8fr);gap:1rem;align-items:start}
 .controls{display:grid;gap:.75rem}.controls label{display:grid;gap:.3rem;font-weight:650}.controls textarea{inline-size:100%;box-sizing:border-box;resize:vertical;min-block-size:7rem}
-.control-row,.chips,.metrics{display:flex;flex-wrap:wrap;gap:.55rem;align-items:center}.control-row>*{min-inline-size:0}.chips button{min-block-size:44px}
+.control-row,.chips,.metrics{display:flex;flex-wrap:wrap;gap:.55rem;align-items:center}.control-row>*{min-inline-size:0}.controls button,.controls select,.controls input[type="range"],.model-loader button{min-block-size:44px}.controls label:has(input[type="checkbox"]) span:last-child{display:flex;align-items:center;gap:.5rem;min-block-size:44px}.controls input[type="checkbox"]{inline-size:24px;block-size:24px;margin:0}
 .score-row{display:grid;grid-template-columns:minmax(7rem,1fr) minmax(7rem,2fr) 4.2rem 4.5rem;gap:.55rem;align-items:center;margin-block:.45rem}.score-row progress{inline-size:100%}
 .verdict{border-inline-start:.35rem solid var(--accent);padding:.75rem;margin-block:.75rem;background:var(--surface)}.verdict.ok{border-color:var(--good)}.verdict.warn{border-color:var(--bad)}
 .token-list{display:flex;flex-wrap:wrap;gap:.35rem}.token-list code{padding:.25rem .4rem;background:var(--surface);overflow-wrap:anywhere}

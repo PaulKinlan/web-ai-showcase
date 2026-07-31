@@ -114,11 +114,11 @@ if (mode === "multimodel") {
 }
 setRunEnabled();
 
-for (const input of document.querySelectorAll("[data-evidence-control]")) {
-  input.addEventListener(
-    "change",
-    () => changed(input.id || input.name, input.type === "checkbox" ? input.checked : input.value),
-  );
+for (const input of document.querySelectorAll(".controls textarea, [data-evidence-control]")) {
+  const recordChange = () =>
+    changed(input.id || input.name, input.type === "checkbox" ? input.checked : input.value);
+  input.addEventListener("change", recordChange);
+  if (input.matches("textarea")) input.addEventListener("input", recordChange);
 }
 for (const button of document.querySelectorAll("[data-sample]")) {
   button.addEventListener("click", () => {
