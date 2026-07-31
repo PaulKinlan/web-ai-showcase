@@ -151,7 +151,11 @@ async function setValue(sessionId, selector, value) {
   return await ev(sessionId, `(()=>{const node=document.querySelector(${JSON.stringify(selector)});if(!node)return false;if(node.type==='checkbox')node.checked=${Boolean(value)};else node.value=${JSON.stringify(String(value))};node.dispatchEvent(new Event('input',{bubbles:true}));node.dispatchEvent(new Event('change',{bubbles:true}));return true})()`);
 }
 async function pressKey(sessionId, key, code, keyCode) {
-  await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key, code, windowsVirtualKeyCode: keyCode, nativeVirtualKeyCode: keyCode }, sessionId);
+  // CDP only performs the browser's native default action when keyDown carries the key's text.
+  // This is a trusted input event (unlike dispatchEvent(new KeyboardEvent(...))), so Enter/Space
+  // genuinely activate the focused native button through its keyboard behavior.
+  const text = key === "Enter" ? "\r" : key;
+  await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key, code, text, unmodifiedText: text, windowsVirtualKeyCode: keyCode, nativeVirtualKeyCode: keyCode }, sessionId);
   await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key, code, windowsVirtualKeyCode: keyCode, nativeVirtualKeyCode: keyCode }, sessionId);
 }
 async function keyboardActivate(sessionId, selector, key = "Enter") {
