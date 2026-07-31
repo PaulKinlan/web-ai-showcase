@@ -12,7 +12,10 @@ export const GENERAL_MODEL = {
   modelId: "Xenova/clip-vit-base-patch16",
   runtime: "transformers.js",
   dtype: "q8",
-  sizeMB: 90,
+  revision: "342fdf2f67aded64d138ff074745fb4a5d2bba5f",
+  onnxBytes: 152040303,
+  onnxSha256: "cf5b03d7c03cd78498b0d59a905552b549ae91af4e99ffb985103aa9424d2272",
+  sizeMB: 145,
   requiresWebGPU: false,
 };
 

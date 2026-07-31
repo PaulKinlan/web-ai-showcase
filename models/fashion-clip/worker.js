@@ -8,6 +8,7 @@ const MODELS = {
   },
   general: {
     id: "Xenova/clip-vit-base-patch16",
+    revision: "342fdf2f67aded64d138ff074745fb4a5d2bba5f",
     dtype: "q8",
   },
 };
@@ -29,6 +30,7 @@ async function ensureLoaded(kind) {
     ? await loadPipeline({
       task: "zero-shot-image-classification",
       model: "Xenova/clip-vit-base-patch16",
+      revision: "342fdf2f67aded64d138ff074745fb4a5d2bba5f",
       backend: "wasm",
       dtype: "q8",
       onProgress: (progress) => post({ type: "progress", progress }),
