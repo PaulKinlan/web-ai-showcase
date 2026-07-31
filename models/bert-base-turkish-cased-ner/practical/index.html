@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Turkish NER — Practical: entity index &amp; privacy redaction · Web AI Showcase</title>
+    <meta name="description" content="Two real workflows on Turkish text: build a de-duplicated entity index (people, orgs, places — with counts and JSON export) and redact names for privacy before sharing. All locally in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🇹🇷</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Turkish NER</a></p>
+
+    <header>
+      <p class="eyebrow">Practical · token-classification · WASM</p>
+      <h1>Index the names, or make them disappear</h1>
+      <p class="lede">
+        Two things you can ship the moment you know where every name sits. <strong>Entity index:</strong>
+        scan a whole document and collect who, which organisations and which places it mentions, with
+        mention counts — then copy the result as JSON for a pipeline. <strong>Privacy redaction:</strong>
+        the same spans are exactly what you'd mask before sharing a document. Both run on-device, so the
+        sensitive text never leaves the tab.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Scan a document</h3>
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
+        Turkish text
+        <textarea id="text" class="ner-input" lang="tr" rows="5" disabled>Türk Hava Yolları yöneticisi Ahmet Bolat, İstanbul'da Selçuk Bayraktar ile görüştü. Baykar, Ankara ve İzmir'deki ekiplerini büyüteceğini açıkladı. Ahmet Bolat toplantının ardından Türkiye'ye döndü.</textarea>
+      </label>
+      <p class="gloss">“Turkish Airlines executive Ahmet Bolat met Selçuk Bayraktar in Istanbul. Baykar announced team growth in Ankara and İzmir.”</p>
+      <div style="margin:.5rem 0;display:flex;gap:.4rem;flex-wrap:wrap">
+        <button id="run" type="button" disabled>Build entity index</button>
+      </div>
+
+      <div id="results" hidden>
+        <h4 style="margin:.8rem 0 .2rem">Entity index <span class="muted" style="font-weight:400;font-size:.8rem">(de-duplicated, with mentions)</span></h4>
+        <div id="index"></div>
+
+        <h4 style="margin:1rem 0 .2rem">Entity mix</h4>
+        <div id="dist" class="dist"></div>
+
+        <h4 style="margin:1rem 0 .2rem">JSON <span class="muted" style="font-weight:400;font-size:.8rem">(for your pipeline)</span></h4>
+        <pre id="json" class="json-out"></pre>
+        <button id="copy" type="button" class="secondary" style="margin-top:.4rem">Copy JSON</button>
+      </div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+        <span>spans <b id="rSpans">–</b></span>
+        <span>unique <b id="rUnique">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="redact-h">
+      <h3 id="redact-h">Redact it for sharing</h3>
+      <p class="muted">Pick which entity types to mask; every detected span of those types is replaced by
+        a typed placeholder like <code>[KİŞİ]</code>. Uses the same scan as above — run it first.</p>
+      <div style="display:flex;gap:.9rem;flex-wrap:wrap;align-items:center;margin:.5rem 0" id="typeBoxes">
+        <label style="font-size:.84rem;display:flex;gap:.35rem;align-items:center"><input type="checkbox" value="PER" checked /> Person</label>
+        <label style="font-size:.84rem;display:flex;gap:.35rem;align-items:center"><input type="checkbox" value="ORG" checked /> Organisation</label>
+        <label style="font-size:.84rem;display:flex;gap:.35rem;align-items:center"><input type="checkbox" value="LOC" /> Location</label>
+        <button id="redact" type="button" disabled>Redact selected</button>
+      </div>
+      <div id="redactOut" lang="tr" class="redact-out" hidden></div>
+      <button id="copyRedact" type="button" class="secondary" style="margin-top:.4rem" hidden>Copy redacted text</button>
+    </section>
+
+    <section aria-labelledby="next-h">
+      <h2 id="next-h">Keep exploring</h2>
+      <div class="model-grid">
+        <a class="model-card" href="../basics/"><h3>← Basics</h3><p class="muted">Highlight every name by its type.</p></a>
+        <a class="model-card" href="../wild/"><h3>Wild →</h3><p class="muted">Recast the story with your own names.</p></a>
+        <a class="model-card" href="../multi-model/"><h3>Multi-model →</h3><p class="muted">Language ID → Turkish NER routing.</p></a>
+      </div>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="../">Back to the model →</a>
+    </footer>
+
+    <script type="module">
+      import { NerEngine, NER_CSS, renderDistribution, TYPES, escapeHTML } from "../ner.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = NER_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new NerEngine();
+      const MASK = { PER: "[KİŞİ]", ORG: "[KURUM]", LOC: "[YER]" };
+      let lastResult = null;
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "akdeniz27/bert-base-turkish-cased-ner", runtime: "raw-ort", dtype: "fp32", sizeMB: 420, revision: "99995f7d2be4b3a28c74f0d36ee97f8c04ee0571", requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        dispose: async () => engine.dispose(),
+        onReady: () => { $("text").disabled = false; $("run").disabled = false; run(); },
+        onDispose: () => { $("text").disabled = true; $("run").disabled = true; $("redact").disabled = true; },
+      });
+
+      $("run").addEventListener("click", run);
+      async function run() {
+        const text = $("text").value.trim();
+        if (!text) return;
+        $("run").disabled = true;
+        try {
+          const r = await engine.tag(text);
+          lastResult = r;
+          // De-dupe entities by (type, lowercased text), counting mentions, keeping first casing.
+          const byKey = new Map();
+          for (const e of r.entities) {
+            const k = e.type + "|" + e.text.toLowerCase();
+            if (!byKey.has(k)) byKey.set(k, { type: e.type, text: e.text, mentions: 0, score: e.score });
+            byKey.get(k).mentions++;
+          }
+          const unique = [...byKey.values()].sort((a, b) => a.type.localeCompare(b.type) || b.mentions - a.mentions);
+          $("index").replaceChildren(...unique.map((u) => {
+            const card = document.createElement("span");
+            card.className = "ent-card pg-" + u.type;
+            card.innerHTML = `<span class="ent-text"></span><span class="ent-type"></span><span class="ent-score"></span>`;
+            card.querySelector(".ent-text").textContent = u.text;
+            card.querySelector(".ent-type").textContent = TYPES[u.type]?.label ?? u.type;
+            card.querySelector(".ent-score").textContent = `× ${u.mentions}`;
+            card.title = `${(u.score * 100).toFixed(1)}% confidence · ${u.mentions} mention(s)`;
+            return card;
+          }));
+          if (!unique.length) $("index").innerHTML = '<span class="muted">No named entities found.</span>';
+
+          renderDistribution($("dist"), r.entities);
+
+          $("json").textContent = JSON.stringify({
+            model: "akdeniz27/bert-base-turkish-cased-ner",
+            entities: unique.map((u) => ({ text: u.text, type: u.type, mentions: u.mentions, score: Number(u.score.toFixed(4)) })),
+          }, null, 2);
+
+          $("results").hidden = false;
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = r.ms + " ms";
+          $("rSpans").textContent = r.entities.length;
+          $("rUnique").textContent = unique.length;
+          $("redact").disabled = false;
+          $("redactOut").hidden = true;
+          $("copyRedact").hidden = true;
+        } catch (err) {
+          $("runStatus").hidden = false;
+          $("runStatus").textContent = "Analysis failed: " + err.message;
+          $("runStatus").classList.add("err");
+        } finally {
+          $("run").disabled = false;
+        }
+      }
+
+      $("copy").addEventListener("click", async () => {
+        await navigator.clipboard.writeText($("json").textContent);
+        $("copy").textContent = "Copied ✓";
+        setTimeout(() => $("copy").textContent = "Copy JSON", 1200);
+      });
+
+      $("redact").addEventListener("click", () => {
+        if (!lastResult) return;
+        const picked = new Set([...document.querySelectorAll("#typeBoxes input:checked")].map((i) => i.value));
+        // Replace spans from the end so earlier offsets stay valid; keep untyped text verbatim.
+        const text = lastResult.text;
+        const hits = lastResult.entities
+          .filter((e) => picked.has(e.type) && e.start != null && e.end != null)
+          .sort((a, b) => b.start - a.start);
+        let out = text;
+        for (const e of hits) out = out.slice(0, e.start) + MASK[e.type] + out.slice(e.end);
+        const masked = hits.length;
+        $("redactOut").innerHTML = escapeHTML(out)
+          .replace(/\[PERSONNE\]|\[ORGANISATION\]|\[LIEU\]|\[ENTITÉ\]/g, (m) => {
+            const t = Object.keys(MASK).find((k) => MASK[k] === m);
+            return `<span class="redact-mark pg-${t}">${m}</span>`;
+          })
+          .replace(/\n/g, "<br>");
+        $("redactOut").hidden = false;
+        $("copyRedact").hidden = false;
+        $("copyRedact").dataset.text = out;
+        if (!masked) $("redactOut").innerHTML = '<span class="muted">Nothing of the selected types to redact.</span>';
+      });
+
+      $("copyRedact").addEventListener("click", async () => {
+        await navigator.clipboard.writeText($("copyRedact").dataset.text || "");
+        $("copyRedact").textContent = "Copied ✓";
+        setTimeout(() => $("copyRedact").textContent = "Copy redacted text", 1200);
+      });
+    </script>
+  </body>
+</html>
