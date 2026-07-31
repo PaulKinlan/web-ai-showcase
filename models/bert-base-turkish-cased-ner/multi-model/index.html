@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Turkish NER + language gate · Web AI Showcase</title>
+  <meta name="description" content="A real two-model local workflow: XLM-R identifies Turkish before canonical BERTurk NER highlights people, organisations and locations." />
+  <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+</head>
+<body>
+  <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Turkish NER</a></p>
+  <header>
+    <p class="eyebrow">Multi-model · language identification → token classification · WASM</p>
+    <h1>Route Turkish text before extracting its entities</h1>
+    <p class="lede">Language identification is a useful guardrail for a language-specific model. A
+      multilingual XLM-R classifier first scores the input across 20 languages. The canonical Turkish
+      BERT NER then extracts exact spans. If Turkish is not the top language, the page still lets you
+      inspect the NER result but labels it out-of-domain instead of pretending it is reliable.</p>
+    <p class="muted"><strong>Two real downloads:</strong> language ID q8 is exactly 278,836,241 bytes
+      (265.9 MiB), revision <code>919c87aa…</code>, SHA-256 <code>e3a2f1b4…182c9</code>; Turkish NER
+      fp32 is exactly 440,394,743 bytes (420.0 MiB), revision <code>99995f7d…</code>, SHA-256
+      <code>a8f8a685…4482</code>. This composition is best prepared on desktop/Wi-Fi. It is a routing
+      hint, not a security boundary: code-switching and short text can fool language ID, and NER can
+      miss names.</p>
+  </header>
+  <section class="panel" aria-labelledby="run-h">
+    <h3 id="run-h">Run the language gate and NER</h3>
+    <div id="lang-loader"></div>
+    <div id="ner-loader" style="margin-top:.5rem"></div>
+    <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+    <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
+      Text to route
+      <textarea id="text" class="ner-input" lang="tr" rows="3" disabled>Elif Şafak, Boğaziçi Üniversitesi'nde İstanbul üzerine konuştu.</textarea>
+    </label>
+    <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin:.5rem 0">
+      <button class="ner-chip" type="button" data-set="Elif Şafak, Boğaziçi Üniversitesi'nde İstanbul üzerine konuştu.">Turkish</button>
+      <button class="ner-chip" type="button" data-set="Elif Shafak spoke at Oxford University in London.">English contrast</button>
+      <button class="ner-chip" type="button" data-set="Elif Şafak spoke at Boğaziçi Üniversitesi in İstanbul.">code-switched</button>
+      <button id="run" type="button" disabled>Detect language → find entities</button>
+    </div>
+    <div id="steps" hidden>
+      <h4>Step 1 — language distribution</h4>
+      <div id="language"></div>
+      <h4>Step 2 — Turkish entity spans</h4>
+      <div id="tagged" lang="tr" class="ner-out" aria-live="polite"></div>
+      <div id="entities"></div>
+      <details style="margin-top:.7rem"><summary>Inspect raw WordPieces, BIO labels and scores</summary><div id="tokens" class="tok-strip"></div></details>
+    </div>
+    <div class="readout" id="readout" hidden>
+      <span>language <b id="rLang">–</b></span><span>language confidence <b id="rConfidence">–</b></span>
+      <span>entities <b id="rEntities">–</b></span><span>combined latency <b id="rMs">–</b></span>
+    </div>
+  </section>
+  <section aria-labelledby="how-h"><h2 id="how-h">Why compose these models?</h2>
+    <p>A language router prevents accidentally treating an English or mixed-language result as if it
+      came from the Turkish model's intended domain. It can route Turkish text to this specialist,
+      another language to its own model, or mixed text to review. Both stages remain inspectable and
+      run in separate workers, so neither inference pass blocks interaction.</p>
+  </section>
+  <section><h2>Keep exploring</h2><div class="model-grid">
+    <a class="model-card" href="../basics/"><h3>Basics</h3><p>Highlight Turkish entities.</p></a>
+    <a class="model-card" href="../practical/"><h3>Practical</h3><p>Index and review redactions.</p></a>
+    <a class="model-card" href="../wild/"><h3>Wild</h3><p>Recast a Turkish story.</p></a>
+  </div></section>
+  <footer class="byline">Made by <a href="https://paul.kinlan.me/">Paul Kinlan</a>. Both models run locally. <a href="../">Back to Turkish NER →</a></footer>
+  <script type="module">
+    import { NerEngine, NER_CSS, renderTagged, renderEntities, renderTokenStrip, isAbortError } from "../ner.js";
+    import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+    const style=document.createElement("style"); style.textContent=NER_CSS; document.head.append(style);
+    const $=id=>document.getElementById(id); const ner=new NerEngine();
+    class LanguageEngine {
+      constructor(){this.worker=null;this.ready=false;this.wait=[];this.pending=new Map();this.id=0;this.generation=0;this.spawn()}
+      spawn(){const generation=++this.generation;const worker=new Worker("./language-worker.js",{type:"module"});this.worker=worker;worker.onmessage=({data:m})=>{if(this.worker!==worker||this.generation!==generation)return;if(m.type==="progress")this.onProgress?.(m.p);else if(m.type==="ready"){this.ready=true;this.wait.splice(0).forEach(x=>x.resolve(this))}else if(m.type==="result"){const p=this.pending.get(m.id);if(p){this.pending.delete(m.id);p.resolve(m)}}else if(m.type==="error"){const p=this.pending.get(m.id);if(p){this.pending.delete(m.id);p.reject(new Error(m.message))}else this.wait.splice(0).forEach(x=>x.reject(new Error(m.message)))}};worker.onerror=(event)=>{if(this.worker!==worker||this.generation!==generation)return;const error=new Error(event.message||"Language worker failed");this.ready=false;this.wait.splice(0).forEach(x=>x.reject(error));this.pending.forEach(x=>x.reject(error));this.pending.clear()}}
+      load(onProgress){this.onProgress=onProgress;if(!this.worker)this.spawn();if(this.ready)return Promise.resolve(this);return new Promise((resolve,reject)=>{this.wait.push({resolve,reject});this.worker.postMessage({type:"load"})})}
+      run(text){if(!this.worker||!this.ready)return Promise.reject(new Error("Language model is not ready"));for(const [id,p] of this.pending){this.worker.postMessage({type:"cancel",id});p.reject(new DOMException("Superseded by a newer language request","AbortError"));this.pending.delete(id)}const id=++this.id;return new Promise((resolve,reject)=>{this.pending.set(id,{resolve,reject});this.worker.postMessage({type:"run",id,text})})}
+      dispose(reason="Language model disposed"){const error=new DOMException(reason,"AbortError");this.wait.splice(0).forEach(x=>x.reject(error));for(const [id,p] of this.pending){this.worker?.postMessage({type:"cancel",id});p.reject(error)}this.pending.clear();this.generation++;this.worker?.terminate();this.worker=null;this.ready=false;this.onProgress=null}
+    }
+    const language=new LanguageEngine(); let nerReady=false,langReady=false;
+    const enable=()=>{const ready=nerReady&&langReady;$("run").disabled=!ready;$("text").disabled=!ready};
+    createModelLoader({mount:$("lang-loader"),model:{modelId:"onnx-community/xlm-roberta-base-language-detection-ONNX",runtime:"transformers.js",dtype:"q8",sizeMB:265.9,revision:"919c87aa2749131ae1ab709931a16bf1cc9774ea",requiresWebGPU:false},load:async p=>{await language.load(p);return language},dispose:async(_instance,reason)=>language.dispose(reason),onReady:()=>{langReady=true;enable()},onDispose:()=>{langReady=false;enable()}});
+    createModelLoader({mount:$("ner-loader"),model:{modelId:"akdeniz27/bert-base-turkish-cased-ner",runtime:"raw-ort",dtype:"fp32",sizeMB:420,revision:"99995f7d2be4b3a28c74f0d36ee97f8c04ee0571",requiresWebGPU:false},load:async p=>{await ner.load(p);return ner},dispose:async()=>ner.dispose(),onReady:()=>{nerReady=true;enable()},onDispose:()=>{nerReady=false;enable()}});
+    document.querySelectorAll("[data-set]").forEach(button=>button.onclick=()=>{$("text").value=button.dataset.set});
+    $("run").onclick=async()=>{const text=$("text").value.trim();if(!text)return;$("run").disabled=true;$("runStatus").hidden=true;try{const started=performance.now();const [langResult,nerResult]=await Promise.all([language.run(text),ner.tag(text)]);const top=langResult.scores[0];const turkish=String(top.label).toLowerCase()==="tr";$("language").innerHTML=`<p class="status ${turkish?"ok":"err"}"><strong>${top.label}</strong> ${(top.score*100).toFixed(1)}% — ${turkish?"Turkish route selected":"not confidently Turkish; inspect NER as out-of-domain"}</p><div class="pill-row">${langResult.scores.slice(0,5).map(x=>`<span class="kw-pill">${x.label} ${(x.score*100).toFixed(1)}%</span>`).join("")}</div>`;renderTagged($("tagged"),nerResult.words);renderEntities($("entities"),nerResult.entities);renderTokenStrip($("tokens"),nerResult.tokens);$("steps").hidden=false;$("readout").hidden=false;$("rLang").textContent=top.label;$("rConfidence").textContent=(top.score*100).toFixed(1)+"%";$("rEntities").textContent=nerResult.entities.length;$("rMs").textContent=Math.round(performance.now()-started)+" ms"}catch(error){if(!isAbortError(error)){$("runStatus").hidden=false;$("runStatus").classList.add("err");$("runStatus").textContent="Two-model run failed: "+error.message}}finally{enable()}};
+  </script>
+</body></html>
