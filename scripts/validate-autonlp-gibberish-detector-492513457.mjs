@@ -346,7 +346,10 @@ try {
   // Cache Storage entries are atomic, so partial/corrupt is honestly represented by deleting one
   // recorded response (browser eviction), then requiring the shared Re-download state and recovery.
   await waitFor(first.sessionId, `(async()=>{const {listValidationRecords}=await import('/web-ai-showcase/lib/model-cache.js');return (await listValidationRecords()).some(r=>r.modelId===${JSON.stringify(MODEL)}&&r.files?.length)})()`, "validation record with cached files", 120_000);
-  const eviction = await ev(first.sessionId, `(async()=>{const {listValidationRecords}=await import('/web-ai-showcase/lib/model-cache.js');const record=(await listValidationRecords()).find(r=>r.modelId===${JSON.stringify(MODEL)});const url=record?.files?.find(u=>!/model\.onnx(?:\?|$)/.test(u))||record?.files?.[0];let removed=false,cacheName=null;for(const name of await caches.keys()){const cache=await caches.open(name);if(url&&await cache.delete(url)){removed=true;cacheName=name;break}}return {removed,url,cacheName,recordedFiles:record?.files?.length||0}})()`);
+  // recordValidated() is intentionally background work; let the offline re-init record settle before
+  // deleting a response so a late metadata write cannot race the eviction simulation.
+  await sleep(6000);
+  const eviction = await ev(first.sessionId, `(async()=>{const cacheApi=await import('/web-ai-showcase/lib/model-cache.js');const record=(await cacheApi.listValidationRecords()).find(r=>r.modelId===${JSON.stringify(MODEL)});const url=record?.files?.find(u=>!u.includes('/onnx/model.onnx'))||record?.files?.[0];let removed=false,cacheName=null;for(const name of await caches.keys()){const cache=await caches.open(name);if(url&&await cache.delete(url)){removed=true;cacheName=name;break}}const inspected=record?await cacheApi.inspectModel({key:record.key,timeoutMs:2000}):null;return {removed,url,cacheName,recordedFiles:record?.files?.length||0,inspectedState:inspected?.state||null,missing:inspected?.missing?.length||0}})()`);
   lifecycle.push({ event: "eviction", state: "recorded-file-deleted", ...eviction });
   await closePage(cdp, first.targetId);
 
