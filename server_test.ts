@@ -57,6 +57,13 @@ Deno.test("canonical root proxies the prefixed GitHub Pages root", async () => {
   assertIsolated(response);
 });
 
+Deno.test("canonical favicon proxies the root asset", async () => {
+  const response = await handle(new Request(`${CANONICAL_ORIGIN}/favicon.ico`));
+  assertEquals(response.status, 200);
+  assertEquals(new URL(requests.at(-1)!.url).pathname, `${SITE_PREFIX}/favicon.ico`);
+  assertIsolated(response);
+});
+
 Deno.test("legacy prefixed paths redirect to the matching canonical path and query", async () => {
   const response = await handle(
     new Request(`${CANONICAL_ORIGIN}${SITE_PREFIX}/models/demo/?mode=inside`),

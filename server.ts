@@ -4,6 +4,7 @@ export const UPSTREAM_ORIGIN = "https://paulkinlan.github.io";
 
 const PUBLIC_ROOT_FILES = new Set([
   "download-routes.json",
+  "favicon.ico",
   "home-core.mjs",
   "home.js",
   "index.html",
