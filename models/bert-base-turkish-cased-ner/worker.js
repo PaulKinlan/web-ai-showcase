@@ -6,12 +6,7 @@
 // Tokenisation, ONNX inference, WordPiece reconstruction and BIO span aggregation all stay here,
 // off the main thread. The visitor's text never leaves the browser.
 
-import {
-  alignPieces,
-  assertArtifactIntegrity,
-  entitySpans,
-  mergeWords,
-} from "./ner-core.js";
+import { alignPieces, assertArtifactIntegrity, entitySpans, mergeWords } from "./ner-core.js";
 
 const MODEL_ID = "akdeniz27/bert-base-turkish-cased-ner";
 const REVISION = "99995f7d2be4b3a28c74f0d36ee97f8c04ee0571";

@@ -28,12 +28,15 @@ test("WordPiece continuation disagreement keeps the first-piece BIO label and on
   const words = mergeWords(tokens, text);
   assert.equal(words[2].surface, "Tanpınar");
   assert.equal(words[2].entity, "I-PER");
-  assert.deepEqual(entitySpans(words, text).map(({ type, text, start, end }) => ({
-    type,
-    text,
-    start,
-    end,
-  })), [{ type: "PER", text: "Ahmet Hamdi Tanpınar", start: 0, end: 20 }]);
+  assert.deepEqual(
+    entitySpans(words, text).map(({ type, text, start, end }) => ({
+      type,
+      text,
+      start,
+      end,
+    })),
+    [{ type: "PER", text: "Ahmet Hamdi Tanpınar", start: 0, end: 20 }],
+  );
 });
 
 test("orphan I-* and type transitions are repaired into separate BIO spans", () => {
@@ -71,17 +74,28 @@ test("Turkish locale casing de-duplicates dotted and dotless I correctly", () =>
 
 test("artifact integrity requires both exact length and SHA-256", async () => {
   const bytes = new TextEncoder().encode("abc").buffer;
-  assert.deepEqual(await assertArtifactIntegrity(bytes, {
-    expectedBytes: 3,
-    expectedSha256: ABC_SHA256,
-    label: "fixture",
-  }), { byteLength: 3, sha256: ABC_SHA256 });
+  assert.deepEqual(
+    await assertArtifactIntegrity(bytes, {
+      expectedBytes: 3,
+      expectedSha256: ABC_SHA256,
+      label: "fixture",
+    }),
+    { byteLength: 3, sha256: ABC_SHA256 },
+  );
   await assert.rejects(
-    assertArtifactIntegrity(bytes, { expectedBytes: 4, expectedSha256: ABC_SHA256, label: "fixture" }),
+    assertArtifactIntegrity(bytes, {
+      expectedBytes: 4,
+      expectedSha256: ABC_SHA256,
+      label: "fixture",
+    }),
     /expected 4 bytes, received 3/,
   );
   await assert.rejects(
-    assertArtifactIntegrity(bytes, { expectedBytes: 3, expectedSha256: "0".repeat(64), label: "fixture" }),
+    assertArtifactIntegrity(bytes, {
+      expectedBytes: 3,
+      expectedSha256: "0".repeat(64),
+      label: "fixture",
+    }),
     /expected SHA-256/,
   );
 });
@@ -89,14 +103,29 @@ test("artifact integrity requires both exact length and SHA-256", async () => {
 test("NerEngine is latest-wins, bounded, rejects disposal, and suppresses stale replies", async () => {
   class FakeWorker {
     static instances = [];
-    constructor() { this.listeners = new Map(); this.messages = []; this.terminated = false; FakeWorker.instances.push(this); }
-    addEventListener(type, fn) { this.listeners.set(type, fn); }
-    postMessage(message) { this.messages.push(message); }
-    terminate() { this.terminated = true; }
-    emit(data) { this.listeners.get("message")?.({ data }); }
+    constructor() {
+      this.listeners = new Map();
+      this.messages = [];
+      this.terminated = false;
+      FakeWorker.instances.push(this);
+    }
+    addEventListener(type, fn) {
+      this.listeners.set(type, fn);
+    }
+    postMessage(message) {
+      this.messages.push(message);
+    }
+    terminate() {
+      this.terminated = true;
+    }
+    emit(data) {
+      this.listeners.get("message")?.({ data });
+    }
   }
   globalThis.Worker = FakeWorker;
-  const { NerEngine } = await import(`../models/bert-base-turkish-cased-ner/ner.js?test=${Date.now()}`);
+  const { NerEngine } = await import(
+    `../models/bert-base-turkish-cased-ner/ner.js?test=${Date.now()}`
+  );
   const engine = new NerEngine();
   const worker = FakeWorker.instances[0];
   const load = engine.load();
@@ -118,7 +147,10 @@ test("NerEngine is latest-wins, bounded, rejects disposal, and suppresses stale 
   const pending = engine.tag("dispose race");
   const pendingId = worker.messages.at(-1).id;
   engine.dispose("test release");
-  await assert.rejects(pending, (error) => error.name === "AbortError" && /test release/.test(error.message));
+  await assert.rejects(
+    pending,
+    (error) => error.name === "AbortError" && /test release/.test(error.message),
+  );
   assert.equal(engine._pending.size, 0);
   assert.equal(worker.terminated, true);
   worker.emit({ type: "tag", id: pendingId, text: "late" });
