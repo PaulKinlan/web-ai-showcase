@@ -1,16 +1,24 @@
 // Canonical Turkish BERT NER, run directly with ORT-Web because this repository ships a root
 // model.onnx rather than the onnx/model_*.onnx layout expected by Transformers.js pipelines.
 // Exact lineage: akdeniz27/bert-base-turkish-cased-ner @
-// 99995f7d2be4b3a28c74f0d36ee97f8c04ee0571, fp32 model.onnx (440,394,743 bytes), MIT.
+// 99995f7d2be4b3a28c74f0d36ee97f8c04ee0571, fp32 model.onnx (440,394,743 bytes),
+// SHA-256 a8f8a685d1a3dbf4a22a0c3ec9810f12a7035062fd61d79cadb759c24ace4482, MIT.
 // Tokenisation, ONNX inference, WordPiece reconstruction and BIO span aggregation all stay here,
 // off the main thread. The visitor's text never leaves the browser.
+
+import {
+  alignPieces,
+  assertArtifactIntegrity,
+  entitySpans,
+  mergeWords,
+} from "./ner-core.js";
 
 const MODEL_ID = "akdeniz27/bert-base-turkish-cased-ner";
 const REVISION = "99995f7d2be4b3a28c74f0d36ee97f8c04ee0571";
 const MODEL_URL = `https://huggingface.co/${MODEL_ID}/resolve/${REVISION}/model.onnx`;
 const MODEL_BYTES = 440394743;
+const MODEL_SHA256 = "a8f8a685d1a3dbf4a22a0c3ec9810f12a7035062fd61d79cadb759c24ace4482";
 const LABELS = ["O", "B-PER", "I-PER", "B-ORG", "I-ORG", "B-LOC", "I-LOC"];
-const SPECIAL = /^\[(?:CLS|SEP|PAD|MASK)\]$/;
 
 let tokenizer = null;
 let session = null;
@@ -48,15 +56,32 @@ async function readWithProgress(response) {
   return bytes.buffer;
 }
 
+async function verifiedModelBytes(response, source) {
+  const bytes = await response.arrayBuffer();
+  await assertArtifactIntegrity(bytes, {
+    expectedBytes: MODEL_BYTES,
+    expectedSha256: MODEL_SHA256,
+    label: `${source} model.onnx`,
+  });
+  return bytes;
+}
+
 async function modelBytes() {
   const cache = await caches.open("transformers-cache");
   let response = await cache.match(MODEL_URL);
   if (response) {
     post({
       type: "progress",
-      p: { status: "initiate", file: "model.onnx", name: "Validated cached model" },
+      p: { status: "initiate", file: "model.onnx", name: "Validating cached model" },
     });
-    return response.arrayBuffer();
+    try {
+      return await verifiedModelBytes(response, "Cached");
+    } catch (error) {
+      // Fail closed and remove poisoned/stale bytes. The shared loader exposes Retry; this call must
+      // not silently turn a returning user's auto-init into another 420 MiB network transfer.
+      await cache.delete(MODEL_URL);
+      throw error;
+    }
   }
   post({
     type: "progress",
@@ -64,16 +89,15 @@ async function modelBytes() {
   });
   response = await fetch(MODEL_URL, { cache: "no-store" });
   if (!response.ok) throw new Error(`Model download failed (${response.status})`);
-  const [forRuntime, forCache] = response.body.tee();
   const headers = new Headers(response.headers);
-  const cacheWrite = cache.put(MODEL_URL, new Response(forCache, { status: 200, headers }));
-  const bytes = await readWithProgress(new Response(forRuntime, { status: 200, headers }));
-  await cacheWrite;
-  if (bytes.byteLength !== MODEL_BYTES) {
-    throw new Error(
-      `Model integrity check failed: expected ${MODEL_BYTES} bytes, received ${bytes.byteLength}`,
-    );
-  }
+  const bytes = await readWithProgress(new Response(response.body, { status: 200, headers }));
+  await assertArtifactIntegrity(bytes, {
+    expectedBytes: MODEL_BYTES,
+    expectedSha256: MODEL_SHA256,
+    label: "Downloaded model.onnx",
+  });
+  // Only verified bytes cross the persistent-cache boundary.
+  await cache.put(MODEL_URL, new Response(bytes, { status: 200, headers }));
   return bytes;
 }
 
@@ -93,7 +117,13 @@ async function ensureLoaded() {
     executionProviders: ["wasm"],
     graphOptimizationLevel: "all",
   });
-  post({ type: "ready", device: "wasm", revision: REVISION, modelBytes: MODEL_BYTES });
+  post({
+    type: "ready",
+    device: "wasm",
+    revision: REVISION,
+    modelBytes: MODEL_BYTES,
+    modelSha256: MODEL_SHA256,
+  });
 }
 
 function softmaxBest(data, offset, width) {
@@ -111,81 +141,7 @@ function softmaxBest(data, offset, width) {
 }
 
 // Transformers.js currently returns zero offset_mapping values for this slow-compatible BERT
-// tokenizer. Align the exact cased WordPieces monotonically against the original Turkish text.
-function alignPieces(pieces, text) {
-  let cursor = 0;
-  return pieces.map((piece) => {
-    if (SPECIAL.test(piece)) return { start: null, end: null, special: true };
-    while (/\s/u.test(text[cursor] || "")) cursor++;
-    let surface = piece.replace(/^##/, "");
-    if (piece === "[UNK]") {
-      const match = text.slice(cursor).match(/^[^\s.,!?;:'"()]+/u);
-      surface = match?.[0] || text[cursor] || "";
-    }
-    const start = text.indexOf(surface, cursor);
-    if (start < 0) {
-      throw new Error(`Could not align tokenizer piece “${piece}” after character ${cursor}`);
-    }
-    const end = start + surface.length;
-    cursor = end;
-    return { start, end, special: false };
-  });
-}
-
-function mergeWords(tokens, text) {
-  const words = [];
-  for (const token of tokens) {
-    if (token.special) continue;
-    const continuation = token.word.startsWith("##") && words.length > 0;
-    if (continuation) {
-      const word = words.at(-1);
-      word.end = token.end;
-      word.surface = text.slice(word.start, word.end);
-      word.pieces.push(token);
-      // WordPiece aggregation uses the first piece's BIO label, matching the token-classification
-      // "first" strategy and preventing an occasional noisy continuation from splitting a word.
-      word.score = word.pieces.reduce((sum, item) => sum + item.score, 0) / word.pieces.length;
-    } else {
-      const type = token.entity === "O" ? null : token.entity.slice(2);
-      words.push({
-        surface: text.slice(token.start, token.end),
-        entity: token.entity,
-        type,
-        score: token.score,
-        start: token.start,
-        end: token.end,
-        pieces: [token],
-      });
-    }
-  }
-  return words.map(({ pieces: _pieces, ...word }) => word);
-}
-
-function entitySpans(words, text) {
-  const spans = [];
-  let open = null;
-  for (const word of words) {
-    if (!word.type) {
-      open = null;
-      continue;
-    }
-    const bio = word.entity.slice(0, 1);
-    if (bio === "B" || !open || open.type !== word.type) {
-      open = { type: word.type, start: word.start, end: word.end, scores: [word.score] };
-      spans.push(open);
-    } else {
-      open.end = word.end;
-      open.scores.push(word.score);
-    }
-  }
-  return spans.map((span) => ({
-    type: span.type,
-    text: text.slice(span.start, span.end),
-    start: span.start,
-    end: span.end,
-    score: span.scores.reduce((a, b) => a + b, 0) / span.scores.length,
-  }));
-}
+// tokenizer. Pure helpers align exact cased WordPieces and repair/aggregate BIO spans.
 
 async function analyse(text) {
   const encoded = await tokenizer(text, { truncation: true, max_length: 256 });
@@ -212,40 +168,71 @@ async function analyse(text) {
   return { text, tokens, words, entities: entitySpans(words, text) };
 }
 
-async function runOne(id, text) {
-  await ensureLoaded();
-  const started = performance.now();
-  const result = await analyse(text);
-  post({ type: "tag", id, ...result, ms: Math.round(performance.now() - started), device: "wasm" });
-}
+const cancelled = new Set();
+let activeJob = null;
+let queuedJob = null; // bounded latest-wins queue: one running + at most one waiting
 
-async function runMany(id, texts) {
+async function execute(job) {
+  const { id, type } = job;
   await ensureLoaded();
+  if (cancelled.delete(id)) return;
   const started = performance.now();
+  if (type === "tag") {
+    const result = await analyse(job.text);
+    if (!cancelled.delete(id)) {
+      post({
+        type: "tag",
+        id,
+        ...result,
+        ms: Math.round(performance.now() - started),
+        device: "wasm",
+      });
+    }
+    return;
+  }
   const results = [];
-  for (const text of texts) results.push(await analyse(text));
-  post({
-    type: "tagMany",
-    id,
-    results,
-    ms: Math.round(performance.now() - started),
-    device: "wasm",
-  });
+  for (const text of job.texts) {
+    if (cancelled.has(id)) break;
+    results.push(await analyse(text));
+  }
+  if (!cancelled.delete(id)) {
+    post({
+      type: "tagMany",
+      id,
+      results,
+      ms: Math.round(performance.now() - started),
+      device: "wasm",
+    });
+  }
 }
 
-async function dispose() {
-  await session?.release?.();
-  session = null;
-  tokenizer = null;
-  post({ type: "disposed" });
+async function drain() {
+  if (activeJob || !queuedJob) return;
+  activeJob = queuedJob;
+  queuedJob = null;
+  try {
+    await execute(activeJob);
+  } catch (error) {
+    if (!cancelled.delete(activeJob.id)) {
+      post({ type: "error", id: activeJob.id, message: String(error?.message || error) });
+    }
+  } finally {
+    activeJob = null;
+    void drain();
+  }
+}
+
+function enqueue(job) {
+  if (queuedJob) cancelled.delete(queuedJob.id);
+  queuedJob = job;
+  void drain();
 }
 
 self.addEventListener("message", async ({ data }) => {
   try {
     if (data.type === "load") await ensureLoaded();
-    else if (data.type === "tag") await runOne(data.id, data.text);
-    else if (data.type === "tagMany") await runMany(data.id, data.texts);
-    else if (data.type === "dispose") await dispose();
+    else if (data.type === "cancel") cancelled.add(data.id);
+    else if (data.type === "tag" || data.type === "tagMany") enqueue(data);
   } catch (error) {
     post({ type: "error", id: data?.id, message: String(error?.message || error) });
   }

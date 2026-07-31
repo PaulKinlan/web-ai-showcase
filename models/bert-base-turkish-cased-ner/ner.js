@@ -9,6 +9,14 @@ export const TYPES = {
   LOC: { label: "Location", desc: "a place — city, country, region, landmark" },
 };
 
+function abortError(message) {
+  return new DOMException(message, "AbortError");
+}
+
+export function isAbortError(error) {
+  return error?.name === "AbortError";
+}
+
 export class NerEngine {
   constructor() {
     this.worker = null;
@@ -16,18 +24,24 @@ export class NerEngine {
     this.device = "wasm";
     this.onProgress = null;
     this._loadWaiters = [];
-    this._pending = new Map();
+    this._pending = new Map(); // latest-wins; bounded to one inference request
     this._id = 0;
+    this._generation = 0;
     this._spawn();
   }
 
   _spawn() {
-    this.worker = new Worker(WORKER_URL, { type: "module" });
-    this.worker.addEventListener("message", (e) => this._onMessage(e.data));
-    this.worker.addEventListener("error", (e) => {
+    const generation = ++this._generation;
+    const worker = new Worker(WORKER_URL, { type: "module" });
+    this.worker = worker;
+    worker.addEventListener("message", (e) => {
+      if (this.worker === worker && this._generation === generation) this._onMessage(e.data);
+    });
+    worker.addEventListener("error", (e) => {
+      if (this.worker !== worker || this._generation !== generation) return;
       const err = new Error(e.message || "Worker failed to start");
-      for (const w of this._loadWaiters) w.reject(err);
-      this._loadWaiters = [];
+      this.ready = false;
+      for (const w of this._loadWaiters.splice(0)) w.reject(err);
       for (const [, p] of this._pending) p.reject(err);
       this._pending.clear();
     });
@@ -39,8 +53,7 @@ export class NerEngine {
     } else if (msg.type === "ready") {
       this.ready = true;
       this.device = msg.device;
-      for (const w of this._loadWaiters) w.resolve(msg.device);
-      this._loadWaiters = [];
+      for (const w of this._loadWaiters.splice(0)) w.resolve(msg.device);
     } else if (msg.type === "tag" || msg.type === "tagMany") {
       const p = this._pending.get(msg.id);
       if (p) {
@@ -53,8 +66,7 @@ export class NerEngine {
         this._pending.delete(msg.id);
       } else {
         const err = new Error(msg.message);
-        for (const w of this._loadWaiters) w.reject(err);
-        this._loadWaiters = [];
+        for (const w of this._loadWaiters.splice(0)) w.reject(err);
       }
     }
   }
@@ -69,14 +81,32 @@ export class NerEngine {
     });
   }
 
-  dispose() {
+  dispose(reason = "Model disposed") {
+    const error = abortError(reason);
+    for (const waiter of this._loadWaiters.splice(0)) waiter.reject(error);
+    for (const [id, pending] of this._pending) {
+      this.worker?.postMessage({ type: "cancel", id });
+      pending.reject(error);
+    }
+    this._pending.clear();
+    this._generation++;
     this.worker?.terminate();
     this.worker = null;
     this.ready = false;
-    this._pending.clear();
+    this.onProgress = null;
   }
 
   _call(payload) {
+    if (!this.worker || !this.ready) {
+      return Promise.reject(new Error("Model is not ready"));
+    }
+    // Rapid edits are latest-wins: cancel/reject the older call before admitting the next one. This
+    // bounds client state and prevents an older response from overwriting output for newer text.
+    for (const [pendingId, pending] of this._pending) {
+      this.worker.postMessage({ type: "cancel", id: pendingId });
+      pending.reject(abortError("Superseded by a newer inference request"));
+      this._pending.delete(pendingId);
+    }
     const id = ++this._id;
     return new Promise((resolve, reject) => {
       this._pending.set(id, { resolve, reject });
