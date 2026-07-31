@@ -1,15 +1,15 @@
 #!/usr/bin/env node
 // Coverage against a BOUNDED, meaningful denominator: distinct ARCHITECTURE FAMILIES.
 //
-// Why: the raw browser-runnable "eligible family" count from inventory.mjs does not converge — it
+// Why: the raw runtime-catalogue discovery count from inventory.mjs does not converge — it
 // grows with scan depth (635 @ --pages 8 → 754 @ 10 → 1288 @ 20 → 2355 @ 40 …) because the HF long
 // tail of transformers.js/ONNX re-exports and fine-tunes is effectively unbounded. A showcase's real
 // target is not "every repo" but "every KIND of model" — the distinct architecture families. That set
 // IS bounded and stable, so it's the honest denominator for coverage.
 //
 // This reads models.json (built) and classifies each built model into an architecture family; the
-// denominator is the curated taxonomy below (the canonical browser-runnable architectures). Raw
-// inventory (inventory/eligible.ndjson) is kept as evidence of the universe + to discover NEW
+// denominator is the curated taxonomy below (the canonical browser-runnable architectures). Typed
+// inventory (legacy path inventory/eligible.ndjson) retains verified/candidate/blocked evidence + discovers NEW
 // architectures to add to the taxonomy. Run: `node scripts/coverage.mjs`.
 
 import { readFile } from "node:fs/promises";
@@ -96,7 +96,7 @@ function classify(id) {
   // aren't swallowed by the generic "bert"/"vit-" patterns. Caveat: a few families whose id carries a
   // longer backbone/token substring (detr-RESNET, clip-VIT) get attributed to that backbone family,
   // so the built/63 ratio slightly UNDERcounts distinct architectures present. It's a secondary,
-  // "kinds of model" signal only — the evidence-backed eligible catalogue is the primary denominator.
+  // "kinds of model" signal only — the typed inventory/catalogue is the primary denominator.
   let best = null, bestLen = 0;
   for (const [fam, pats] of Object.entries(FAMILIES)) {
     for (const p of pats) {
@@ -123,7 +123,7 @@ async function main() {
 
   console.log("=== ARCHITECTURE-FAMILY COVERAGE (SECONDARY metric — 'kinds of model') ===");
   console.log(
-    "(PRIMARY denominator is the evidence-backed eligible catalogue: inventory/summary.json)",
+    "(PRIMARY denominator is the typed verified/candidate/blocked inventory: inventory/summary.json)",
   );
   console.log(`taxonomy families: ${taxo.length}`);
   console.log(`built (>=1 demo):  ${builtTaxo.length} / ${taxo.length}`);
@@ -137,7 +137,7 @@ async function main() {
     console.log(`\nBuilt demos outside the taxonomy (candidates to add): ${others.join(", ")}`);
   }
   console.log(
-    "\nNOTE: the raw browser-runnable repo universe is unbounded by scan depth (evidence:",
+    "\nNOTE: the raw runtime-catalogue discovery frontier is unbounded by scan depth (typed evidence:",
   );
   console.log(
     "inventory/eligible.ndjson); this taxonomy is the stable coverage denominator. Never",

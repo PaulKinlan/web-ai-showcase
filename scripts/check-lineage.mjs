@@ -26,6 +26,12 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import {
+  findCatalogueCollision,
+  isExactCatalogueMatch,
+  validateInventorySummary,
+  validateReviewedAliasPolicy,
+} from "./inventory-lib.mjs";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const p = (rel) => ROOT + rel;
@@ -63,6 +69,10 @@ for (
     "inventory/lineage/value-records.ndjson",
     "inventory/lineage/denominators.json",
     "inventory/lineage/priority.json",
+    "inventory/eligible.ndjson",
+    "inventory/summary.json",
+    "inventory/collisions.json",
+    "inventory/reviewed-aliases.json",
   ]
 ) {
   if (!existsSync(p(f))) {
@@ -73,8 +83,14 @@ if (failures.length) report();
 
 const records = readNdjson("inventory/lineage/records.ndjson");
 const values = readNdjson("inventory/lineage/value-records.ndjson");
+const inventory = readNdjson("inventory/eligible.ndjson");
 denom = JSON.parse(readFileSync(p("inventory/lineage/denominators.json"), "utf8"));
 priority = JSON.parse(readFileSync(p("inventory/lineage/priority.json"), "utf8"));
+const summary = JSON.parse(readFileSync(p("inventory/summary.json"), "utf8"));
+const collisionLedger = JSON.parse(readFileSync(p("inventory/collisions.json"), "utf8"));
+const reviewedAliasPolicy = JSON.parse(
+  readFileSync(p("inventory/reviewed-aliases.json"), "utf8"),
+);
 const cat = JSON.parse(readFileSync(p("models.json"), "utf8")).models;
 
 const REL_ENUM = new Set([
@@ -100,6 +116,8 @@ for (const [i, r] of records.entries()) {
       "id",
       "task",
       "runtime",
+      "runtimeVerification",
+      "discoveryStatus",
       "relationship",
       "canonicalFamily",
       "specialization",
@@ -152,6 +170,164 @@ for (const [i, v] of values.entries()) {
   }
 }
 if (!Array.isArray(priority.queue)) fail("SCHEMA priority.json: queue must be an array");
+for (const policyFailure of validateReviewedAliasPolicy(reviewedAliasPolicy)) {
+  fail(`SCHEMA reviewed-aliases.json: ${policyFailure}`);
+}
+
+// ── A2. current inventory/summary/catalogue reconciliation ──
+const discoveryStatuses = new Set(["verified-eligible", "candidate-unverified", "blocked"]);
+for (const [i, model] of inventory.entries()) {
+  const where = `eligible.ndjson[${i}] (${model.id})`;
+  if (!model.discovery || !discoveryStatuses.has(model.discovery.status)) {
+    fail(`SCHEMA ${where}: typed discovery.status is required`);
+    continue;
+  }
+  if (
+    !model.discovery.runtime || !model.discovery.browserArtifact || !model.discovery.feasibleSize
+  ) {
+    fail(`SCHEMA ${where}: typed runtime/artifact/size provenance is required`);
+  }
+  if (model.discovery.status === "candidate-unverified") {
+    if (
+      model.discovery.runtime?.verification !== "source-claimed" ||
+      model.discovery.browserArtifact?.verification !== "unverified" ||
+      model.discovery.feasibleSize?.verification !== "unverified"
+    ) {
+      fail(
+        `HONESTY ${where}: candidate must keep runtime source-claimed and artifact/size unverified`,
+      );
+    }
+  }
+}
+const inventoryStatusCounts = { "verified-eligible": 0, "candidate-unverified": 0, blocked: 0 };
+for (const model of inventory) inventoryStatusCounts[model.discovery.status]++;
+for (const drift of validateInventorySummary(summary, inventory, cat)) {
+  fail(`DRIFT: ${drift}`);
+}
+const taskCounts = {};
+for (const model of inventory) {
+  const counts = taskCounts[model.task] ??= {
+    families: 0,
+    verifiedEligible: 0,
+    candidateUnverified: 0,
+    blocked: 0,
+  };
+  counts.families++;
+  if (model.discovery.status === "verified-eligible") counts.verifiedEligible++;
+  else if (model.discovery.status === "candidate-unverified") counts.candidateUnverified++;
+  else counts.blocked++;
+}
+if (JSON.stringify(taskCounts) !== JSON.stringify(summary.byTask)) {
+  fail("DRIFT: byTask recomputed from current inventory does not match inventory/summary.json");
+}
+const lineageIds = new Set(records.map((record) => record.id));
+const inventoryIds = new Set(inventory.map((model) => model.id));
+if (
+  lineageIds.size !== inventoryIds.size ||
+  [...inventoryIds].some((id) => !lineageIds.has(id))
+) {
+  fail("DRIFT: lineage records do not represent the exact current inventory snapshot");
+}
+const currentDenom = denom.denominators || {};
+if (
+  currentDenom.rawCatalogue !== cat.length ||
+  currentDenom.inventoryRepresentatives !== inventory.length ||
+  currentDenom.verifiedEligible !== inventoryStatusCounts["verified-eligible"] ||
+  currentDenom.candidateUnverified !== inventoryStatusCounts["candidate-unverified"] ||
+  currentDenom.blocked !== inventoryStatusCounts.blocked
+) {
+  fail("DRIFT: lineage denominators do not match current models.json + inventory snapshot");
+}
+if (
+  summary.catalogue.rawCandidatesAdded !==
+    summary.catalogue.addedThisRun + summary.catalogue.candidateCollisionsThisRun
+) {
+  fail("DRIFT: raw catalogue candidates must reconcile to additions + catalogue collisions");
+}
+if (!Array.isArray(collisionLedger.scan) || !Array.isArray(collisionLedger.catalogueMerge)) {
+  fail("SCHEMA collisions.json: scan[] and catalogueMerge[] are required");
+} else {
+  if (
+    collisionLedger.scan.length !== summary.scanFamilyCollisions ||
+    collisionLedger.catalogueMerge.length !== summary.catalogue.candidateCollisionsThisRun
+  ) {
+    fail("DRIFT: collision ledger counts do not match inventory/summary.json");
+  }
+  const currentHf = new Set(cat.map((model) => model.hfId));
+  for (const collision of collisionLedger.scan) {
+    if (!inventoryIds.has(collision.kept) || inventoryIds.has(collision.removed)) {
+      fail(
+        `COLLISION LEDGER: scan collision ${collision.removed} -> ${collision.kept} is not reflected in inventory`,
+      );
+    }
+  }
+  for (const collision of collisionLedger.catalogueMerge) {
+    if (!currentHf.has(collision.kept) || currentHf.has(collision.removed)) {
+      fail(
+        `COLLISION LEDGER: catalogue collision ${collision.removed} -> ${collision.kept} is not reflected in models.json`,
+      );
+    }
+  }
+
+  // Re-run the exact generator policy against the committed inventory/catalogue. This rejects a
+  // hand-patched ledger, a stale reviewed policy, or generator drift that would append an alias on
+  // the next refresh. Exact self-matches are already-appended candidates, not merge collisions.
+  const generatedCatalogueMerge = [];
+  for (const candidate of inventory) {
+    if (candidate.discovery.status !== "candidate-unverified") continue;
+    try {
+      const collision = findCatalogueCollision(candidate, cat, reviewedAliasPolicy);
+      if (!collision || isExactCatalogueMatch(candidate, collision)) continue;
+      generatedCatalogueMerge.push({
+        phase: "catalogue-candidate-merge",
+        collisionKey: collision.collisionKey,
+        kept: collision.model.hfId,
+        keptStatus: collision.model.status,
+        removed: candidate.id,
+        reason: collision.reason,
+      });
+    } catch (error) {
+      fail(`COLLISION POLICY: ${error.message}`);
+    }
+  }
+  const collisionSort = (a, b) =>
+    a.collisionKey.localeCompare(b.collisionKey) || a.removed.localeCompare(b.removed);
+  generatedCatalogueMerge.sort(collisionSort);
+  const committedCatalogueMerge = [...collisionLedger.catalogueMerge].sort(collisionSort);
+  if (JSON.stringify(generatedCatalogueMerge) !== JSON.stringify(committedCatalogueMerge)) {
+    fail(
+      "DRIFT: catalogue collision ledger does not equal decisions generated from reviewed-aliases.json plus inventory collision rules",
+    );
+  }
+
+  const committedByRemoved = new Map(
+    collisionLedger.catalogueMerge.map((collision) => [collision.removed, collision]),
+  );
+  for (const alias of reviewedAliasPolicy.aliases || []) {
+    const candidate = inventory.find((model) =>
+      model.id === alias.candidateHfId && model.task === alias.task
+    );
+    if (!candidate) continue; // Retain reviewed policy even when a later scan no longer observes it.
+    try {
+      const generated = findCatalogueCollision(candidate, cat, reviewedAliasPolicy);
+      const committed = committedByRemoved.get(alias.candidateHfId);
+      if (
+        generated?.collisionKey !== alias.collisionKey ||
+        generated?.model.hfId !== alias.keptHfId ||
+        generated?.reason !== alias.reason ||
+        committed?.collisionKey !== alias.collisionKey ||
+        committed?.kept !== alias.keptHfId ||
+        committed?.reason !== alias.reason
+      ) {
+        fail(
+          `DRIFT: reviewed alias policy/generator/ledger diverge for ${alias.candidateHfId}`,
+        );
+      }
+    } catch (error) {
+      fail(`COLLISION POLICY: ${error.message}`);
+    }
+  }
+}
 
 // ── B. identity preservation ──
 const builtIds = cat.filter((m) => m.status === "built").map((m) => m.hfId);
@@ -167,11 +343,31 @@ const baseRaw = gitShow("origin/main:models.json");
 if (baseRaw) {
   try {
     const base = JSON.parse(baseRaw);
+    const baseModels = Array.isArray(base) ? base : base.models;
     const nowIds = new Set(cat.map((m) => m.hfId + "::" + m.slug));
-    for (const m of (Array.isArray(base) ? base : base.models)) {
+    for (const m of baseModels) {
       if ((m.status === "built" || m.status === "blocked") && !nowIds.has(m.hfId + "::" + m.slug)) {
         fail(
           `IDENTITY LOST: published ${m.status} model ${m.slug} (${m.hfId}) missing/renamed vs origin/main — lineage pass must be additive.`,
+        );
+      }
+    }
+    const baseHf = new Set(baseModels.map((model) => model.hfId));
+    const addedModels = cat.filter((item) => !baseHf.has(item.hfId));
+    if (addedModels.length !== summary.catalogue.addedThisRun) {
+      fail(
+        `DRIFT: summary addedThisRun=${summary.catalogue.addedThisRun} but models.json adds ${addedModels.length} vs origin/main`,
+      );
+    }
+    for (const model of addedModels) {
+      if (
+        model.status !== "pending" || model.backend !== undefined || model.runtime !== undefined ||
+        model.candidate?.status !== "unverified" || !model.candidate?.claimedRuntime ||
+        model.candidate?.provenance?.browserArtifact?.verification !== "unverified" ||
+        model.candidate?.provenance?.feasibleSize?.verification !== "unverified"
+      ) {
+        fail(
+          `HONESTY: new catalogue candidate ${model.hfId} must be typed unverified without proven backend/runtime`,
         );
       }
     }
@@ -264,7 +460,7 @@ function report() {
   if (denom && denom.denominators) {
     const d = denom.denominators;
     console.log(
-      `denominators: rawCatalogue ${d.rawCatalogue} · mission ${d.missionBaseline} · eligible reps ${d.eligibleRepresentatives} (runnable ${d.eligibleRunnable}, blocked/gated ${d.blockedGated})`,
+      `denominators: rawCatalogue ${d.rawCatalogue} · mission ${d.missionBaseline} · inventory reps ${d.inventoryRepresentatives} (verified ${d.verifiedEligible}, candidate-unverified ${d.candidateUnverified}, blocked ${d.blocked})`,
     );
     console.log(
       `reviewed: ${denom.reviewed?.reviewed}/${denom.reviewed?.total}   byRelationship: ${

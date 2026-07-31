@@ -92,7 +92,8 @@ function feasibility(model, rec) {
   const ev = [];
   let score = null;
   const sizeMB = model && model.sizeMB;
-  const backend = (model && model.backend) || (rec && rec.runtime === "webllm" ? "webgpu" : "wasm");
+  const backend = model && model.backend ? model.backend : null;
+  const claimedRuntime = model?.candidate?.claimedRuntime || rec?.runtime || null;
   if (typeof sizeMB === "number") {
     ev.push(`sizeMB=${sizeMB}`);
     if (sizeMB <= 120) score = 3;
@@ -100,12 +101,15 @@ function feasibility(model, rec) {
     else if (sizeMB <= 1500) score = 1;
     else score = 0;
   }
-  ev.push(`backend=${backend}`);
+  if (backend) ev.push(`backend=${backend}`);
+  else if (claimedRuntime) ev.push(`claimed-runtime=${claimedRuntime}; backend unverified`);
   if (backend === "webgpu") ev.push("needs a real WebGPU adapter (honest fallback required)");
   return {
     score,
     label: score === null ? "size-unknown" : ["heavy", "large", "moderate", "light"][score],
     backend,
+    backendVerification: backend ? "catalogue-provenance" : "unverified",
+    claimedRuntime,
     evidence: ev,
     latencyMemory: "eval-pending", // requires a browser-runtime measurement (see README eval protocol)
   };

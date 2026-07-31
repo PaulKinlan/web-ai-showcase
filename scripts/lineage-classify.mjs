@@ -270,6 +270,8 @@ for (const m of elig) {
     task: m.task,
     modality: m.modality,
     runtime: m.runtime,
+    runtimeVerification: m.discovery?.runtime?.verification || "legacy-untyped",
+    discoveryStatus: m.discovery?.status || (m.gated ? "blocked" : "candidate-unverified"),
     license: m.license,
     downloads: m.downloads,
     likes: m.likes,
@@ -316,10 +318,9 @@ const capabilitySlots = new Set(
 const denominators = {
   generatedAt: new Date().toISOString().slice(0, 10),
   disclaimer:
-    "FIRST evidence-backed pass — NOT complete/all. Reviewed sample has PROVEN metadata (HF API: " +
-    "cardData.base_model, config.architectures, siblings); the long tail is classified by cheap " +
-    "heuristics (tags/name/familyKey) with confidence markers. Denominators are refining lower " +
-    "bounds at the current scan depth, kept SEPARATE from the raw catalogue and mission denominators.",
+    "FIRST evidence-backed pass — NOT complete/all. Reviewed metadata proves only the fields it names; " +
+    "it does not promote an unverified discovery to browser eligibility. Candidate/runtime/artifact/size " +
+    "status comes from the typed inventory provenance. Denominators remain separate refining lower bounds.",
   denominators: {
     rawCatalogue: cat.length,
     rawCatalogueNote:
@@ -327,13 +328,12 @@ const denominators = {
     missionBaseline: 635,
     missionBaselineNote:
       "eligibleFamilies @ --pages 8 (original mission denominator); KEPT SEPARATE.",
-    eligibleRepresentatives: records.length,
-    eligibleRepresentativesNote:
-      "family-deduped representatives in inventory/eligible.ndjson at the current scan depth (a " +
-      "refining lower bound; exact byte/config dups + quant/format ports already collapse WITHIN " +
-      "familyKey before this layer).",
-    eligibleRunnable: records.filter((r) => !r.gated).length,
-    blockedGated: records.filter((r) => r.gated).length,
+    inventoryRepresentatives: records.length,
+    inventoryRepresentativesNote:
+      "Family-deduped verified, candidate-unverified, and blocked representatives in the legacy-named inventory/eligible.ndjson path at the current scan depth.",
+    verifiedEligible: records.filter((r) => r.discoveryStatus === "verified-eligible").length,
+    candidateUnverified: records.filter((r) => r.discoveryStatus === "candidate-unverified").length,
+    blocked: records.filter((r) => r.discoveryStatus === "blocked").length,
   },
   reviewed: { reviewed: reviewedCount, total: records.length },
   byRelationship: byRel,

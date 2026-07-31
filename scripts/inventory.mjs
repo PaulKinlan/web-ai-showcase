@@ -3,18 +3,28 @@
 //
 // Queries the real runtime-compatibility catalogues (Transformers.js/ONNX, WebLLM/MLC), applies
 // explicit eligibility + family-deduplication rules, and produces:
-//   inventory/eligible.ndjson  — one line per eligible model (full evidence: id, task, runtime,
-//                                license, likes, downloads, gated, size hint, model-card URL)
-//   inventory/summary.json     — exact denominators + counts by task/modality/runtime + the
-//                                representative model chosen per (task, family)
-//   models.json (merged)       — representatives added as status:"pending" (never drops/downgrades
-//                                existing entries; preserves "built").
+//   inventory/eligible.ndjson  — legacy path containing typed verified/candidate/blocked evidence
+//   inventory/summary.json     — exact inclusive inventory denominator + typed status counts
+//   inventory/collisions.json  — deterministic scan-family and catalogue-merge collision ledger
+//   inventory/reviewed-aliases.json — durable reviewed capability-family collision policy (input)
+//   models.json (merged)       — unverified representatives added as typed pending candidates;
+//                                existing built/blocked entries are never dropped or downgraded.
 //
 // Run: `node scripts/inventory.mjs [--pages N] [--no-merge]`.
-// Rules of the road (see AGENTS.md / SKILL): denominator = eligible families; blocked (gated/too
-// large) and device-only stay IN the denominator; we never shrink it because a model is hard.
+// Rules of the road (see AGENTS.md / SKILL): the inclusive inventory denominator retains verified,
+// candidate-unverified, and blocked families. Metadata is discovery evidence, not runtime proof.
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import {
+  deduplicateFamilies,
+  discoveryClassification,
+  familyKey,
+  findCatalogueCollision,
+  isExactCatalogueMatch,
+  isRetainedInventoryCandidate,
+  slugify,
+  validateReviewedAliasPolicy,
+} from "./inventory-lib.mjs";
 
 const MAX_PAGES = Number(argVal("--pages") ?? 8); // 100/page => up to 800 models per source
 const NO_MERGE = process.argv.includes("--no-merge");
@@ -100,32 +110,6 @@ async function collect(query, runtime) {
   return { models: out, apiTotal: total };
 }
 
-// Family key: normalise the model NAME so fine-tunes/quants/sizes of one architecture collapse to one
-// family, while genuinely different architectures stay distinct. We keep the org out (many orgs
-// re-export the same arch) and strip runtime/quant/size noise.
-function familyKey(id) {
-  let n = id.split("/").pop().toLowerCase();
-  n = n
-    .replace(/[-_.](onnx|ort|web|mlc|gguf|ggml)\b/g, "")
-    .replace(
-      /[-_.](q4f16|q4|q8|int8|int4|fp16|fp32|bf16|uint8|quantized|8bit|4bit)([-_.]\w+)?/g,
-      "",
-    )
-    .replace(/[-_.]\d+(\.\d+)?b\b/g, "") // 0.5b, 1b, 7b size markers
-    .replace(/[-_.](base|small|tiny|mini|large|xl|xxl|medium|nano|micro)\b/g, "")
-    .replace(/[-_.]v?\d+(\.\d+)*\b/g, "") // version tails
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-|-$/g, "");
-  return n || id.toLowerCase();
-}
-
-function slugify(id) {
-  return id.split("/").pop().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(
-    0,
-    80,
-  );
-}
-
 // MediaPipe Tasks Web runtime — model-backed landmarkers/segmenters Google ships as .task/.tflite
 // bundles that run in the browser via @mediapipe/tasks-*. Not on the HF list API, so curated here
 // (each is a real, downloadable, browser-runnable model). Kept in the denominator.
@@ -181,6 +165,14 @@ async function collectWebLLM() {
 }
 
 async function main() {
+  const reviewedAliasPolicy = JSON.parse(
+    await readFile(new URL("inventory/reviewed-aliases.json", ROOT), "utf8"),
+  );
+  const policyFailures = validateReviewedAliasPolicy(reviewedAliasPolicy);
+  if (policyFailures.length) {
+    throw new Error(`invalid reviewed alias policy: ${policyFailures.join("; ")}`);
+  }
+
   const sources = [
     {
       query: { library: "transformers.js", sort: "downloads", limit: "100", full: "false" },
@@ -216,58 +208,83 @@ async function main() {
   apiTotals.mediapipe = `${MEDIAPIPE.length} curated`;
   for (const m of MEDIAPIPE) TASKS[m.task] ??= m.modality; // register discovered tasks
 
-  // Dedup to families: representative per (task, familyKey) = the most-downloaded eligible model.
-  const byFamily = new Map();
-  for (const m of all) {
-    const key = `${m.task}::${familyKey(m.id)}`;
-    const cur = byFamily.get(key);
-    if (!cur || m.downloads > cur.downloads) {
-      byFamily.set(key, { ...m, familyKey: familyKey(m.id) });
-    }
-  }
-  const reps = [...byFamily.values()].sort((a, b) => b.downloads - a.downloads);
+  // Family-dedup is deterministic. In particular, WebLLM precision ports collapse by their
+  // declared base_model:quantized identity, not by the noisy q0/q3/q4 repository spelling.
+  const deduped = deduplicateFamilies(all);
+  const reps = deduped.representatives.map((model) => ({
+    ...model,
+    discovery: discoveryClassification(model),
+  }));
+  const verified = reps.filter((model) => model.discovery.status === "verified-eligible");
+  const candidates = reps.filter((model) => model.discovery.status === "candidate-unverified");
+  const blocked = reps.filter((model) => model.discovery.status === "blocked");
 
-  // Eligibility: gated models are BLOCKED (kept in denominator, not built). Everything else eligible.
-  const eligible = reps.filter((m) => !m.gated);
-  const blocked = reps.filter((m) => m.gated);
-
-  // Counts by task + modality.
   const byTask = {};
-  for (const m of reps) (byTask[m.task] ??= { families: 0, gated: 0 }).families++;
-  for (const m of blocked) byTask[m.task].gated++;
+  for (const model of reps) {
+    const counts = byTask[model.task] ??= {
+      families: 0,
+      verifiedEligible: 0,
+      candidateUnverified: 0,
+      blocked: 0,
+    };
+    counts.families++;
+    if (model.discovery.status === "verified-eligible") counts.verifiedEligible++;
+    else if (model.discovery.status === "candidate-unverified") counts.candidateUnverified++;
+    else counts.blocked++;
+  }
 
   await mkdir(new URL("inventory/", ROOT), { recursive: true });
   await writeFile(
     new URL("inventory/eligible.ndjson", ROOT),
-    reps.map((m) => JSON.stringify(m)).join("\n") + "\n",
+    reps.map((model) => JSON.stringify(model)).join("\n") + "\n",
   );
 
-  // Merge representatives into models.json as pending (preserve existing + built).
+  // Candidates stay pending and explicitly unverified. Do not assign a proven backend/runtime or
+  // size until file-level browser-artifact and feasibility verification exists.
   let mergedInto = 0;
+  let retainedInventoryCandidates = 0;
+  const catalogueCollisions = [];
   const cat = JSON.parse(await readFile(new URL("models.json", ROOT), "utf8"));
-  const existingHf = new Set(cat.models.map((m) => m.hfId));
-  const existingSlug = new Set(cat.models.map((m) => m.slug));
+  const existingSlug = new Set(cat.models.map((model) => model.slug));
   if (!NO_MERGE) {
-    for (const m of eligible) {
-      if (existingHf.has(m.id)) continue;
-      let slug = slugify(m.id);
+    for (const model of candidates) {
+      const collision = findCatalogueCollision(model, cat.models, reviewedAliasPolicy);
+      if (isRetainedInventoryCandidate(model, collision)) {
+        retainedInventoryCandidates++;
+        continue;
+      }
+      if (isExactCatalogueMatch(model, collision)) continue;
+      if (collision) {
+        catalogueCollisions.push({
+          phase: "catalogue-candidate-merge",
+          collisionKey: collision.collisionKey,
+          kept: collision.model.hfId,
+          keptStatus: collision.model.status,
+          removed: model.id,
+          reason: collision.reason,
+        });
+        continue;
+      }
+      let slug = slugify(model.id);
       while (existingSlug.has(slug)) slug += "-x";
       existingSlug.add(slug);
-      existingHf.add(m.id);
       cat.models.push({
         slug,
-        name: m.id.split("/").pop(),
-        hfId: m.id,
-        task: m.task,
-        modality: m.modality,
-        backend: m.runtime === "webllm" ? "webgpu" : "wasm",
-        runtime: m.runtime,
-        family: m.familyKey,
-        license: m.license,
+        name: model.id.split("/").pop(),
+        hfId: model.id,
+        task: model.task,
+        modality: model.modality,
+        family: model.familyKey,
+        license: model.license,
         sizeMB: null,
-        blurb: `${m.task} model — see the model card.`,
-        unlocks: "TODO: filled from the model card at build time.",
+        blurb: `${model.task} candidate — browser artifact and feasible size are unverified.`,
+        unlocks: "Pending artifact, size, and runtime verification before build selection.",
         status: "pending",
+        candidate: {
+          status: "unverified",
+          claimedRuntime: model.runtime,
+          provenance: model.discovery,
+        },
       });
       mergedInto++;
     }
@@ -275,13 +292,25 @@ async function main() {
     await writeFile(new URL("models.json", ROOT), JSON.stringify(cat, null, 2) + "\n");
   }
 
-  const builtCount = cat.models.filter((m) => m.status === "built").length;
+  const collisions = {
+    schemaVersion: 1,
+    scan: deduped.collisions,
+    catalogueMerge: catalogueCollisions.sort((a, b) =>
+      a.collisionKey.localeCompare(b.collisionKey) || a.removed.localeCompare(b.removed)
+    ),
+  };
+  await writeFile(
+    new URL("inventory/collisions.json", ROOT),
+    JSON.stringify(collisions, null, 2) + "\n",
+  );
+
+  const builtCount = cat.models.filter((model) => model.status === "built").length;
   const summary = {
     denominatorNote:
-      "eligibleFamilies is a REFINING LOWER BOUND, not a fixed number — it scales with scanPages " +
-      "because the browser-runnable HF long tail (transformers.js/ONNX re-exports + fine-tunes) is " +
-      "effectively unbounded. Same sources + eligibility + family-dedup throughout; ONLY scanPages " +
-      "changes the count. Always report WITH the scan depth. Never imply complete/all coverage.",
+      "inventoryFamilies is the family-deduplicated refining lower-bound denominator at this scan " +
+      "depth. It includes verified-eligible, candidate-unverified, and blocked families; candidates " +
+      "are never discarded merely because artifact/runtime/size proof is absent. rawDiscoveries " +
+      "preserves the pre-dedup scan count. Never imply complete/all coverage.",
     scanPages: MAX_PAGES,
     sources: [
       "library=transformers.js",
@@ -296,10 +325,17 @@ async function main() {
       note: "the original mission denominator; this run scans deeper",
     },
     blockedRule:
-      "gated / device-only stay IN the denominator; never shrink it because a model is hard",
+      "Blocked and candidate-unverified families stay in inventoryFamilies; never shrink the denominator because proof is incomplete or a model is hard.",
+    verificationRule:
+      "HF library/tag metadata is a discovery signal, not browser eligibility proof. verified-eligible requires a verified browser artifact/runtime and feasible size.",
     apiTotalsRaw: apiTotals,
+    rawDiscoveries: all.length,
+    scanFamilyCollisions: deduped.collisions.length,
+    inventoryFamilies: reps.length,
     collectedRepresentativeFamilies: reps.length,
-    eligibleFamilies: eligible.length,
+    eligibleFamilies: verified.length,
+    verifiedEligibleFamilies: verified.length,
+    candidateUnverifiedFamilies: candidates.length,
     blockedFamilies: blocked.length,
     byTask,
     catalogue: {
@@ -307,15 +343,20 @@ async function main() {
       built: builtCount,
       pending: cat.models.filter((m) => m.status === "pending").length,
       blocked: cat.models.filter((m) => m.status === "blocked").length,
-      addedThisRun: mergedInto,
+      addedThisRun: mergedInto + retainedInventoryCandidates,
+      rawCandidatesAdded: mergedInto + retainedInventoryCandidates + catalogueCollisions.length,
+      candidateCollisionsThisRun: catalogueCollisions.length,
     },
+    collisionLedger: "inventory/collisions.json",
   };
   await writeFile(new URL("inventory/summary.json", ROOT), JSON.stringify(summary, null, 2) + "\n");
 
   console.error("\n=== INVENTORY SUMMARY ===");
-  console.error(`eligible families: ${eligible.length} (blocked/gated: ${blocked.length})`);
   console.error(
-    `catalogue: ${cat.models.length} total, ${builtCount} built, +${mergedInto} added this run`,
+    `inventory families: ${reps.length} (verified eligible: ${verified.length}, candidate unverified: ${candidates.length}, blocked: ${blocked.length})`,
+  );
+  console.error(
+    `catalogue: ${cat.models.length} total, ${builtCount} built, +${mergedInto} newly added, ${retainedInventoryCandidates} retained inventory candidates`,
   );
   console.error(`tasks covered: ${Object.keys(byTask).length}`);
   console.error("evidence -> inventory/eligible.ndjson + inventory/summary.json");
