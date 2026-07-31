@@ -183,7 +183,7 @@ async function fullScreenshot(sessionId, path) {
   writeFileSync(path, Buffer.from(data, "base64"));
 }
 async function materializeContent(sessionId, route) {
-  return await ev(sessionId, `(async()=>{
+  const serialized = await ev(sessionId, `(async()=>{
     let style=document.querySelector('#acceptance-content-visibility');
     if(!style){style=document.createElement('style');style.id='acceptance-content-visibility';style.textContent='.model-card{content-visibility:visible!important;contain-intrinsic-size:auto!important}';document.head.append(style)}
     const regions=[...document.querySelectorAll('header,aside,main>section,main .model-card,footer')];
@@ -192,8 +192,13 @@ async function materializeContent(sessionId, route) {
     const cards=[...document.querySelectorAll('.model-card')].map(node=>({text:node.innerText.trim(),width:node.getBoundingClientRect().width,height:node.getBoundingClientRect().height}));
     const sections=[...document.querySelectorAll('main>section')].map(node=>({id:node.getAttribute('aria-labelledby'),textLength:node.innerText.trim().length,height:node.getBoundingClientRect().height}));
     const resultCount=document.querySelectorAll(${JSON.stringify(RESULT_SELECTORS[route])}).length;
-    return {route,resultCount,cards,sections,allCardsPainted:cards.every(x=>x.text&&x.width>0&&x.height>0),allSectionsPainted:sections.every(x=>x.textLength>0&&x.height>0)};
+    return JSON.stringify({route:${JSON.stringify(route)},resultCount,cards,sections,allCardsPainted:cards.every(x=>x.text&&x.width>0&&x.height>0),allSectionsPainted:sections.every(x=>x.textLength>0&&x.height>0)});
   })()`);
+  try {
+    return JSON.parse(serialized);
+  } catch {
+    return { route, resultCount: 0, cards: [], sections: [], allCardsPainted: false, allSectionsPainted: false, serializationError: String(serialized) };
+  }
 }
 async function captureThemes(page, route, viewport) {
   const captures = [];
