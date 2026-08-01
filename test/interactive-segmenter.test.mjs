@@ -108,6 +108,10 @@ test("MCP evidence helpers reject inert validators and wide mobile screenshots",
   assert.match(capture, /execFileSync\("identify"/);
   assert.match(capture, /writeAtomicCaptureOutputs/);
   assert.match(capture, /fullPage: !device\.mobile/);
+  assert.match(
+    capture,
+    /call\("emulate", \{ viewport: device\.viewport, colorScheme: theme \}/,
+  );
   const bytes = new Uint8Array([1, 2, 3]);
   const shot = {
     bytes: 3,

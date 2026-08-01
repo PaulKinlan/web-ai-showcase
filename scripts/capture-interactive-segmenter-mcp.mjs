@@ -333,7 +333,11 @@ try {
       await call("list_console_messages", {}, { action: "console-after" });
       await call("list_network_requests", {}, { action: "network-after" });
       for (const theme of ["light", "dark"]) {
-        await call("emulate", { colorScheme: theme }, { action: `theme-${theme}` });
+        // The MCP emulate tool replaces the entire emulation state; omitting viewport here
+        // resets Puppeteer's capture viewport to the 1280px launch default.
+        await call("emulate", { viewport: device.viewport, colorScheme: theme }, {
+          action: `theme-${theme}`,
+        });
         await settle(`settle-theme-${theme}`, 250);
         const relative = `evidence/screenshots/${route.id}-${device.id}-${theme}.webp`;
         const absolute = join(repoRoot, "models", slug, relative);
