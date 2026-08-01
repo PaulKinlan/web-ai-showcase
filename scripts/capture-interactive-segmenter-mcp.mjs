@@ -29,6 +29,7 @@ const stable = (value) => JSON.stringify(value, Object.keys(value).sort());
 const textOf = (result) =>
   (result?.content || []).filter((item) => item.type === "text")
     .map((item) => item.text).join("\n");
+const stages = ["interactive_segmenter/magic_touch", "Xenova/mobilevit-small"];
 const routes = [
   { id: "overview", path: "models/interactive-segmenter/" },
   { id: "basics", path: "models/interactive-segmenter/basics/" },
@@ -311,6 +312,7 @@ const summary = {
     finalEventHash: previousHash,
   },
   exactRuntime: records[0]?.actual?.ua,
+  stages,
   artifact: {
     url:
       "https://storage.googleapis.com/mediapipe-models/interactive_segmenter/magic_touch/float32/1/magic_touch.tflite",
