@@ -2,6 +2,10 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { composeMask, summarizeConfidence } from "../models/interactive-segmenter/mask-math.js";
+import {
+  screenshotBindingMatches,
+  sourceUsesExecutableMcp,
+} from "../scripts/interactive-segmenter-evidence.mjs";
 
 const root = new URL("../", import.meta.url);
 const read = (path) => readFileSync(new URL(path, root), "utf8");
@@ -59,6 +63,64 @@ test("artifact pin and worker integrity constant match", () => {
   assert.match(worker, /crypto\.subtle\.digest\("SHA-256"/);
   assert.match(worker, /modelAssetBuffer/);
   assert.match(worker, /InteractiveSegmenter\.createFromOptions/);
+});
+
+test("published API example uses the task API foreground mask at index zero", () => {
+  const html = read("models/interactive-segmenter/index.html");
+  assert.match(html, /result\.confidenceMasks\[0\]\.getAsFloat32Array\(\)/);
+  assert.doesNotMatch(html, /result\.confidenceMasks\[1\]/);
+  assert.match(html, /raw MagicTouch model tensor has background and foreground channels/i);
+  assert.match(html, /task API[^<]*exposes one normalized foreground confidence mask/i);
+});
+
+test("MagicTouch download is honestly site-controlled and restart-only", () => {
+  const route = JSON.parse(read("download-routes.json")).routes.find((entry) =>
+    entry.slug === "interactive-segmenter"
+  );
+  assert.equal(route.family, "mediapipe");
+  assert.equal(route.byteControl, "site-controlled");
+  assert.equal(route.resume, "restart-only");
+  assert.match(route.note, /interruption restarts from byte zero/);
+  assert.doesNotMatch(route.note, /runtime owns|runtime-owned/i);
+  const generator = read("scripts/route-download-inventory.mjs");
+  assert.match(generator, /family === "mediapipe"[\s\S]*modelAssetBuffer/);
+});
+
+test("MCP evidence helpers reject inert validators and wide mobile screenshots", () => {
+  const capture = read("scripts/capture-interactive-segmenter-mcp.mjs");
+  const validator = read("scripts/validate-interactive-segmenter.mjs");
+  assert.equal(sourceUsesExecutableMcp(capture, validator), true);
+  assert.equal(sourceUsesExecutableMcp(capture, `${validator}\nvoid [DESKTOP, MOBILE];`), false);
+  const bytes = new Uint8Array([1, 2, 3]);
+  const shot = {
+    bytes: 3,
+    sha256: "abc",
+    image: { width: 1905, height: 740 },
+    expectedViewport: { width: 360, height: 740, dpr: 1 },
+  };
+  assert.equal(
+    screenshotBindingMatches({
+      shot,
+      bytes,
+      sha256: "abc",
+      width: 1905,
+      height: 740,
+      viewport: { width: 360, height: 740 },
+    }),
+    false,
+  );
+  shot.image.width = 360;
+  assert.equal(
+    screenshotBindingMatches({
+      shot,
+      bytes,
+      sha256: "abc",
+      width: 360,
+      height: 740,
+      viewport: { width: 360, height: 740 },
+    }),
+    true,
+  );
 });
 
 test("inference and dense compositing remain worker-first with deterministic disposal", () => {

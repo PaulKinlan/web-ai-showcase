@@ -146,6 +146,18 @@ for (const slug of readdirSync(MODELS).sort()) {
     }
   } else {
     ({ byteControl, resume, note } = FAMILIES[family]);
+    // A MediaPipe page that fetches bytes itself and supplies modelAssetBuffer owns the transfer.
+    // Unless it uses the shared resumable downloader, interruption restarts from byte zero.
+    if (
+      family === "mediapipe" && /modelAssetBuffer/.test(text) &&
+      /fetch\s*\(/.test(text)
+    ) {
+      byteControl = "site-controlled";
+      resume = /model-download\.js|downloadModelFile/.test(text) ? "resumable" : "restart-only";
+      note = resume === "resumable"
+        ? "site fetches the MediaPipe artifact via lib/model-download.js (Range/206/sha256) before supplying modelAssetBuffer"
+        : "site fetches and verifies the complete MediaPipe artifact before supplying modelAssetBuffer; interruption restarts from byte zero";
+    }
     // refine raw-ort: resumable only when the weights go through the site's resumable downloader
     if (family === "raw-ort" && /model-download\.js|downloadModelFile/.test(text)) {
       resume = "resumable";
