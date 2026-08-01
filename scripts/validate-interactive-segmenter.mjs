@@ -11,7 +11,10 @@ import { join } from "node:path";
 import { DESKTOP, MOBILE, repoRoot, setViewport } from "./browser.mjs";
 import {
   screenshotBindingMatches,
+  screenshotFileMatches,
   sourceUsesExecutableMcp,
+  validateEvidenceSummary,
+  validateLedgerChain,
 } from "./interactive-segmenter-evidence.mjs";
 
 const SLUG = "interactive-segmenter";
@@ -73,19 +76,12 @@ const ledgerRaw = read(LEDGER);
 const events = ledgerRaw.toString().trim().split("\n").filter(Boolean).map((line) =>
   JSON.parse(line)
 );
-let previousHash = "0".repeat(64);
-let chainOkay = events.length > 0;
-for (let i = 0; i < events.length; i++) {
-  const event = events[i];
-  const { hash, ...base } = event;
-  chainOkay &&= event.sequence === i + 1 && event.previousHash === previousHash &&
-    hash === sha256(JSON.stringify(base));
-  previousHash = hash;
-}
-chainOkay &&= evidence.producer?.eventCount === events.length &&
-  evidence.producer?.ledgerSha256 === sha256(ledgerRaw) &&
-  evidence.producer?.finalEventHash === previousHash;
-check("mcp-ledger-integrity", chainOkay, `${events.length} hash-chained MCP events`);
+const chainOkay = validateLedgerChain(events, evidence.producer, ledgerRaw);
+check(
+  "mcp-ledger-integrity",
+  chainOkay,
+  `${events.length} hash-chained typed MCP/artifact-binding events`,
+);
 
 function countEvents(route, device, action, tool) {
   return events.filter((event) =>
@@ -145,6 +141,8 @@ for (const [route, path] of ROUTES) {
 const screenshotRecords = Array.isArray(evidence.screenshots) ? evidence.screenshots : [];
 const screenshotKeys = new Set();
 let screenshotsOkay = screenshotRecords.length === 20;
+let retainedScreenshots = 0;
+let acceptedScreenshots = 0;
 for (const shot of screenshotRecords) {
   const key = `${shot.route}/${shot.device}/${shot.theme}`;
   screenshotKeys.add(key);
@@ -158,18 +156,24 @@ for (const shot of screenshotRecords) {
     encoding: "utf8",
   }).trim().split(/\s+/).map(Number);
   const expected = VIEWPORTS[shot.device];
-  screenshotsOkay &&= screenshotBindingMatches({
+  const input = {
     shot,
     bytes,
     sha256: sha256(bytes),
     width,
     height,
     viewport: expected,
-  }) && statePass(
+    events,
+    absolutePath: join(repoRoot, path),
+  };
+  if (screenshotFileMatches(input)) retainedScreenshots++;
+  const bound = screenshotBindingMatches(input) && statePass(
     records.find((item) => item.route === shot.route && item.device === shot.device),
     shot.route,
     shot.device,
   );
+  if (bound) acceptedScreenshots++;
+  screenshotsOkay &&= bound;
 }
 for (const [route] of ROUTES) {
   for (const device of Object.keys(VIEWPORTS)) {
@@ -182,7 +186,12 @@ for (const [route] of ROUTES) {
 check(
   "retained-screenshots",
   screenshotsOkay && screenshotKeys.size === 20,
-  `${screenshotRecords.length}/20 digest-bound route/device/theme screenshots; mobile must be 360 px wide`,
+  `${retainedScreenshots}/20 retained file matches; ${acceptedScreenshots}/20 MCP-event + artifact-binding matches`,
+);
+check(
+  "summary-schema-and-derivation",
+  validateEvidenceSummary(evidence, events, acceptedScreenshots),
+  `${evidence.status || "missing status"}; exact row, inspection, and screenshot denominators`,
 );
 
 const allConsoleAfter = events.filter((event) =>
@@ -209,7 +218,8 @@ check(
 );
 check(
   "complete-denominator",
-  evidence.status === "completed" && evidence.denominators?.routeDeviceRuns?.completed === 10 &&
+  validateEvidenceSummary(evidence, events, acceptedScreenshots) &&
+    evidence.status === "completed" && evidence.denominators?.routeDeviceRuns?.completed === 10 &&
     evidence.denominators?.routeDeviceRuns?.blocked === 0 &&
     evidence.denominators?.routeDeviceRuns?.notRun === 0,
   `${evidence.denominators?.routeDeviceRuns?.completed || 0}/10 complete · ${

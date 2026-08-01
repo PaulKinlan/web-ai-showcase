@@ -4,9 +4,11 @@
 // rendered state or waits for an already-triggered event; it never injects inference results.
 
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { deriveCaptureStatus, expectedRouteDeviceRows } from "./interactive-segmenter-evidence.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, "..");
@@ -23,9 +25,7 @@ const mcpBundle = process.env.CHROME_DEVTOOLS_MCP_BUNDLE ||
 const mcpServer = process.env.CHROME_DEVTOOLS_MCP_SERVER ||
   "/home/paulkinlan/.npm/_npx/15c61037b1978c83/node_modules/chrome-devtools-mcp/build/src/bin/chrome-devtools-mcp.js";
 
-const { Client, StdioClientTransport } = await import(mcpBundle);
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
-const stable = (value) => JSON.stringify(value, Object.keys(value).sort());
 const textOf = (result) =>
   (result?.content || []).filter((item) => item.type === "text")
     .map((item) => item.text).join("\n");
@@ -43,63 +43,94 @@ const devices = [
 ];
 
 mkdirSync(screenshotDir, { recursive: true });
-const transport = new StdioClientTransport({
-  command: "node",
-  args: [
-    mcpServer,
-    "--channel=stable",
-    "--headless",
-    "--isolated",
-    "--viewport=1280x800",
-    "--no-usage-statistics",
-    "--no-performance-crux",
-    "--redactNetworkHeaders",
-    "--allowUnrestrictedPaths",
-    "--screenshotFormat=webp",
-    "--screenshotQuality=82",
-  ],
-});
-const client = new Client({ name: "webai-magic-touch-acceptance", version: "1.0.0" }, {
-  capabilities: {},
-});
-await client.connect(transport);
-
+let client;
 let sequence = 0;
 let previousHash = "0".repeat(64);
 const ledger = [];
 let context = { route: "setup", device: "desktop", action: "start" };
+function appendEvent(fields) {
+  const base = {
+    sequence: ++sequence,
+    startedAt: fields.startedAt || new Date().toISOString(),
+    endedAt: fields.endedAt || new Date().toISOString(),
+    route: fields.route || context.route,
+    device: fields.device || context.device,
+    eventType: fields.eventType,
+    action: fields.action,
+    tool: fields.tool,
+    request: fields.request || {},
+    response: fields.response || { isError: false, text: "" },
+    previousHash,
+  };
+  const event = { ...base, hash: sha256(JSON.stringify(base)) };
+  ledger.push(event);
+  previousHash = event.hash;
+  writeFileSync(ledgerPath, ledger.map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+  return event;
+}
 async function call(tool, request = {}, next = {}) {
   context = { ...context, ...next };
   const startedAt = new Date().toISOString();
-  const response = await client.callTool(
-    { name: tool, arguments: request },
-    undefined,
-    { timeout: 240_000, maxTotalTimeout: 240_000 },
-  );
-  const endedAt = new Date().toISOString();
-  const responseText = textOf(response);
-  const base = {
-    sequence: ++sequence,
+  let response;
+  let responseText = "";
+  let thrown;
+  try {
+    response = await client.callTool(
+      { name: tool, arguments: request },
+      undefined,
+      { timeout: 240_000, maxTotalTimeout: 240_000 },
+    );
+    responseText = textOf(response);
+  } catch (error) {
+    thrown = error;
+    responseText = String(error?.stack || error);
+  }
+  const event = appendEvent({
     startedAt,
-    endedAt,
-    route: context.route,
-    device: context.device,
+    endedAt: new Date().toISOString(),
+    eventType: "mcp-tool",
     action: context.action,
     tool,
     request,
-    response: {
-      isError: Boolean(response?.isError),
-      text: responseText,
-    },
-    previousHash,
-  };
-  const hash = sha256(JSON.stringify(base));
-  const event = { ...base, hash };
-  ledger.push(event);
-  previousHash = hash;
-  writeFileSync(ledgerPath, ledger.map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+    response: { isError: Boolean(thrown || response?.isError), text: responseText },
+  });
+  if (thrown) throw thrown;
   if (response?.isError) throw new Error(`${tool} failed: ${responseText}`);
-  return { response, text: responseText };
+  return { response, text: responseText, event };
+}
+
+function bindScreenshot(shot, screenshotEvent, absolutePath) {
+  const bytes = readFileSync(absolutePath);
+  const [width, height] = execFileSync("identify", ["-format", "%w %h", absolutePath], {
+    encoding: "utf8",
+  }).trim().split(/\s+/).map(Number);
+  if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0) {
+    throw new Error(`identify returned invalid dimensions for ${absolutePath}`);
+  }
+  const artifact = {
+    ...shot,
+    outputPath: absolutePath,
+    image: { width, height },
+    bytes: bytes.length,
+    sha256: sha256(bytes),
+    viewport: shot.expectedViewport,
+  };
+  appendEvent({
+    eventType: "artifact-binding",
+    action: "bind-screenshot-artifact",
+    tool: "artifact-binding",
+    request: { screenshotEventHash: screenshotEvent.hash, artifact },
+  });
+  return {
+    route: shot.route,
+    device: shot.device,
+    theme: shot.theme,
+    path: shot.path,
+    expectedViewport: shot.expectedViewport,
+    image: artifact.image,
+    bytes: artifact.bytes,
+    sha256: artifact.sha256,
+  };
 }
 
 function snapshotUid(snapshot, role, name) {
@@ -141,16 +172,41 @@ async function settle(action, milliseconds = 700) {
 
 const records = [];
 const screenshots = [];
-const setup = await call("new_page", { url: "about:blank", timeout: 30_000 }, {
-  route: "setup",
-  device: "desktop",
-  action: "new-page",
-});
-void setup;
+const routeDeviceRows = expectedRouteDeviceRows();
+let activeRow = null;
+let blocker = null;
 
 try {
+  const { Client, StdioClientTransport } = await import(mcpBundle);
+  const transport = new StdioClientTransport({
+    command: "node",
+    args: [
+      mcpServer,
+      "--channel=stable",
+      "--headless",
+      "--isolated",
+      "--viewport=1280x800",
+      "--no-usage-statistics",
+      "--no-performance-crux",
+      "--redactNetworkHeaders",
+      "--allowUnrestrictedPaths",
+      "--screenshotFormat=webp",
+      "--screenshotQuality=82",
+    ],
+  });
+  client = new Client({ name: "webai-magic-touch-acceptance", version: "1.0.0" }, {
+    capabilities: {},
+  });
+  await client.connect(transport);
+  await call("new_page", { url: "about:blank", timeout: 30_000 }, {
+    route: "setup",
+    device: "desktop",
+    action: "new-page",
+  });
+
   for (const device of devices) {
     for (const route of routes) {
+      activeRow = routeDeviceRows.find((row) => row.route === route.id && row.device === device.id);
       context = { route: route.id, device: device.id, action: "emulate-light" };
       await call("emulate", { viewport: device.viewport, colorScheme: "light" });
       await call("navigate_page", {
@@ -277,62 +333,128 @@ try {
         await settle(`settle-theme-${theme}`, 250);
         const relative = `evidence/screenshots/${route.id}-${device.id}-${theme}.webp`;
         const absolute = join(repoRoot, "models", slug, relative);
-        await call("take_screenshot", {
+        const capture = await call("take_screenshot", {
           format: "webp",
           quality: 82,
           fullPage: true,
           filePath: absolute,
         }, { action: `screenshot-${theme}` });
-        screenshots.push({
-          route: route.id,
-          device: device.id,
-          theme,
-          path: relative,
-          expectedViewport: { width: device.width, height: device.height, dpr: 1 },
-        });
+        screenshots.push(bindScreenshot(
+          {
+            route: route.id,
+            device: device.id,
+            theme,
+            path: relative,
+            expectedViewport: { width: device.width, height: device.height, dpr: 1 },
+          },
+          capture.event,
+          absolute,
+        ));
+      }
+      activeRow.status = "completed";
+      activeRow = null;
+    }
+  }
+} catch (error) {
+  if (activeRow) activeRow.status = "blocked";
+  blocker = {
+    route: context.route,
+    device: context.device,
+    action: context.action,
+    tool: ledger.at(-1)?.tool || "producer",
+    code: "capture-exception",
+    detail: String(error?.stack || error),
+    recoverable: true,
+    retryDisposition: "requires one fresh-process capture; this producer does not retry",
+  };
+  process.exitCode = 1;
+} finally {
+  if (client) {
+    try {
+      await client.close();
+    } catch (error) {
+      if (!blocker) {
+        const lastCompleted = [...routeDeviceRows].reverse().find((row) =>
+          row.status === "completed"
+        );
+        if (lastCompleted) lastCompleted.status = "blocked";
+        blocker = {
+          route: context.route,
+          device: context.device,
+          action: "close-mcp-client",
+          tool: "producer",
+          code: "capture-close-exception",
+          detail: String(error?.stack || error),
+          recoverable: true,
+          retryDisposition: "requires one fresh-process capture; this producer does not retry",
+        };
+        process.exitCode = 1;
       }
     }
   }
-} finally {
-  await client.close();
-}
 
-writeFileSync(ledgerPath, ledger.map((entry) => JSON.stringify(entry)).join("\n") + "\n");
-const summary = {
-  schemaVersion: 2,
-  generatedAt: new Date().toISOString(),
-  producer: {
-    name: "scripts/capture-interactive-segmenter-mcp.mjs",
-    tool: "chrome-devtools-mcp",
-    packageVersion: "1.6.0",
-    transport: "stdio",
-    eventCount: ledger.length,
-    ledger: "evidence/mcp-events.ndjson",
-    ledgerSha256: sha256(readFileSync(ledgerPath)),
-    finalEventHash: previousHash,
-  },
-  exactRuntime: records[0]?.actual?.ua,
-  stages,
-  artifact: {
-    url:
-      "https://storage.googleapis.com/mediapipe-models/interactive_segmenter/magic_touch/float32/1/magic_touch.tflite",
-    bytes: 6_227_884,
-    sha256: "e24338a717c1b7ad8d159666677ef400babb7f33b8ad60c4d96db4ecf694cd25",
-  },
-  records,
-  screenshots: screenshots.map((shot) => {
-    const bytes = readFileSync(join(repoRoot, "models", slug, shot.path));
-    return { ...shot, bytes: bytes.length, sha256: sha256(bytes) };
-  }),
-  denominators: {
-    routeDeviceRuns: { tested: records.length, expected: 10 },
-    consoleBefore: ledger.filter((event) => event.action === "console-before").length,
-    consoleAfter: ledger.filter((event) => event.action === "console-after").length,
-    networkBefore: ledger.filter((event) => event.action === "network-before").length,
-    networkAfter: ledger.filter((event) => event.action === "network-after").length,
-    screenshots: { captured: screenshots.length, expected: 20 },
-  },
-};
-writeFileSync(summaryPath, JSON.stringify(summary, null, 2) + "\n");
-console.log(`wrote ${summaryPath}`);
-console.log(`wrote ${ledgerPath} (${ledger.length} hash-chained MCP events)`);
+  const ledgerText = ledger.length
+    ? ledger.map((entry) => JSON.stringify(entry)).join("\n") + "\n"
+    : "";
+  writeFileSync(ledgerPath, ledgerText);
+  const completed = routeDeviceRows.filter((row) => row.status === "completed").length;
+  const blocked = routeDeviceRows.filter((row) => row.status === "blocked").length;
+  const successful = (action, tool) =>
+    ledger.filter((event) =>
+      event.eventType === "mcp-tool" && event.action === action && event.tool === tool &&
+      !event.response.isError
+    ).length;
+  const denominator = (action, tool) => ({
+    completed: successful(action, tool),
+    expected: 10,
+  });
+  const summary = {
+    schemaVersion: 3,
+    generatedAt: new Date().toISOString(),
+    status: deriveCaptureStatus(routeDeviceRows),
+    producer: {
+      name: "scripts/capture-interactive-segmenter-mcp.mjs",
+      tool: "chrome-devtools-mcp",
+      packageVersion: "1.6.0",
+      transport: "stdio",
+      eventCount: ledger.length,
+      ledger: "evidence/mcp-events.ndjson",
+      ledgerSha256: sha256(ledgerText),
+      finalEventHash: previousHash,
+    },
+    exactRuntime: records[0]?.actual?.ua || null,
+    stages,
+    artifact: {
+      url:
+        "https://storage.googleapis.com/mediapipe-models/interactive_segmenter/magic_touch/float32/1/magic_touch.tflite",
+      bytes: 6_227_884,
+      sha256: "e24338a717c1b7ad8d159666677ef400babb7f33b8ad60c4d96db4ecf694cd25",
+    },
+    records,
+    screenshots,
+    denominators: {
+      routeDeviceRuns: {
+        completed,
+        blocked,
+        notRun: 10 - completed - blocked,
+        expected: 10,
+        rows: routeDeviceRows,
+      },
+      consoleBefore: denominator("console-before", "list_console_messages"),
+      consoleAfter: denominator("console-after", "list_console_messages"),
+      networkBefore: denominator("network-before", "list_network_requests"),
+      networkAfter: denominator("network-after", "list_network_requests"),
+      screenshots: {
+        accepted: screenshots.length,
+        blocked: 20 - screenshots.length,
+        expected: 20,
+      },
+    },
+    blocker,
+  };
+  const temporarySummaryPath = `${summaryPath}.tmp-${process.pid}`;
+  writeFileSync(temporarySummaryPath, JSON.stringify(summary, null, 2) + "\n");
+  renameSync(temporarySummaryPath, summaryPath);
+  console.log(`wrote ${summaryPath} (${summary.status})`);
+  console.log(`wrote ${ledgerPath} (${ledger.length} hash-chained evidence events)`);
+}

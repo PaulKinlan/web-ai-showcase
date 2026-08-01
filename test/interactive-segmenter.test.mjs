@@ -3,9 +3,13 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { composeMask, summarizeConfidence } from "../models/interactive-segmenter/mask-math.js";
 import {
+  completeEvidencePasses,
   screenshotBindingMatches,
   sourceUsesExecutableMcp,
+  validateEvidenceSummary,
+  validateLedgerChain,
 } from "../scripts/interactive-segmenter-evidence.mjs";
+import { perfectInteractiveSegmenterEvidence } from "./fixtures/interactive-segmenter-evidence.mjs";
 
 const root = new URL("../", import.meta.url);
 const read = (path) => readFileSync(new URL(path, root), "utf8");
@@ -91,6 +95,8 @@ test("MCP evidence helpers reject inert validators and wide mobile screenshots",
   const validator = read("scripts/validate-interactive-segmenter.mjs");
   assert.equal(sourceUsesExecutableMcp(capture, validator), true);
   assert.equal(sourceUsesExecutableMcp(capture, `${validator}\nvoid [DESKTOP, MOBILE];`), false);
+  assert.match(capture, /execFileSync\("identify"/);
+  assert.match(capture, /renameSync\(temporarySummaryPath, summaryPath\)/);
   const bytes = new Uint8Array([1, 2, 3]);
   const shot = {
     bytes: 3,
@@ -109,18 +115,49 @@ test("MCP evidence helpers reject inert validators and wide mobile screenshots",
     }),
     false,
   );
-  shot.image.width = 360;
+});
+
+test("perfect 10/10 and 20/20 fixture requires typed chained screenshot provenance", () => {
+  const fixture = perfectInteractiveSegmenterEvidence();
   assert.equal(
-    screenshotBindingMatches({
-      shot,
-      bytes,
-      sha256: "abc",
-      width: 360,
-      height: 740,
-      viewport: { width: 360, height: 740 },
-    }),
+    validateLedgerChain(fixture.events, fixture.evidence.producer, fixture.ledgerRaw),
     true,
   );
+  assert.equal(validateEvidenceSummary(fixture.evidence, fixture.events, 20), true);
+  assert.equal(completeEvidencePasses(fixture.evidence, fixture.events, 20), true);
+  for (const input of fixture.screenshotInputs) {
+    assert.equal(screenshotBindingMatches(input), true);
+  }
+
+  const digestTamper = structuredClone(fixture.screenshotInputs[0]);
+  digestTamper.shot.sha256 = "0".repeat(64);
+  assert.equal(screenshotBindingMatches(digestTamper), false);
+
+  const sameSizeReplacement = structuredClone(fixture.screenshotInputs[0]);
+  sameSizeReplacement.bytes = Buffer.alloc(sameSizeReplacement.bytes.length, 120);
+  sameSizeReplacement.sha256 = "1".repeat(64);
+  assert.equal(screenshotBindingMatches(sameSizeReplacement), false);
+
+  const dimensionTamper = structuredClone(fixture.screenshotInputs[0]);
+  dimensionTamper.shot.image.height++;
+  assert.equal(screenshotBindingMatches(dimensionTamper), false);
+
+  const missingBinding = {
+    ...fixture.screenshotInputs[0],
+    events: fixture.events.filter((event) =>
+      event.request?.screenshotEventHash !== fixture.events[4].hash
+    ),
+  };
+  assert.equal(screenshotBindingMatches(missingBinding), false);
+
+  const partial = structuredClone(fixture.evidence);
+  partial.status = "partial";
+  partial.blocker = { code: "fixture-blocker" };
+  partial.denominators.routeDeviceRuns.rows[9].status = "blocked";
+  partial.denominators.routeDeviceRuns.completed = 9;
+  partial.denominators.routeDeviceRuns.blocked = 1;
+  assert.equal(validateEvidenceSummary(partial, fixture.events, 20), true);
+  assert.equal(completeEvidencePasses(partial, fixture.events, 20), false);
 });
 
 test("inference and dense compositing remain worker-first with deterministic disposal", () => {
