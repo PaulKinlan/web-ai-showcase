@@ -3,7 +3,7 @@
 // worker runs the pipeline and returns the transcript plus real word/segment timestamps and a token
 // count for a tok/s readout.
 //
-// Model: onnx-community/whisper-base (task: automatic-speech-recognition), WebGPU q8, WASM fallback.
+// Model: onnx-community/whisper-base (task: automatic-speech-recognition), WebGPU q4, WASM q8 fallback.
 // We import the SHARED loader from lib/webai.js — no invented API. If WebGPU load fails we honestly
 // retry on WASM and report which backend actually ran.
 
@@ -34,15 +34,22 @@ async function webgpuUsable() {
 
 // Load, preferring WebGPU when a real adapter is available. If it still throws, fall back to WASM and
 // say so — never present one backend as another.
+//
+// dtype differs BY BACKEND on purpose: int8 (q8) quantized Whisper on WebGPU hits a known ONNX
+// Runtime bug (transformers.js #1317/#1512) that makes the decoder emit deterministic multilingual
+// garbage loops with broken UTF-8 — the exact failure this guard exists for. WASM + q8 is verified
+// clean; WebGPU uses q4 (accurate for whisper-base; q4f16 is the unstable small-model variant and is
+// avoided here).
 async function ensureLoaded(preferred) {
   if (pipe) return;
   const want = preferred || (await webgpuUsable() ? "webgpu" : "wasm");
+  const dtype = want === "webgpu" ? "q4" : "q8";
   try {
     const loaded = await loadPipeline({
       task: TASK,
       model: "onnx-community/whisper-base_timestamped",
       backend: want,
-      dtype: "q8",
+      dtype,
       onProgress: (p) => post({ type: "progress", p }),
     });
     pipe = loaded.pipe;
@@ -64,6 +71,25 @@ async function ensureLoaded(preferred) {
     }
   }
   post({ type: "ready", device });
+}
+
+// Garbage-output detector for the WebGPU corruption mode: broken UTF-8 replacement chars, or the
+// same long window of text repeating over and over (the decoder repetition loop). Either means the
+// transcript is not to be trusted.
+function looksGarbled(text) {
+  if (!text) return false;
+  if (text.includes("\uFFFD")) return true;
+  const compact = text.replace(/\s+/g, " ");
+  const WINDOW = 60;
+  if (compact.length >= WINDOW * 3) {
+    for (let i = 0; i + WINDOW <= compact.length; i += 20) {
+      const slice = compact.slice(i, i + WINDOW);
+      let count = 0, from = 0;
+      while ((from = compact.indexOf(slice, from)) !== -1) { count++; from += slice.length; }
+      if (count >= 3) return true;
+    }
+  }
+  return false;
 }
 
 // Group flat word chunks into readable segments (~sentence boundaries or ~8-word runs).
@@ -99,12 +125,30 @@ async function run(id, audio, opts) {
   });
   // Word-level timestamps give us both the karaoke word stream and (grouped) segments. The runtime
   // does not expose a trustworthy percentage for this inference, so the page shows elapsed time rather
-  // than fabricating one.
-  const output = await pipe(audio, {
+  // than fabricating one. no_repeat_ngram_size guards against residual decoder repetition loops.
+  let output = await pipe(audio, {
     return_timestamps: "word",
     chunk_length_s: 30,
     stride_length_s: 5,
+    no_repeat_ngram_size: 3,
   });
+  let note = null;
+
+  // If WebGPU still produces garbled output (upstream numerical bug), reload on WASM once and
+  // re-run — and say plainly that it happened. Never show garbage as if it were a transcript.
+  if (device === "webgpu" && looksGarbled((output.text || "").trim())) {
+    post({ type: "stage", id, message: "WebGPU output was unstable — re-running on WASM…" });
+    try { pipe.dispose?.(); } catch { /* best effort */ }
+    pipe = null;
+    await ensureLoaded("wasm");
+    output = await pipe(audio, {
+      return_timestamps: "word",
+      chunk_length_s: 30,
+      stride_length_s: 5,
+      no_repeat_ngram_size: 3,
+    });
+    note = "WebGPU produced garbled output on this clip, so it was re-transcribed on WASM.";
+  }
   const ms = Math.round(performance.now() - t0);
   post({ type: "stage", id, message: "Formatting the transcript and timestamps…" });
 
@@ -137,6 +181,7 @@ async function run(id, audio, opts) {
     tokPerSec,
     ms,
     device,
+    note,
   });
 }
 
