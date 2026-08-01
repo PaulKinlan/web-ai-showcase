@@ -340,7 +340,9 @@ try {
         const capture = await call("take_screenshot", {
           format: "webp",
           quality: 82,
-          fullPage: true,
+          // chrome-devtools-mcp full-page capture uses the launch viewport width even after
+          // mobile emulation. Viewport capture preserves the exact 360px mobile evidence width.
+          fullPage: !device.mobile,
           filePath: absolute,
         }, { action: `screenshot-${theme}` });
         screenshots.push(bindScreenshot(

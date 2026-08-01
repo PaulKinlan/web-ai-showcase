@@ -15,7 +15,10 @@ import {
   validateEvidenceSummary,
   validateLedgerChain,
 } from "../scripts/interactive-segmenter-evidence.mjs";
-import { validateInteractiveSegmenterEvidence } from "../scripts/validate-interactive-segmenter.mjs";
+import {
+  consoleInspectionClean,
+  validateInteractiveSegmenterEvidence,
+} from "../scripts/validate-interactive-segmenter.mjs";
 import { perfectInteractiveSegmenterEvidence } from "./fixtures/interactive-segmenter-evidence.mjs";
 
 const root = new URL("../", import.meta.url);
@@ -104,6 +107,7 @@ test("MCP evidence helpers reject inert validators and wide mobile screenshots",
   assert.equal(sourceUsesExecutableMcp(capture, `${validator}\nvoid [DESKTOP, MOBILE];`), false);
   assert.match(capture, /execFileSync\("identify"/);
   assert.match(capture, /writeAtomicCaptureOutputs/);
+  assert.match(capture, /fullPage: !device\.mobile/);
   const bytes = new Uint8Array([1, 2, 3]);
   const shot = {
     bytes: 3,
@@ -122,6 +126,21 @@ test("MCP evidence helpers reject inert validators and wide mobile screenshots",
     }),
     false,
   );
+});
+
+test("console acceptance rejects unknown warnings and errors but permits exact runtime warnings", () => {
+  assert.equal(consoleInspectionClean("## Console messages\nmsgid=1 [log] ready"), true);
+  assert.equal(
+    consoleInspectionClean(
+      "msgid=1 [warn] OpenGL error checking is disabled\n" +
+        "msgid=2 [warn] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.\n" +
+        "msgid=3 [warn] Unable to determine content-length from response headers. Will expand buffer when needed.",
+    ),
+    true,
+  );
+  assert.equal(consoleInspectionClean("msgid=1 [warn] unexpected provider warning"), false);
+  assert.equal(consoleInspectionClean("msgid=1 [error] inference failed"), false);
+  assert.equal(consoleInspectionClean("msgid=1 [issue] security issue"), false);
 });
 
 test("run-record and portfolio freshness bind imported acceptance helpers", () => {

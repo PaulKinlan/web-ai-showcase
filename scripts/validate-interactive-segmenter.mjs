@@ -41,6 +41,20 @@ const ARTIFACT_BYTES = 6_227_884;
 const sha256 = (data) => createHash("sha256").update(data).digest("hex");
 const read = (path) => readFileSync(join(repoRoot, path));
 
+const allowedRuntimeWarningPatterns = [
+  /OpenGL error checking is disabled/,
+  /Feedback manager requires a model with a single signature inference\. Disabling support for feedback tensors\./,
+  /Unable to determine content-length from response headers\. Will expand buffer when needed\./,
+];
+
+export function consoleInspectionClean(text) {
+  if (typeof text !== "string") return false;
+  const issueLines = text.split("\n").filter((line) => /\[(?:error|warn|issue)\]/i.test(line));
+  return issueLines.every((line) =>
+    /\[warn\]/i.test(line) && allowedRuntimeWarningPatterns.some((pattern) => pattern.test(line))
+  );
+}
+
 function statePass(record, route, device) {
   const expected = VIEWPORTS[device];
   const actual = record?.actual;
@@ -201,8 +215,8 @@ export function validateInteractiveSegmenterEvidence({
   check(
     "console-clean",
     allConsoleAfter.length === 10 &&
-      allConsoleAfter.every((event) => !/\[(error|warn|issue)\]/i.test(event.response.text)),
-    `${allConsoleAfter.length}/10 post-interaction console inspections`,
+      allConsoleAfter.every((event) => consoleInspectionClean(event.response.text)),
+    `${allConsoleAfter.length}/10 post-interaction console inspections; only exact allowlisted MediaPipe/loader runtime warnings accepted`,
   );
   const allNetworkAfter = events.filter((event) =>
     event.action === "network-after" && event.tool === "list_network_requests" &&
