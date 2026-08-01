@@ -41,18 +41,29 @@ const ARTIFACT_BYTES = 6_227_884;
 const sha256 = (data) => createHash("sha256").update(data).digest("hex");
 const read = (path) => readFileSync(join(repoRoot, path));
 
-const allowedRuntimeWarningPatterns = [
-  /OpenGL error checking is disabled/,
-  /Feedback manager requires a model with a single signature inference\. Disabling support for feedback tensors\./,
-  /Unable to determine content-length from response headers\. Will expand buffer when needed\./,
+const allowedRuntimeWarningLines = [
+  /^msgid=\d+ \[warn\] W\d{4} \d{2}:\d{2}:\d{2}\.\d+ \d+ gl_context\.cc:1060\] OpenGL error checking is disabled \(1 args\)$/,
+  /^msgid=\d+ \[warn\] W\d{4} \d{2}:\d{2}:\d{2}\.\d+ \d+ inference_feedback_manager\.cc:121\] Feedback manager requires a model with a single signature inference\. Disabling support for feedback tensors\. \(1 args\)$/,
+  /^msgid=\d+ \[warn\] Unable to determine content-length from response headers\. Will expand buffer when needed\. \(1 args\)$/,
+];
+const allowedConsoleMetadataLines = [
+  /^Emulating viewport: \{"deviceScaleFactor":1,"isMobile":(?:true|false),"hasTouch":(?:true|false),"isLandscape":false,"width":(?:1280|360),"height":(?:800|740)\}$/,
+  /^Emulating color scheme: light$/,
+  /^## Console messages$/,
+  /^Showing \d+-\d+ of \d+ \(Page \d+ of \d+\)\.$/,
+  /^msgid=\d+ \[(?:log|info)\] .+ \(\d+ args\)$/,
 ];
 
 export function consoleInspectionClean(text) {
-  if (typeof text !== "string") return false;
-  const issueLines = text.split("\n").filter((line) => /\[(?:error|warn|issue)\]/i.test(line));
-  return issueLines.every((line) =>
-    /\[warn\]/i.test(line) && allowedRuntimeWarningPatterns.some((pattern) => pattern.test(line))
-  );
+  if (typeof text !== "string" || text.length === 0) return false;
+  return text.split("\n").every((line) => {
+    if (line.length === 0) return true;
+    if (/\[(?:error|issue)\]/i.test(line)) return false;
+    if (/\[warn\]/i.test(line)) {
+      return allowedRuntimeWarningLines.some((pattern) => pattern.test(line));
+    }
+    return allowedConsoleMetadataLines.some((pattern) => pattern.test(line));
+  });
 }
 
 function statePass(record, route, device) {
@@ -293,6 +304,7 @@ function runCli() {
       CAPTURE_RUNNER,
       "scripts/interactive-segmenter-evidence.mjs",
       "scripts/interactive-segmenter-capture-summary.mjs",
+      "scripts/register-interactive-segmenter-screenshot-provenance.mjs",
       `:(exclude)models/${SLUG}/acceptance.json`,
       `:(exclude)models/${SLUG}/acceptance-run.json`,
     ], { cwd: repoRoot, encoding: "utf8" }).trim();

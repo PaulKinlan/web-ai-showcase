@@ -128,19 +128,38 @@ test("MCP evidence helpers reject inert validators and wide mobile screenshots",
   );
 });
 
-test("console acceptance rejects unknown warnings and errors but permits exact runtime warnings", () => {
-  assert.equal(consoleInspectionClean("## Console messages\nmsgid=1 [log] ready"), true);
+test("console acceptance is line-exact and rejects warning/error smuggling", () => {
+  const openGl =
+    "msgid=2 [warn] W0801 11:42:53.146000 1905760 gl_context.cc:1060] OpenGL error checking is disabled (1 args)";
+  const feedback =
+    "msgid=5 [warn] W0801 11:42:53.390000 1905760 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors. (1 args)";
+  const contentLength =
+    "msgid=28 [warn] Unable to determine content-length from response headers. Will expand buffer when needed. (1 args)";
   assert.equal(
     consoleInspectionClean(
-      "msgid=1 [warn] OpenGL error checking is disabled\n" +
-        "msgid=2 [warn] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.\n" +
-        "msgid=3 [warn] Unable to determine content-length from response headers. Will expand buffer when needed.",
+      'Emulating viewport: {"deviceScaleFactor":1,"isMobile":false,"hasTouch":false,"isLandscape":false,"width":1280,"height":800}\n' +
+        "Emulating color scheme: light\n## Console messages\nShowing 1-6 of 6 (Page 1 of 1).\n" +
+        "msgid=1 [log] Graph successfully started running. (1 args)\n" +
+        `${openGl}\n${feedback}\n${contentLength}`,
     ),
     true,
   );
-  assert.equal(consoleInspectionClean("msgid=1 [warn] unexpected provider warning"), false);
-  assert.equal(consoleInspectionClean("msgid=1 [error] inference failed"), false);
-  assert.equal(consoleInspectionClean("msgid=1 [issue] security issue"), false);
+  for (
+    const hostile of [
+      `prefix ${openGl}`,
+      `${openGl} suffix`,
+      `${openGl} [error] inference failed`,
+      `[issue] security issue ${openGl}`,
+      `[error] ${openGl}`,
+      `${openGl}\ninference failed`,
+      openGl.replace("[warn]", "[WARN]"),
+      openGl.replace("disabled", "disabled; unexpected"),
+      "msgid=1 [warn] unexpected provider warning",
+      "msgid=1 [error] inference failed",
+      "msgid=1 [issue] security issue",
+      "untagged continuation",
+    ]
+  ) assert.equal(consoleInspectionClean(hostile), false, hostile);
 });
 
 test("run-record and portfolio freshness bind imported acceptance helpers", () => {
@@ -151,6 +170,7 @@ test("run-record and portfolio freshness bind imported acceptance helpers", () =
     const dependency of [
       "scripts/interactive-segmenter-evidence.mjs",
       "scripts/interactive-segmenter-capture-summary.mjs",
+      "scripts/register-interactive-segmenter-screenshot-provenance.mjs",
     ]
   ) {
     assert.ok(validator.includes(dependency), `${dependency} missing from run-record revision`);

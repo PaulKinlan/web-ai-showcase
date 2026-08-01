@@ -44,7 +44,24 @@ export function perfectInteractiveSegmenterEvidence() {
         ["console-after", "list_console_messages"],
         ["network-after", "list_network_requests"],
       ]
-    ) append({ ...row, action, tool });
+    ) {
+      const response = action.startsWith("console-")
+        ? {
+          isError: false,
+          text: `Emulating viewport: ${
+            JSON.stringify({
+              deviceScaleFactor: 1,
+              isMobile: row.device === "mobile",
+              hasTouch: row.device === "mobile",
+              isLandscape: false,
+              width: viewport.width,
+              height: viewport.height,
+            })
+          }\nEmulating color scheme: light\n## Console messages\nShowing 1-1 of 1 (Page 1 of 1).\nmsgid=1 [log] Graph successfully started running. (1 args)`,
+        }
+        : undefined;
+      append({ ...row, action, tool, ...(response ? { response } : {}) });
+    }
 
     records.push({
       route: row.route,

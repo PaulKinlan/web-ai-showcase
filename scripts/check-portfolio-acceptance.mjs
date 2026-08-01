@@ -96,6 +96,7 @@ const familyAcceptanceDependencies = {
     "scripts/capture-interactive-segmenter-mcp.mjs",
     "scripts/interactive-segmenter-evidence.mjs",
     "scripts/interactive-segmenter-capture-summary.mjs",
+    "scripts/register-interactive-segmenter-screenshot-provenance.mjs",
   ],
 };
 const familyPaths = (slug, validator) =>
