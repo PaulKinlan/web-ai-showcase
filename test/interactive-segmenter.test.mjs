@@ -124,6 +124,23 @@ test("MCP evidence helpers reject inert validators and wide mobile screenshots",
   );
 });
 
+test("run-record and portfolio freshness bind imported acceptance helpers", () => {
+  const validator = read("scripts/validate-interactive-segmenter.mjs");
+  const portfolio = read("scripts/check-portfolio-acceptance.mjs");
+  assert.match(validator, /`scripts\/validate-\$\{SLUG\}\.mjs`,\s*CAPTURE_RUNNER,/);
+  for (
+    const dependency of [
+      "scripts/interactive-segmenter-evidence.mjs",
+      "scripts/interactive-segmenter-capture-summary.mjs",
+    ]
+  ) {
+    assert.ok(validator.includes(dependency), `${dependency} missing from run-record revision`);
+    assert.ok(portfolio.includes(dependency), `${dependency} missing from portfolio freshness`);
+  }
+  assert.ok(portfolio.includes("scripts/capture-interactive-segmenter-mcp.mjs"));
+  assert.match(portfolio, /familyPaths\(s\)/);
+});
+
 test("perfect 10/10 and 20/20 fixture requires typed chained screenshot provenance", () => {
   const fixture = perfectInteractiveSegmenterEvidence();
   assert.equal(

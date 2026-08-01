@@ -91,22 +91,28 @@ if (WRITE_BASELINE) {
 }
 
 const HEAD = git(["rev-parse", "HEAD"]);
+const familyAcceptanceDependencies = {
+  "interactive-segmenter": [
+    "scripts/capture-interactive-segmenter-mcp.mjs",
+    "scripts/interactive-segmenter-evidence.mjs",
+    "scripts/interactive-segmenter-capture-summary.mjs",
+  ],
+};
 const familyPaths = (slug, validator) =>
-  [`models/${slug}`, validator ?? `scripts/validate-${slug}.mjs`].filter(Boolean);
+  [
+    `models/${slug}`,
+    validator ?? `scripts/validate-${slug}.mjs`,
+    ...(familyAcceptanceDependencies[slug] ?? []),
+  ].filter(Boolean);
 
 // In scope: built families that are NEW since the baseline, or legacy families TOUCHED after it
 // (committed diff OR uncommitted working-tree changes to the family or its validator).
 const newSlugs = [...builtNow].filter((s) => !baseline.has(s));
 const touchedSlugs = [...baseline].filter((s) => {
   if (!builtNow.has(s)) return false;
-  const diff = git(
-    ["diff", "--name-only", BASELINE_SHA, HEAD, "--", `models/${s}`, `scripts/validate-${s}.mjs`],
-    true,
-  );
-  const dirty = git(
-    ["status", "--porcelain", "--", `models/${s}`, `scripts/validate-${s}.mjs`],
-    true,
-  );
+  const paths = familyPaths(s);
+  const diff = git(["diff", "--name-only", BASELINE_SHA, HEAD, "--", ...paths], true);
+  const dirty = git(["status", "--porcelain", "--", ...paths], true);
   return diff.length > 0 || dirty.length > 0;
 });
 const inScope = [...new Set([...newSlugs, ...touchedSlugs])].sort();

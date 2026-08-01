@@ -277,6 +277,8 @@ function runCli() {
       `models/${SLUG}`,
       `scripts/validate-${SLUG}.mjs`,
       CAPTURE_RUNNER,
+      "scripts/interactive-segmenter-evidence.mjs",
+      "scripts/interactive-segmenter-capture-summary.mjs",
       `:(exclude)models/${SLUG}/acceptance.json`,
       `:(exclude)models/${SLUG}/acceptance-run.json`,
     ], { cwd: repoRoot, encoding: "utf8" }).trim();
