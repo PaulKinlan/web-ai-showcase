@@ -316,7 +316,10 @@ export function validateEvidenceSummary(evidence, events, acceptedScreenshots) {
     !exactKeys(evidence.artifact, ["url", "bytes", "sha256"]) ||
     !isNonEmptyString(evidence.artifact.url) || !URL.canParse(evidence.artifact.url) ||
     !isPositiveInteger(evidence.artifact.bytes) || !isDigest(evidence.artifact.sha256) ||
-    !Array.isArray(evidence.records) || !evidence.records.every(validRecord) ||
+    !Array.isArray(evidence.records) || evidence.records.length > EXPECTED_ROUTE_DEVICE_RUNS ||
+    !evidence.records.every(validRecord) ||
+    new Set(evidence.records.map((record) => `${record.route}/${record.device}`)).size !==
+      evidence.records.length ||
     !Array.isArray(evidence.screenshots) || evidence.screenshots.length > 20 ||
     !evidence.screenshots.every(validScreenshot) || !Array.isArray(events) ||
     !events.every((event, index) => validateTypedEvent(event, events[index - 1])) ||
@@ -350,7 +353,18 @@ export function validateEvidenceSummary(evidence, events, acceptedScreenshots) {
   );
   if (
     routeRuns.completed !== counts.completed || routeRuns.blocked !== counts.blocked ||
-    routeRuns.notRun !== counts.notRun
+    routeRuns.notRun !== counts.notRun || evidence.records.length !== counts.completed
+  ) return false;
+  const completedRowKeys = new Set(
+    routeRuns.rows.filter((row) => row.status === "completed").map((row) =>
+      `${row.route}/${row.device}`
+    ),
+  );
+  if (
+    evidence.records.some((record) => !completedRowKeys.has(`${record.route}/${record.device}`)) ||
+    (evidence.status === "completed" &&
+      (completedRowKeys.size !== expectedRowKeys.size ||
+        [...expectedRowKeys].some((key) => !completedRowKeys.has(key))))
   ) return false;
 
   for (

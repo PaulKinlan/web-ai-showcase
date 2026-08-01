@@ -185,7 +185,8 @@ test("perfect 10/10 and 20/20 fixture requires typed chained screenshot provenan
   partial.denominators.routeDeviceRuns.rows[9].status = "blocked";
   partial.denominators.routeDeviceRuns.completed = 9;
   partial.denominators.routeDeviceRuns.blocked = 1;
-  assert.equal(validateEvidenceSummary(partial, fixture.events, 20), true);
+  // A status-only demotion with all ten completed records is internally inconsistent.
+  assert.equal(validateEvidenceSummary(partial, fixture.events, 20), false);
   assert.equal(completeEvidencePasses(partial, fixture.events, 20), false);
 });
 
@@ -214,6 +215,14 @@ test("importable portfolio validator accepts synthetic executable 10/10 and 20/2
   assert.equal(outcome.checks.length, 21);
   assert.equal(outcome.failures, 0);
   assert.equal(outcome.acceptedScreenshots, 20);
+});
+
+test("portfolio validator rejects an eleventh duplicate route/device record", () => {
+  const fixture = perfectInteractiveSegmenterEvidence();
+  fixture.evidence.records.push(structuredClone(fixture.evidence.records[0]));
+  assert.equal(validateEvidenceSummary(fixture.evidence, fixture.events, 20), false);
+  const outcome = validateInteractiveSegmenterEvidence(fixtureValidatorInput(fixture));
+  assert.ok(outcome.failures > 0);
 });
 
 test("portfolio validator rejects tampered, missing, and partial perfect fixtures", () => {
