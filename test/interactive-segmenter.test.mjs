@@ -165,6 +165,9 @@ test("console acceptance is line-exact and rejects warning/error smuggling", () 
 test("run-record and portfolio freshness bind imported acceptance helpers", () => {
   const validator = read("scripts/validate-interactive-segmenter.mjs");
   const portfolio = read("scripts/check-portfolio-acceptance.mjs");
+  const registrar = read("scripts/register-interactive-segmenter-screenshot-provenance.mjs");
+  assert.doesNotMatch(registrar, /new Date\(\)/);
+  assert.match(registrar, /ledger\.generated = evidence\.generatedAt\.slice\(0, 10\)/);
   assert.match(validator, /`scripts\/validate-\$\{SLUG\}\.mjs`,\s*CAPTURE_RUNNER,/);
   for (
     const dependency of [

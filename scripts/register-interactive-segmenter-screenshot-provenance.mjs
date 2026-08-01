@@ -32,6 +32,11 @@ const expectedKeys = new Set(
 
 const evidence = JSON.parse(readFileSync(evidencePath, "utf8"));
 if (
+  typeof evidence.generatedAt !== "string" ||
+  !Number.isFinite(Date.parse(evidence.generatedAt)) ||
+  new Date(Date.parse(evidence.generatedAt)).toISOString() !== evidence.generatedAt
+) throw new Error("MagicTouch evidence generatedAt must be a canonical immutable timestamp");
+if (
   evidence.status !== "completed" || !Array.isArray(evidence.screenshots) ||
   evidence.screenshots.length !== EXPECTED_SCREENSHOTS
 ) {
@@ -101,7 +106,7 @@ const byArchetype = Object.fromEntries(
     ledger.entries.filter((entry) => entry.archetype === archetype).length,
   ]),
 );
-ledger.generated = new Date().toISOString().slice(0, 10);
+ledger.generated = evidence.generatedAt.slice(0, 10);
 ledger.totals = {
   uniqueImages: ledger.entries.length,
   files: ledger.entries.reduce((sum, entry) => sum + entry.paths.length, 0),
