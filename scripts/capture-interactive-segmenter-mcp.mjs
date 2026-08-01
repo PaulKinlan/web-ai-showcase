@@ -5,10 +5,11 @@
 
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { deriveCaptureStatus, expectedRouteDeviceRows } from "./interactive-segmenter-evidence.mjs";
+import { writeAtomicCaptureOutputs } from "./interactive-segmenter-capture-summary.mjs";
+import { expectedRouteDeviceRows } from "./interactive-segmenter-evidence.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, "..");
@@ -47,14 +48,14 @@ let client;
 let sequence = 0;
 let previousHash = "0".repeat(64);
 const ledger = [];
-let context = { route: "setup", device: "desktop", action: "start" };
+let context = { route: null, device: null, action: "start" };
 function appendEvent(fields) {
   const base = {
     sequence: ++sequence,
     startedAt: fields.startedAt || new Date().toISOString(),
     endedAt: fields.endedAt || new Date().toISOString(),
-    route: fields.route || context.route,
-    device: fields.device || context.device,
+    route: fields.route ?? context.route,
+    device: fields.device ?? context.device,
     eventType: fields.eventType,
     action: fields.action,
     tool: fields.tool,
@@ -108,7 +109,10 @@ function bindScreenshot(shot, screenshotEvent, absolutePath) {
     throw new Error(`identify returned invalid dimensions for ${absolutePath}`);
   }
   const artifact = {
-    ...shot,
+    route: shot.route,
+    device: shot.device,
+    theme: shot.theme,
+    path: shot.path,
     outputPath: absolutePath,
     image: { width, height },
     bytes: bytes.length,
@@ -199,8 +203,8 @@ try {
   });
   await client.connect(transport);
   await call("new_page", { url: "about:blank", timeout: 30_000 }, {
-    route: "setup",
-    device: "desktop",
+    route: null,
+    device: null,
     action: "new-page",
   });
 
@@ -322,7 +326,7 @@ try {
       records.push({
         route: route.id,
         device: device.id,
-        expectedViewport: device,
+        expectedViewport: { width: device.width, height: device.height, dpr: 1 },
         actual: parsed,
       });
 
@@ -393,68 +397,15 @@ try {
     }
   }
 
-  const ledgerText = ledger.length
-    ? ledger.map((entry) => JSON.stringify(entry)).join("\n") + "\n"
-    : "";
-  writeFileSync(ledgerPath, ledgerText);
-  const completed = routeDeviceRows.filter((row) => row.status === "completed").length;
-  const blocked = routeDeviceRows.filter((row) => row.status === "blocked").length;
-  const successful = (action, tool) =>
-    ledger.filter((event) =>
-      event.eventType === "mcp-tool" && event.action === action && event.tool === tool &&
-      !event.response.isError
-    ).length;
-  const denominator = (action, tool) => ({
-    completed: successful(action, tool),
-    expected: 10,
-  });
-  const summary = {
-    schemaVersion: 3,
-    generatedAt: new Date().toISOString(),
-    status: deriveCaptureStatus(routeDeviceRows),
-    producer: {
-      name: "scripts/capture-interactive-segmenter-mcp.mjs",
-      tool: "chrome-devtools-mcp",
-      packageVersion: "1.6.0",
-      transport: "stdio",
-      eventCount: ledger.length,
-      ledger: "evidence/mcp-events.ndjson",
-      ledgerSha256: sha256(ledgerText),
-      finalEventHash: previousHash,
-    },
-    exactRuntime: records[0]?.actual?.ua || null,
-    stages,
-    artifact: {
-      url:
-        "https://storage.googleapis.com/mediapipe-models/interactive_segmenter/magic_touch/float32/1/magic_touch.tflite",
-      bytes: 6_227_884,
-      sha256: "e24338a717c1b7ad8d159666677ef400babb7f33b8ad60c4d96db4ecf694cd25",
-    },
+  const summary = writeAtomicCaptureOutputs({
+    ledgerPath,
+    summaryPath,
+    ledger,
+    routeDeviceRows,
     records,
     screenshots,
-    denominators: {
-      routeDeviceRuns: {
-        completed,
-        blocked,
-        notRun: 10 - completed - blocked,
-        expected: 10,
-        rows: routeDeviceRows,
-      },
-      consoleBefore: denominator("console-before", "list_console_messages"),
-      consoleAfter: denominator("console-after", "list_console_messages"),
-      networkBefore: denominator("network-before", "list_network_requests"),
-      networkAfter: denominator("network-after", "list_network_requests"),
-      screenshots: {
-        accepted: screenshots.length,
-        blocked: 20 - screenshots.length,
-        expected: 20,
-      },
-    },
     blocker,
-  };
-  const temporarySummaryPath = `${summaryPath}.tmp-${process.pid}`;
-  writeFileSync(temporarySummaryPath, JSON.stringify(summary, null, 2) + "\n");
-  renameSync(temporarySummaryPath, summaryPath);
+  });
   console.log(`wrote ${summaryPath} (${summary.status})`);
   console.log(`wrote ${ledgerPath} (${ledger.length} hash-chained evidence events)`);
 }
