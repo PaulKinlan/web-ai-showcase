@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Fashion-CLIP Practical — zero-shot tagging · Web AI Showcase</title>
+    <meta name="description" content="Score the whole catalog against several labels at once — zero-shot tagging with real per-image similarity, on-device." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🏷️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">Fashion-CLIP</a></p>
+
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Practical: zero-shot tagging</h1>
+      <p class="lede">
+        Instead of hand-labeling a media library, ask CLIP to score every asset against the labels you care
+        about. This demo runs the catalog against three tags at once and shows each image's real similarity —
+        the core of auto-tagging pipelines, done privately on-device.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+
+      <div class="chips" style="margin-top:.6rem">
+        <button class="chip active" type="button" data-tag="outdoors">outdoors</button>
+        <button class="chip" type="button" data-tag="food">food</button>
+        <button class="chip" type="button" data-tag="urban">urban</button>
+      </div>
+      <div class="controls" style="margin:.4rem 0">
+        <button id="run" type="button" disabled>Tag everything</button>
+      </div>
+      <p class="eyebrow" id="gridLabel" hidden>per-image similarity to each tag (top score = tag assigned)</p>
+      <div class="results" id="results"></div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>tags×images <b id="rN">–</b></span>
+        <span>total time <b id="rMs">–</b></span>
+      </div>
+    </section>
+
+    <p class="muted" style="font-size:.85rem">
+      Each card shows the image with its three tag scores; the highest-scoring tag is highlighted. This is
+      how a zero-shot tagger works: no training, just embeddings and a threshold.
+    </p>
+    <p class="crumbs"><a href="../">← Back to Fashion-CLIP</a> · Next: <a href="../wild/">Wild →</a></p>
+
+    <script type="module">
+      import { ClipEngine, CLIP_CSS, CATALOG } from "../clip.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = CLIP_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new ClipEngine();
+      const TAGS = ["outdoors", "food", "urban"];
+
+      for (const c of document.querySelectorAll(".chips .chip")) c.addEventListener("click", () => {
+        for (const x of document.querySelectorAll(".chips .chip")) x.classList.toggle("active", x === c);
+      });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "patrickjohncyh/fashion-clip", revision: "7e3ba62ce16b379a1ab479346b66f192e76f51b7", runtime: "transformers.js", dtype: "fp32", sizeMB: 578, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: async () => {
+          $("run").disabled = false;
+          $("status").textContent = "Embedding the catalog…";
+          try {
+            await engine.embedCatalog(CATALOG.map((c) => c.url));
+            $("status").textContent = "Ready."; $("status").classList.add("ok");
+          } catch (err) { $("status").textContent = "Embedding failed: " + err.message; $("status").classList.add("err"); }
+        },
+      });
+
+      $("run").addEventListener("click", async () => {
+        $("run").disabled = true; $("status").hidden = false; $("status").classList.remove("err","ok"); $("status").textContent = "Tagging…";
+        const t0 = performance.now();
+        try {
+          const scores = [];
+          for (const tag of TAGS) {
+            const r = await engine.search(tag);
+            scores.push(r.ranked);
+          }
+          const ms = Math.round(performance.now() - t0);
+          $("gridLabel").hidden = false;
+          $("results").replaceChildren(
+            ...CATALOG.map((c, idx) => {
+              const card = document.createElement("div");
+              card.className = "result-card";
+              const tagRows = TAGS.map((tag, ti) => {
+                const score = scores[ti].find((x) => x.idx === idx)?.score ?? 0;
+                const isTop = scores[ti][0]?.idx === idx;
+                return `<div class="meta" style="${isTop ? "border-top:2px solid var(--good)" : ""}">
+                  <span style="font-size:.72rem">${tag}</span>
+                  <div class="score">${score.toFixed(3)}</div>
+                  <div class="scorebar"><span class="fill" style="inline-size:${Math.max(2, (score + 1) * 50).toFixed(1)}%"></span></div></div>`;
+              }).join("");
+              card.innerHTML = `<img src="${c.url}" alt="${c.label}" loading="lazy" />${tagRows}`;
+              return card;
+            }),
+          );
+          $("readout").hidden = false;
+          $("rBackend").textContent = "WASM";
+          $("rN").textContent = `${TAGS.length}×${CATALOG.length}`;
+          $("rMs").textContent = ms + " ms";
+          $("status").textContent = "Tagged."; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Tagging failed: "+err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+    <script type="module" src="/web-ai-showcase/public/image-credit.js"></script>
+  </body>
+</html>
