@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MMS Alignment Wild — your voice, your words · Web AI Showcase</title>
+    <meta name="description" content="Record yourself saying a sentence, type what you said, and watch the aligner time every word of your own voice — on-device, privacy-preserving pronunciation feedback." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎙️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">MMS forced alignment</a></p>
+
+    <header>
+      <p class="eyebrow">use case · wild</p>
+      <h1>Wild: your voice, your words</h1>
+      <p class="lede">
+        The most personal alignment target there is: you. Record yourself saying a sentence, type what you said,
+        and the model times every word of your own voice. This is the engine behind pronunciation apps and
+        reading-coach tools — running entirely in your browser, so your voice never leaves your device.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+
+      <div class="controls" style="margin-top:.6rem">
+        <button id="rec" type="button" disabled>Record a sentence</button>
+        <span id="recState" class="muted" style="font-size:.82rem">microphone off</span>
+      </div>
+      <p class="muted" style="font-size:.85rem">
+        Suggested sentence: <em>"The quick brown fox jumps over the lazy dog."</em> — say it slowly and clearly,
+        then type exactly what you said below.
+      </p>
+      <audio id="player" controls preload="metadata" hidden></audio>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">What you said
+        <textarea id="transcript" class="prompt" disabled spellcheck="false">The quick brown fox jumps over the lazy dog.</textarea>
+      </label>
+      <div class="controls">
+        <button id="run" type="button" disabled>Align my words</button>
+      </div>
+
+      <p class="eyebrow" id="wordsLabel" hidden>your words, timed — click to hear yourself</p>
+      <div class="words" id="words"></div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>matched <b id="rMatched">–</b></span>
+        <span>total time <b id="rMs">–</b></span>
+      </div>
+    </section>
+
+    <p class="muted" style="font-size:.85rem">
+      The aligner is honest: words that don't match the audio (background noise, a stumble, a changed word) show
+      up in the matched-char ratio. Try reading a sentence from a book or a song lyric you know by heart.
+    </p>
+
+    <p class="crumbs"><a href="../">← Back to MMS forced alignment</a></p>
+
+    <script type="module">
+      import { AlignerEngine, ALIGN_CSS, blobToMono16k, MicRecorder, renderWordChips } from "../aligner.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = ALIGN_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new AlignerEngine();
+      let pcm = null, audioDur = 0;
+      const rec = new MicRecorder();
+
+      $("rec").addEventListener("click", async () => {
+        if (rec.rec) { // stop
+          const { blob, url } = await rec.stop();
+          $("rec").textContent = "Record a sentence";
+          $("recState").textContent = "recorded — aligning ready";
+          const { pcm: p, duration } = await blobToMono16k(blob);
+          pcm = p; audioDur = duration;
+          $("player").hidden = false; $("player").src = url;
+        } else {
+          try {
+            await rec.start();
+            $("rec").textContent = "Stop recording";
+            $("recState").textContent = "recording…";
+          } catch (err) {
+            $("recState").textContent = "Mic unavailable: " + (err?.message || err);
+          }
+        }
+      });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/mms-300m-1130-forced-aligner-ONNX", runtime: "transformers.js", dtype: "q4", sizeMB: 241, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => {
+          $("transcript").disabled = false;
+          $("run").disabled = false;
+          $("rec").disabled = !MicRecorder.supported();
+          if (!MicRecorder.supported()) $("recState").textContent = "mic not supported here — upload is on the main page";
+        },
+      });
+
+      $("run").addEventListener("click", async () => {
+        const transcript = $("transcript").value;
+        if (!pcm) { $("status").textContent = "Record a sentence first."; $("status").classList.add("err"); return; }
+        if (!transcript.trim()) return;
+        $("run").disabled = true; $("status").hidden = false; $("status").classList.remove("err","ok"); $("status").textContent = "Aligning…";
+        try {
+          const res = await engine.align(pcm, transcript, audioDur);
+          $("wordsLabel").hidden = false;
+          renderWordChips($("words"), res.words, (w) => {
+            for (const c of $("words").children) c.classList.toggle("active", c.dataset.i === String(res.words.indexOf(w)));
+            $("player").currentTime = w.start; $("player").play();
+          });
+          $("readout").hidden = false;
+          $("rBackend").textContent = res.device.toUpperCase();
+          $("rMatched").textContent = `${res.matched}/${res.total} chars`;
+          $("rMs").textContent = res.ms + " ms";
+          $("status").textContent = "Aligned."; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Alignment failed: "+err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+    </script>
+  </body>
+</html>

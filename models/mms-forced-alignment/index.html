@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MMS forced alignment — word timestamps for any speech · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Align a known transcript to its audio: Meta's MMS-300m forced aligner finds the start and end time of every word, on-device, for subtitles, karaoke, and pronunciation practice."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>⏱️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">automatic-speech-recognition · forced alignment · WASM · ~241 MB</p>
+      <h1>MMS forced alignment — when exactly did they say it?</h1>
+      <p class="lede">
+        Speech-to-text tells you <em>what</em> was said. Forced alignment tells you <em>when</em>: give this
+        model an audio clip and the transcript that belongs to it, and it times every word — the exact start and
+        end of each one — entirely on your device. That's how subtitles, karaoke, and pronunciation apps are
+        built.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="glance">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/onnx-community/mms-300m-1130-forced-aligner-ONNX" target="_blank" rel="noopener">onnx-community/mms-300m-1130-forced-aligner-ONNX</a> · original <a href="https://huggingface.co/MahmoudAshraf/mms-300m-1130-forced-aligner" target="_blank" rel="noopener">MahmoudAshraf/mms-300m-1130-forced-aligner</a></td></tr>
+          <tr><th>Task</th><td><code>automatic-speech-recognition</code> (CTC) — used here for <strong>forced alignment</strong>, not transcription</td></tr>
+          <tr><th>Architecture</th><td>Wav2Vec2ForCTC — Meta's MMS-300m backbone fine-tuned on a forced-alignment dataset; 31-symbol char alphabet (<blank> + letters + apostrophe), one CTC distribution per ~20ms frame</td></tr>
+          <tr><th>Params / dtype</th><td>300M · <code>q4</code> (4-bit quantized ONNX — the int8 export uses ConvInteger, which has no WASM kernel, so this demo honestly uses q4)</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (CPU) — no GPU required</td></tr>
+          <tr><th>Download</th><td>~241 MB, cached after first load</td></tr>
+          <tr><th>License</th><td>CC-BY-NC-4.0 (non-commercial — recorded honestly)</td></tr>
+          <tr><th>Web APIs</th><td>Web Workers, Web Audio (decode + resample), Cache Storage (via Transformers.js)</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+      <model-run-status id="runMonitor"></model-run-status>
+
+      <div class="sample-row" style="margin-top:.6rem">
+        <button type="button" class="chip" data-src="jfk.wav" data-label="JFK — inaugural (11s)">Sample: JFK inaugural (11s)</button>
+      </div>
+      <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an audio file">
+        <span id="dropText">…or drop / choose your own audio (wav, mp3, m4a, webm)</span>
+        <input type="file" id="file" accept="audio/*" hidden />
+      </div>
+      <audio id="player" controls preload="metadata"></audio>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
+        Transcript (the words in the audio — edit freely)
+        <textarea id="transcript" class="prompt" disabled spellcheck="false">And so, my fellow Americans, ask not what your country can do for you; ask what you can do for your country.</textarea>
+      </label>
+
+      <div class="controls">
+        <button id="run" type="button" disabled>Align words</button>
+      </div>
+
+      <p class="eyebrow" id="wordsLabel" hidden>word timestamps — click a word to seek the audio</p>
+      <div class="words" id="words"></div>
+
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>frames <b id="rFrames">–</b></span>
+        <span>frame <b id="rFrameMs">–</b></span>
+        <span>matched <b id="rMatched">–</b></span>
+        <span>total time <b id="rMs">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside — the CTC frame strip</h3>
+      <p class="muted">
+        Wav2Vec2 models score every ~20ms audio frame against a tiny alphabet. We take the transcript as ground
+        truth, run the model once, and monotonically match each character of your transcript to the frame where
+        it fires — that's the alignment. The readout shows the real numbers: how many frames, the frame length,
+        and how many transcript characters were matched (fewer than 100% means silence or a transcript mismatch —
+        honest, never faked). We also compare with the model's own greedy reading below.
+      </p>
+      <p id="heardWrap" hidden>
+        <span class="eyebrow">what the model heard (greedy CTC — for comparison, not used for alignment)</span>
+        <pre class="srt" id="heard"></pre>
+      </p>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        Almost every product that shows <em>when</em> words happen — subtitles, karaoke, lyric videos,
+        pronunciation feedback, podcast transcripts, search-within-audio — depends on forced alignment. Running
+        it in the browser means audio never leaves the device: private by construction.
+      </p>
+      <ul>
+        <li><strong>Subtitle / caption generation</strong> — align any transcript to any clip and export SRT timings.</li>
+        <li><strong>Karaoke &amp; lyric sync</strong> — word-perfect highlight of a song's lyrics as they're sung.</li>
+        <li><strong>Pronunciation practice</strong> — compare where a learner said each word against the reference.</li>
+        <li><strong>Audio search &amp; navigation</strong> — jump straight to the sentence that mentions a topic.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Align the JFK clip and click through the words — hear exactly where each one lands.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Build subtitles: align your own audio + transcript and export a copyable SRT block.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Your voice, your words — record yourself, type what you said, watch the alignment follow you.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>The model itself is a plain CTC speech model; alignment is an algorithm on top of its frames:</p>
+      <pre><code>import { AutoProcessor, AutoModelForCTC } from "@huggingface/transformers";
+
+const processor = await AutoProcessor.from_pretrained(MODEL);
+const model = await AutoModelForCTC.from_pretrained(MODEL, { dtype: "int8" });
+const { logits } = await model(await processor(audio)); // [1, frames, 31]
+
+// 1. tokenize the KNOWN transcript into character ids (spaces → id 3)
+// 2. argmax each frame → emission strip; collapse CTC blanks/repeats
+// 3. monotonic-match transcript chars to emission frames
+// 4. group chars into words → start/end = frame × 20 ms</code></pre>
+      <p class="muted">
+        We deliberately call the model directly instead of the ASR pipeline — the pipeline hides the per-frame
+        output we need. Everything runs in a Web Worker; audio is decoded and resampled to 16 kHz mono via Web
+        Audio first.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/onnx-community/mms-300m-1130-forced-aligner-ONNX" target="_blank" rel="noopener">Model card — ONNX conversion</a></li>
+        <li><a href="https://huggingface.co/MahmoudAshraf/mms-300m-1130-forced-aligner" target="_blank" rel="noopener">Original model card — MahmoudAshraf/mms-300m-1130-forced-aligner</a></li>
+        <li><a href="https://github.com/MahmoudAshraf97/ctc-forced-aligner" target="_blank" rel="noopener">ctc-forced-aligner — the reference implementation this demo mirrors</a></li>
+        <li><a href="https://huggingface.co/blog/mms" target="_blank" rel="noopener">Meta's MMS: Expanding Speech Technology to 1,000+ Languages</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { AlignerEngine, ALIGN_CSS, urlToMono16k, blobToMono16k, renderWordChips } from "./aligner.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      import "/web-ai-showcase/lib/model-run-status.mjs";
+      const style = document.createElement("style"); style.textContent = ALIGN_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new AlignerEngine();
+      let pcm = null, audioUrl = "jfk.wav", audioDur = 11;
+
+      $("player").src = "jfk.wav";
+
+      const file = $("file"), drop = $("drop");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadBlob(f) {
+        $("dropText").textContent = f.name;
+        const { pcm: p, duration } = await blobToMono16k(f);
+        pcm = p; audioDur = duration;
+        audioUrl = URL.createObjectURL(f);
+        $("player").src = audioUrl;
+      }
+      file.addEventListener("change", () => file.files[0] && loadBlob(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("audio/")) loadBlob(f); });
+
+      const autoRun = new URLSearchParams(location.search).has("auto");
+      if (autoRun) {
+        // Test hook: click the shared loader's Download button when it appears (mirrors qwen3 precedent).
+        const t = setInterval(() => {
+          const b = [...document.querySelectorAll("button")].find((x) => x.textContent.includes("Download model"));
+          if (b) { clearInterval(t); b.click(); }
+        }, 300);
+      }
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/mms-300m-1130-forced-aligner-ONNX", runtime: "transformers.js", dtype: "q4", sizeMB: 241, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => {
+          $("run").disabled = false; $("transcript").disabled = false;
+          if (autoRun) $("run").click();
+        },
+      });
+
+      $("run").addEventListener("click", async () => {
+        const transcript = $("transcript").value;
+        if (!transcript.trim()) return;
+        $("run").disabled = true;
+        $("status").hidden = false; $("status").classList.remove("err","ok"); $("status").textContent = "Aligning…";
+        try {
+          if (!pcm) {
+            const { pcm: p, duration } = await urlToMono16k(audioUrl);
+            pcm = p; audioDur = duration;
+          }
+          const r = await engine.align(pcm, transcript, audioDur);
+          $("wordsLabel").hidden = false;
+          renderWordChips($("words"), r.words, (w) => {
+            for (const c of $("words").children) c.classList.toggle("active", c.dataset.i === String(r.words.indexOf(w)));
+            $("player").currentTime = w.start;
+            $("player").play();
+          });
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rFrames").textContent = r.frames;
+          $("rFrameMs").textContent = r.frameMs + " ms";
+          $("rMatched").textContent = `${r.matched}/${r.total} chars`;
+          $("rMs").textContent = r.ms + " ms";
+          $("heardWrap").hidden = false;
+          $("heard").textContent = r.heard || "(nothing heard — silence?)";
+          $("status").textContent = "Aligned.";
+          $("status").classList.add("ok");
+        } catch (err) {
+          $("status").textContent = "Alignment failed: " + err.message;
+          $("status").classList.add("err");
+        } finally {
+          $("run").disabled = false;
+        }
+      });
+    </script>
+  </body>
+</html>

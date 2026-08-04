@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MMS Alignment Practical — build subtitles (SRT) · Web AI Showcase</title>
+    <meta name="description" content="Align your own audio and transcript, then export a copyable SRT subtitle block — private, on-device caption generation." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>📝</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">MMS forced alignment</a></p>
+
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Practical: build subtitles (SRT)</h1>
+      <p class="lede">
+        Subtitles need timestamps; forced alignment makes them. Drop in any audio you have a transcript for,
+        align it on-device, and export a ready-to-use SRT block — the exact format video players and editors
+        consume. Audio never leaves your machine.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+
+      <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Upload or drop an audio file" style="margin-top:.6rem">
+        <span id="dropText">Upload your audio (wav, mp3, m4a, webm) — or use the JFK sample</span>
+        <input type="file" id="file" accept="audio/*" hidden />
+      </div>
+      <div class="sample-row">
+        <button type="button" class="chip" data-src="jfk.wav">Use JFK sample</button>
+      </div>
+      <audio id="player" controls preload="metadata"></audio>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">Transcript
+        <textarea id="transcript" class="prompt" disabled spellcheck="false">And so, my fellow Americans, ask not what your country can do for you; ask what you can do for your country.</textarea>
+      </label>
+      <div class="controls">
+        <button id="run" type="button" disabled>Align + build SRT</button>
+        <button id="copy" type="button" disabled>Copy SRT</button>
+      </div>
+
+      <p class="eyebrow" id="srtLabel" hidden>SRT output (one caption per word — group them in your editor)</p>
+      <pre class="srt" id="srt" hidden></pre>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>words <b id="rWords">–</b></span>
+        <span>total time <b id="rMs">–</b></span>
+      </div>
+    </section>
+
+    <p class="muted" style="font-size:.85rem">
+      The SRT uses word-level captions so you can see the raw timings; most editors can merge them into
+      sentence cues. Try it with your own recording and its transcript — the aligner only needs the words to
+      match the audio.
+    </p>
+
+    <p class="crumbs"><a href="../">← Back to MMS forced alignment</a> · Next: <a href="../wild/">Wild →</a></p>
+
+    <script type="module">
+      import { AlignerEngine, ALIGN_CSS, urlToMono16k, blobToMono16k, srtTime } from "../aligner.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = ALIGN_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new AlignerEngine();
+      let pcm = null, audioUrl = "jfk.wav", audioDur = 11;
+
+      $("player").src = "jfk.wav";
+      const file = $("file"), drop = $("drop");
+      drop.addEventListener("click", () => file.click());
+      drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+      ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+      async function loadBlob(f) {
+        $("dropText").textContent = f.name;
+        const { pcm: p, duration } = await blobToMono16k(f);
+        pcm = p; audioDur = duration; audioUrl = URL.createObjectURL(f); $("player").src = audioUrl;
+      }
+      file.addEventListener("change", () => file.files[0] && loadBlob(file.files[0]));
+      drop.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f?.type.startsWith("audio/")) loadBlob(f); });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "onnx-community/mms-300m-1130-forced-aligner-ONNX", runtime: "transformers.js", dtype: "q4", sizeMB: 241, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("run").disabled = false; $("transcript").disabled = false; },
+      });
+
+      let lastSrt = "";
+      $("run").addEventListener("click", async () => {
+        const transcript = $("transcript").value;
+        if (!transcript.trim()) return;
+        $("run").disabled = true; $("status").hidden = false; $("status").classList.remove("err","ok"); $("status").textContent = "Aligning…";
+        try {
+          if (!pcm) { const r = await urlToMono16k(audioUrl); pcm = r.pcm; audioDur = r.duration; }
+          const res = await engine.align(pcm, transcript, audioDur);
+          lastSrt = res.words.map((w, i) => `${i + 1}\n${srtTime(w.start)} --> ${srtTime(w.end)}\n${w.text}`).join("\n\n");
+          $("srtLabel").hidden = false; $("srt").hidden = false; $("srt").textContent = lastSrt;
+          $("copy").disabled = false;
+          $("readout").hidden = false;
+          $("rBackend").textContent = res.device.toUpperCase();
+          $("rWords").textContent = res.words.length;
+          $("rMs").textContent = res.ms + " ms";
+          $("status").textContent = "SRT built."; $("status").classList.add("ok");
+        } catch (err) { $("status").textContent = "Alignment failed: "+err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+      $("copy").addEventListener("click", async () => {
+        try { await navigator.clipboard.writeText(lastSrt); $("status").textContent = "Copied to clipboard."; $("status").classList.add("ok"); }
+        catch { $("status").textContent = "Clipboard unavailable — select the SRT text manually."; }
+      });
+    </script>
+  </body>
+</html>
