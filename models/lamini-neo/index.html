@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LaMini-Neo-125M — a tiny model that follows instructions · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run MBZUAI's LaMini-Neo-125M locally: a 125M instruction-tuned GPT-Neo that explains, summarizes, and rewrites on request — streaming, entirely on your device."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>💡</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">text-generation · instruction-tuned LLM · WASM · ~140 MB</p>
+      <h1>LaMini-Neo — instructions in, answers out, 125M parameters</h1>
+      <p class="lede">
+        LaMini-Neo-125M is a tiny GPT-Neo that MBZUAI fine-tuned on 2.6 million instruction-response pairs.
+        It follows simple instructions — explain, summarize, rewrite, draft — with a fraction of the weights
+        of a modern chat model, and it runs on a plain CPU in your browser.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="glance">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/Xenova/LaMini-Neo-125M" target="_blank" rel="noopener">Xenova/LaMini-Neo-125M</a> (ONNX) · original <a href="https://huggingface.co/MBZUAI/LaMini-Neo-125M" target="_blank" rel="noopener">MBZUAI/LaMini-Neo-125M</a></td></tr>
+          <tr><th>Task</th><td><code>text-generation</code> (instruction following via the LaMini prompt format)</td></tr>
+          <tr><th>Architecture</th><td>GPT-Neo — EleutherAI's 125M decoder, instruction-tuned on ~2.6M pairs (GPT4All/Alpaca-style)</td></tr>
+          <tr><th>Params / dtype</th><td>125M · <code>int8</code> (8-bit quantized ONNX)</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (CPU) — no GPU required</td></tr>
+          <tr><th>Download</th><td>~140 MB, cached after first load</td></tr>
+          <tr><th>License</th><td><strong>CC-BY-NC-4.0</strong> — non-commercial weights (see note below)</td></tr>
+          <tr><th>Web APIs</th><td>Web Workers, Cache Storage (via Transformers.js), WebAssembly</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <div class="license-note" role="note">
+      <strong>License: CC-BY-NC-4.0 — non-commercial.</strong> The LaMini-Neo-125M weights are released
+      under a Creative Commons <em>Non-Commercial</em> license. This demo is for personal and educational
+      evaluation; <strong>commercial use of the weights requires a separate license</strong>. Model credit:
+      MBZUAI (LaMini fine-tune), EleutherAI (GPT-Neo base), Xenova (ONNX conversion). See the
+      <a href="https://huggingface.co/MBZUAI/LaMini-Neo-125M" target="_blank" rel="noopener">model card</a>.
+    </div>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+      <model-run-status id="runMonitor"></model-run-status>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">
+        Instruction
+        <textarea id="prompt" class="prompt" disabled>Explain what photosynthesis is in simple terms.</textarea>
+      </label>
+      <div class="sample-row" id="samples">
+        <button type="button" class="chip" data-t="Explain what photosynthesis is in simple terms.">explain 🌿</button>
+        <button type="button" class="chip" data-t="Write a haiku about the moon.">haiku 🌙</button>
+        <button type="button" class="chip" data-t="Rewrite this to be friendlier: 'The report is late.'">rewrite ✏️</button>
+        <button type="button" class="chip" data-t="List three ways to reduce plastic waste.">list 3 ways ♻️</button>
+        <button type="button" class="chip" data-t="Summarize in one sentence: 'The internet is a global network that connects computers so people can share information, email, and websites.'">summarize 📄</button>
+        <button type="button" class="chip" data-t="What is the capital of France?">fact 🇫🇷</button>
+      </div>
+
+      <div class="controls">
+        <div class="seg" role="group" aria-label="Sampling mode">
+          <button id="mGreedy" type="button" aria-pressed="false">greedy</button>
+          <button id="mSample" type="button" aria-pressed="true">sample</button>
+        </div>
+        <label>max tokens
+          <input id="maxNew" type="number" min="16" max="192" value="96" />
+          <output id="maxNewV">96</output>
+        </label>
+        <button id="run" type="button" disabled>Answer</button>
+      </div>
+
+      <div class="gen-out" id="out" aria-live="polite"><span class="muted">The model's answer will stream here.</span></div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>mode <b id="rMode">–</b></span>
+        <span>new tokens <b id="rTok">–</b></span>
+        <span>total time <b id="rMs">–</b></span>
+        <span>tok/s <b id="rTps">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside — the LaMini prompt format</h3>
+      <p class="muted">
+        Instruction-tuned models don't chat — they complete a template. LaMini's format is
+        <code>### Instruction: …</code> followed by <code>### Response:</code>, and the model continues from
+        there. The panel below shows the exact template built for your last instruction.
+      </p>
+      <pre class="srt" id="template" hidden></pre>
+      <p class="eyebrow" id="chainLabel" hidden>the token chain</p>
+      <div class="token-chain" id="chain"></div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        Most instruction models need billions of parameters. LaMini shows that <strong>125M parameters tuned on
+        good instruction data</strong> can follow simple requests — which makes private, offline instruction
+        following feasible on phones and low-end devices.
+      </p>
+      <ul>
+        <li><strong>On-device helper text</strong> — summarize, reword, or explain snippets with zero uploads.</li>
+        <li><strong>A teaching model</strong> — see instruction tuning at its smallest: the same template and sampling controls as big models, at 140 MB.</li>
+        <li><strong>Baseline for the family</strong> — the smallest GPT-Neo/LaMini rung; compare against the bigger models on the showcase.</li>
+        <li><strong>Privacy-by-construction drafting</strong> — notes, emails, and ideas reworded locally.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Follow the instruction — the fundamental instruction-tuned move, streamed.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Rewriter's desk: reword, tighten, and re-tone the same sentence three ways.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Instruction roulette — rapid-fire silly prompts, each answered by a 125M model taking them seriously.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>The friendly one-liner is the <code>text-generation</code> pipeline:</p>
+      <pre><code>import { pipeline } from "@huggingface/transformers";
+
+const gen = await pipeline("text-generation", "Xenova/LaMini-Neo-125M", { dtype: "int8" });
+const prompt = "### Instruction:\\nExplain photosynthesis simply.\\n\\n### Response:\\n";
+const out = await gen(prompt, { max_new_tokens: 96, do_sample: true, temperature: 0.7 });
+// out[0].generated_text → the response after the ### Response: marker</code></pre>
+      <p class="muted">
+        The demo streams tokens through a <code>TextStreamer</code> inside a Web Worker, so the page never
+        blocks — the token chain is the stream, one real token at a time.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/Xenova/LaMini-Neo-125M" target="_blank" rel="noopener">Model card — Xenova/LaMini-Neo-125M (ONNX)</a></li>
+        <li><a href="https://huggingface.co/MBZUAI/LaMini-Neo-125M" target="_blank" rel="noopener">Original model card — MBZUAI/LaMini-Neo-125M</a></li>
+        <li><a href="https://arxiv.org/abs/2211.01786" target="_blank" rel="noopener">Paper — GPT-NeoX-20B / GPT-Neo family background (EleutherAI)</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { LaminiEngine, LAMINI_CSS, showToken } from "./lamini.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      import "/web-ai-showcase/lib/model-run-status.mjs";
+      const style = document.createElement("style"); style.textContent = LAMINI_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new LaminiEngine();
+      let mode = "sample";
+
+      for (const c of $("samples").children) c.addEventListener("click", () => { $("prompt").value = c.dataset.t; });
+      $("maxNew").addEventListener("input", () => $("maxNewV").textContent = $("maxNew").value);
+      function setMode(m) {
+        mode = m;
+        $("mGreedy").setAttribute("aria-pressed", m === "greedy");
+        $("mSample").setAttribute("aria-pressed", m === "sample");
+      }
+      $("mGreedy").addEventListener("click", () => setMode("greedy"));
+      $("mSample").addEventListener("click", () => setMode("sample"));
+
+      const autoRun = new URLSearchParams(location.search).has("auto");
+      if (autoRun) {
+        // Test hook: click the shared loader's Download button when it appears (mirrors qwen3 precedent).
+        const t = setInterval(() => {
+          const b = [...document.querySelectorAll("button")].find((x) => x.textContent.includes("Download model"));
+          if (b) { clearInterval(t); b.click(); }
+        }, 300);
+      }
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "Xenova/LaMini-Neo-125M", runtime: "transformers.js", dtype: "int8", sizeMB: 140, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => {
+          for (const id of ["run","prompt","maxNew"]) $(id).disabled = false;
+          if (autoRun) $("run").click();
+        },
+      });
+
+      $("run").addEventListener("click", async () => {
+        const instruction = $("prompt").value;
+        if (!instruction.trim()) return;
+        $("run").disabled = true;
+        $("status").hidden = false; $("status").classList.remove("err","ok"); $("status").textContent = "Thinking…";
+        $("out").innerHTML = '<span class="muted">The model&#39;s answer will stream here.</span>';
+        $("chain").replaceChildren();
+        $("chainLabel").hidden = false;
+        const opts = { maxNew: +$("maxNew").value, greedy: mode === "greedy", temperature: 0.7, topK: 40 };
+        try {
+          const r = await engine.generate(instruction, opts, (msg) => {
+            const span = document.createElement("span"); span.className = "new-span"; span.textContent = msg.piece;
+            $("out").append(span);
+            const t = document.createElement("span"); t.className = "t"; t.innerHTML = showToken(msg.piece);
+            $("chain").append(t);
+          });
+          $("template").hidden = false;
+          $("template").textContent = r.promptTemplate || "";
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMode").textContent = mode;
+          $("rTok").textContent = $("chain").children.length;
+          $("rMs").textContent = `${r.ms} ms`;
+          $("rTps").textContent = $("chain").children.length ? (($("chain").children.length / (r.ms / 1000)).toFixed(1)) : "–";
+          $("status").textContent = "Done.";
+          $("status").classList.add("ok");
+        } catch (err) {
+          $("status").textContent = "Failed: " + err.message;
+          $("status").classList.add("err");
+        } finally {
+          $("run").disabled = false;
+        }
+      });
+    </script>
+  </body>
+</html>
