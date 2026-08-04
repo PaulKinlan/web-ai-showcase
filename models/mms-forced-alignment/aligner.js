@@ -182,5 +182,8 @@ textarea.prompt { inline-size: 100%; font: inherit; padding: .6rem .7rem; border
 .chip:hover, .chip:focus-visible { border-color: var(--accent); }
 pre.srt { font-family: var(--font-mono); font-size: .8rem; white-space: pre-wrap; background: var(--bg-raised);
   border: 1px solid var(--border); border-radius: 8px; padding: .6rem .7rem; }
+.license-note { border: 1px solid var(--border); border-inline-start: 4px solid var(--accent); border-radius: var(--radius, 8px);
+  background: var(--bg-raised); color: var(--color); padding: .7rem .8rem; margin: .9rem 0; font-size: .86rem; line-height: 1.55; }
+.license-note strong { color: var(--color); }
 audio { inline-size: 100%; margin-top: .5rem; }
 `;
