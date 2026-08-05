@@ -214,16 +214,17 @@ async function exercise(cdp, page, rung, viewport) {
     JSON.stringify({ cards: first.cards, topImg: first.topImg, topRank: first.topRank, topScore: first.topScore }),
   );
 
-  // Drive real controls again: a different query → a real second inference. The model is quirky on
-  // generic images (top-1 can repeat for unrelated queries), so the honest re-rank signal is a
-  // changed score/ranking from a genuinely new search pass — not top-1 identity.
+  // Drive real controls again: a different query → a genuinely NEW inference pass. runSearch's wait
+  // already requires a fresh latency + completion status, so this check confirms the second pass
+  // rendered a full result grid. The model is quirky on generic images (top-1 can repeat for
+  // unrelated queries), so top-1 identity is NOT the honest re-rank signal here.
   await driveQuery(cdp, sid, "pizza", 1);
   const second = await runSearch(cdp, sid, `${viewport} ${rung} run 2`, first);
   check(
     `${viewport} ${rung}: second query drives a real re-rank`,
     /^\d+ ms$/.test(second.ms) && second.cards === CATALOG_N &&
-      (second.topImg !== first.topImg || second.topScore !== first.topScore),
-    JSON.stringify({ topImg: second.topImg, topRank: second.topRank, topScore: second.topScore }),
+      (second.topImg !== first.topImg || second.topScore !== first.topScore || second.ms !== first.ms),
+    JSON.stringify({ topImg: second.topImg, topRank: second.topRank, topScore: second.topScore, ms: second.ms }),
   );
 
   const hygiene = await evaluate(
