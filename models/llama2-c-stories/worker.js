@@ -22,7 +22,7 @@ function post(msg) {
 
 async function makePipeline() {
   const { pipeline } = mod;
-  return pipeline("text-generation", MODEL_ID, {
+  return pipeline("text-generation", "Xenova/llama2.c-stories15M", {
     device,
     dtype: DTYPE,
     progress_callback: (p) => post({ type: "progress", p }),
