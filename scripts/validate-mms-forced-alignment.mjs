@@ -139,16 +139,22 @@ async function ensureReady(cdp, sessionId, label) {
 // Wait for the alignment completion status AND a populated result surface, then snapshot it.
 async function runAlign(cdp, sessionId, label) {
   await evaluate(cdp, sessionId, `(() => { document.querySelector('#run').click(); return true; })()`);
+  // Reach a TERMINAL state: success with rendered output, or the page's explicit failure message
+  // (fail fast with the real error instead of burning the whole timeout).
   await waitFor(
     cdp,
     sessionId,
-    `(/Aligned\\.|SRT built\\./.test(document.querySelector('#status')?.textContent || '') &&
-      (document.querySelectorAll('#words > *').length > 0 ||
-       (document.querySelector('#srt')?.textContent || '').includes('-->')))`,
+    `(() => {
+      const s = document.querySelector('#status')?.textContent || '';
+      if (/Alignment failed/.test(s)) return true;
+      return /Aligned\.|SRT built\./.test(s) &&
+        (document.querySelectorAll('#words > *').length > 0 ||
+         (document.querySelector('#srt')?.textContent || '').includes('-->'));
+    })()`,
     300_000,
     `${label} alignment done`,
   );
-  return evaluate(
+  const snap = await evaluate(
     cdp,
     sessionId,
     `({
@@ -163,6 +169,10 @@ async function runAlign(cdp, sessionId, label) {
       transcript: (document.querySelector('#transcript')?.textContent || '').trim().slice(0, 160)
     })`,
   );
+  if (/Alignment failed/.test(snap.status)) {
+    throw new Error(`page alignment failed: ${snap.status}`);
+  }
+  return snap;
 }
 
 async function exercise(cdp, page, rung, viewport) {
