@@ -219,27 +219,37 @@ export async function launchChrome(options = {}) {
   }
   if (!started) throw new Error("Chrome did not expose a DevTools endpoint (after retries)");
   let killPromise = null;
+  const killStarted = ({ removeProfile = removeProfileOnKill } = {}) => {
+    if (!killPromise) {
+      try {
+        started.ws.close();
+      } catch { /* ignore */ }
+      signalProcessTree(started.proc);
+      // Keep legacy fire-and-forget callers safe: their profile is removed synchronously even if
+      // they call process.exit() without awaiting the returned process-tree completion promise.
+      if (removeProfile) {
+        try {
+          rmSync(userDataDir, { recursive: true, force: true });
+        } catch { /* ignore */ }
+      }
+      killPromise = stopProcessTree(started.proc);
+    }
+    return killPromise;
+  };
+  // CDP lifecycle: always disconnect + kill the browser, even if the caller is
+  // terminated by SIGINT/SIGTERM/SIGHUP before its own finally runs (the
+  // 2026-08-05 OOM incident leaked headless chromes exactly this way).
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+    process.once(signal, () => {
+      killStarted();
+      process.exit(130);
+    });
+  }
   return {
     proc: started.proc,
     ws: started.ws,
     userDataDir,
-    kill({ removeProfile = removeProfileOnKill } = {}) {
-      if (!killPromise) {
-        try {
-          started.ws.close();
-        } catch { /* ignore */ }
-        signalProcessTree(started.proc);
-        // Keep legacy fire-and-forget callers safe: their profile is removed synchronously even if
-        // they call process.exit() without awaiting the returned process-tree completion promise.
-        if (removeProfile) {
-          try {
-            rmSync(userDataDir, { recursive: true, force: true });
-          } catch { /* ignore */ }
-        }
-        killPromise = stopProcessTree(started.proc);
-      }
-      return killPromise;
-    },
+    kill: killStarted,
   };
 }
 
