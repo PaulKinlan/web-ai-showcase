@@ -303,6 +303,13 @@ other pages. `lib/model-cache.js` is version-agnostic (scans Cache Storage by mo
 `@huggingface/transformers@4.2.0`; everything else stays 3.7.5. Verify the pin stays scoped to that
 worker.
 
+**transformers.js option naming — `top_k` not `topk`.** The text-classification pipeline in 3.7.5
+reads its top-k option as **`top_k`** (snake_case); `topk` is silently ignored and the pipeline
+returns only the top-1 result. If a demo intends multi-bar probability output (e.g. 3-way NLI),
+pass `{ top_k: N }` — or `{ topk: null }` for all labels (toxicity-detection pattern). Found
+2026-08-05: `mobilebert-nli` shipped `{ topk: 3 }` and rendered a single bar; fixed to `top_k`.
+Audit other text-classification workers for the same mistake before copying them.
+
 Cover the full capability range — classification, NER, embeddings/ reranking/search,
 summarisation/translation/generation, ASR, audio classification, TTS, image classification,
 zero-shot image, detection, segmentation, depth/normal, OCR/doc, captioning/VQA/VLM, background
