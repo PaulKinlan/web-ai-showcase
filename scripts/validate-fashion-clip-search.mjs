@@ -24,8 +24,8 @@ import {
 
 const WRITE_RUN = process.argv.includes("--write-run");
 const RUN_RECORD = join(repoRoot, "models/fashion-clip-search/acceptance-run.json");
-mkdirSync(join(homedir(), ".cache", "webai-validator-profiles"), { recursive: true });
-const PROFILE_DIR = mkdtempSync(join(homedir(), ".cache", "webai-validator-profiles", "fashion-clip-search-acceptance-"));
+const PROFILE_DIR = join(homedir(), ".cache", "webai-validator-profiles", "fashion-clip-search");
+mkdirSync(PROFILE_DIR, { recursive: true });
 if (WRITE_RUN) rmSync(RUN_RECORD, { force: true });
 
 const STAGE = "patrickjohncyh/fashion-clip"; // the one advertised model stage
@@ -146,13 +146,17 @@ async function driveQuery(cdp, sessionId, query, chipIndex) {
   );
 }
 
-async function runSearch(cdp, sessionId, label) {
+async function runSearch(cdp, sessionId, label, prev = {}) {
   await evaluate(cdp, sessionId, `(() => { document.querySelector('#run').click(); return true; })()`);
+  // Completion status varies by rung ("Done." / "Tagged." / "Ranked."); wait for a GENUINELY new
+  // pass (status cycle + fresh latency + fresh grid) so a stale previous result set is never
+  // snapshotted as this run's output.
   await waitFor(
     cdp,
     sessionId,
-    `document.querySelectorAll('#results .result-card').length > 0 &&
-     (document.querySelector('#rBackend')?.textContent || '').length > 0`,
+    `/(Done\.|Tagged\.|Ranked\.)/.test(document.querySelector('#status')?.textContent || '') &&
+     (${JSON.stringify(prev.ms || "")} === '' || (document.querySelector('#rMs')?.textContent || '') !== ${JSON.stringify(prev.ms)}) &&
+     document.querySelectorAll('#results .result-card').length > 0`,
     300_000,
     `${label} search done`,
   );
@@ -194,8 +198,7 @@ async function exercise(cdp, page, rung, viewport) {
 
   // Real search #1.
   await driveQuery(cdp, sid, "a dog", 0);
-  const first = await runSearch(cdp, sid, `${viewport} ${rung} run 1`);
-  check(
+  const first = await runSearch(cdp, sid, `${viewport} ${rung} run 1`);  check(
     `${viewport} ${rung}: real ${STAGE} retrieval`,
     first.backend === "WASM" && /^\d+ ms$/.test(first.ms) && first.cards === CATALOG_N &&
       first.topScore.trim().length > 0,
@@ -212,7 +215,7 @@ async function exercise(cdp, page, rung, viewport) {
   // generic images (top-1 can repeat for unrelated queries), so the honest re-rank signal is a
   // changed score/ranking from a genuinely new search pass — not top-1 identity.
   await driveQuery(cdp, sid, "pizza", 1);
-  const second = await runSearch(cdp, sid, `${viewport} ${rung} run 2`);
+  const second = await runSearch(cdp, sid, `${viewport} ${rung} run 2`, first);
   check(
     `${viewport} ${rung}: second query drives a real re-rank`,
     /^\d+ ms$/.test(second.ms) && second.cards === CATALOG_N &&
@@ -274,7 +277,7 @@ try {
   console.log(`ROUTE-RESULTS-JSON: ${JSON.stringify(results)}`);
   if (chrome) await chrome.kill({ removeProfile: false });
   if (server) await new Promise((resolve) => server.close(resolve));
-  rmSync(PROFILE_DIR, { recursive: true, force: true });
+
 }
 
 const succeeded = checks === 40 && passed === checks && results.length === 8 &&

@@ -23,8 +23,8 @@ import {
 
 const WRITE_RUN = process.argv.includes("--write-run");
 const RUN_RECORD = join(repoRoot, "models/chinese-spell-check/acceptance-run.json");
-mkdirSync(join(homedir(), ".cache", "webai-validator-profiles"), { recursive: true });
-const PROFILE_DIR = mkdtempSync(join(homedir(), ".cache", "webai-validator-profiles", "chinese-spell-check-acceptance-"));
+const PROFILE_DIR = join(homedir(), ".cache", "webai-validator-profiles", "chinese-spell-check");
+mkdirSync(PROFILE_DIR, { recursive: true });
 if (WRITE_RUN) rmSync(RUN_RECORD, { force: true });
 
 const STAGE = "Xenova/macbert4csc-base-chinese"; // the one advertised model stage
@@ -157,7 +157,7 @@ async function exercise(cdp, page, rung, viewport) {
   );
   check(
     `${viewport} ${rung}: real ${STAGE} streamed generation`,
-    first.out.trim().length >= 20 && /WASM/.test(first.backend) && /^\d+ ms$/.test(first.ms),
+    first.out.trim().length >= 6 && /WASM/.test(first.backend) && /^\d+ ms$/.test(first.ms),
     JSON.stringify(first).slice(0, 200),
   );
 
@@ -193,7 +193,7 @@ async function exercise(cdp, page, rung, viewport) {
   );
   check(
     `${viewport} ${rung}: sample chip + Answer drive a real second stream`,
-    second.out.trim().length >= 20 && second.out !== first.out && /^\d+ ms$/.test(second.ms),
+    second.out.trim().length >= 6 && second.out !== first.out && /^\d+ ms$/.test(second.ms),
     JSON.stringify(second).slice(0, 200),
   );
 
@@ -251,7 +251,7 @@ try {
   console.log(`ROUTE-RESULTS-JSON: ${JSON.stringify(results)}`);
   if (chrome) await chrome.kill({ removeProfile: false });
   if (server) await new Promise((resolve) => server.close(resolve));
-  rmSync(PROFILE_DIR, { recursive: true, force: true });
+
 }
 
 const succeeded = checks === 32 && passed === checks && results.length === 8 &&

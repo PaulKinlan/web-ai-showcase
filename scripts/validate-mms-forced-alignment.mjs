@@ -25,8 +25,8 @@ import {
 
 const WRITE_RUN = process.argv.includes("--write-run");
 const RUN_RECORD = join(repoRoot, "models/mms-forced-alignment/acceptance-run.json");
-mkdirSync(join(homedir(), ".cache", "webai-validator-profiles"), { recursive: true });
-const PROFILE_DIR = mkdtempSync(join(homedir(), ".cache", "webai-validator-profiles", "mms-forced-alignment-acceptance-"));
+const PROFILE_DIR = join(homedir(), ".cache", "webai-validator-profiles", "mms-forced-alignment");
+mkdirSync(PROFILE_DIR, { recursive: true });
 if (WRITE_RUN) rmSync(RUN_RECORD, { force: true });
 
 const STAGE = "onnx-community/mms-300m-1130-forced-aligner-ONNX"; // the one advertised model stage
@@ -283,7 +283,7 @@ try {
   console.log(`ROUTE-RESULTS-JSON: ${JSON.stringify(results)}`);
   if (chrome) await chrome.kill({ removeProfile: false });
   if (server) await new Promise((resolve) => server.close(resolve));
-  rmSync(PROFILE_DIR, { recursive: true, force: true });
+
 }
 
 const succeeded = checks === 40 && passed === checks && results.length === 8 &&

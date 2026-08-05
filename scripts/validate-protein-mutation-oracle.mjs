@@ -23,8 +23,8 @@ import {
 
 const WRITE_RUN = process.argv.includes("--write-run");
 const RUN_RECORD = join(repoRoot, "models/protein-mutation-oracle/acceptance-run.json");
-mkdirSync(join(homedir(), ".cache", "webai-validator-profiles"), { recursive: true });
-const PROFILE_DIR = mkdtempSync(join(homedir(), ".cache", "webai-validator-profiles", "protein-mutation-oracle-acceptance-"));
+const PROFILE_DIR = join(homedir(), ".cache", "webai-validator-profiles", "protein-mutation-oracle");
+mkdirSync(PROFILE_DIR, { recursive: true });
 if (WRITE_RUN) rmSync(RUN_RECORD, { force: true });
 
 const STAGE = "Xenova/esm2_t12_35M_UR50D"; // the one advertised model stage
@@ -253,7 +253,7 @@ try {
   console.log(`ROUTE-RESULTS-JSON: ${JSON.stringify(results)}`);
   if (chrome) await chrome.kill({ removeProfile: false });
   if (server) await new Promise((resolve) => server.close(resolve));
-  rmSync(PROFILE_DIR, { recursive: true, force: true });
+
 }
 
 const succeeded = checks === 8 && passed === checks && results.length === 2 &&

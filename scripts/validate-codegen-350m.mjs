@@ -250,7 +250,7 @@ try {
   console.log(`ROUTE-RESULTS-JSON: ${JSON.stringify(results)}`);
   if (chrome) await chrome.kill({ removeProfile: false });
   if (server) await new Promise((resolve) => server.close(resolve));
-  rmSync(PROFILE_DIR, { recursive: true, force: true });
+
 }
 
 const succeeded = checks === 32 && passed === checks && results.length === 8 &&
