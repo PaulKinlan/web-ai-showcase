@@ -202,6 +202,17 @@ async function exercise(cdp, page, rung, viewport) {
       `${viewport} ${rung} recording stopped`,
       1_000,
     );
+    // recState flips BEFORE blobToMono16k finishes; the page assigns pcm then reveals the player,
+    // so the player reveal is the decode-complete signal — clicking run before it means pcm is
+    // still null and the page answers "Record a sentence first."
+    await waitFor(
+      cdp,
+      sid,
+      `document.querySelector('#player')?.hidden === false && (document.querySelector('#player')?.src || '').length > 0`,
+      30_000,
+      `${viewport} ${rung} recording decoded`,
+      1_000,
+    );
     await evaluate(
       cdp,
       sid,
