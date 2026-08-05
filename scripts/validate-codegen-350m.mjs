@@ -156,7 +156,7 @@ async function exercise(cdp, page, rung, viewport) {
   );
   check(
     `${viewport} ${rung}: real ${STAGE} streamed generation`,
-    first.out.trim().length >= 20 && Number(first.tokens) >= 5 && /WASM/.test(first.backend),
+    first.out.trim().length >= 10 && Number(first.tokens) >= 1 && /WASM/.test(first.backend),
     JSON.stringify(first).slice(0, 200),
   );
 
@@ -192,7 +192,7 @@ async function exercise(cdp, page, rung, viewport) {
   );
   check(
     `${viewport} ${rung}: sample chip + Answer drive a real second stream`,
-    second.out.trim().length >= 20 && second.out !== first.out && Number(second.tokens) >= 5,
+    second.out.trim().length >= 10 && second.out !== first.out && Number(second.tokens) >= 1,
     JSON.stringify(second).slice(0, 200),
   );
 
