@@ -22,7 +22,7 @@ async function ensureLoaded() {
   if (classifier) return;
   mod = await import(TRANSFORMERS_URL);
   const { pipeline } = mod;
-  classifier = await pipeline("text-classification", MODEL_ID, {
+  classifier = await pipeline("text-classification", "Xenova/mobilebert-uncased-mnli", {
     device,
     dtype: DTYPE,
     progress_callback: (p) => post({ type: "progress", p }),
@@ -33,7 +33,7 @@ async function ensureLoaded() {
 async function classify(id, premise, hypothesis) {
   await ensureLoaded();
   const t0 = performance.now();
-  const out = await classifier(`${premise} ${hypothesis}`, { topk: 3 });
+  const out = await classifier(`${premise} ${hypothesis}`, { top_k: 3 });
   const ms = Math.round(performance.now() - t0);
   post({
     type: "result",
