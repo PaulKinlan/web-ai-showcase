@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Route-complete llama2-c-stories acceptance: real browser inference on every published route at desktop
 // and mobile. Advertised stage driven for real:
-//   Xenova/llama2.c-stories15M  (all routes — text-generation llama2.c 15M TinyStories story generation, WASM int8, 15MB)
+//   Xenova/llama2.c-stories15M  (all routes — text-generation instruction following, WASM int8, 140MB)
 // The harness owns one fresh Chrome process tree per route cell while reusing its own cache profile
 // (proving cached auto-init); every wait has a hard deadline and the ?auto hook downloads + runs the
 // model on ready. Every route is driven through real controls: a sample chip + the Answer button.
@@ -180,8 +180,7 @@ async function exercise(cdp, page, rung, viewport) {
     cdp,
     sid,
     `(document.querySelector('#out')?.textContent || '') !== ${JSON.stringify(first.out)} &&
-     /[^…]\.$/.test(document.querySelector('#status')?.textContent || '') &&
-     !/…$/.test(document.querySelector('#status')?.textContent || '')`,
+     /(Done\.|Rewritten\.)/.test(document.querySelector('#status')?.textContent || '')`,
     300_000,
     `${viewport} ${rung} second generation`,
   );
