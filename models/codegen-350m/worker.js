@@ -21,7 +21,7 @@ function post(msg) {
 
 async function makePipeline() {
   const { pipeline } = mod;
-  return pipeline("text-generation", MODEL_ID, {
+  return pipeline("text-generation", "Xenova/codegen-350M-mono", {
     device,
     dtype: DTYPE,
     progress_callback: (p) => post({ type: "progress", p }),
