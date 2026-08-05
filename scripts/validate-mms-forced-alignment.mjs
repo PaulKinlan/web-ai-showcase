@@ -121,10 +121,13 @@ async function ensureReady(cdp, sessionId, label) {
       `(() => {
       const buttons = [...document.querySelectorAll('.model-loader')].flatMap((loader) =>
         [...loader.querySelectorAll('button')].filter((item) =>
-          /Download|Retry|Re-download/i.test(item.textContent) && !item.disabled
+          /Download|Retry|Re-download|Continue/i.test(item.textContent) && !item.disabled
         )
       );
-      setTimeout(() => buttons.forEach((button) => button.click()), 0);
+      // In check-timeout the Retry button re-enters the same stalled check while Continue is the
+      // honest forward path (it verifies the cache / downloads); prefer Continue when present.
+      const cont = buttons.find((b) => /^Continue/i.test(b.textContent.trim()));
+      setTimeout(() => (cont || buttons[0])?.click(), 0);
       return buttons.length;
     })()`,
     );
@@ -198,7 +201,7 @@ async function exercise(cdp, page, rung, viewport) {
 
   // Real run #1: the bundled JFK sample (11 s) is the default audio; the Align button drives CTC.
   const first = await runAlign(cdp, sid, `${viewport} ${rung} run 1`);
-  const m1 = (first.matched || "").match(/^(\d+)\//); // readout is "54/83 chars"
+  const m1 = (first.matched || "").match(/^(\d+)(\/|$)/); // "54/83 chars" (overview) or "22" (practical)
   check(
     `${viewport} ${rung}: real ${STAGE} forced alignment`,
     first.backend === "WASM" && !!m1 && Number(m1[1]) > 0 &&
@@ -213,7 +216,7 @@ async function exercise(cdp, page, rung, viewport) {
 
   // Drive real controls: Align again → a second real alignment pass, output persists.
   const second = await runAlign(cdp, sid, `${viewport} ${rung} run 2`);
-  const m2 = (second.matched || "").match(/^(\d+)\//);
+  const m2 = (second.matched || "").match(/^(\d+)(\/|$)/);
   check(
     `${viewport} ${rung}: second Align re-runs real alignment`,
     !!m2 && Number(m2[1]) > 0 && /^\d+ ms$/.test(second.ms) &&

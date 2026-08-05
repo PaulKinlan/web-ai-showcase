@@ -111,10 +111,13 @@ async function ensureReady(cdp, sessionId, label) {
       `(() => {
       const buttons = [...document.querySelectorAll('.model-loader')].flatMap((loader) =>
         [...loader.querySelectorAll('button')].filter((item) =>
-          /Download|Retry|Re-download/i.test(item.textContent) && !item.disabled
+          /Download|Retry|Re-download|Continue/i.test(item.textContent) && !item.disabled
         )
       );
-      setTimeout(() => buttons.forEach((button) => button.click()), 0);
+      // In check-timeout the Retry button re-enters the same stalled check while Continue is the
+      // honest forward path (it verifies the cache / downloads); prefer Continue when present.
+      const cont = buttons.find((b) => /^Continue/i.test(b.textContent.trim()));
+      setTimeout(() => (cont || buttons[0])?.click(), 0);
       return buttons.length;
     })()`,
     );
