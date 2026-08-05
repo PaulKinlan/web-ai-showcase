@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Route-complete codegen-350m acceptance: real browser inference on every published route at desktop
 // and mobile. Advertised stage driven for real:
-//   Xenova/codegen-350M-mono  (all routes — text-generation codegen-350M code completion, WASM int8, ~350MB)
+//   Xenova/codegen-350M-mono  (all routes — text-generation instruction following, WASM int8, 140MB)
 // The harness owns one fresh Chrome process tree per route cell while reusing its own cache profile
 // (proving cached auto-init); every wait has a hard deadline and the ?auto hook downloads + runs the
 // model on ready. Every route is driven through real controls: a sample chip + the Answer button.
@@ -156,7 +156,7 @@ async function exercise(cdp, page, rung, viewport) {
   );
   check(
     `${viewport} ${rung}: real ${STAGE} streamed generation`,
-    first.out.trim().length >= 10 && Number(first.tokens) >= 1 && /WASM/.test(first.backend),
+    first.out.trim().length >= 20 && Number(first.tokens) >= 5 && /WASM/.test(first.backend),
     JSON.stringify(first).slice(0, 200),
   );
 
@@ -180,8 +180,7 @@ async function exercise(cdp, page, rung, viewport) {
     cdp,
     sid,
     `(document.querySelector('#out')?.textContent || '') !== ${JSON.stringify(first.out)} &&
-     /[^…]\.$/.test(document.querySelector('#status')?.textContent || '') &&
-     !/…$/.test(document.querySelector('#status')?.textContent || '')`,
+     /(Done\.|Rewritten\.)/.test(document.querySelector('#status')?.textContent || '')`,
     300_000,
     `${viewport} ${rung} second generation`,
   );
@@ -192,7 +191,7 @@ async function exercise(cdp, page, rung, viewport) {
   );
   check(
     `${viewport} ${rung}: sample chip + Answer drive a real second stream`,
-    second.out.trim().length >= 10 && second.out !== first.out && Number(second.tokens) >= 1,
+    second.out.trim().length >= 20 && second.out !== first.out && Number(second.tokens) >= 5,
     JSON.stringify(second).slice(0, 200),
   );
 

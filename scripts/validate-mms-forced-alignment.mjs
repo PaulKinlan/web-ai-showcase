@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// Route-complete protein-mutation-oracle acceptance: real browser inference on every published route at desktop
+// Route-complete mms-forced-alignment acceptance: real browser inference on every published route at desktop
 // and mobile. Advertised stage driven for real:
-//   Xenova/esm2_t12_35M_UR50D  (all routes — text-generation instruction following, WASM int8, 140MB)
+//   Xenova/mms-300m-1130-forced-aligner-ONNX  (all routes — text-generation instruction following, WASM int8, 140MB)
 // The harness owns one fresh Chrome process tree per route cell while reusing its own cache profile
 // (proving cached auto-init); every wait has a hard deadline and the ?auto hook downloads + runs the
 // model on ready. Every route is driven through real controls: a sample chip + the Answer button.
@@ -22,16 +22,16 @@ import {
 } from "./browser.mjs";
 
 const WRITE_RUN = process.argv.includes("--write-run");
-const RUN_RECORD = join(repoRoot, "models/protein-mutation-oracle/acceptance-run.json");
-const PROFILE_DIR = mkdtempSync(join(tmpdir(), "protein-mutation-oracle-acceptance-"));
+const RUN_RECORD = join(repoRoot, "models/mms-forced-alignment/acceptance-run.json");
+const PROFILE_DIR = mkdtempSync(join(tmpdir(), "mms-forced-alignment-acceptance-"));
 if (WRITE_RUN) rmSync(RUN_RECORD, { force: true });
 
-const STAGE = "Xenova/esm2_t12_35M_UR50D"; // the one advertised model stage
+const STAGE = "Xenova/mms-300m-1130-forced-aligner-ONNX"; // the one advertised model stage
 const ROUTES = {
-  overview: "models/protein-mutation-oracle/",
-  basics: "models/protein-mutation-oracle/basics/",
-  practical: "models/protein-mutation-oracle/practical/",
-  wild: "models/protein-mutation-oracle/wild/",
+  overview: "models/mms-forced-alignment/",
+  basics: "models/mms-forced-alignment/basics/",
+  practical: "models/mms-forced-alignment/practical/",
+  wild: "models/mms-forced-alignment/wild/",
 };
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const results = [];
