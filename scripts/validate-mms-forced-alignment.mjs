@@ -146,7 +146,7 @@ async function runAlign(cdp, sessionId, label) {
     sessionId,
     `(() => {
       const s = document.querySelector('#status')?.textContent || '';
-      if (/Alignment failed/.test(s)) return true;
+      if (/Alignment failed|Record a sentence first/.test(s)) return true;
       return /Aligned\.|SRT built\./.test(s) &&
         (document.querySelectorAll('#words > *').length > 0 ||
          (document.querySelector('#srt')?.textContent || '').includes('-->'));
@@ -169,8 +169,8 @@ async function runAlign(cdp, sessionId, label) {
       transcript: (document.querySelector('#transcript')?.textContent || '').trim().slice(0, 160)
     })`,
   );
-  if (/Alignment failed/.test(snap.status)) {
-    throw new Error(`page alignment failed: ${snap.status}`);
+  if (/Alignment failed|Record a sentence first/.test(snap.status)) {
+    throw new Error(`page alignment stopped: ${snap.status}`);
   }
   return snap;
 }
