@@ -1,13 +1,14 @@
 #!/usr/bin/env node
-// Route-complete fashion-clip-search acceptance: real browser inference on every published route at desktop
-// and mobile. Advertised stage driven for real:
-//   Xenova/fashion-clip  (all routes — text-generation instruction following, WASM int8, 140MB)
+// Route-complete fashion-clip-search acceptance: real browser inference on every published route at
+// desktop and mobile. Advertised stage driven for real:
+//   patrickjohncyh/fashion-clip  (all routes — CLIP text→image retrieval over the embedded catalog, WASM fp32, 578 MB)
 // The harness owns one fresh Chrome process tree per route cell while reusing its own cache profile
 // (proving cached auto-init); every wait has a hard deadline and the ?auto hook downloads + runs the
-// model on ready. Every route is driven through real controls: a sample chip + the Answer button.
+// model on ready. Every route is driven through real controls: the query box (or a preset tag chip on
+// the practical rung, which has no free-text box) + the Search button.
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import {
   CDP,
@@ -23,16 +24,18 @@ import {
 
 const WRITE_RUN = process.argv.includes("--write-run");
 const RUN_RECORD = join(repoRoot, "models/fashion-clip-search/acceptance-run.json");
-const PROFILE_DIR = mkdtempSync(join(tmpdir(), "fashion-clip-search-acceptance-"));
+mkdirSync(join(homedir(), ".cache", "webai-validator-profiles"), { recursive: true });
+const PROFILE_DIR = mkdtempSync(join(homedir(), ".cache", "webai-validator-profiles", "fashion-clip-search-acceptance-"));
 if (WRITE_RUN) rmSync(RUN_RECORD, { force: true });
 
-const STAGE = "Xenova/fashion-clip"; // the one advertised model stage
+const STAGE = "patrickjohncyh/fashion-clip"; // the one advertised model stage
 const ROUTES = {
   overview: "models/fashion-clip-search/",
   basics: "models/fashion-clip-search/basics/",
   practical: "models/fashion-clip-search/practical/",
   wild: "models/fashion-clip-search/wild/",
 };
+const CATALOG_N = 8; // clip.js CATALOG length — the full ranked grid renders every catalog image
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const results = [];
 let checks = 0;
@@ -124,75 +127,97 @@ async function ensureReady(cdp, sessionId, label) {
   throw new Error(`hard timeout after 840000ms: ${label} model download/init`);
 }
 
+// Set a free-text query (overview/basics/wild) or click a preset tag chip (practical), then Search.
+async function driveQuery(cdp, sessionId, query, chipIndex) {
+  return evaluate(
+    cdp,
+    sessionId,
+    `(() => {
+      const input = document.querySelector('#query');
+      if (input) {
+        input.value = ${JSON.stringify(query)};
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+      } else {
+        const chips = [...document.querySelectorAll('.chips .chip')];
+        if (chips[${chipIndex}]) { chips[${chipIndex}].click(); return 'chip:' + chips[${chipIndex}].textContent.trim(); }
+      }
+      return input ? 'query' : 'none';
+    })()`,
+  );
+}
+
+async function runSearch(cdp, sessionId, label) {
+  await evaluate(cdp, sessionId, `(() => { document.querySelector('#run').click(); return true; })()`);
+  await waitFor(
+    cdp,
+    sessionId,
+    `document.querySelectorAll('#results .result-card').length > 0 &&
+     (document.querySelector('#rBackend')?.textContent || '').length > 0`,
+    300_000,
+    `${label} search done`,
+  );
+  return evaluate(
+    cdp,
+    sessionId,
+    `({
+      cards: document.querySelectorAll('#results .result-card').length,
+      topImg: document.querySelector('#results .result-card .rank1 img, #results .result-card img')?.src || '',
+      topRank: document.querySelector('#results .result-card .rank')?.textContent || '',
+      topScore: document.querySelector('#results .result-card .score')?.textContent || '',
+      backend: document.querySelector('#rBackend')?.textContent || '',
+      ms: document.querySelector('#rMs')?.textContent || '',
+      dim: document.querySelector('#rDim')?.textContent || '',
+      n: document.querySelector('#rN')?.textContent || '',
+      status: document.querySelector('#status')?.textContent || ''
+    })`,
+  );
+}
+
 async function exercise(cdp, page, rung, viewport) {
   const sid = page.sessionId;
   const mobile = viewport === "mobile";
   await setViewport(cdp, sid, mobile ? MOBILE : DESKTOP);
   await ensureReady(cdp, sid, `${viewport} ${rung}`);
 
-  // Overview auto-runs on ?auto; ladder pages need the Answer button driven.
-  const alreadyRan = await evaluate(cdp, sid, `document.querySelector('#readout')?.hidden === false`);
-  if (!alreadyRan) {
-    await evaluate(cdp, sid, `(() => { document.querySelector('#run').click(); return true; })()`);
-  }
-  // Streaming generation: wait for the readout (set when the stream completes). Completion
-  // status text varies by route ("Done." / "Rewritten.") so the readout is the reliable signal.
+  // Wait for the catalog to be embedded on ready before searching (search errors without it).
+  // Rungs differ in the exact status copy ("Catalog embedded. Ready to search." / "Ready.") and in
+  // whether #rN exists, so accept any of the real signals.
   await waitFor(
     cdp,
     sid,
-    `document.querySelector('#readout')?.hidden === false`,
-    300_000,
-    `${viewport} ${rung} default generation`,
-  );
-  const first = await evaluate(
-    cdp,
-    sid,
-    `({
-      out: document.querySelector('#out')?.textContent || '',
-      tokens: document.querySelector('#rTok')?.textContent || '',
-      backend: document.querySelector('#rBackend')?.textContent || '',
-      chips: document.querySelectorAll('#chain .t').length
-    })`,
-  );
-  check(
-    `${viewport} ${rung}: real ${STAGE} streamed generation`,
-    first.out.trim().length >= 20 && Number(first.tokens) >= 5 && /WASM/.test(first.backend),
-    JSON.stringify(first).slice(0, 200),
+    `/(Catalog embedded|Ready\.)/.test(document.querySelector('#status')?.textContent || '') ||
+     (document.querySelector('#rN')?.textContent || '').trim().length > 0`,
+    120_000,
+    `${viewport} ${rung} catalog embedded`,
+    2_000,
   );
 
-  // Drive real controls: click a sample chip (different instruction) + Answer → new stream.
-  const prompt0 = await evaluate(cdp, sid, `document.querySelector('#prompt')?.value || ''`);
-  await evaluate(
-    cdp,
-    sid,
-    `(() => { const chip = document.querySelectorAll('#samples .chip')[1]; if (chip) chip.click(); return !!chip; })()`,
-  );
-  await waitFor(
-    cdp,
-    sid,
-    `document.querySelector('#prompt')?.value !== ${JSON.stringify(prompt0)}`,
-    15_000,
-    `${viewport} ${rung} chip applied`,
-    500,
-  );
-  await evaluate(cdp, sid, `(() => { document.querySelector('#run').click(); return true; })()`);
-  await waitFor(
-    cdp,
-    sid,
-    `(document.querySelector('#out')?.textContent || '') !== ${JSON.stringify(first.out)} &&
-     /(Done\.|Rewritten\.)/.test(document.querySelector('#status')?.textContent || '')`,
-    300_000,
-    `${viewport} ${rung} second generation`,
-  );
-  const second = await evaluate(
-    cdp,
-    sid,
-    `({ out: document.querySelector('#out')?.textContent || '', tokens: document.querySelector('#rTok')?.textContent || '' })`,
+  // Real search #1.
+  await driveQuery(cdp, sid, "a dog", 0);
+  const first = await runSearch(cdp, sid, `${viewport} ${rung} run 1`);
+  check(
+    `${viewport} ${rung}: real ${STAGE} retrieval`,
+    first.backend === "WASM" && /^\d+ ms$/.test(first.ms) && first.cards === CATALOG_N &&
+      first.topScore.trim().length > 0,
+    JSON.stringify(first).slice(0, 240),
   );
   check(
-    `${viewport} ${rung}: sample chip + Answer drive a real second stream`,
-    second.out.trim().length >= 20 && second.out !== first.out && Number(second.tokens) >= 5,
-    JSON.stringify(second).slice(0, 200),
+    `${viewport} ${rung}: ranked result grid rendered`,
+    first.cards === CATALOG_N && first.topImg.endsWith(".jpg") && first.topScore.trim().length > 0 &&
+      (first.topRank === "" || first.topRank.includes("#")),
+    JSON.stringify({ cards: first.cards, topImg: first.topImg, topRank: first.topRank, topScore: first.topScore }),
+  );
+
+  // Drive real controls again: a different query → a real second inference. The model is quirky on
+  // generic images (top-1 can repeat for unrelated queries), so the honest re-rank signal is a
+  // changed score/ranking from a genuinely new search pass — not top-1 identity.
+  await driveQuery(cdp, sid, "pizza", 1);
+  const second = await runSearch(cdp, sid, `${viewport} ${rung} run 2`);
+  check(
+    `${viewport} ${rung}: second query drives a real re-rank`,
+    /^\d+ ms$/.test(second.ms) && second.cards === CATALOG_N &&
+      (second.topImg !== first.topImg || second.topScore !== first.topScore),
+    JSON.stringify({ topImg: second.topImg, topRank: second.topRank, topScore: second.topScore }),
   );
 
   const hygiene = await evaluate(
@@ -234,7 +259,7 @@ try {
         page = await openPage(cdp, url(route));
         const before = passed;
         await exercise(cdp, page, rung, viewport);
-        cell.pass = passed - before === 4;
+        cell.pass = passed - before === 5;
       } catch (error) {
         console.log(`FAIL  ${viewport} ${rung}: ${String(error.stack || error).slice(0, 500)}`);
       } finally {
@@ -252,7 +277,7 @@ try {
   rmSync(PROFILE_DIR, { recursive: true, force: true });
 }
 
-const succeeded = checks === 32 && passed === checks && results.length === 8 &&
+const succeeded = checks === 40 && passed === checks && results.length === 8 &&
   results.every((item) => item.pass);
 if (WRITE_RUN && succeeded) {
   const commit = execFileSync("git", ["rev-parse", "HEAD"], {

@@ -1,13 +1,15 @@
 #!/usr/bin/env node
-// Route-complete mms-forced-alignment acceptance: real browser inference on every published route at desktop
-// and mobile. Advertised stage driven for real:
-//   Xenova/mms-300m-1130-forced-aligner-ONNX  (all routes — text-generation instruction following, WASM int8, 140MB)
+// Route-complete mms-forced-alignment acceptance: real browser inference on every published route at
+// desktop and mobile. Advertised stage driven for real:
+//   onnx-community/mms-300m-1130-forced-aligner-ONNX  (all routes — MMS 300M CTC word alignment, WASM q4, 241 MB)
 // The harness owns one fresh Chrome process tree per route cell while reusing its own cache profile
-// (proving cached auto-init); every wait has a hard deadline and the ?auto hook downloads + runs the
-// model on ready. Every route is driven through real controls: a sample chip + the Answer button.
+// (proving cached auto-init); every wait has a hard deadline. Every route is driven through real
+// controls: the bundled JFK sample auto-loads, then the Align button runs real CTC alignment. The
+// practical rung renders an SRT export instead of word chips, so the checks branch on the element
+// actually present.
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import {
   CDP,
@@ -23,10 +25,17 @@ import {
 
 const WRITE_RUN = process.argv.includes("--write-run");
 const RUN_RECORD = join(repoRoot, "models/mms-forced-alignment/acceptance-run.json");
-const PROFILE_DIR = mkdtempSync(join(tmpdir(), "mms-forced-alignment-acceptance-"));
+mkdirSync(join(homedir(), ".cache", "webai-validator-profiles"), { recursive: true });
+const PROFILE_DIR = mkdtempSync(join(homedir(), ".cache", "webai-validator-profiles", "mms-forced-alignment-acceptance-"));
 if (WRITE_RUN) rmSync(RUN_RECORD, { force: true });
 
-const STAGE = "Xenova/mms-300m-1130-forced-aligner-ONNX"; // the one advertised model stage
+const STAGE = "onnx-community/mms-300m-1130-forced-aligner-ONNX"; // the one advertised model stage
+// The wild rung has no bundled audio — it drives a real mic recording. In the harness we point
+// Chrome's fake audio device at the bundled JFK clip and align it against its known transcript, so
+// the record → transcript → align flow runs end to end for real.
+const JFK_WAV = join(repoRoot, "models/mms-forced-alignment/jfk.wav");
+const JFK_TRANSCRIPT =
+  "And so, my fellow Americans, ask not what your country can do for you; ask what you can do for your country.";
 const ROUTES = {
   overview: "models/mms-forced-alignment/",
   basics: "models/mms-forced-alignment/basics/",
@@ -124,75 +133,91 @@ async function ensureReady(cdp, sessionId, label) {
   throw new Error(`hard timeout after 840000ms: ${label} model download/init`);
 }
 
+// Wait for the alignment completion status AND a populated result surface, then snapshot it.
+async function runAlign(cdp, sessionId, label) {
+  await evaluate(cdp, sessionId, `(() => { document.querySelector('#run').click(); return true; })()`);
+  await waitFor(
+    cdp,
+    sessionId,
+    `(/Aligned\\.|SRT built\\./.test(document.querySelector('#status')?.textContent || '') &&
+      (document.querySelectorAll('#words > *').length > 0 ||
+       (document.querySelector('#srt')?.textContent || '').includes('-->')))`,
+    300_000,
+    `${label} alignment done`,
+  );
+  return evaluate(
+    cdp,
+    sessionId,
+    `({
+      status: document.querySelector('#status')?.textContent || '',
+      matched: document.querySelector('#rMatched')?.textContent || document.querySelector('#rWords')?.textContent || '',
+      frames: document.querySelector('#rFrames')?.textContent || '',
+      frameMs: document.querySelector('#rFrameMs')?.textContent || '',
+      backend: document.querySelector('#rBackend')?.textContent || '',
+      ms: document.querySelector('#rMs')?.textContent || '',
+      words: document.querySelectorAll('#words > *').length,
+      srt: (document.querySelector('#srt')?.textContent || '').slice(0, 120),
+      transcript: (document.querySelector('#transcript')?.textContent || '').trim().slice(0, 160)
+    })`,
+  );
+}
+
 async function exercise(cdp, page, rung, viewport) {
   const sid = page.sessionId;
   const mobile = viewport === "mobile";
   await setViewport(cdp, sid, mobile ? MOBILE : DESKTOP);
   await ensureReady(cdp, sid, `${viewport} ${rung}`);
 
-  // Overview auto-runs on ?auto; ladder pages need the Answer button driven.
-  const alreadyRan = await evaluate(cdp, sid, `document.querySelector('#readout')?.hidden === false`);
-  if (!alreadyRan) {
-    await evaluate(cdp, sid, `(() => { document.querySelector('#run').click(); return true; })()`);
+  if (rung === "wild") {
+    // Real mic flow against Chrome's fake audio device (the bundled JFK clip).
+    await evaluate(cdp, sid, `(() => { document.querySelector('#rec').click(); return true; })()`);
+    await waitFor(
+      cdp,
+      sid,
+      `(document.querySelector('#recState')?.textContent || '').includes('recording')`,
+      15_000,
+      `${viewport} ${rung} recording started`,
+      500,
+    );
+    await sleep(13_500); // let the 11 s fake clip fully record
+    await evaluate(cdp, sid, `(() => { document.querySelector('#rec').click(); return true; })()`);
+    await waitFor(
+      cdp,
+      sid,
+      `(document.querySelector('#recState')?.textContent || '').includes('recorded')`,
+      30_000,
+      `${viewport} ${rung} recording stopped`,
+      1_000,
+    );
+    await evaluate(
+      cdp,
+      sid,
+      `(() => { const t = document.querySelector('#transcript'); t.value = ${JSON.stringify(JFK_TRANSCRIPT)}; return t.value.length; })()`,
+    );
   }
-  // Streaming generation: wait for the readout (set when the stream completes). Completion
-  // status text varies by route ("Done." / "Rewritten.") so the readout is the reliable signal.
-  await waitFor(
-    cdp,
-    sid,
-    `document.querySelector('#readout')?.hidden === false`,
-    300_000,
-    `${viewport} ${rung} default generation`,
-  );
-  const first = await evaluate(
-    cdp,
-    sid,
-    `({
-      out: document.querySelector('#out')?.textContent || '',
-      tokens: document.querySelector('#rTok')?.textContent || '',
-      backend: document.querySelector('#rBackend')?.textContent || '',
-      chips: document.querySelectorAll('#chain .t').length
-    })`,
+
+  // Real run #1: the bundled JFK sample (11 s) is the default audio; the Align button drives CTC.
+  const first = await runAlign(cdp, sid, `${viewport} ${rung} run 1`);
+  check(
+    `${viewport} ${rung}: real ${STAGE} forced alignment`,
+    first.backend === "WASM" && /^\d+$/.test(first.matched) && Number(first.matched) > 0 &&
+      /^\d+ ms$/.test(first.ms) && first.transcript.length > 0,
+    JSON.stringify(first).slice(0, 240),
   );
   check(
-    `${viewport} ${rung}: real ${STAGE} streamed generation`,
-    first.out.trim().length >= 20 && Number(first.tokens) >= 5 && /WASM/.test(first.backend),
-    JSON.stringify(first).slice(0, 200),
+    `${viewport} ${rung}: word-level output rendered`,
+    (rung === "practical" ? first.srt.includes("-->") : first.words > 0),
+    JSON.stringify({ words: first.words, srt: first.srt }),
   );
 
-  // Drive real controls: click a sample chip (different instruction) + Answer → new stream.
-  const prompt0 = await evaluate(cdp, sid, `document.querySelector('#prompt')?.value || ''`);
-  await evaluate(
-    cdp,
-    sid,
-    `(() => { const chip = document.querySelectorAll('#samples .chip')[1]; if (chip) chip.click(); return !!chip; })()`,
-  );
-  await waitFor(
-    cdp,
-    sid,
-    `document.querySelector('#prompt')?.value !== ${JSON.stringify(prompt0)}`,
-    15_000,
-    `${viewport} ${rung} chip applied`,
-    500,
-  );
-  await evaluate(cdp, sid, `(() => { document.querySelector('#run').click(); return true; })()`);
-  await waitFor(
-    cdp,
-    sid,
-    `(document.querySelector('#out')?.textContent || '') !== ${JSON.stringify(first.out)} &&
-     /(Done\.|Rewritten\.)/.test(document.querySelector('#status')?.textContent || '')`,
-    300_000,
-    `${viewport} ${rung} second generation`,
-  );
-  const second = await evaluate(
-    cdp,
-    sid,
-    `({ out: document.querySelector('#out')?.textContent || '', tokens: document.querySelector('#rTok')?.textContent || '' })`,
-  );
+  // Drive real controls: Align again → a second real alignment pass, output persists.
+  const second = await runAlign(cdp, sid, `${viewport} ${rung} run 2`);
   check(
-    `${viewport} ${rung}: sample chip + Answer drive a real second stream`,
-    second.out.trim().length >= 20 && second.out !== first.out && Number(second.tokens) >= 5,
-    JSON.stringify(second).slice(0, 200),
+    `${viewport} ${rung}: second Align re-runs real alignment`,
+    /^\d+$/.test(second.matched) && Number(second.matched) > 0 &&
+      /^\d+ ms$/.test(second.ms) &&
+      (rung === "practical" ? second.srt.includes("-->") : second.words > 0),
+    JSON.stringify(second).slice(0, 240),
   );
 
   const hygiene = await evaluate(
@@ -229,12 +254,20 @@ try {
           userDataDir: PROFILE_DIR,
           resetProfile: false,
           removeProfileOnKill: false,
+          // The wild rung records from the mic; drive Chrome's fake device with the bundled clip.
+          extraArgs: rung === "wild"
+            ? [
+              "--use-fake-ui-for-media-stream",
+              "--use-fake-device-for-media-stream",
+              `--use-file-for-fake-audio-capture=${JFK_WAV}`,
+            ]
+            : [],
         });
         cdp = new CDP(chrome.ws);
         page = await openPage(cdp, url(route));
         const before = passed;
         await exercise(cdp, page, rung, viewport);
-        cell.pass = passed - before === 4;
+        cell.pass = passed - before === 5;
       } catch (error) {
         console.log(`FAIL  ${viewport} ${rung}: ${String(error.stack || error).slice(0, 500)}`);
       } finally {
@@ -252,7 +285,7 @@ try {
   rmSync(PROFILE_DIR, { recursive: true, force: true });
 }
 
-const succeeded = checks === 32 && passed === checks && results.length === 8 &&
+const succeeded = checks === 40 && passed === checks && results.length === 8 &&
   results.every((item) => item.pass);
 if (WRITE_RUN && succeeded) {
   const commit = execFileSync("git", ["rev-parse", "HEAD"], {

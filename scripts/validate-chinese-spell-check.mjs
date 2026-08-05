@@ -6,8 +6,8 @@
 // (proving cached auto-init); every wait has a hard deadline and the ?auto hook downloads + runs the
 // model on ready. Every route is driven through real controls: a sample chip + the Answer button.
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import {
   CDP,
@@ -23,7 +23,8 @@ import {
 
 const WRITE_RUN = process.argv.includes("--write-run");
 const RUN_RECORD = join(repoRoot, "models/chinese-spell-check/acceptance-run.json");
-const PROFILE_DIR = mkdtempSync(join(tmpdir(), "chinese-spell-check-acceptance-"));
+mkdirSync(join(homedir(), ".cache", "webai-validator-profiles"), { recursive: true });
+const PROFILE_DIR = mkdtempSync(join(homedir(), ".cache", "webai-validator-profiles", "chinese-spell-check-acceptance-"));
 if (WRITE_RUN) rmSync(RUN_RECORD, { force: true });
 
 const STAGE = "Xenova/macbert4csc-base-chinese"; // the one advertised model stage
@@ -149,18 +150,19 @@ async function exercise(cdp, page, rung, viewport) {
     sid,
     `({
       out: document.querySelector('#out')?.textContent || '',
-      tokens: document.querySelector('#rTok')?.textContent || '',
+      ms: document.querySelector('#rMs')?.textContent || '',
       backend: document.querySelector('#rBackend')?.textContent || '',
       chips: document.querySelectorAll('#chain .t').length
     })`,
   );
   check(
     `${viewport} ${rung}: real ${STAGE} streamed generation`,
-    first.out.trim().length >= 20 && Number(first.tokens) >= 5 && /WASM/.test(first.backend),
+    first.out.trim().length >= 20 && /WASM/.test(first.backend) && /^\d+ ms$/.test(first.ms),
     JSON.stringify(first).slice(0, 200),
   );
 
-  // Drive real controls: click a sample chip (different instruction) + Answer → new stream.
+  // Drive real controls: click a sample chip (different sentence) + Answer → new real check.
+  // Completion status is "完成。" (macbert4csc) — never the English template texts.
   const prompt0 = await evaluate(cdp, sid, `document.querySelector('#prompt')?.value || ''`);
   await evaluate(
     cdp,
@@ -180,18 +182,18 @@ async function exercise(cdp, page, rung, viewport) {
     cdp,
     sid,
     `(document.querySelector('#out')?.textContent || '') !== ${JSON.stringify(first.out)} &&
-     /(Done\.|Rewritten\.)/.test(document.querySelector('#status')?.textContent || '')`,
+     /完成。/.test(document.querySelector('#status')?.textContent || '')`,
     300_000,
     `${viewport} ${rung} second generation`,
   );
   const second = await evaluate(
     cdp,
     sid,
-    `({ out: document.querySelector('#out')?.textContent || '', tokens: document.querySelector('#rTok')?.textContent || '' })`,
+    `({ out: document.querySelector('#out')?.textContent || '', ms: document.querySelector('#rMs')?.textContent || '' })`,
   );
   check(
     `${viewport} ${rung}: sample chip + Answer drive a real second stream`,
-    second.out.trim().length >= 20 && second.out !== first.out && Number(second.tokens) >= 5,
+    second.out.trim().length >= 20 && second.out !== first.out && /^\d+ ms$/.test(second.ms),
     JSON.stringify(second).slice(0, 200),
   );
 

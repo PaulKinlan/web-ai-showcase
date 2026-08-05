@@ -18,7 +18,7 @@ import { readFile } from "node:fs/promises";
 // surfaces genuinely new architectures (not new fine-tunes). Each: family -> name-substring patterns.
 const FAMILIES = {
   // Text — encoder
-  bert: ["bert", "-ner", "distilbert", "sst-2", "squad"],
+  bert: ["bert", "-ner", "sst-2", "squad"],
   roberta: ["roberta"],
   deberta: ["deberta", "nli-deberta"],
   albert: ["albert"],
@@ -48,7 +48,7 @@ const FAMILIES = {
   marian: ["opus-mt", "marian"],
   // Vision — classify/detect/segment/depth
   vit: ["vit-", "vit_", "vit-base", "beit", "deit"],
-  detr: ["detr"],
+  detr: ["detr-resnet", "detr"],
   yolos: ["yolos"],
   "rt-detr": ["rt-detr", "rtdetr"],
   sam: ["sam", "slimsam", "segment-anything"],

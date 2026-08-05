@@ -1,13 +1,13 @@
 #!/usr/bin/env node
-// Route-complete protein-mutation-oracle acceptance: real browser inference on every published route at desktop
-// and mobile. Advertised stage driven for real:
-//   Xenova/esm2_t12_35M_UR50D  (all routes — text-generation instruction following, WASM int8, 140MB)
+// Route-complete protein-mutation-oracle acceptance: real browser inference on the published overview
+// route at desktop and mobile. Advertised stage driven for real:
+//   Xenova/esm2_t12_35M_UR50D  (overview — ESM-2 masked-LM zero-shot variant-effect scoring, WASM q8, ~35 MB)
 // The harness owns one fresh Chrome process tree per route cell while reusing its own cache profile
-// (proving cached auto-init); every wait has a hard deadline and the ?auto hook downloads + runs the
-// model on ready. Every route is driven through real controls: a sample chip + the Answer button.
+// (proving cached auto-init); every wait has a hard deadline and the loader auto-initialises on ready.
+// Every route is driven through real controls: a sample chip + the Analyse button.
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import {
   CDP,
@@ -23,15 +23,14 @@ import {
 
 const WRITE_RUN = process.argv.includes("--write-run");
 const RUN_RECORD = join(repoRoot, "models/protein-mutation-oracle/acceptance-run.json");
-const PROFILE_DIR = mkdtempSync(join(tmpdir(), "protein-mutation-oracle-acceptance-"));
+mkdirSync(join(homedir(), ".cache", "webai-validator-profiles"), { recursive: true });
+const PROFILE_DIR = mkdtempSync(join(homedir(), ".cache", "webai-validator-profiles", "protein-mutation-oracle-acceptance-"));
 if (WRITE_RUN) rmSync(RUN_RECORD, { force: true });
 
 const STAGE = "Xenova/esm2_t12_35M_UR50D"; // the one advertised model stage
+// Single published rung (overview) — the family's acceptance.json declares overview only.
 const ROUTES = {
   overview: "models/protein-mutation-oracle/",
-  basics: "models/protein-mutation-oracle/basics/",
-  practical: "models/protein-mutation-oracle/practical/",
-  wild: "models/protein-mutation-oracle/wild/",
 };
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const results = [];
@@ -130,69 +129,74 @@ async function exercise(cdp, page, rung, viewport) {
   await setViewport(cdp, sid, mobile ? MOBILE : DESKTOP);
   await ensureReady(cdp, sid, `${viewport} ${rung}`);
 
-  // Overview auto-runs on ?auto; ladder pages need the Answer button driven.
-  const alreadyRan = await evaluate(cdp, sid, `document.querySelector('#readout')?.hidden === false`);
-  if (!alreadyRan) {
-    await evaluate(cdp, sid, `(() => { document.querySelector('#run').click(); return true; })()`);
-  }
-  // Streaming generation: wait for the readout (set when the stream completes). Completion
-  // status text varies by route ("Done." / "Rewritten.") so the readout is the reliable signal.
+  // The page pre-loads hemoglobin β and auto-runs the sickle-cell position (E6) once the model is
+  // ready. Wait for that auto scan to render its readout.
   await waitFor(
     cdp,
     sid,
-    `document.querySelector('#readout')?.hidden === false`,
+    `document.querySelector('#readout')?.hidden === false &&
+     (document.querySelector('#rBackend')?.textContent || '').length > 0`,
     300_000,
-    `${viewport} ${rung} default generation`,
+    `${viewport} ${rung} auto scan readout`,
   );
   const first = await evaluate(
     cdp,
     sid,
     `({
-      out: document.querySelector('#out')?.textContent || '',
-      tokens: document.querySelector('#rTok')?.textContent || '',
       backend: document.querySelector('#rBackend')?.textContent || '',
-      chips: document.querySelectorAll('#chain .t').length
+      ms: document.querySelector('#rMs')?.textContent || '',
+      pos: document.querySelector('#rPos')?.textContent || '',
+      bars: document.querySelectorAll('#preds .pg-bar-row').length,
+      muts: document.querySelectorAll('#muts .pg-mut-row').length,
+      sub: document.querySelector('#predSub')?.textContent || ''
     })`,
   );
   check(
-    `${viewport} ${rung}: real ${STAGE} streamed generation`,
-    first.out.trim().length >= 20 && Number(first.tokens) >= 5 && /WASM/.test(first.backend),
-    JSON.stringify(first).slice(0, 200),
+    `${viewport} ${rung}: real ${STAGE} masked-LM scan rendered`,
+    first.backend === "WASM" && /^\d+ ms$/.test(first.ms) && first.pos.length >= 2 &&
+      first.bars === 8 && first.muts === 20 && /wild-type is [A-Z]/.test(first.sub),
+    JSON.stringify(first).slice(0, 220),
   );
 
-  // Drive real controls: click a sample chip (different instruction) + Answer → new stream.
-  const prompt0 = await evaluate(cdp, sid, `document.querySelector('#prompt')?.value || ''`);
+  // Drive real controls: switch to the ubiquitin sample, then Analyse → a NEW scan of position 1 (M1).
+  const seq0 = await evaluate(cdp, sid, `document.querySelector('#seqin')?.value || ''`);
   await evaluate(
     cdp,
     sid,
-    `(() => { const chip = document.querySelectorAll('#samples .chip')[1]; if (chip) chip.click(); return !!chip; })()`,
+    `(() => { const chip = [...document.querySelectorAll('#samples .pg-btn')].find((b) => /ubiquitin/i.test(b.textContent)); if (chip) chip.click(); return !!chip; })()`,
   );
   await waitFor(
     cdp,
     sid,
-    `document.querySelector('#prompt')?.value !== ${JSON.stringify(prompt0)}`,
+    `document.querySelector('#seqin')?.value !== ${JSON.stringify(seq0)}`,
     15_000,
-    `${viewport} ${rung} chip applied`,
+    `${viewport} ${rung} sample chip applied`,
     500,
   );
-  await evaluate(cdp, sid, `(() => { document.querySelector('#run').click(); return true; })()`);
+  await evaluate(cdp, sid, `(() => { document.querySelector('#analyseBtn').click(); return true; })()`);
   await waitFor(
     cdp,
     sid,
-    `(document.querySelector('#out')?.textContent || '') !== ${JSON.stringify(first.out)} &&
-     /(Done\.|Rewritten\.)/.test(document.querySelector('#status')?.textContent || '')`,
+    `document.querySelector('#readout')?.hidden === false &&
+     (document.querySelector('#rPos')?.textContent || '') !== ${JSON.stringify(first.pos)} &&
+     /^[A-Z]\\d+$/.test(document.querySelector('#rPos')?.textContent || '')`,
     300_000,
-    `${viewport} ${rung} second generation`,
+    `${viewport} ${rung} second scan`,
   );
   const second = await evaluate(
     cdp,
     sid,
-    `({ out: document.querySelector('#out')?.textContent || '', tokens: document.querySelector('#rTok')?.textContent || '' })`,
+    `({
+      pos: document.querySelector('#rPos')?.textContent || '',
+      ms: document.querySelector('#rMs')?.textContent || '',
+      bars: document.querySelectorAll('#preds .pg-bar-row').length,
+      muts: document.querySelectorAll('#muts .pg-mut-row').length
+    })`,
   );
   check(
-    `${viewport} ${rung}: sample chip + Answer drive a real second stream`,
-    second.out.trim().length >= 20 && second.out !== first.out && Number(second.tokens) >= 5,
-    JSON.stringify(second).slice(0, 200),
+    `${viewport} ${rung}: sample chip + Analyse drive a real second scan`,
+    second.pos !== first.pos && /^\d+ ms$/.test(second.ms) && second.bars === 8 && second.muts === 20,
+    JSON.stringify(second).slice(0, 220),
   );
 
   const hygiene = await evaluate(
@@ -252,7 +256,7 @@ try {
   rmSync(PROFILE_DIR, { recursive: true, force: true });
 }
 
-const succeeded = checks === 32 && passed === checks && results.length === 8 &&
+const succeeded = checks === 8 && passed === checks && results.length === 2 &&
   results.every((item) => item.pass);
 if (WRITE_RUN && succeeded) {
   const commit = execFileSync("git", ["rev-parse", "HEAD"], {

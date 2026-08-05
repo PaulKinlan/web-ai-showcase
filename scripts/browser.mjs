@@ -149,7 +149,7 @@ async function stopProcessTree(proc) {
   });
 }
 
-async function spawnChromeOnce(userDataDir, resetProfile) {
+async function spawnChromeOnce(userDataDir, resetProfile, extraArgs = []) {
   if (resetProfile) {
     try {
       rmSync(userDataDir, { recursive: true, force: true });
@@ -180,6 +180,7 @@ async function spawnChromeOnce(userDataDir, resetProfile) {
     // validator exercises a real play button. Allow autoplay in the TEST browser only (shipped pages
     // still resume on genuine user clicks). Standard practice (Puppeteer/Playwright default).
     "--autoplay-policy=no-user-gesture-required",
+    ...extraArgs,
     `--user-data-dir=${userDataDir}`,
     "about:blank",
   ], { detached: detachedProcessGroup, stdio: ["ignore", "ignore", "ignore"] });
@@ -210,11 +211,12 @@ export async function launchChrome(options = {}) {
   const userDataDir = options.userDataDir || join(repoRoot, ".conformance-chrome-profile");
   const resetProfile = options.resetProfile ?? true;
   const removeProfileOnKill = options.removeProfileOnKill ?? true;
+  const extraArgs = options.extraArgs || [];
   // Chrome can intermittently fail to expose its endpoint under IO/memory pressure — retry the whole
   // spawn a few times before giving up so the harness is reliable in constrained sandboxes.
   let started = null;
   for (let attempt = 0; attempt < 4 && !started; attempt++) {
-    started = await spawnChromeOnce(userDataDir, resetProfile);
+    started = await spawnChromeOnce(userDataDir, resetProfile, extraArgs);
     if (!started) await new Promise((r) => setTimeout(r, 500));
   }
   if (!started) throw new Error("Chrome did not expose a DevTools endpoint (after retries)");

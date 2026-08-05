@@ -6,8 +6,8 @@
 // (proving cached auto-init); every wait has a hard deadline and the ?auto hook downloads + runs the
 // model on ready. Every route is driven through real controls: a sample chip + the Answer button.
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import {
   CDP,
@@ -23,7 +23,8 @@ import {
 
 const WRITE_RUN = process.argv.includes("--write-run");
 const RUN_RECORD = join(repoRoot, "models/llama2-c-stories/acceptance-run.json");
-const PROFILE_DIR = mkdtempSync(join(tmpdir(), "llama2-c-stories-acceptance-"));
+mkdirSync(join(homedir(), ".cache", "webai-validator-profiles"), { recursive: true });
+const PROFILE_DIR = mkdtempSync(join(homedir(), ".cache", "webai-validator-profiles", "llama2-c-stories-acceptance-"));
 if (WRITE_RUN) rmSync(RUN_RECORD, { force: true });
 
 const STAGE = "Xenova/llama2.c-stories15M"; // the one advertised model stage
@@ -131,7 +132,11 @@ async function exercise(cdp, page, rung, viewport) {
   await ensureReady(cdp, sid, `${viewport} ${rung}`);
 
   // Overview auto-runs on ?auto; ladder pages need the Answer button driven.
-  const alreadyRan = await evaluate(cdp, sid, `document.querySelector('#readout')?.hidden === false`);
+  const alreadyRan = await evaluate(
+    cdp,
+    sid,
+    `document.querySelector('#readout')?.hidden === false`,
+  );
   if (!alreadyRan) {
     await evaluate(cdp, sid, `(() => { document.querySelector('#run').click(); return true; })()`);
   }
@@ -160,27 +165,51 @@ async function exercise(cdp, page, rung, viewport) {
     JSON.stringify(first).slice(0, 200),
   );
 
-  // Drive real controls: click a sample chip (different instruction) + Answer → new stream.
+  // Drive real controls: a sample chip (or, on the spec-driven practical rung, the character box) +
+  // Answer → a new real stream. Completion status text varies by route ("The end." / "Story draft
+  // ready." / "Another version.") so the out-change + status both gate the wait.
+  const hasChips = await evaluate(
+    cdp,
+    sid,
+    `document.querySelectorAll('#samples .chip').length > 0`,
+  );
   const prompt0 = await evaluate(cdp, sid, `document.querySelector('#prompt')?.value || ''`);
-  await evaluate(
-    cdp,
-    sid,
-    `(() => { const chip = document.querySelectorAll('#samples .chip')[1]; if (chip) chip.click(); return !!chip; })()`,
-  );
-  await waitFor(
-    cdp,
-    sid,
-    `document.querySelector('#prompt')?.value !== ${JSON.stringify(prompt0)}`,
-    15_000,
-    `${viewport} ${rung} chip applied`,
-    500,
-  );
+  if (hasChips) {
+    await evaluate(
+      cdp,
+      sid,
+      `(() => { const chip = document.querySelectorAll('#samples .chip')[1]; if (chip) chip.click(); return !!chip; })()`,
+    );
+    await waitFor(
+      cdp,
+      sid,
+      `document.querySelector('#prompt')?.value !== ${JSON.stringify(prompt0)}`,
+      15_000,
+      `${viewport} ${rung} chip applied`,
+      500,
+    );
+  } else {
+    // practical rung: character + problem <select> boxes drive the draft
+    await evaluate(
+      cdp,
+      sid,
+      `(() => { const c = document.querySelector('#character'); if (c && c.options.length > 1) { c.selectedIndex = 1; c.dispatchEvent(new Event('change', { bubbles: true })); } return !!c; })()`,
+    );
+    await waitFor(
+      cdp,
+      sid,
+      `document.querySelector('#character')?.selectedIndex === 1`,
+      15_000,
+      `${viewport} ${rung} character applied`,
+      500,
+    );
+  }
   await evaluate(cdp, sid, `(() => { document.querySelector('#run').click(); return true; })()`);
   await waitFor(
     cdp,
     sid,
     `(document.querySelector('#out')?.textContent || '') !== ${JSON.stringify(first.out)} &&
-     /(Done\.|Rewritten\.)/.test(document.querySelector('#status')?.textContent || '')`,
+     /(The end\.|Story draft ready\.|Another version\.)/.test(document.querySelector('#status')?.textContent || '')`,
     300_000,
     `${viewport} ${rung} second generation`,
   );
