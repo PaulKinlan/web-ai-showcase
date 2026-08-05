@@ -24,7 +24,7 @@ function post(msg) {
 
 async function makePipeline() {
   const { pipeline } = mod;
-  return pipeline("text-generation", MODEL_ID, {
+  return pipeline("text-generation", "Xenova/LaMini-Neo-125M", {
     device,
     dtype: DTYPE,
     progress_callback: (p) => post({ type: "progress", p }),
