@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Wild — hide in plain sight · Stanford De-identifier · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="The Stanford paper's signature move: replace real PHI with realistic synthetic surrogates, so the note stays readable and machine-usable while the real patient is invisible."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎭</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="/web-ai-showcase/models/stanford-deidentifier-base/">Stanford De-identifier</a> · Wild</p>
+
+    <header>
+      <p class="eyebrow">wild · token-classification · WASM · ~105 MB</p>
+      <h1>Hide in plain sight</h1>
+      <p class="lede">
+        Stanford's paper doesn't just <em>blank</em> identifiers — it replaces them with realistic fake
+        values, “hiding in plain sight” so the note stays fluent, readable, and machine-usable while the
+        real patient is invisible. This page does exactly that: every detected span is swapped for a
+        synthetic surrogate that fits its category.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+      <model-run-status id="runMonitor"></model-run-status>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">
+        Clinical text
+        <textarea id="text" class="phl-input" disabled></textarea>
+      </label>
+
+      <div class="controls">
+        <button id="run" type="button" disabled>Replace PHI</button>
+        <button id="reshuffle" type="button" class="copy-btn" disabled>New surrogates</button>
+        <button id="copy" type="button" class="copy-btn" disabled>Copy</button>
+      </div>
+      <p class="status" id="copyStatus" role="status" aria-live="polite" hidden></p>
+
+      <div id="out" class="doc" aria-live="polite"><span class="muted">The de-identified note will appear here.</span></div>
+      <div class="counts" id="counts" hidden></div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+        <span>spans <b id="rSpans">–</b></span>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why replace instead of blank?</h2>
+      <p>
+        A redacted note full of <code>[REDACTED]</code> is hard to read and unnatural for downstream models —
+        “The patient [REDACTED] was seen at [REDACTED] on [REDACTED]” loses grammar and context. Replacing
+        spans with <em>plausible same-category values</em> keeps the text fluent: “The patient <strong>Jamie
+        Rivera</strong> was seen at <strong>St. Mary's General</strong> on <strong>02/14/2023</strong>.” That
+        is precisely the trick Stanford used to build large realistic synthetic datasets for training more
+        de-identifiers.
+      </p>
+      <ul>
+        <li><strong>Synthetic data pipelines</strong> — generate large volumes of realistic, PHI-free clinical text for research and training.</li>
+        <li><strong>Usable anonymized notes</strong> — keep the structure and grammar for NLP, while the identity is gone.</li>
+        <li><strong>Demonstrable privacy</strong> — show exactly which categories were swapped and how often (counts panel).</li>
+      </ul>
+      <p class="muted">
+        The surrogates here are randomly generated placeholders from fixed fictional pools — they never
+        correspond to a real person. “New surrogates” re-shuffles them with a different seed. As always:
+        an automated first pass, not a certified compliance tool.
+      </p>
+    </section>
+
+    <footer class="byline">
+      <a href="/web-ai-showcase/models/stanford-deidentifier-base/">← Back to the model</a> ·
+      <a href="../practical/">Previous: Redact before you share</a>
+    </footer>
+
+    <script type="module">
+      import { DeidentEngine, DEIDENT_CSS, copyText, renderSurrogates, surrogateFor } from "../deident.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      import "/web-ai-showcase/lib/model-run-status.mjs";
+
+      const style = document.createElement("style");
+      style.textContent = DEIDENT_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new DeidentEngine();
+      let lastResult = null;
+      let seed = 1;
+
+      $("text").value = "PROCEDURE: Chest x-ray. COMPARISON: last seen on 1/1/2020 and also a record dated March 1st, 2019. FINDINGS: patchy airspace opacities. IMPRESSION: The results of the chest x-ray of January 1, 2020 are the most concerning ones. The patient was transferred to another service of UH Medical Center under the responsibility of Dr. Perez. We used the MedClinical data transmitter and sent the data on 2/1/2020, under the ID 5874233. We received the confirmation from Dr. Perez, who is reachable at 567-493-1234. The patient, Maria Gonzalez, was admitted on 04/12/2020 and discharged on 04/19/2020; her record number is MRN 884102. A follow-up with Dr. Susan Park at Stanford Medical Center was scheduled for May 5, 2020.";
+
+      function render() {
+        if (!lastResult) return;
+        const text = $("text").value;
+        const replaced = renderSurrogates($("out"), text, lastResult.spans, seed);
+        const counts = $("counts");
+        counts.hidden = false;
+        counts.replaceChildren();
+        for (const [k, n] of Object.entries(lastResult.counts)) {
+          const c = document.createElement("div");
+          c.className = "c";
+          const b = document.createElement("b");
+          b.textContent = n;
+          const span = document.createElement("span");
+          span.textContent = k;
+          c.append(b, " ", span);
+          counts.append(c);
+        }
+        return replaced;
+      }
+
+      async function run() {
+        const text = $("text").value;
+        if (!text.trim()) return;
+        $("run").disabled = true;
+        $("reshuffle").disabled = true;
+        $("copy").disabled = true;
+        $("runStatus").hidden = false;
+        $("runStatus").classList.remove("err", "ok");
+        $("runStatus").textContent = "Analysing…";
+        try {
+          const r = await engine.deidentify(text);
+          lastResult = r;
+          render();
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = `${r.ms} ms`;
+          $("rSpans").textContent = r.spans.length;
+          $("reshuffle").disabled = false;
+          $("copy").disabled = false;
+          $("runStatus").textContent = "Done. Every protected span now has a synthetic surrogate.";
+          $("runStatus").classList.add("ok");
+        } catch (err) {
+          $("runStatus").textContent = "Failed: " + err.message;
+          $("runStatus").classList.add("err");
+        } finally {
+          $("run").disabled = false;
+        }
+      }
+
+      $("reshuffle").addEventListener("click", () => {
+        seed = (seed * 48271) % 2147483647;
+        if (lastResult) render();
+        $("copyStatus").hidden = true;
+      });
+
+      $("copy").addEventListener("click", () => {
+        if (!lastResult) return;
+        const text = $("text").value;
+        const div = document.createElement("div");
+        const replaced = renderSurrogates(div, text, lastResult.spans, seed);
+        const plain = div.textContent;
+        $("copyStatus").hidden = false;
+        copyText(plain, $("copy"), $("copyStatus"));
+      });
+
+      const autoRun = new URLSearchParams(location.search).has("auto");
+      if (autoRun) {
+        const t = setInterval(() => {
+          const b = [...document.querySelectorAll("button")].find((x) => x.textContent.includes("Download model"));
+          if (b) { clearInterval(t); b.click(); }
+        }, 300);
+      }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: {
+          modelId: "onnx-community/stanford-deidentifier-base-ONNX",
+          runtime: "transformers.js",
+          dtype: "q8",
+          sizeMB: 105,
+          requiresWebGPU: false,
+        },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => {
+          $("text").disabled = false;
+          $("run").disabled = false;
+          if (autoRun) run();
+        },
+      });
+
+      $("run").addEventListener("click", run);
+    </script>
+  </body>
+</html>

@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Basics — find the PHI · Stanford De-identifier · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="The fundamental capability: run Stanford's de-identifier on short clinical snippets and see every protected span highlighted by category — patient, date, hospital, ID, phone, vendor."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🔍</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="/web-ai-showcase/models/stanford-deidentifier-base/">Stanford De-identifier</a> · Basics</p>
+
+    <header>
+      <p class="eyebrow">basics · token-classification · WASM · ~105 MB</p>
+      <h1>Find the PHI</h1>
+      <p class="lede">
+        The fundamental capability, plainly: paste a clinical sentence and see every protected span
+        highlighted by category. Six tiny samples below show each of the model's seven PHI categories
+        firing on its own.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+      <model-run-status id="runMonitor"></model-run-status>
+
+      <div class="sample-row" id="samples" role="group" aria-label="One-category samples">
+        <button type="button" class="chip" data-t="p">patient name 🧑</button>
+        <button type="button" class="chip" data-t="h">healthcare worker 🩺</button>
+        <button type="button" class="chip" data-t="hs">hospital 🏥</button>
+        <button type="button" class="chip" data-t="d">date 📅</button>
+        <button type="button" class="chip" data-t="i">record ID 🔢</button>
+        <button type="button" class="chip" data-t="ph">phone 📞</button>
+        <button type="button" class="chip" data-t="v">vendor 🧪</button>
+        <button type="button" class="chip" data-t="mix">mixed 🧩</button>
+      </div>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.4rem">
+        Clinical text
+        <textarea id="text" class="phl-input" disabled></textarea>
+      </label>
+
+      <div class="controls">
+        <button id="run" type="button" disabled>Find PHI</button>
+      </div>
+
+      <div id="out" class="doc" aria-live="polite"><span class="muted">Detected PHI will appear here.</span></div>
+      <div class="ent-legend" id="legend" hidden></div>
+      <div class="counts" id="counts" hidden></div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+        <span>spans <b id="rSpans">–</b></span>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">What you're seeing</h2>
+      <p>
+        Each highlighted span is a run of tokens the model agrees are one piece of protected health
+        information. The model is <em>trained on radiology reports and medical notes</em>, so it is
+        tuned for exactly this register of text — abbreviations, section headers, template sentences.
+        It is not a perfect identifier: real-world use always pairs it with a human check (the
+        practical page shows the redaction workflow).
+      </p>
+      <ul>
+        <li><strong>Patient</strong> — names of the patient (“Maria Gonzalez”, “Mr. John Okafor”).</li>
+        <li><strong>Healthcare worker</strong> — names and titles of clinicians (“Dr. Perez”).</li>
+        <li><strong>Hospital</strong> — institutions (“UH Medical Center”, “Mercy General”).</li>
+        <li><strong>Date</strong> — dates in any common format (“1/1/2020”, “March 1st, 2019”).</li>
+        <li><strong>ID</strong> — record numbers (“MRN 884102”, “ID 5874233”).</li>
+        <li><strong>Phone</strong> — phone/fax numbers (“567-493-1234”).</li>
+        <li><strong>Vendor</strong> — product/system names (“MedClinical data transmitter”).</li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      <a href="/web-ai-showcase/models/stanford-deidentifier-base/">← Back to the model</a> ·
+      <a href="practical/">Next: Redact before you share →</a>
+    </footer>
+
+    <script type="module">
+      import { DeidentEngine, DEIDENT_CSS, ENTITY_META, LEGEND_HTML, renderHighlight } from "../deident.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      import "/web-ai-showcase/lib/model-run-status.mjs";
+
+      const style = document.createElement("style");
+      style.textContent = DEIDENT_CSS;
+      document.head.append(style);
+      if (typeof CSS !== "undefined" && CSS.highlights) {
+        const hl = document.createElement("style");
+        hl.textContent = Object.entries(ENTITY_META)
+          .map(([k, m]) => `::highlight(phi-${k}) { background-color: color-mix(in srgb, ${m.color} 30%, transparent); text-decoration: underline ${m.color} 2px; }`)
+          .join("\n");
+        document.head.append(hl);
+      }
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new DeidentEngine();
+
+      const SAMPLES = {
+        p: "The patient, Maria Gonzalez, tolerated the procedure well.",
+        h: "The study was performed by Dr. Perez in room 4.",
+        hs: "The patient was transferred to UH Medical Center for further care.",
+        d: "Comparison is made to the prior study from 1/1/2020 and March 1st, 2019.",
+        i: "The record ID is 5874233 and the accession number is A-44102.",
+        ph: "The physician can be reached at 567-493-1234.",
+        v: "We used the MedClinical data transmitter to send the images.",
+        mix: "Mr. John Okafor, MRN 330591, was admitted 09/14/2020 to Mercy General under Dr. Rosa Delgado; contact the office at 555-014-8821 regarding the Horizon Imaging scanner.",
+      };
+      $("text").value = SAMPLES.p;
+      for (const c of $("samples").children) c.addEventListener("click", () => { $("text").value = SAMPLES[c.dataset.t] ?? SAMPLES.p; });
+
+      async function run() {
+        const text = $("text").value;
+        if (!text.trim()) return;
+        $("run").disabled = true;
+        $("runStatus").hidden = false;
+        $("runStatus").classList.remove("err", "ok");
+        $("runStatus").textContent = "Analysing…";
+        $("legend").hidden = false;
+        $("legend").innerHTML = LEGEND_HTML;
+        try {
+          const r = await engine.deidentify(text);
+          if (r.spans.length === 0) {
+            $("out").replaceChildren();
+            const p = document.createElement("p");
+            p.className = "muted";
+            p.textContent = "No protected health information detected in this text.";
+            $("out").append(p);
+            $("counts").hidden = true;
+          } else {
+            renderHighlight($("out"), text, r.spans, { interactive: true });
+            const counts = $("counts");
+            counts.hidden = false;
+            counts.replaceChildren();
+            for (const [k, m] of Object.entries(ENTITY_META)) {
+              const n = r.counts[k] ?? 0;
+              const c = document.createElement("div");
+              c.className = "c";
+              const b = document.createElement("b");
+              b.textContent = n;
+              const span = document.createElement("span");
+              span.textContent = m.label;
+              c.append(b, " ", span);
+              counts.append(c);
+            }
+          }
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = `${r.ms} ms`;
+          $("rSpans").textContent = r.spans.length;
+          $("runStatus").textContent = "Done.";
+          $("runStatus").classList.add("ok");
+        } catch (err) {
+          $("runStatus").textContent = "Failed: " + err.message;
+          $("runStatus").classList.add("err");
+        } finally {
+          $("run").disabled = false;
+        }
+      }
+
+      const autoRun = new URLSearchParams(location.search).has("auto");
+      if (autoRun) {
+        const t = setInterval(() => {
+          const b = [...document.querySelectorAll("button")].find((x) => x.textContent.includes("Download model"));
+          if (b) { clearInterval(t); b.click(); }
+        }, 300);
+      }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: {
+          modelId: "onnx-community/stanford-deidentifier-base-ONNX",
+          runtime: "transformers.js",
+          dtype: "q8",
+          sizeMB: 105,
+          requiresWebGPU: false,
+        },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => {
+          $("text").disabled = false;
+          $("run").disabled = false;
+          if (autoRun) run();
+        },
+      });
+
+      $("run").addEventListener("click", run);
+    </script>
+  </body>
+</html>

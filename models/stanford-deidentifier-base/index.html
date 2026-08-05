@@ -1,0 +1,310 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Stanford De-identifier — find and redact patient data locally · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Run Stanford's PHI de-identifier in your browser: a PubMedBERT model that finds patient names, dates, hospitals, IDs and phone numbers in clinical text — everything stays on your device."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🛡️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">token-classification · clinical text · WASM · ~105 MB</p>
+      <h1>Stanford De-identifier — spot protected health information, on-device</h1>
+      <p class="lede">
+        The Stanford de-identifier is a PubMedBERT model fine-tuned on thousands of radiology reports and
+        medical notes to detect <strong>protected health information (PHI)</strong>: patient names, dates,
+        hospital names, record IDs, phone numbers and more. Paste a note, see every PHI span highlighted —
+        and redact it before it leaves the machine.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="glance">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/onnx-community/stanford-deidentifier-base-ONNX" target="_blank" rel="noopener">onnx-community/stanford-deidentifier-base-ONNX</a> · original <a href="https://huggingface.co/StanfordAIMI/stanford-deidentifier-base" target="_blank" rel="noopener">StanfordAIMI/stanford-deidentifier-base</a></td></tr>
+          <tr><th>Task</th><td><code>token-classification</code> — per-token PHI labels over 7 categories + <code>O</code></td></tr>
+          <tr><th>Architecture</th><td>PubMedBERT-base (uncased, biomedical vocabulary), fine-tuned on radiology reports + medical notes (MIDRC + i2b2-style data)</td></tr>
+          <tr><th>Params / dtype</th><td>110M · <code>q8</code> (8-bit quantized ONNX)</td></tr>
+          <tr><th>Backend</th><td>WebAssembly (CPU) — no GPU required</td></tr>
+          <tr><th>Download</th><td>~105 MB, cached after first load</td></tr>
+          <tr><th>License</th><td><strong>MIT</strong> (original weights) — ONNX conversion by onnx-community</td></tr>
+          <tr><th>Web APIs</th><td>Web Workers, Cache Storage (via Transformers.js), WebAssembly, CSS Custom Highlight API</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">
+        Paste a clinical note (or pick a sample). The model tags every token with one of seven PHI
+        categories — <strong>Patient · Healthcare worker · Hospital · Date · ID · Phone · Vendor</strong> —
+        then merges adjacent same-label tokens into spans. Switch the view to <em>redact</em> or
+        <em>hide in plain sight</em> to see the de-identified output.
+      </p>
+
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+      <model-run-status id="runMonitor"></model-run-status>
+
+      <div class="sample-row" id="samples" role="group" aria-label="Sample clinical notes">
+        <button type="button" class="chip" data-t="default">radiology report 📋</button>
+        <button type="button" class="chip" data-t="short">short note 🩺</button>
+        <button type="button" class="chip" data-t="discharge">discharge summary 🏥</button>
+      </div>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.4rem">
+        Clinical text
+        <textarea id="text" class="phl-input" disabled></textarea>
+      </label>
+
+      <div class="controls">
+        <div class="seg" role="group" aria-label="Output view">
+          <button id="mHighlight" type="button" aria-pressed="true">highlight</button>
+          <button id="mRedact" type="button" aria-pressed="false">redact</button>
+          <button id="mCategory" type="button" aria-pressed="false">tag</button>
+          <button id="mSurrogate" type="button" aria-pressed="false">replace</button>
+        </div>
+        <button id="run" type="button" disabled>De-identify</button>
+      </div>
+
+      <div id="out" class="doc" aria-live="polite"><span class="muted">Detected PHI will appear here.</span></div>
+      <div class="ent-legend" id="legend" hidden></div>
+      <div class="counts" id="counts" hidden></div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+        <span>spans <b id="rSpans">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside — the token labels behind the highlight</h3>
+      <p class="muted">
+        The de-identifier uses a <strong>flat per-token label scheme</strong> — no B-/I- prefixes. Each
+        WordPiece token gets one of seven PHI labels (or <code>O</code> for ordinary text), and adjacent
+        tokens with the same label merge into a span; single punctuation between same-label tokens
+        (“/”, “-”) is bridged so <em>1/1/2020</em> and <em>567-493-1234</em> stay whole. The chips below are
+        the real tokens the model flagged for your last run, with their confidences. Low-confidence tags
+        (below 0.8) are marked.
+      </p>
+      <div class="token-chain" id="chain" hidden></div>
+      <p class="muted legend-note" id="chainNote" hidden></p>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        Clinical text is full of patient identifiers, and sharing or analysing it — for research, second
+        opinions, model training, or just emailing a referral — usually requires manual redaction.
+        Stanford's model automates the finding step, and running it <strong>in the browser means the raw
+        text never leaves the device</strong>: no upload, no third party, no data-handling agreement.
+      </p>
+      <ul>
+        <li><strong>Privacy-first clinical tooling</strong> — de-identify notes locally before any upload, with the model itself never seeing the network.</li>
+        <li><strong>Research &amp; dataset prep</strong> — batch-redact reports for release or annotation (copy the redacted text straight out).</li>
+        <li><strong>“Hide in plain sight”</strong> — the Stanford approach replaces PHI with realistic fake values, keeping the text readable and machine-usable while the real patient is invisible.</li>
+        <li><strong>Accessible ML</strong> — a 105 MB model on a CPU: a real production-grade biomedical tool, no GPU, no account.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">Find the PHI — see every protected span highlighted by category in any clinical note.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Redact before you share — a discharge summary with [REDACTED] output you can copy.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Hide in plain sight — swap real PHI for realistic synthetic surrogates, Stanford-style.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>The one-liner is the <code>token-classification</code> pipeline:</p>
+      <pre><code>import { pipeline } from "@huggingface/transformers";
+
+const tagger = await pipeline("token-classification", "onnx-community/stanford-deidentifier-base-ONNX", {
+  dtype: "q8",
+});
+const tokens = await tagger("Dr. Perez is reachable at 567-493-1234.", { aggregation_strategy: "none" });
+// [{ entity: "HCW",  score: 0.998, word: "dr" },
+//  { entity: "HCW",  score: 0.995, word: "perez" },
+//  { entity: "PHONE", score: 0.991, word: "567" }, …]</code></pre>
+      <p class="muted">
+        The pipeline returns per-token labels with <em>no character offsets</em>, so this demo maps each
+        token back to the original text with a case-insensitive cursor-walk (PubMedBERT lowercases),
+        then merges flat same-label runs — bridging “/” and “-” so dates and phone numbers survive as one
+        span. Everything runs in a Web Worker; the page never blocks.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/onnx-community/stanford-deidentifier-base-ONNX" target="_blank" rel="noopener">Model card — onnx-community/stanford-deidentifier-base-ONNX</a></li>
+        <li><a href="https://huggingface.co/StanfordAIMI/stanford-deidentifier-base" target="_blank" rel="noopener">Original model card — StanfordAIMI/stanford-deidentifier-base</a></li>
+        <li><a href="https://academic.oup.com/jamia/article/30/1/39/6800123" target="_blank" rel="noopener">Paper — “Automated deidentification of radiology reports…” (JAMIA 2022)</a></li>
+        <li><a href="https://github.com/MIDRC/Stanford_Penn_Deidentifier" target="_blank" rel="noopener">Stanford/Penn de-identifier toolbox (GitHub)</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { DeidentEngine, DEIDENT_CSS, ENTITY_META, LEGEND_HTML, renderHighlight, renderRedacted, renderSurrogates } from "./deident.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      import "/web-ai-showcase/lib/model-run-status.mjs";
+
+      const style = document.createElement("style");
+      style.textContent = DEIDENT_CSS;
+      document.head.append(style);
+      if (typeof CSS !== "undefined" && CSS.highlights) {
+        const hl = document.createElement("style");
+        hl.textContent = Object.entries(ENTITY_META)
+          .map(([k, m]) => `::highlight(phi-${k}) { background-color: color-mix(in srgb, ${m.color} 30%, transparent); text-decoration: underline ${m.color} 2px; }`)
+          .join("\n");
+        document.head.append(hl);
+      }
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new DeidentEngine();
+      let mode = "highlight";
+
+      const SAMPLES = {
+        default: "PROCEDURE: Chest x-ray. COMPARISON: last seen on 1/1/2020 and also a record dated March 1st, 2019. FINDINGS: patchy airspace opacities. IMPRESSION: The results of the chest x-ray of January 1, 2020 are the most concerning ones. The patient was transferred to another service of UH Medical Center under the responsibility of Dr. Perez. We used the MedClinical data transmitter and sent the data on 2/1/2020, under the ID 5874233. We received the confirmation from Dr. Perez, who is reachable at 567-493-1234. The patient, Maria Gonzalez, was admitted on 04/12/2020 and discharged on 04/19/2020; her record number is MRN 884102. A follow-up with Dr. Susan Park at Stanford Medical Center was scheduled for May 5, 2020.",
+        short: "Dr. Anne Whitfield scheduled a follow-up for the patient with the cardiology department on 06/23 at City Health Hospital.",
+        discharge: "DISCHARGE SUMMARY: Mr. John Okafor, MRN 330591, admitted 09/14/2020 to Mercy General with chest pain. Attending: Dr. Rosa Delgado. Discharged 09/18/2020. Follow-up in 2 weeks at Mercy General Radiology; contact the office at 555-014-8821 regarding the new scanner from Horizon Imaging Systems.",
+      };
+      $("text").value = SAMPLES.default;
+      for (const c of $("samples").children) c.addEventListener("click", () => { $("text").value = SAMPLES[c.dataset.t] ?? SAMPLES.default; });
+
+      function setMode(m) {
+        mode = m;
+        for (const id of ["mHighlight", "mRedact", "mCategory", "mSurrogate"]) {
+          $(id).setAttribute("aria-pressed", id === "m" + m[0].toUpperCase() + m.slice(1));
+        }
+      }
+      $("mHighlight").addEventListener("click", () => setMode("highlight"));
+      $("mRedact").addEventListener("click", () => setMode("redact"));
+      $("mCategory").addEventListener("click", () => setMode("category"));
+      $("mSurrogate").addEventListener("click", () => setMode("surrogate"));
+
+      function showChain(r) {
+        const chain = $("chain");
+        chain.replaceChildren();
+        let low = 0;
+        for (const s of r.spans) {
+          const label = ENTITY_META[s.type]?.label ?? s.type;
+          for (const t of s.tokens) {
+            const chip = document.createElement("span");
+            chip.className = "t";
+            const w = t.word.replace(/^##/, "");
+            chip.innerHTML = `${w.replace(/[<>&"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]))} <b>${label}</b> ${(t.score * 100).toFixed(0)}%`;
+            chip.title = `${label} · confidence ${(t.score * 100).toFixed(1)}%`;
+            if (t.score < 0.8) { chip.style.borderColor = "#c2444a"; low++; }
+            chain.append(chip);
+          }
+        }
+        chain.hidden = false;
+        $("chainNote").hidden = false;
+        $("chainNote").textContent = low
+          ? `${low} low-confidence token${low === 1 ? "" : "s"} (red border, &lt;80%) — check these spans.`
+          : "All flagged tokens above 80% confidence.";
+      }
+
+      async function run() {
+        const text = $("text").value;
+        if (!text.trim()) return;
+        $("run").disabled = true;
+        $("runStatus").hidden = false;
+        $("runStatus").classList.remove("err", "ok");
+        $("runStatus").textContent = "Analysing…";
+        $("legend").hidden = false;
+        $("legend").innerHTML = LEGEND_HTML;
+        try {
+          const r = await engine.deidentify(text);
+          if (r.spans.length === 0) {
+            $("out").replaceChildren();
+            const p = document.createElement("p");
+            p.className = "muted";
+            p.textContent = "No protected health information detected in this text.";
+            $("out").append(p);
+            $("counts").hidden = true;
+            $("readout").hidden = true;
+            $("chain").hidden = true;
+            $("chainNote").hidden = true;
+          } else {
+            if (mode === "redact") renderRedacted($("out"), text, r.spans, "redact");
+            else if (mode === "category") renderRedacted($("out"), text, r.spans, "category");
+            else if (mode === "surrogate") renderSurrogates($("out"), text, r.spans, 1);
+            else renderHighlight($("out"), text, r.spans, { interactive: true });
+            const counts = $("counts");
+            counts.hidden = false;
+            counts.replaceChildren();
+            for (const [k, m] of Object.entries(ENTITY_META)) {
+              const n = r.counts[k] ?? 0;
+              const c = document.createElement("div");
+              c.className = "c";
+              const b = document.createElement("b");
+              b.textContent = n;
+              const span = document.createElement("span");
+              span.textContent = m.label;
+              c.append(b, " ", span);
+              counts.append(c);
+            }
+            showChain(r);
+          }
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = `${r.ms} ms`;
+          $("rSpans").textContent = r.spans.length;
+          $("runStatus").textContent = "Done.";
+          $("runStatus").classList.add("ok");
+        } catch (err) {
+          $("runStatus").textContent = "Failed: " + err.message;
+          $("runStatus").classList.add("err");
+        } finally {
+          $("run").disabled = false;
+        }
+      }
+
+      const autoRun = new URLSearchParams(location.search).has("auto");
+      if (autoRun) {
+        const t = setInterval(() => {
+          const b = [...document.querySelectorAll("button")].find((x) => x.textContent.includes("Download model"));
+          if (b) { clearInterval(t); b.click(); }
+        }, 300);
+      }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: {
+          modelId: "onnx-community/stanford-deidentifier-base-ONNX",
+          runtime: "transformers.js",
+          dtype: "q8",
+          sizeMB: 105,
+          requiresWebGPU: false,
+        },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => {
+          $("text").disabled = false;
+          $("run").disabled = false;
+          if (autoRun) run();
+        },
+      });
+
+      $("run").addEventListener("click", run);
+    </script>
+  </body>
+</html>

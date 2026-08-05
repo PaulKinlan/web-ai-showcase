@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Practical — redact before you share · Stanford De-identifier · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="The business workflow: de-identify a discharge summary locally, get a [REDACTED]-per-category copy, and paste it anywhere — no PHI ever leaves the device."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>✂️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="/web-ai-showcase/models/stanford-deidentifier-base/">Stanford De-identifier</a> · Practical</p>
+
+    <header>
+      <p class="eyebrow">practical · token-classification · WASM · ~105 MB</p>
+      <h1>Redact before you share</h1>
+      <p class="lede">
+        Sharing a referral, a research cohort, or a second-opinion request means stripping the identifiers
+        first. Paste the note, get a copy-safe redacted version — <strong>[REDACTED]</strong> or tagged by
+        category — and paste it anywhere. The raw text never leaves this tab.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <div id="model-loader"></div>
+      <p class="status" id="runStatus" role="status" aria-live="polite" hidden></p>
+      <model-run-status id="runMonitor"></model-run-status>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">
+        Discharge summary
+        <textarea id="text" class="phl-input" disabled></textarea>
+      </label>
+
+      <div class="controls">
+        <div class="seg" role="group" aria-label="Redaction style">
+          <button id="mRedact" type="button" aria-pressed="true">[REDACTED]</button>
+          <button id="mCategory" type="button" aria-pressed="false">[CATEGORY]</button>
+        </div>
+        <button id="run" type="button" disabled>De-identify</button>
+        <button id="copy" type="button" class="copy-btn" disabled>Copy</button>
+      </div>
+      <p class="status" id="copyStatus" role="status" aria-live="polite" hidden></p>
+
+      <div id="out" class="doc" aria-live="polite"><span class="muted">The redacted summary will appear here.</span></div>
+      <div class="counts" id="counts" hidden></div>
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+        <span>spans <b id="rSpans">–</b></span>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why this workflow matters</h2>
+      <p>
+        De-identification is a real, regulated step — HIPAA in the US, GDPR in Europe — and it is usually
+        done by hand. A model like this turns the finding step into seconds, and doing it on-device keeps
+        the <em>original</em> text out of any server log, training set, or data-processing agreement.
+      </p>
+      <ul>
+        <li><strong>Research cohorts</strong> — strip identifiers before a dataset leaves the institution.</li>
+        <li><strong>Second opinions</strong> — share a redacted summary with an outside specialist.</li>
+        <li><strong>Note-taking &amp; handoffs</strong> — paste a sanitized version into any downstream tool.</li>
+        <li><strong>Auditability</strong> — the [CATEGORY] view keeps structure for automated pipelines; the counts panel shows what was found.</li>
+      </ul>
+      <p class="muted">
+        Caveat, honestly: this model is strong on radiology-report-style text but is <em>not</em> a
+        certified compliance tool. Treat the output as a first-pass redaction to be human-checked.
+      </p>
+    </section>
+
+    <footer class="byline">
+      <a href="/web-ai-showcase/models/stanford-deidentifier-base/">← Back to the model</a> ·
+      <a href="../wild/">Next: Hide in plain sight →</a>
+    </footer>
+
+    <script type="module">
+      import { DeidentEngine, DEIDENT_CSS, copyText, renderRedacted } from "../deident.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      import "/web-ai-showcase/lib/model-run-status.mjs";
+
+      const style = document.createElement("style");
+      style.textContent = DEIDENT_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const engine = new DeidentEngine();
+      let mode = "redact";
+      let lastResult = null;
+
+      $("text").value = "DISCHARGE SUMMARY — PATIENT: Maria Gonzalez, MRN 884102, age 54. ADMITTED: 04/12/2020 to UH Medical Center under the care of Dr. Susan Park. DISCHARGED: 04/19/2020. DIAGNOSIS: Community-acquired pneumonia, resolved. PROCEDURES: Chest x-ray performed 04/13/2020; results discussed with Dr. Perez. MEDICATIONS: Amoxicillin 875 mg BID for 10 days, completed. FOLLOW-UP: Recheck chest x-ray and labs with Dr. Park in 6 weeks; appointment scheduled for May 28, 2020. CONTACT: For questions, call the clinic at 567-493-1234 or email via the MedClinical patient portal. The attending physician was Dr. Rosa Delgado of Stanford Medical Center.";
+
+      function setMode(m) {
+        mode = m;
+        $("mRedact").setAttribute("aria-pressed", m === "redact");
+        $("mCategory").setAttribute("aria-pressed", m === "category");
+        if (lastResult) render();
+      }
+      $("mRedact").addEventListener("click", () => setMode("redact"));
+      $("mCategory").addEventListener("click", () => setMode("category"));
+
+      function render() {
+        if (!lastResult) return;
+        const text = $("text").value;
+        if (mode === "category") renderRedacted($("out"), text, lastResult.spans, "category");
+        else renderRedacted($("out"), text, lastResult.spans, "redact");
+      }
+
+      async function run() {
+        const text = $("text").value;
+        if (!text.trim()) return;
+        $("run").disabled = true;
+        $("copy").disabled = true;
+        $("runStatus").hidden = false;
+        $("runStatus").classList.remove("err", "ok");
+        $("runStatus").textContent = "Analysing…";
+        try {
+          const r = await engine.deidentify(text);
+          lastResult = r;
+          render();
+          const counts = $("counts");
+          counts.hidden = false;
+          counts.replaceChildren();
+          for (const [k, n] of Object.entries(r.counts)) {
+            const c = document.createElement("div");
+            c.className = "c";
+            const b = document.createElement("b");
+            b.textContent = n;
+            const span = document.createElement("span");
+            span.textContent = k;
+            c.append(b, " ", span);
+            counts.append(c);
+          }
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = `${r.ms} ms`;
+          $("rSpans").textContent = r.spans.length;
+          $("copy").disabled = false;
+          $("runStatus").textContent = "Done. Review the redaction before sharing.";
+          $("runStatus").classList.add("ok");
+        } catch (err) {
+          $("runStatus").textContent = "Failed: " + err.message;
+          $("runStatus").classList.add("err");
+        } finally {
+          $("run").disabled = false;
+        }
+      }
+
+      $("copy").addEventListener("click", () => {
+        if (!lastResult) return;
+        const text = $("text").value;
+        const div = document.createElement("div");
+        if (mode === "category") renderRedacted(div, text, lastResult.spans, "category");
+        else renderRedacted(div, text, lastResult.spans, "redact");
+        const plain = div.textContent;
+        $("copyStatus").hidden = false;
+        copyText(plain, $("copy"), $("copyStatus"));
+      });
+
+      const autoRun = new URLSearchParams(location.search).has("auto");
+      if (autoRun) {
+        const t = setInterval(() => {
+          const b = [...document.querySelectorAll("button")].find((x) => x.textContent.includes("Download model"));
+          if (b) { clearInterval(t); b.click(); }
+        }, 300);
+      }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: {
+          modelId: "onnx-community/stanford-deidentifier-base-ONNX",
+          runtime: "transformers.js",
+          dtype: "q8",
+          sizeMB: 105,
+          requiresWebGPU: false,
+        },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => {
+          $("text").disabled = false;
+          $("run").disabled = false;
+          if (autoRun) run();
+        },
+      });
+
+      $("run").addEventListener("click", run);
+    </script>
+  </body>
+</html>
