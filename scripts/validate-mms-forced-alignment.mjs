@@ -198,9 +198,10 @@ async function exercise(cdp, page, rung, viewport) {
 
   // Real run #1: the bundled JFK sample (11 s) is the default audio; the Align button drives CTC.
   const first = await runAlign(cdp, sid, `${viewport} ${rung} run 1`);
+  const m1 = (first.matched || "").match(/^(\d+)\//); // readout is "54/83 chars"
   check(
     `${viewport} ${rung}: real ${STAGE} forced alignment`,
-    first.backend === "WASM" && /^\d+$/.test(first.matched) && Number(first.matched) > 0 &&
+    first.backend === "WASM" && !!m1 && Number(m1[1]) > 0 &&
       /^\d+ ms$/.test(first.ms) && first.transcript.length > 0,
     JSON.stringify(first).slice(0, 240),
   );
@@ -212,10 +213,10 @@ async function exercise(cdp, page, rung, viewport) {
 
   // Drive real controls: Align again → a second real alignment pass, output persists.
   const second = await runAlign(cdp, sid, `${viewport} ${rung} run 2`);
+  const m2 = (second.matched || "").match(/^(\d+)\//);
   check(
     `${viewport} ${rung}: second Align re-runs real alignment`,
-    /^\d+$/.test(second.matched) && Number(second.matched) > 0 &&
-      /^\d+ ms$/.test(second.ms) &&
+    !!m2 && Number(m2[1]) > 0 && /^\d+ ms$/.test(second.ms) &&
       (rung === "practical" ? second.srt.includes("-->") : second.words > 0),
     JSON.stringify(second).slice(0, 240),
   );
