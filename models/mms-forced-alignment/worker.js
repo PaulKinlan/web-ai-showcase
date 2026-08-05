@@ -48,10 +48,10 @@ function post(msg) {
 async function ensureLoaded() {
   if (model) return;
   const { AutoProcessor, AutoModelForCTC } = await import(TRANSFORMERS_URL);
-  processor = await AutoProcessor.from_pretrained(MODEL, {
+  processor = await AutoProcessor.from_pretrained("onnx-community/mms-300m-1130-forced-aligner-ONNX", {
     progress_callback: (p) => post({ type: "progress", p }),
   });
-  model = await AutoModelForCTC.from_pretrained(MODEL, {
+  model = await AutoModelForCTC.from_pretrained("onnx-community/mms-300m-1130-forced-aligner-ONNX", {
     device,
     dtype: "q4", // maps to onnx/model_q4.onnx
     progress_callback: (p) => post({ type: "progress", p }),

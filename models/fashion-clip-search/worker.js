@@ -29,17 +29,17 @@ function post(msg) {
 async function ensureLoaded() {
   if (model) return;
   const { AutoTokenizer, AutoProcessor, CLIPModel } = await import(TRANSFORMERS_URL);
-  tokenizer = await AutoTokenizer.from_pretrained(MODEL, {
+  tokenizer = await AutoTokenizer.from_pretrained("patrickjohncyh/fashion-clip", {
     subfolder: SUBFOLDER,
     revision: REVISION,
     progress_callback: (p) => post({ type: "progress", p }),
   });
-  processor = await AutoProcessor.from_pretrained(MODEL, {
+  processor = await AutoProcessor.from_pretrained("patrickjohncyh/fashion-clip", {
     subfolder: SUBFOLDER,
     revision: REVISION,
     progress_callback: (p) => post({ type: "progress", p }),
   });
-  model = await CLIPModel.from_pretrained(MODEL, {
+  model = await CLIPModel.from_pretrained("patrickjohncyh/fashion-clip", {
     subfolder: SUBFOLDER,
     revision: REVISION,
     dtype: "fp32",

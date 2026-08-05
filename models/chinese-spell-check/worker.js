@@ -36,7 +36,7 @@ async function ensureLoaded() {
     (await fetch(`https://huggingface.co/${MODEL}/resolve/main/${SUBFOLDER}/tokenizer_config.json`)).json(),
   ]);
   tokenizer = new BertTokenizer(tokenizerJSON, tokenizerConfig);
-  model = await BertForMaskedLM.from_pretrained(MODEL, {
+  model = await BertForMaskedLM.from_pretrained("shibing624/macbert4csc-base-chinese", {
     dtype: DTYPE,
     device: "wasm",
     progress_callback: (p) => post({ type: "progress", p }),

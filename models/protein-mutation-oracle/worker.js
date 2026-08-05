@@ -27,10 +27,10 @@ function post(msg) {
 async function ensureLoaded() {
   if (model) return;
   T = await import(TRANSFORMERS_URL);
-  tokenizer = await T.AutoTokenizer.from_pretrained(REPO, {
+  tokenizer = await T.AutoTokenizer.from_pretrained("Xenova/esm2_t12_35M_UR50D", {
     progress_callback: (p) => post({ type: "progress", p }),
   });
-  model = await T.AutoModelForMaskedLM.from_pretrained(REPO, {
+  model = await T.AutoModelForMaskedLM.from_pretrained("Xenova/esm2_t12_35M_UR50D", {
     dtype: "q8",
     device: "wasm",
     progress_callback: (p) => post({ type: "progress", p }),
