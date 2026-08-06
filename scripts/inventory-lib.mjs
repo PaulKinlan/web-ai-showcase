@@ -69,12 +69,22 @@ export function deduplicateFamilies(models) {
     representatives: [...representatives.values()].sort((a, b) =>
       b.downloads - a.downloads || a.id.localeCompare(b.id)
     ),
-    collisions: collisions.map((collision) => ({
-      ...collision,
-      kept: representatives.get(collision.collisionKey).id,
-    })).sort((a, b) =>
-      a.collisionKey.localeCompare(b.collisionKey) || a.removed.localeCompare(b.removed)
-    ),
+    // Exact duplicate scan hits (the same repo discovered twice across API pages) collapse onto
+    // themselves; they are not merges and must not appear in the collision ledger.
+    duplicateDiscoveries: collisions.filter((c) => c.removed === c.kept).length,
+    collisions: collisions
+      .map((collision) => ({
+        ...collision,
+        kept: representatives.get(collision.collisionKey).id,
+      }))
+      // The kept slot above is rewritten to the family's FINAL representative, so when several
+      // models collapse onto one key an earlier entry's `removed` can end up equal to that final
+      // rep — a nonsense self-collision (removed == kept) that check-lineage rightly rejects.
+      // Drop those; only genuine merges (removed !== kept) belong in the ledger.
+      .filter((collision) => collision.removed !== collision.kept)
+      .sort((a, b) =>
+        a.collisionKey.localeCompare(b.collisionKey) || a.removed.localeCompare(b.removed)
+      ),
   };
 }
 
@@ -257,7 +267,8 @@ export function validateInventorySummary(summary, inventory, catalogue) {
       failures.push(`unknown discovery status for ${model.id}`);
     } else statusCounts[model.discovery.status]++;
   }
-  if (summary.rawDiscoveries !== summary.inventoryFamilies + summary.scanFamilyCollisions) {
+  if (summary.rawDiscoveries !==
+    summary.inventoryFamilies + summary.scanFamilyCollisions + (summary.duplicateDiscoveries ?? 0)) {
     failures.push("rawDiscoveries does not reconcile with representatives plus scan collisions");
   }
   const expected = {
