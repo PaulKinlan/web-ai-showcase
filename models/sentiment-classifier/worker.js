@@ -52,7 +52,7 @@ function logit(p) {
 async function classify(id, text) {
   await ensureLoaded();
   const t0 = performance.now();
-  const out = await pipe(text, { topk: 2 });
+  const out = await pipe(text, { top_k: 2 });
   const pos = posProb(out);
   const ms = Math.round(performance.now() - t0);
   post({
@@ -82,7 +82,7 @@ async function attribute(id, text) {
   }
   // Batch: the full text plus one variant per word with that word removed.
   const variants = [text, ...words.map((_, i) => words.filter((_, j) => j !== i).join(" "))];
-  const out = await pipe(variants, { topk: 2 });
+  const out = await pipe(variants, { top_k: 2 });
   const fullPos = posProb(out[0]);
   const fullLogit = logit(fullPos);
   // attribution_i = logit_pos(full) - logit_pos(without word i), in log-odds so near-saturated scores
