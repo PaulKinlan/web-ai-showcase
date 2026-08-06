@@ -7,7 +7,7 @@
 //   delete or duplicate it. Serve model files via caches.match() across ALL caches; do not re-store
 //   another copy. Double-storing ~GB models is what pushes an origin into quota eviction.
 // - We only cache the small app shell (HTML/CSS/JS/JSON) ourselves.
-const SW_VERSION = "2026-07-20-home-search-v2";
+const SW_VERSION = "2026-08-06-check-fix-v1";
 const SHELL_CACHE = `webai-shell-${SW_VERSION}`;
 const MODEL_HOSTS = ["huggingface.co", "cdn-lfs.huggingface.co", "cdn-lfs-us-1.huggingface.co"];
 const LIB_HOSTS = ["cdn.jsdelivr.net"];
@@ -56,18 +56,28 @@ self.addEventListener("fetch", (e) => {
     return;
   }
 
-  // Same-origin app shell: network-first, fall back to cache offline.
+  // Same-origin app shell: cache-first with background revalidation (stale-while-revalidate).
+  // Returning users get an instant load from cache — the model check starts immediately instead of
+  // after the full HTML/CSS/JS network round-trip — while the network refreshes the cache in the
+  // background so the next visit is current. (Previously network-first: every page load serialised
+  // the shell round-trip before the demo's "Checking for a local copy…" could even begin, which is
+  // what felt like waiting on a server response for an already-local model.)
   if (url.origin === self.location.origin) {
     e.respondWith(
-      fetch(req)
-        .then((res) => {
-          if (res.ok) {
-            const copy = res.clone();
-            caches.open(SHELL_CACHE).then((c) => c.put(req, copy)).catch(() => {});
-          }
-          return res;
-        })
-        .catch(() => caches.match(req)),
+      (async () => {
+        const cached = await caches.match(req);
+        const network = fetch(req)
+          .then((res) => {
+            if (res.ok) {
+              const copy = res.clone();
+              caches.open(SHELL_CACHE).then((c) => c.put(req, copy)).catch(() => {});
+            }
+            return res;
+          })
+          .catch(() => cached);
+        return cached || network;
+      })(),
     );
+    return;
   }
 });
