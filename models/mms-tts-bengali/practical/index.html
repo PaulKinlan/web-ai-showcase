@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MMS-TTS Bengali Practical — a Bengali narrator · Web AI Showcase</title>
+    <meta name="description" content="A private, offline Bengali narrator: pick a register — notification, weather report, article snippet — and MMS-TTS reads it aloud in Bengali, in your browser." />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🗣️</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">MMS-TTS Bengali (VITS)</a></p>
+
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Practical: a Bengali narrator</h1>
+      <p class="lede">
+        The shape of a real read-aloud feature — Bengali content in, spoken Bengali out, entirely on-device. Pick
+        a register below (a push notification, a weather report, an article snippet), tweak the text, and MMS
+        narrates it. Nothing is uploaded and there's no per-character bill.
+      </p>
+    </header>
+
+    <section class="panel">
+      <label class="field" style="max-inline-size:26rem">Register
+        <select id="register"></select>
+      </label>
+
+      <div id="model-loader" style="margin-top:.6rem"></div>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+
+      <label class="field" style="margin-top:.6rem">পড়ার জন্য পাঠ্য (Bengali)
+        <textarea id="text" class="tts" lang="bn" style="min-block-size:6rem" disabled></textarea>
+      </label>
+      <div class="tts-grid"><span></span><button id="run" type="button" disabled>পড়ুন</button></div>
+
+      <div class="audio-row">
+        <audio id="player" controls preload="none"></audio>
+        <a id="download" class="button secondary" download="mms-tts-ben.wav" hidden>Download .wav</a>
+      </div>
+      <div class="wave-wrap"><canvas id="wave" class="wave" aria-label="Spoken Bengali waveform"></canvas></div>
+      <div class="readout" id="readout" hidden>
+        <span>register <b id="rReg">–</b></span>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>gen time <b id="rMs">–</b></span>
+        <span>audio <b id="rDur">–</b></span>
+      </div>
+    </section>
+
+    <p class="muted" style="font-size:.85rem">
+      One Bengali checkpoint covers every register — the model doesn't know or care whether it's reading a
+      weather report or a warning; it just turns Bengali characters into a waveform. That makes it a practical
+      building block for an offline Bengali voice in any app.
+    </p>
+
+    <p class="crumbs"><a href="../basics/">← Basics</a> · <a href="../">Back to MMS-TTS Bengali</a> · Next: <a href="../wild/">Wild →</a></p>
+
+    <script type="module">
+      import { MmsBnEngine, wavUrl, drawWaveform, MMS_BN_CSS } from "../mmsttsbn.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      const style = document.createElement("style"); style.textContent = MMS_BN_CSS; document.head.append(style);
+      const $ = (id) => document.getElementById(id);
+      const engine = new MmsBnEngine();
+      let pcm = null, curUrl = null;
+
+      const REGISTERS = [
+        { name: "বিজ্ঞপ্তি (Push notification)", text: "আপনার প্যাকেজটি পৌঁছে গেছে এবং দরজার সামনে রাখা হয়েছে। শুভ দিন কাটুক।" },
+        { name: "আবহাওয়ার খবর (Weather report)", text: "সপ্তাহান্তে আকাশ মূলত পরিষ্কার থাকবে, সর্বোচ্চ তাপমাত্রা বত্রিশ ডিগ্রি; রাতে আঠারো ডিগ্রিতে নেমে যাবে।" },
+        { name: "সংবাদ (News snippet)", text: "গবেষকরা একটি নতুন পদ্ধতি উপস্থাপন করেছেন, যা দিয়ে ভাষা মডেল সম্পূর্ণরূপে ব্রাউজারে চালানো যায়।" },
+        { name: "স্টেশন ঘোষণা (Station announcement)", text: "দয়া করে লক্ষ্য করুন: কলকাতাগামী ট্রেনটি আজ প্ল্যাটফর্ম পাঁচ থেকে ছাড়বে। অসুবিধার জন্য দুঃখিত।" },
+        { name: "রান্নার ধাপ (Recipe step)", text: "এখন দুই টেবিল চামচ ময়দা যোগ করুন এবং দলা ছাড়া ভালোভাবে মিশিয়ে নিন।" },
+      ];
+      const sel = $("register");
+      for (const r of REGISTERS) { const o = document.createElement("option"); o.value = r.name; o.textContent = r.name; sel.append(o); }
+      let current = REGISTERS[0];
+      function setRegister(r) { current = r; $("text").value = r.text; }
+      sel.addEventListener("change", () => setRegister(REGISTERS.find((r) => r.name === sel.value)));
+      setRegister(REGISTERS[0]);
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: { modelId: "naklitechie/mms-tts-bn-ONNX", runtime: "transformers.js", dtype: "fp32", sizeMB: 109, requiresWebGPU: false },
+        load: async (onProgress) => { await engine.load(onProgress); return engine; },
+        onReady: () => { $("text").disabled = false; $("run").disabled = false; },
+      });
+
+      $("run").addEventListener("click", async () => {
+        const text = $("text").value.trim();
+        if (!text) return;
+        $("run").disabled = true; $("status").hidden = false; $("status").classList.remove("err","ok");
+        $("status").textContent = "Synthesising…";
+        try {
+          const r = await engine.speak(text);
+          pcm = r.audio;
+          if (curUrl) URL.revokeObjectURL(curUrl);
+          curUrl = wavUrl(pcm, r.rate);
+          $("player").src = curUrl; $("download").href = curUrl; $("download").hidden = false;
+          drawWaveform($("wave"), pcm, 0);
+          const durSec = pcm.length / r.rate;
+          $("readout").hidden = false;
+          $("rReg").textContent = current.name;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rMs").textContent = (r.ms/1000).toFixed(2)+" s";
+          $("rDur").textContent = durSec.toFixed(2)+" s";
+          $("status").textContent = "Done — press play."; $("status").classList.add("ok");
+          $("player").play().catch(()=>{});
+        } catch (err) { $("status").textContent = "Synthesis failed: "+err.message; $("status").classList.add("err"); }
+        finally { $("run").disabled = false; }
+      });
+      $("player").addEventListener("timeupdate", () => { if (pcm && $("player").duration) drawWaveform($("wave"), pcm, $("player").currentTime/$("player").duration); });
+      $("player").addEventListener("ended", () => pcm && drawWaveform($("wave"), pcm, 1));
+      addEventListener("resize", () => pcm && drawWaveform($("wave"), pcm, 0));
+    </script>
+  </body>
+</html>
