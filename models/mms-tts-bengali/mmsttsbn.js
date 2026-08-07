@@ -8,7 +8,7 @@
 // from Hindi's Devanagari) + Bengali-trained VITS weights. The worker reproduces the VitsTokenizer exactly
 // (verified identical to the real tokenizer) because this export omits tokenizer.json.
 
-const WORKER_URL = "/web-ai-showcase/models/mms-tts-bengali/worker.js";
+const WORKER_URL = "/web-ai-showcase/models/mms-tts-Bengali/worker.js";
 export const MODEL_ID = "naklitechie/mms-tts-bn-ONNX";
 
 export class MmsBnEngine {
