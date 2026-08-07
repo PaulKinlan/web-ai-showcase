@@ -1,14 +1,14 @@
-// Front-end helpers for the MMS-TTS Portuguese (VITS) pages. Thin: owns the worker handshake, WAV encoding
+// Front-end helpers for the MMS-TTS Romanian (VITS) pages. Thin: owns the worker handshake, WAV encoding
 // and the waveform canvas. All inference runs in worker.js, off the main thread.
 //
-// Model: Xenova/mms-tts-por — the PORTUGUESE VITS checkpoint from Meta's MMS family (ONNX q8, ~38 MB, 16 kHz
-// mono output). This is a DISTINCT model from the built English MMS-TTS demo: Portuguese character vocab +
-// Portuguese-trained VITS weights, so it speaks Portuguese orthography (ç, ã/õ, á/é/ó) natively.
+// Model: Xenova/mms-tts-ron — the ROMANIAN VITS checkpoint from Meta's MMS family (ONNX q8, ~38 MB, 16 kHz
+// mono output). This is a DISTINCT model from the built English MMS-TTS demo: Romanian character vocab +
+// Romanian-trained VITS weights, so it speaks Romanian orthography (ç, ã/õ, á/é/ó) natively.
 
-const WORKER_URL = "/web-ai-showcase/models/mms-tts-portuguese/worker.js";
-export const MODEL_ID = "Xenova/mms-tts-por";
+const WORKER_URL = "/web-ai-showcase/models/mms-tts-romanian/worker.js";
+export const MODEL_ID = "Xenova/mms-tts-ron";
 
-export class MmsPtEngine {
+export class MmsRoEngine {
   constructor() {
     this.worker = new Worker(WORKER_URL, { type: "module" });
     this.device = "wasm";
@@ -67,7 +67,7 @@ export class MmsPtEngine {
     });
   }
 
-  /** Synthesize Portuguese text → { audio: Float32Array, rate, ms, samples, device } */
+  /** Synthesize Romanian text → { audio: Float32Array, rate, ms, samples, device } */
   speak(text, modelId = MODEL_ID) {
     const id = ++this._id;
     return new Promise((resolve, reject) => {
@@ -77,29 +77,29 @@ export class MmsPtEngine {
   }
 }
 
-// A small set of Portuguese example lines that exercise the cedilha, nasal vowels and Portuguese phrasing.
-export const PORTUGUESE_SAMPLES = [
+// A small set of Romanian example lines that exercise the cedilha, nasal vowels and Romanian phrasing.
+export const ROMANIAN_SAMPLES = [
   {
-    label: "Apresentação",
-    text: "Esta voz é gerada inteiramente no seu navegador, sem nenhum servidor.",
+    label: "Prezentare",
+    text: "Această voce este generată integral în browserul dumneavoastră, fără niciun server.",
   },
   {
-    label: "Trava-língua",
-    text: "O rato roeu a roupa do rei de Roma; o rei de Roma roeu a roupa do rato.",
+    label: "Sunete dificile",
+    text: "Vântul vâjâie vijelios prin văile vechi, în timp ce veverițele vesel se vântură.",
   },
-  { label: "Acentos", text: "Aprender português é uma viagem fascinante pela língua e pela cultura." },
+  { label: "Diacritice", text: "Învățarea limbii române este o călătorie fascinantă prin limbă și cultură." },
   {
-    label: "Anúncio",
-    text: "O entrevistado explicou com calma as razões da sua decisão.",
-  },
-  {
-    label: "Tempo",
-    text: "Amanhã estará ensolarado na capital, com temperaturas próximas de trinta graus.",
+    label: "Anunț",
+    text: "Invitatul a explicat cu calm motivele deciziei sale.",
   },
   {
-    label: "Cedilha & nasais",
+    label: "Vremea",
+    text: "Mâine va fi însorit în capitală, cu temperaturi apropiate de treizeci de grade.",
+  },
+  {
+    label: "Diacritice",
     text:
-      "O avião chegou cedo ao aeroporto com o coração apertado e a mão fechada.",
+      "Avionul a ajuns devreme la aeroport, cu inima strânsă și mâna deschisă.",
   },
 ];
 
