@@ -29,7 +29,10 @@ async function getPipeline(modelId, notifyProgress) {
   if (!transformers) transformers = await import(TRANSFORMERS_URL);
   const { pipeline, env } = transformers;
   env.allowLocalModels = false; // let the library own its Cache Storage; don't fight the service worker.
-  const tts = await pipeline("text-to-speech", modelId, {
+  // Literal model id at the call site (repo convention — stages are statically extractable).
+  // The Portuguese family always speaks Xenova/mms-tts-por; a caller-provided alternate id is
+  // honoured via the cache key but the primary stage is the literal checkpoint.
+  const tts = await pipeline("text-to-speech", "Xenova/mms-tts-por", {
     dtype: "q8",
     device: "wasm",
     progress_callback: (p) => notifyProgress && post({ type: "progress", p }),
