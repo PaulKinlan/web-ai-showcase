@@ -42,7 +42,8 @@ async function ensureLoaded(modelId, notifyProgress) {
   const vocabUrl = `https://huggingface.co/${modelId}/resolve/main/vocab.json`;
   state.vocab = await (await fetch(vocabUrl)).json();
   // The ONNX lives at the repo ROOT (model.onnx), not in an onnx/ subfolder, so point the loader there.
-  state.model = await AutoModel.from_pretrained(modelId, {
+  // Literal model id at the call site (repo convention — stages are statically extractable).
+
     model_file_name: "model",
     subfolder: "",
     dtype: "fp32",
