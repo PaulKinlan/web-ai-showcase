@@ -43,7 +43,7 @@ async function ensureLoaded(modelId, notifyProgress) {
   state.vocab = await (await fetch(vocabUrl)).json();
   // The ONNX lives at the repo ROOT (model.onnx), not in an onnx/ subfolder, so point the loader there.
   // Literal model id at the call site (repo convention — stages are statically extractable).
-
+  state.model = await AutoModel.from_pretrained("naklitechie/mms-tts-bn-ONNX", {
     model_file_name: "model",
     subfolder: "",
     dtype: "fp32",
