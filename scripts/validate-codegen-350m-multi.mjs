@@ -22,16 +22,16 @@ import {
 } from "./browser.mjs";
 
 const WRITE_RUN = process.argv.includes("--write-run");
-const RUN_RECORD = join(repoRoot, "models/codegen-350m/acceptance-run.json");
+const RUN_RECORD = join(repoRoot, "models/codegen-350m-multi/acceptance-run.json");
 const PROFILE_DIR = mkdtempSync(join(tmpdir(), "codegen-350m-acceptance-"));
 if (WRITE_RUN) rmSync(RUN_RECORD, { force: true });
 
 const STAGE = "Xenova/codegen-350M-multi"; // the one advertised model stage
 const ROUTES = {
-  overview: "models/codegen-350m/",
-  basics: "models/codegen-350m/basics/",
-  practical: "models/codegen-350m/practical/",
-  wild: "models/codegen-350m/wild/",
+  overview: "models/codegen-350m-multi/",
+  basics: "models/codegen-350m-multi/basics/",
+  practical: "models/codegen-350m-multi/practical/",
+  wild: "models/codegen-350m-multi/wild/",
 };
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const results = [];
