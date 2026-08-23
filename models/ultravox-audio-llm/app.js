@@ -68,8 +68,7 @@ function resetEngine(kind, reason = "Model released") {
   if (kind === "vad") {
     vadGeneration++;
     captureGeneration++;
-    staleVadReplies = 0;
-    pending.length = 0;
+    pending.clear();
     engines.vad.onStream = onVadStream;
     watchVadErrors();
   }
@@ -365,9 +364,16 @@ function announce(text) {
 // Mic + endpointing (Silero decides WHEN you stopped — it never produces words)
 // ---------------------------------------------------------------------------
 let mic = null;
-const pending = [];
+// Queued audio, keyed by the VAD worker's request id. It used to be an array plus a counter of
+// replies to discard, which was wrong twice over: a chunk that FAILED never produced a reply, so the
+// counter over-counted and every subsequent reply was paired with the previous chunk's PCM; and the
+// busy decision was taken when the reply came back rather than when the audio was captured, so on a
+// backlogged device speech recorded during the "not collecting" gap could be endpointed anyway.
+// Each entry now carries the state that was true AT CAPTURE TIME, and correlation is by id, so a
+// missing or failed reply simply never matches.
+const pending = new Map();
 const MAX_PENDING = 64;
-let staleVadReplies = 0;
+let feedSeq = 0; // only used by the localhost debug hook's feedVad
 
 let inSpeech = false;
 let startRun = 0;
@@ -420,12 +426,12 @@ function concat(chunks, total) {
 }
 
 function onVadStream(msg) {
-  if (staleVadReplies > 0) {
-    staleVadReplies--;
-    return;
-  }
-  const chunk = pending.shift();
-  if (!chunk) return;
+  // No entry means the chunk was discarded (stop, overflow, engine reset) — its reply is stale.
+  const entry = pending.get(msg.id);
+  if (!entry) return;
+  pending.delete(msg.id);
+  const chunk = entry.pcm;
+  const capturedWhileBusy = entry.busy;
   const p = msg.probs;
   for (let f = 0; f < p.length; f++) {
     const frame = chunk.subarray(f * 512, f * 512 + 512);
@@ -433,7 +439,10 @@ function onVadStream(msg) {
     for (let i = 0; i < frame.length; i++) sumSq += frame[i] * frame[i];
     pushFrame(Math.sqrt(sumSq / Math.max(1, frame.length)), p[f]);
 
-    if (busy) {
+    // The state that matters is the one at CAPTURE time, not now: on a slow device this reply can
+    // arrive after generation finished, and treating that audio as freshly captured would let speech
+    // recorded during the advertised gap be endpointed as a new command.
+    if (capturedWhileBusy || busy) {
       // Not collecting: the answer is still generating. Remember that the stream has a hole in it.
       if (!awaitingResync) {
         awaitingResync = true;
@@ -497,7 +506,12 @@ engines.vad.onStream = onVadStream;
 
 function watchVadErrors() {
   engines.vad.worker.addEventListener("message", (e) => {
-    if (e.data?.type !== "error" || !listening) return;
+    if (e.data?.type !== "error") return;
+    // A failed chunk produces an error carrying its id, never a `stream` reply. Drop its entry so
+    // the invariant holds — every queued chunk is removed exactly once, on reply OR on failure —
+    // regardless of what the policy below decides to do about listening.
+    if (e.data.id != null) pending.delete(e.data.id);
+    if (!listening) return;
     stopListening();
     $("status").textContent = `Voice detection failed, so listening stopped: ${e.data.message}`;
     $("status").classList.add("err");
@@ -543,7 +557,7 @@ async function beginListening() {
       // frames would otherwise reach a fresh, loader-unready engine and streamChunk() would fetch
       // Silero again behind the visitor's back, with the loader still saying download-required.
       if (cancelled()) return;
-      if (pending.length >= MAX_PENDING) {
+      if (pending.size >= MAX_PENDING) {
         // Dropping samples mid-utterance would leave a hole: later frames get appended after a
         // missing span and Ultravox would hear a SPLICED command — "set a timer for five… minutes"
         // with the middle gone. On a page whose whole claim is that the model hears the real audio,
@@ -552,17 +566,18 @@ async function beginListening() {
         resetEndpointer();
         // Clearing the endpointer alone was not enough: `pending` still held the queued audio, so as
         // soon as one reply freed a slot the backlog resumed and could form a new utterance spanning
-        // the very gap the UI had just said was discarded. Discard the queued work too.
-        staleVadReplies += pending.length;
-        pending.length = 0;
+        // the very gap the UI had just said was discarded. Discard the queued work too; their replies
+        // no longer match anything and are ignored on arrival.
+        pending.clear();
         setPhase(listening ? "listening" : "idle", listening ? "1" : "0");
         $("micNote").textContent = wasCollecting
           ? "This device can't keep up — that turn was discarded rather than sent with a gap. Try again."
           : "Dropping audio — the voice detector is behind on this device.";
         return;
       }
-      pending.push(frames);
-      engine.streamChunk(frames);
+      // Tag the chunk with the state at capture time, then send. The id ties the two together.
+      const id = engine.streamChunk(frames);
+      pending.set(id, { pcm: frames, busy });
     },
   });
   mic = pendingMic;
@@ -602,7 +617,7 @@ async function beginListening() {
     return;
   }
   listening = true;
-  staleVadReplies = 0;
+  pending.clear();
   resetEndpointer();
   // A previous failure may have shown the no-microphone panel; capture is plainly working now.
   $("micFallback").hidden = true;
@@ -620,8 +635,7 @@ function stopListening() {
     mic?.stop();
   } catch { /* already gone */ }
   mic = null;
-  staleVadReplies += pending.length;
-  pending.length = 0;
+  pending.clear();
   resetEndpointer();
   $("listen").textContent = "🎙️ Start listening";
   $("micNote").textContent = "Mic closed.";
@@ -800,7 +814,11 @@ async function runTurn({ audio, seconds = 0, voicedSec = null, prompt = null, tr
 
     const calls = parseToolCalls(first.text);
     if (!calls.length) {
-      const direct = stripToolCalls(first.text) || (first.text || "").trim();
+      // NOT `|| first.text`: a reply of nothing but special tokens (<|eot_id|>, <|python_tag|>)
+      // strips to empty, and restoring the raw markup rendered it as a real answer. Now that
+      // stripToolCalls preserves genuine content — including ordinary JSON — the stripped result IS
+      // the model's answer, and empty means empty.
+      const direct = stripToolCalls(first.text);
       if (!direct) {
         // Nothing at all came back — no tool call, no prose, or only special tokens. Rendering that
         // as a completed "direct answer" would be a blank turn dressed up as a success.
@@ -932,7 +950,7 @@ async function runTurn({ audio, seconds = 0, voicedSec = null, prompt = null, tr
     readout(card, [
       ["audio", `${seconds.toFixed(1)} s → ${first.audioFrames} positions`],
       ["hear", `${first.genMs} ms`],
-      ["tool", `${outcome.ms} ms`],
+      ["tool", outcome.ms == null ? "not run" : `${outcome.ms} ms`],
       ["answer", `${second.genMs} ms`],
       ["backend", (device || "–").toUpperCase()],
       ["total", `${Math.round(performance.now() - t0)} ms`],
@@ -1025,11 +1043,12 @@ if (isLocalHost()) {
     // Feed the endpointer real VAD frames. This drives the SAME code path the worker drives — no
     // state is spoofed, only the speech probabilities the model would have returned — so the
     // endpointer and its post-busy resync gate can be tested without a microphone.
-    feedVad: (probs) => {
-      pending.push(new Float32Array(probs.length * 512));
-      onVadStream({ probs: Float32Array.from(probs) });
+    feedVad: (probs, capturedWhileBusy = busy) => {
+      const id = -(++feedSeq); // negative ids can never collide with the worker's
+      pending.set(id, { pcm: new Float32Array(probs.length * 512), busy: capturedWhileBusy });
+      onVadStream({ id, probs: Float32Array.from(probs) });
     },
-    endpointer: () => ({ inSpeech, awaitingResync, utterLen, voicedFrames, pending: pending.length }),
+    endpointer: () => ({ inSpeech, awaitingResync, utterLen, voicedFrames, pending: pending.size }),
     markReady: (which) => {
       ready[which] = true;
       reportReadiness();

@@ -45,7 +45,14 @@ const FAMILIES = {
       "MediaPipe Tasks fetches the .task/.tflite bundle; download managed inside the WASM runtime",
   },
   "raw-ort": {
-    test: (t) => /onnxruntime-web|InferenceSession|\bort\.(InferenceSession|env)/.test(t),
+    // Match ACTUAL ORT usage — an import of the library or its API — not the bare string
+    // "onnxruntime-web", which also appears as loader METADATA (`runtime: "onnxruntime-web"`) on
+    // pages whose real download runtime is something else entirely. That string alone was enough to
+    // classify a Transformers.js route as raw-ort, which then reported the wrong byte-control and
+    // resume semantics for the biggest download on the page.
+    test: (t) =>
+      /onnxruntime-web@|from ["'][^"']*onnxruntime-web|import\(["'][^"']*onnxruntime-web|InferenceSession|\bort\.(InferenceSession|env)/
+        .test(t),
     byteControl: "site-controlled",
     // refined below: resumable only if it goes through lib/model-download.js
     resume: "restart-only",

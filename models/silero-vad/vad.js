@@ -107,10 +107,17 @@ export class VadEngine {
     });
   }
 
-  /** Feed a chunk of 16 kHz samples to the live path; results arrive via onStream. */
+  /**
+   * Feed a chunk of 16 kHz samples to the live path; results arrive via onStream.
+   * Returns the request id. Both the `stream` reply and any `error` carry the same id, so a caller
+   * that needs to pair probabilities with the exact PCM it sent — or to drop a chunk that failed —
+   * can correlate instead of counting replies. Existing callers may ignore the return value.
+   */
   streamChunk(pcm) {
     const copy = pcm.slice();
-    this.worker.postMessage({ type: "stream-chunk", id: ++this._id, pcm: copy }, [copy.buffer]);
+    const id = ++this._id;
+    this.worker.postMessage({ type: "stream-chunk", id, pcm: copy }, [copy.buffer]);
+    return id;
   }
 }
 

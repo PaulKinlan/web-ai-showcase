@@ -470,6 +470,54 @@ try {
     );
     check(`${name}: and the page is not left listening`, hidden.listening === false);
 
+    // ---- audio captured DURING a turn stays quarantined even if its reply lands late ----
+    // Regression (PR #3 Codex round 12): the busy decision was taken when the reply came back, not
+    // when the PCM was captured, so on a backlogged device a chunk recorded during the advertised
+    // "not collecting" gap could arrive after generation finished and be endpointed as a command.
+    // Each queued chunk now carries the state that was true at capture time.
+    const lateReply = await evaluate(sessionId, `(() => {
+      const uv = globalThis.__ultravox;
+      const before = uv.endpointer();
+      // A chunk captured while busy, delivered now that the page is idle.
+      uv.feedVad(Array(12).fill(0.95), true);
+      return { before, after: uv.endpointer(), busyNow: uv.state().busy };
+    })()`);
+    check(
+      `${name}: a chunk captured while busy is quarantined even when its reply lands late`,
+      lateReply.busyNow === false && lateReply.after.inSpeech === false && lateReply.after.utterLen === 0,
+      JSON.stringify(lateReply),
+    );
+    check(
+      `${name}: and that late audio puts capture back into resync`,
+      lateReply.after.awaitingResync === true,
+      JSON.stringify(lateReply.after),
+    );
+    // Meanwhile a chunk genuinely captured while idle is still collected normally.
+    await evaluate(sessionId, `globalThis.__ultravox.feedVad(Array(30).fill(0.02), false)`);
+    await evaluate(sessionId, `globalThis.__ultravox.feedVad(Array(6).fill(0.95), false)`);
+    const idleChunk = await evaluate(sessionId, `globalThis.__ultravox.endpointer()`);
+    check(
+      `${name}: audio captured while idle is still collected`,
+      idleChunk.inSpeech === true && idleChunk.utterLen > 0,
+      JSON.stringify(idleChunk),
+    );
+
+    // ---- a reply with no matching queued chunk is simply ignored ----
+    // Regression (PR #3 Codex round 12): stale replies were counted, not correlated, so a chunk that
+    // FAILED (an error, never a reply) made the counter over-count and every later reply was paired
+    // with the previous chunk's PCM. Correlation by id makes an unmatched reply a no-op.
+    const orphan = await evaluate(sessionId, `(() => {
+      const uv = globalThis.__ultravox;
+      const before = uv.endpointer();
+      uv.engines.vad.onStream({ id: 999999, probs: Float32Array.from(Array(10).fill(0.95)) });
+      return { before, after: uv.endpointer() };
+    })()`);
+    check(
+      `${name}: a reply for a chunk that was never queued changes nothing`,
+      JSON.stringify(orphan.before) === JSON.stringify(orphan.after),
+      JSON.stringify(orphan),
+    );
+
     check(`${name}: still no console errors`, page.errors.length === 0, page.errors.join(" | "));
     await closePage(cdp, page.targetId);
   }
@@ -516,7 +564,7 @@ console.log("\n===== source guards (not behavioural proof) =====");
   const overflow = app.slice(app.indexOf("This device can't keep up") - 1600, app.indexOf("This device can't keep up"));
   check(
     "a VAD overflow purges the queued audio, not just the endpointer",
-    /staleVadReplies \+= pending\.length;[\s\S]{0,80}pending\.length = 0;/.test(overflow),
+    /pending\.clear\(\);/.test(overflow),
   );
 
   // Codex round 8: releasing the LLM left the microphone open, so every completed utterance fell
