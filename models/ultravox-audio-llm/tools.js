@@ -252,7 +252,13 @@ const LINEAR = {
   length: {
     base: "m",
     units: {
-      mm: 0.001, cm: 0.01, m: 1, km: 1000,
+      // Spoken input reaches the model as sound and comes back as ordinary words, so the metric
+      // names need the same spelled-out coverage the imperial ones already had — "three metres to
+      // feet" was failing while "three feet to metres" worked.
+      mm: 0.001, millimetre: 0.001, millimetres: 0.001, millimeter: 0.001, millimeters: 0.001,
+      cm: 0.01, centimetre: 0.01, centimetres: 0.01, centimeter: 0.01, centimeters: 0.01,
+      m: 1, metre: 1, metres: 1, meter: 1, meters: 1,
+      km: 1000, kilometre: 1000, kilometres: 1000, kilometer: 1000, kilometers: 1000,
       in: 0.0254, inch: 0.0254, inches: 0.0254,
       ft: 0.3048, foot: 0.3048, feet: 0.3048,
       yd: 0.9144, yard: 0.9144, yards: 0.9144,

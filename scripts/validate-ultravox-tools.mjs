@@ -105,6 +105,17 @@ check("non-volume conversions carry no system label", convert(1, "km", "miles").
 const pintOut = runTool({ name: "convert_units", arguments: { value: 2, from: "litres", to: "pints" } }, {});
 check("the displayed conversion names the system", /US pints/.test(pintOut.display), pintOut.display);
 
+// Regression (PR #3 Codex round 6): spoken input reaches the model as sound and comes back as
+// ordinary words, so metric names must be as well covered as the imperial ones already were.
+// "three metres to feet" used to throw while "three feet to metres" worked.
+near("3 meters → feet", convert(3, "meters", "feet").value, 9.84252, 1e-4);
+near("metres (UK spelling)", convert(2, "metres", "ft").value, 6.56168, 1e-4);
+near("5 kilometres → miles", convert(5, "kilometres", "miles").value, 3.106856, 1e-5);
+near("kilometers (US spelling)", convert(5, "kilometers", "miles").value, 3.106856, 1e-5);
+near("50 centimetres → inches", convert(50, "centimetres", "inches").value, 19.68504, 1e-4);
+near("millimetres still work", convert(1000, "millimetres", "m").value, 1);
+near("the symbols still work", convert(100, "km", "miles").value, 62.137119, 1e-5);
+
 console.log("— tool-call parsing —");
 const canonical = '<tool_call>\n{"name": "get_time", "arguments": {"timezone": "Asia/Tokyo"}}\n</tool_call>';
 check("canonical <tool_call>", JSON.stringify(parseToolCalls(canonical)) ===

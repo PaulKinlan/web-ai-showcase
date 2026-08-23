@@ -491,7 +491,16 @@ async function beginListening() {
       // Silero again behind the visitor's back, with the loader still saying download-required.
       if (generation !== vadGeneration) return;
       if (pending.length >= MAX_PENDING) {
-        $("micNote").textContent = "Dropping audio — the VAD worker is behind on this device.";
+        // Dropping samples mid-utterance would leave a hole: later frames get appended after a
+        // missing span and Ultravox would hear a SPLICED command — "set a timer for five… minutes"
+        // with the middle gone. On a page whose whole claim is that the model hears the real audio,
+        // quietly stitching it is the worst option. Abandon this turn and say so.
+        const wasCollecting = inSpeech;
+        resetEndpointer();
+        setPhase(listening ? "listening" : "idle", listening ? "1" : "0");
+        $("micNote").textContent = wasCollecting
+          ? "This device can't keep up — that turn was discarded rather than sent with a gap. Try again."
+          : "Dropping audio — the voice detector is behind on this device.";
         return;
       }
       pending.push(frames);
