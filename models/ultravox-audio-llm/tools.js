@@ -461,8 +461,17 @@ export function parseToolCalls(text, names = TOOL_NAMES) {
   const tagged = /<tool_call>([\s\S]*?)(?:<\/tool_call>|$)/g;
   let m;
   while ((m = tagged.exec(src)) !== null) {
-    const found = firstObject(m[1]);
-    if (found) consider(found[0]);
+    // EVERY object in the wrapper, not just the first. A small model packs two calls into one
+    // wrapper — concatenated objects, or a JSON array of them — and reading only the first meant the
+    // page saw a single call and executed it, bypassing the multi-call refusal entirely. The refusal
+    // can only work if the parser reports everything the model asked for.
+    let at = 0;
+    for (;;) {
+      const found = firstObject(m[1], at);
+      if (!found) break;
+      consider(found[0]);
+      at = found[1];
+    }
   }
   if (out.length) return out;
 

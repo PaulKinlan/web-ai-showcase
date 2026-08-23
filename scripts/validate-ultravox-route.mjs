@@ -387,7 +387,89 @@ try {
       JSON.stringify(resumed),
     );
 
-    check(`${name}: eight turns logged`, (await evaluate(sessionId, `document.querySelectorAll("#turns .turn").length`)) === 8);
+    // ---- a packed multi-call wrapper must also run NOTHING ----
+    // Regression (PR #3 Codex round 11): two calls concatenated inside ONE <tool_call> wrapper
+    // parsed as a single call, so the page executed it and never reached the round-9 refusal.
+    const timersBeforePacked = await evaluate(sessionId, `document.querySelectorAll("#timers .timer").length`);
+    await evaluate(sessionId, stubEngine(
+      '<tool_call>{"name":"start_timer","parameters":{"seconds":60}}' +
+        '{"name":"start_timer","parameters":{"seconds":300}}</tool_call>',
+      "One at a time, please.",
+    ));
+    await evaluate(sessionId, `globalThis.__ultravox.runTurn({ audio: new Float32Array(16000), seconds: 1, source: "clip" })`);
+    await waitFor(sessionId, `!globalThis.__ultravox.state().busy`, 20_000, "the packed multi-call turn");
+    const tPacked = await evaluate(sessionId, turnSnapshot);
+    check(`${name}: a PACKED multi-call reply is marked failed`, tPacked.nodes.includes("tool:fail"), tPacked.nodes.join(" "));
+    check(
+      `${name}: and starts no timer`,
+      (await evaluate(sessionId, `document.querySelectorAll("#timers .timer").length`)) === timersBeforePacked,
+    );
+
+    // ---- a fatal worker error must leave the engine RECOVERABLE ----
+    // Regression (PR #3 Codex round 11): the error handler rejected the waiters but left the dead
+    // worker installed, so the loader's Retry posted into a corpse and its promise never settled.
+    const recovery = await evaluate(sessionId, `(async () => {
+      const { UltravoxEngine } = await import("/web-ai-showcase/models/ultravox-audio-llm/ultravox.js");
+      const e = new UltravoxEngine();
+      const before = !!e.worker;
+      // Simulate the fatal case: a module worker whose graph never starts.
+      e._fatal(new Error("Worker failed to start"));
+      const afterFatal = { worker: !!e.worker, ready: e.ready };
+      // The loader's Retry calls load() again — it must get a FRESH worker, not hang forever.
+      const p = e.load();
+      const respawned = !!e.worker;
+      let settled = "pending";
+      await Promise.race([
+        p.then(() => (settled = "resolved"), () => (settled = "rejected")),
+        new Promise((r) => setTimeout(r, 1200)),
+      ]);
+      e.dispose();
+      return { before, afterFatal, respawned, settled, disposedWorker: !!e.worker };
+    })()`, 40_000);
+    check(`${name}: a fresh engine starts with a worker`, recovery.before === true);
+    check(
+      `${name}: a fatal error discards the dead worker and clears ready`,
+      recovery.afterFatal.worker === false && recovery.afterFatal.ready === false,
+      JSON.stringify(recovery.afterFatal),
+    );
+    check(`${name}: Retry builds a fresh worker instead of posting into the corpse`, recovery.respawned === true);
+    check(`${name}: and that retry actually settles`, recovery.settled !== "pending", recovery.settled);
+    check(`${name}: dispose leaves no worker behind`, recovery.disposedWorker === false);
+
+    // ---- generate() on an unloaded engine must fail loudly, not hang ----
+    const noModel = await evaluate(sessionId, `(async () => {
+      const { UltravoxEngine } = await import("/web-ai-showcase/models/ultravox-audio-llm/ultravox.js");
+      const e = new UltravoxEngine();
+      try {
+        await e.generate({ messages: [], tools: [], maxTokens: 4 });
+        return "resolved";
+      } catch (err) {
+        return String(err.message);
+      } finally {
+        e.dispose();
+      }
+    })()`);
+    check(`${name}: generate() without a loaded model rejects with a readable reason`, /not loaded/i.test(noModel), noModel);
+
+    check(`${name}: nine turns logged`, (await evaluate(sessionId, `document.querySelectorAll("#turns .turn").length`)) === 9);
+    // ---- pagehide must cancel a microphone startup still in flight ----
+    // Regression (PR #3 Codex round 11): pagehide called stopListening() or mic.stop(), neither of
+    // which can cancel an unresolved permission request. With the back-forward cache the page comes
+    // BACK, and beginListening() could then pass its cancellation check and mark the restored page
+    // as listening over a microphone the visitor never re-authorised.
+    const hidden = await evaluate(sessionId, `(() => {
+      const uv = globalThis.__ultravox;
+      const before = uv.captureGeneration();
+      window.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true }));
+      return { before, after: uv.captureGeneration(), listening: uv.state().listening };
+    })()`);
+    check(
+      `${name}: pagehide advances the capture generation, invalidating a pending startup`,
+      hidden.after > hidden.before,
+      JSON.stringify(hidden),
+    );
+    check(`${name}: and the page is not left listening`, hidden.listening === false);
+
     check(`${name}: still no console errors`, page.errors.length === 0, page.errors.join(" | "));
     await closePage(cdp, page.targetId);
   }

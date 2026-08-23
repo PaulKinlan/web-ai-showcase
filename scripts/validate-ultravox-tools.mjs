@@ -369,5 +369,38 @@ console.log("— stripToolCalls removes only what would have run —");
   check("the two calls keep their distinct arguments", parsed[0].arguments.seconds === 60 && parsed[1].arguments.seconds === 300);
 }
 
+// Regression (PR #3 Codex round 11): a small model packs two calls into ONE <tool_call> wrapper —
+// concatenated objects, or a JSON array of them. Reading only the first balanced object meant the
+// page saw a single call and executed it, walking straight past the round-9 multi-call refusal.
+console.log("— packed multi-call wrappers —");
+{
+  const concatenated = '<tool_call>{"name":"start_timer","parameters":{"seconds":60}}' +
+    '{"name":"start_timer","parameters":{"seconds":300}}</tool_call>';
+  const c = parseToolCalls(concatenated);
+  check("two objects concatenated in one wrapper are BOTH reported", c.length === 2, String(c.length));
+  check("and keep their distinct arguments", c[0]?.arguments.seconds === 60 && c[1]?.arguments.seconds === 300);
+
+  const arrayed = '<tool_call>[{"name":"start_timer","parameters":{"seconds":60}},' +
+    '{"name":"add_note","parameters":{"text":"milk"}}]</tool_call>';
+  const a = parseToolCalls(arrayed);
+  check("a JSON array of calls in one wrapper reports both", a.length === 2, String(a.length));
+  check("with the right names in order", a[0]?.name === "start_timer" && a[1]?.name === "add_note", a.map((x) => x.name).join(","));
+
+  const mixed = '<tool_call>{"name":"get_time","parameters":{}}{"name":"not_a_tool","parameters":{}}</tool_call>';
+  check("an unrecognised name packed alongside a real one is ignored, not executed", parseToolCalls(mixed).length === 1);
+
+  // The single-call path must be untouched: one wrapper, one object, still exactly one call.
+  check(
+    "a single packed call is still a single call",
+    parseToolCalls('<tool_call>{"name":"get_time","parameters":{"timezone":"Asia/Tokyo"}}</tool_call>').length === 1,
+  );
+  // And stripToolCalls, which shares the rule, must still blank a wrapper it recognises.
+  check(
+    "stripToolCalls still removes a packed wrapper it recognises",
+    stripToolCalls("Sure." + concatenated) === "Sure.",
+    stripToolCalls("Sure." + concatenated),
+  );
+}
+
 console.log(`\n${checks - failed}/${checks} checks passed`);
 process.exit(failed ? 1 : 0);

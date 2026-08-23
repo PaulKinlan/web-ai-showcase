@@ -5,7 +5,7 @@ const WORKER_URL = "/web-ai-showcase/models/ultravox-audio-llm/worker.js";
 
 export class UltravoxEngine {
   constructor() {
-    this.worker = new Worker(WORKER_URL, { type: "module" });
+    this.worker = null;
     this.ready = false;
     this.device = null;
     this.onProgress = null;
@@ -13,10 +13,38 @@ export class UltravoxEngine {
     this._probeWaiters = [];
     this._pending = new Map();
     this._id = 0;
+    this._disposed = false;
+    this._spawn();
+  }
+
+  /**
+   * Build the worker. Called again after a FATAL worker error — a module worker whose graph 404s or
+   * fails to parse never becomes usable, and the old code left that dead worker installed: the
+   * loader offered Retry, load() posted into it, and the promise simply never settled. A fatal error
+   * now tears the worker down, so the next load() gets a fresh one and Retry can actually recover.
+   */
+  _spawn() {
+    if (this._disposed) return;
+    this.worker = new Worker(WORKER_URL, { type: "module" });
     this.worker.addEventListener("message", (e) => this._onMessage(e.data));
     this.worker.addEventListener("error", (e) => {
-      this._rejectAll(new Error(e.message || "Worker failed to start"));
+      this._fatal(new Error(e.message || "Worker failed to start"));
     });
+  }
+
+  /** A failure the worker cannot continue past: reject everything and discard the worker. */
+  _fatal(err) {
+    this.ready = false;
+    this.device = null;
+    const dead = this.worker;
+    this.worker = null;
+    try {
+      dead?.terminate();
+    } catch { /* already gone */ }
+    this._rejectAll(err);
+    // A probe that can never answer must not hang the honest-capability gate either.
+    for (const w of this._probeWaiters) w.resolve(false);
+    this._probeWaiters = [];
   }
 
   _rejectAll(err) {
@@ -68,6 +96,8 @@ export class UltravoxEngine {
   }
 
   probeGPU() {
+    if (this._disposed) return Promise.resolve(false);
+    if (!this.worker) this._spawn();
     return new Promise((resolve) => {
       this._probeWaiters.push({ resolve });
       this.worker.postMessage({ type: "probe" });
@@ -77,6 +107,10 @@ export class UltravoxEngine {
   load(onProgress) {
     if (onProgress) this.onProgress = onProgress;
     if (this.ready) return Promise.resolve({ device: this.device, dtype: this.dtype });
+    if (this._disposed) return Promise.reject(new Error("Engine disposed"));
+    // Retry after a fatal error lands here with no worker; build a fresh one rather than posting
+    // into the corpse and waiting forever.
+    if (!this.worker) this._spawn();
     return new Promise((resolve, reject) => {
       this._loadWaiters.push({ resolve, reject });
       this.worker.postMessage({ type: "load" });
@@ -88,6 +122,11 @@ export class UltravoxEngine {
    * The audio is TRANSFERRED, so the caller must pass a copy it no longer needs.
    */
   generate({ messages, tools, audio, maxTokens, onPrompt, onToken }) {
+    // Never silently start a fresh worker here: a generate without a loaded model would sit waiting
+    // while the page believed a turn was running. Fail loudly and let the loader's Retry reload.
+    if (!this.worker || !this.ready) {
+      return Promise.reject(new Error("The model is not loaded — reload it and try again."));
+    }
     const id = ++this._id;
     return new Promise((resolve, reject) => {
       this._pending.set(id, { resolve, reject, onPrompt, onToken });
@@ -98,11 +137,15 @@ export class UltravoxEngine {
 
   /** Reject anything in flight, then terminate. Not reusable afterwards — construct a new one. */
   dispose(reason = "Engine disposed") {
+    this._disposed = true;
     this.ready = false;
     this._rejectAll(new Error(reason));
+    for (const w of this._probeWaiters) w.resolve(false);
+    this._probeWaiters = [];
     try {
-      this.worker.terminate();
+      this.worker?.terminate();
     } catch { /* already gone */ }
+    this.worker = null;
   }
 }
 

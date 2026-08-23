@@ -640,6 +640,12 @@ addEventListener("pagehide", () => {
   // return showing "Stop listening" over a microphone that no longer exists — the next press would
   // only clear that stale state instead of reopening capture. Tear the whole thing down.
   try {
+    // A startup still awaiting the permission prompt is the case stopListening() cannot reach:
+    // `listening` is false, and stopping a microphone that has not opened yet cancels nothing. Bump
+    // the capture generation so that when the prompt finally resolves — possibly after the page has
+    // been restored from the back-forward cache — beginListening() abandons it instead of marking
+    // the restored page as listening.
+    captureGeneration++;
     if (listening) stopListening();
     else mic?.stop();
   } catch { /* noop */ }
