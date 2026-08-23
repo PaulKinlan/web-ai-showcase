@@ -32,7 +32,7 @@ const START_FRAMES = 2;
 const HANG_SEC = 0.8;
 const PREROLL_SEC = 0.4;
 const MAX_UTTER_SEC = 20;
-const MIN_UTTER_SEC = 0.35;
+const MIN_VOICED_SEC = 0.35; // measured on VOICED frames, not on the padded utterance
 const PREROLL_SAMPLES = Math.round(PREROLL_SEC * 16000);
 const MAX_UTTER_SAMPLES = Math.round(MAX_UTTER_SEC * 16000);
 
@@ -133,12 +133,26 @@ for (const schema of TOOL_SCHEMAS) {
 // ---------------------------------------------------------------------------
 let gpuBlocked = null; // set once the main-thread probe answers
 
+/** What the shared loaders are actually showing right now. */
+function loaderStates() {
+  return [...document.querySelectorAll(".model-loader")].map((l) => l.dataset.state);
+}
+
 function reportReadiness() {
   const count = Number(ready.llm) + Number(ready.vad);
   const el = $("status");
   el.classList.toggle("ok", count === 2);
   if (count === 2) {
     el.textContent = "Both models ready — press Start listening, or send the bundled clip.";
+  } else if (
+    !gpuBlocked && loaderStates().some((st) => st === "download-required" || st === "partial")
+  ) {
+    // "Preparing…" is only true while something is actually initialising. A loader sitting at
+    // download-required is waiting for the visitor, and a screen-reader user hearing "preparing"
+    // would wait forever for a transfer that is never going to start on its own.
+    el.textContent =
+      "Nothing is downloading. These models aren't on this device yet — use the Download buttons " +
+      "above when you're ready; nothing is fetched without you asking.";
   } else if (gpuBlocked) {
     // A loader that lands on "unsupported" never calls onReady, so without this the page would sit
     // on "Preparing…" forever while the loader beside it plainly says the model cannot run.
@@ -326,6 +340,10 @@ let staleVadReplies = 0;
 let inSpeech = false;
 let startRun = 0;
 let silentFrames = 0;
+// Voiced frames only. The utterance's total length always includes 0.4 s of pre-roll and the 0.8 s
+// hangover that ended it, so a duration test against it could never reject anything — the filter
+// was dead code. Count the frames Silero actually called speech instead.
+let voicedFrames = 0;
 let utterance = [];
 let utterLen = 0;
 const preroll = [];
@@ -335,6 +353,7 @@ function resetEndpointer() {
   inSpeech = false;
   startRun = 0;
   silentFrames = 0;
+  voicedFrames = 0;
   utterance = [];
   utterLen = 0;
   preroll.length = 0;
@@ -381,6 +400,7 @@ function onVadStream(msg) {
       if (startRun >= START_FRAMES) {
         inSpeech = true;
         silentFrames = 0;
+        voicedFrames = startRun;
         utterance = preroll.slice();
         utterLen = prerollLen;
         preroll.length = 0;
@@ -390,15 +410,23 @@ function onVadStream(msg) {
     } else {
       utterance.push(frame.slice());
       utterLen += frame.length;
+      if (p[f] >= STOP_PROB) voicedFrames++;
       silentFrames = p[f] < STOP_PROB ? silentFrames + 1 : 0;
       const hangReached = silentFrames * FRAME_SEC >= HANG_SEC;
       const tooLong = utterLen >= MAX_UTTER_SAMPLES;
       if (hangReached || tooLong) {
         const pcm = concat(utterance, utterLen);
+        const voicedSec = voicedFrames * FRAME_SEC;
         resetEndpointer();
         const seconds = pcm.length / 16000;
-        if (seconds < MIN_UTTER_SEC) setPhase("listening", "1");
-        else runTurn({ audio: pcm, seconds, truncated: tooLong, source: "mic" });
+        if (voicedSec < MIN_VOICED_SEC) {
+          // A cough, a door, a single clipped syllable. Not worth ~1.5 GB of model's attention.
+          setPhase("listening", "1");
+          $("micNote").textContent =
+            `Ignored ${voicedSec.toFixed(2)} s of sound — too short to be a command.`;
+        } else {
+          runTurn({ audio: pcm, seconds, voicedSec, truncated: tooLong, source: "mic" });
+        }
       }
     }
   }
@@ -597,7 +625,7 @@ function readout(card, parts) {
     .join("");
 }
 
-async function runTurn({ audio, seconds = 0, prompt = null, truncated = false, source = "mic" }) {
+async function runTurn({ audio, seconds = 0, voicedSec = null, prompt = null, truncated = false, source = "mic" }) {
   if (busy) return;
   if (!ready.llm) {
     $("status").textContent =
@@ -612,7 +640,11 @@ async function runTurn({ audio, seconds = 0, prompt = null, truncated = false, s
   const t0 = performance.now();
 
   try {
-    card.stage("vad", "done", source === "clip" ? "clip" : `endpointed ${seconds.toFixed(1)}s`);
+    card.stage(
+      "vad",
+      "done",
+      source === "clip" ? "clip" : `${voicedSec != null ? voicedSec.toFixed(1) : seconds.toFixed(1)}s voiced`,
+    );
     setPhase("listening back", "1");
 
     // The audio IS the user turn. Any text sits alongside the placeholder, never replacing it.
@@ -751,6 +783,13 @@ drawMeter();
 
 // Gate honestly and EARLY: probe on the main thread so the page says why it can't run before the
 // loaders finish their own checks, rather than showing a stale "preparing" line.
+// The shared loader has no callback for "settled but not ready", so watch its state attribute.
+for (const mount of ["loader-llm", "loader-vad"]) {
+  const el = $(mount);
+  new MutationObserver(() => reportReadiness())
+    .observe(el, { attributes: true, attributeFilter: ["data-state"], subtree: true });
+}
+
 probeWebGPUMain().then((gpu) => {
   if (gpu.ok) return;
   const reasons = {

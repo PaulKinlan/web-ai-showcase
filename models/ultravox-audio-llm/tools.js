@@ -186,28 +186,32 @@ export function evaluateExpression(src) {
     }
     return left;
   }
-  // term := power (('*'|'/'|'%') power)*
+  // term := unary (('*'|'/'|'%') unary)*
   function term() {
-    let left = power();
+    let left = unary();
     while (peek() && (peek().t === "*" || peek().t === "/" || peek().t === "%")) {
       const op = tokens[pos++].t;
-      const right = power();
+      const right = unary();
       if ((op === "/" || op === "%") && right === 0) throw new Error("division by zero");
       left = op === "*" ? left * right : op === "/" ? left / right : left % right;
     }
     return left;
   }
-  // power := unary ('^' power)?   (right-associative)
-  function power() {
-    const base = unary();
-    if (peek() && peek().t === "^") { pos++; return Math.pow(base, power()); }
-    return base;
-  }
-  // unary := ('-'|'+') unary | primary
+  // unary := ('-'|'+') unary | power
+  //
+  // The sign sits ABOVE exponentiation, which is what every calculator and maths convention does:
+  // -2^2 is -(2^2) = -4, not (-2)^2 = 4. Getting this backwards made the agent confidently report
+  // the wrong number for any negative power.
   function unary() {
     if (peek() && peek().t === "-") { pos++; return -unary(); }
     if (peek() && peek().t === "+") { pos++; return unary(); }
-    return primary();
+    return power();
+  }
+  // power := primary ('^' unary)?   (right-associative; the exponent may carry its own sign)
+  function power() {
+    const base = primary();
+    if (peek() && peek().t === "^") { pos++; return Math.pow(base, unary()); }
+    return base;
   }
   // primary := num | const | func '(' args ')' | '(' expr ')'
   function primary() {
@@ -407,8 +411,12 @@ export function parseToolCalls(text, names = TOOL_NAMES) {
   };
 
   // Llama emits the call after a <|python_tag|> marker when Environment: ipython is set.
-  const src = String(text ?? "").replace(/<\|python_tag\|>/g, " ");
-  // 1. The canonical <tool_call> blocks (closing tag optional — small models truncate it).
+  const raw = String(text ?? "");
+  // Markers the model wraps a call in. Stripping them leaves what it actually "said".
+  const src = raw.replace(/<\|python_tag\|>/g, " ").replace(/<\|eom_id\|>|<\|eot_id\|>/g, " ");
+
+  // 1. An explicit <tool_call> block is an unambiguous request to act (closing tag optional — small
+  //    models truncate it), so it counts wherever it appears.
   const tagged = /<tool_call>([\s\S]*?)(?:<\/tool_call>|$)/g;
   let m;
   while ((m = tagged.exec(src)) !== null) {
@@ -417,22 +425,18 @@ export function parseToolCalls(text, names = TOOL_NAMES) {
   }
   if (out.length) return out;
 
-  // 2. A fenced code block.
-  const fenced = /```(?:json|tool_call)?\s*([\s\S]*?)```/g;
-  while ((m = fenced.exec(src)) !== null) {
-    const found = firstObject(m[1]);
-    if (found) consider(found[0]);
-  }
-  if (out.length) return out;
-
-  // 3. A bare object anywhere in the text.
-  let idx = 0;
-  for (let guard = 0; guard < 8; guard++) {
-    const found = firstObject(src, idx);
-    if (!found) break;
-    consider(found[0]);
-    idx = found[1];
-  }
+  // 2+3. Otherwise the call must BE the whole message, not something the message mentions.
+  //
+  // This matters for safety, not tidiness: asked to "show me the JSON for a timer but don't run it",
+  // a model produces exactly that JSON inside a sentence. Executing it would run an action the user
+  // explicitly declined. Llama-3.2's canonical format is a bare object emitted alone, so requiring
+  // the object to span the entire trimmed output keeps every genuine call working while making
+  // prose-that-quotes-JSON inert.
+  const trimmed = src.trim();
+  const fenceOnly = /^```(?:json|tool_call)?\s*([\s\S]*?)```$/.exec(trimmed);
+  const candidate = fenceOnly ? fenceOnly[1].trim() : trimmed;
+  const found = firstObject(candidate);
+  if (found && found[0].trim() === candidate.trim()) consider(found[0]);
   return out;
 }
 

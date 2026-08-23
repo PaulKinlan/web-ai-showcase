@@ -3,7 +3,8 @@
 //
 // These are the parts that must be right no matter what the model says: the arithmetic evaluator
 // (which parses untrusted model output and must NEVER reach eval), the unit table, and the
-// <tool_call> parser that has to cope with a 0.5B model's near-miss formatting.
+// function-call parser, which must accept Llama-3.2's canonical shapes and reject JSON the model is
+// merely talking about.
 //
 // Pure Node, no browser, no network. Run: node scripts/validate-ultravox-tools.mjs
 
@@ -64,6 +65,15 @@ throws("rejects division by zero", () => evaluateExpression("1/0"));
 throws("rejects an empty expression", () => evaluateExpression("   "));
 throws("rejects an over-long expression", () => evaluateExpression("1+".repeat(200) + "1"));
 
+// Regression (PR #3 Codex round 3): a leading sign must NOT bind tighter than exponentiation.
+// -2^2 is -(2^2) = -4 everywhere except a broken parser, and the agent would have read out "4".
+near("-2^2 is -(2^2)", evaluateExpression("-2^2"), -4);
+near("-3^2+1", evaluateExpression("-3^2+1"), -8);
+near("a negative exponent still works", evaluateExpression("2^-2"), 0.25);
+near("parentheses still force a negative base", evaluateExpression("(-2)^2"), 4);
+near("exponentiation stays right-associative", evaluateExpression("2^3^2"), 512);
+near("unary minus still binds to multiplication", evaluateExpression("-2*3"), -6);
+
 console.log("— unit conversion —");
 near("100 km → miles", convert(100, "km", "miles").value, 62.137119, 1e-5);
 near("5 kg → lb", convert(5, "kg", "lb").value, 11.023113, 1e-5);
@@ -103,9 +113,12 @@ check(
   "unterminated <tool_call> (truncated generation)",
   parseToolCalls('<tool_call>\n{"name": "list_notes", "arguments": {}}').length === 1,
 );
+// Superseded by the canonical-channel rule below: a fence introduced by prose is the model TALKING
+// about a call, not making one, so it must no longer execute. A fence that is the whole message
+// still does — see "a fence containing only the call still counts".
 check(
-  "fenced json block",
-  parseToolCalls('Sure!\n```json\n{"name":"calculate","arguments":{"expression":"2+2"}}\n```').length === 1,
+  "a fence introduced by prose does NOT execute",
+  parseToolCalls('Sure!\n```json\n{"name":"calculate","arguments":{"expression":"2+2"}}\n```').length === 0,
 );
 check(
   "bare object",
@@ -150,9 +163,28 @@ check(
   "python_tag with trailing eom",
   parseToolCalls('<|python_tag|>{"name":"list_notes","parameters":{}}<|eom_id|>')[0]?.name === "list_notes",
 );
+// Regression (PR #3 Codex round 3): a call must BE the message, not something the message quotes.
+// Asked to "show the JSON but don't run it", a model produces exactly that JSON inside a sentence;
+// executing it would perform an action the user explicitly declined.
 check(
-  "prose before a bare call still parses",
-  parseToolCalls('Sure, let me check.\n{"name": "list_notes", "parameters": {}}')[0]?.name === "list_notes",
+  "JSON quoted inside prose does NOT execute",
+  parseToolCalls('The JSON would be {"name": "start_timer", "parameters": {"seconds": 300}} but do not run it.').length === 0,
+);
+check(
+  "a trailing explanation after a call does NOT execute",
+  parseToolCalls('{"name": "list_notes", "parameters": {}} — that is what I would send.').length === 0,
+);
+check(
+  "an explicit <tool_call> wrapper still counts anywhere",
+  parseToolCalls('Here you go: <tool_call>{"name":"list_notes","arguments":{}}</tool_call>')[0]?.name === "list_notes",
+);
+check(
+  "a bare object alone still counts",
+  parseToolCalls('  {"name": "list_notes", "parameters": {}}  ')[0]?.name === "list_notes",
+);
+check(
+  "a fence containing only the call still counts",
+  parseToolCalls('```json\n{"name":"list_notes","parameters":{}}\n```')[0]?.name === "list_notes",
 );
 check(
   "stripToolCalls removes a bare llama call",
