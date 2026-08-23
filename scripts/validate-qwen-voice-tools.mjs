@@ -1,0 +1,140 @@
+#!/usr/bin/env node
+// Unit tests for the voice-agent tool layer (models/qwen-tiny-llm/multi-model/tools.js).
+//
+// These are the parts that must be right no matter what the model says: the arithmetic evaluator
+// (which parses untrusted model output and must NEVER reach eval), the unit table, and the
+// <tool_call> parser that has to cope with a 0.5B model's near-miss formatting.
+//
+// Pure Node, no browser, no network. Run: node scripts/validate-qwen-voice-tools.mjs
+
+import {
+  convert,
+  evaluateExpression,
+  parseToolCalls,
+  runTool,
+  stripToolCalls,
+  TOOL_NAMES,
+  toolMessageContent,
+} from "../models/qwen-tiny-llm/multi-model/tools.js";
+
+let checks = 0;
+let failed = 0;
+
+function check(label, ok, detail = "") {
+  checks++;
+  if (!ok) failed++;
+  console.log(`${ok ? "PASS" : "FAIL"}  ${label}${detail ? ` — ${detail}` : ""}`);
+}
+
+function near(label, actual, expected, tol = 1e-6) {
+  check(label, Math.abs(actual - expected) <= tol, `got ${actual}, want ${expected}`);
+}
+
+function throws(label, fn) {
+  try {
+    const v = fn();
+    check(label, false, `expected a throw, got ${JSON.stringify(v)}`);
+  } catch {
+    check(label, true);
+  }
+}
+
+console.log("— arithmetic evaluator —");
+near("18 * 7", evaluateExpression("18 * 7"), 126);
+near("(120 + 45) / 3", evaluateExpression("(120 + 45) / 3"), 55);
+near("precedence 2 + 3 * 4", evaluateExpression("2 + 3 * 4"), 14);
+near("right-assoc 2^3^2", evaluateExpression("2^3^2"), 512);
+near("unary minus", evaluateExpression("-5 + 2"), -3);
+near("sqrt(144)", evaluateExpression("sqrt(144)"), 12);
+near("max(3, 9, 4)", evaluateExpression("max(3, 9, 4)"), 9);
+near("15% of 80 as 80 * 15 / 100", evaluateExpression("80 * 15 / 100"), 12);
+near("modulo", evaluateExpression("17 % 5"), 2);
+near("unicode ×", evaluateExpression("6 × 7"), 42);
+near("pi constant", evaluateExpression("pi"), Math.PI);
+throws("rejects eval-style code", () => evaluateExpression("globalThis.alert(1)"));
+throws("rejects property access", () => evaluateExpression("(1).constructor"));
+throws("rejects a bare identifier", () => evaluateExpression("process"));
+throws("rejects unbalanced parens", () => evaluateExpression("(1 + 2"));
+throws("rejects trailing junk", () => evaluateExpression("1 + 2 foo"));
+throws("rejects division by zero", () => evaluateExpression("1/0"));
+throws("rejects an empty expression", () => evaluateExpression("   "));
+throws("rejects an over-long expression", () => evaluateExpression("1+".repeat(200) + "1"));
+
+console.log("— unit conversion —");
+near("100 km → miles", convert(100, "km", "miles").value, 62.137119, 1e-5);
+near("5 kg → lb", convert(5, "kg", "lb").value, 11.023113, 1e-5);
+near("20 celsius → fahrenheit", convert(20, "celsius", "fahrenheit").value, 68);
+near("degrees prefix tolerated", convert(20, "degrees celsius", "fahrenheit").value, 68);
+near("0 c → kelvin", convert(0, "c", "kelvin").value, 273.15);
+near("60 mph → kph", convert(60, "mph", "kph").value, 96.56064, 1e-4);
+near("2 litres → pints", convert(2, "litres", "pints").value, 4.226753, 1e-5);
+check("dimension is reported", convert(1, "m", "ft").dimension === "length");
+throws("rejects a cross-dimension convert", () => convert(1, "km", "kg"));
+throws("rejects an unknown unit", () => convert(1, "furlong", "m"));
+throws("rejects a non-number value", () => convert("banana", "m", "ft"));
+
+console.log("— tool-call parsing —");
+const canonical = '<tool_call>\n{"name": "get_time", "arguments": {"timezone": "Asia/Tokyo"}}\n</tool_call>';
+check("canonical <tool_call>", JSON.stringify(parseToolCalls(canonical)) ===
+  JSON.stringify([{ name: "get_time", arguments: { timezone: "Asia/Tokyo" } }]));
+check(
+  "unterminated <tool_call> (truncated generation)",
+  parseToolCalls('<tool_call>\n{"name": "list_notes", "arguments": {}}').length === 1,
+);
+check(
+  "fenced json block",
+  parseToolCalls('Sure!\n```json\n{"name":"calculate","arguments":{"expression":"2+2"}}\n```').length === 1,
+);
+check(
+  "bare object",
+  parseToolCalls('{"name": "add_note", "arguments": {"text": "milk"}}')[0].name === "add_note",
+);
+check(
+  "stringified arguments",
+  parseToolCalls('<tool_call>{"name":"calculate","arguments":"{\\"expression\\":\\"3*3\\"}"}</tool_call>')[0]
+    .arguments.expression === "3*3",
+);
+check(
+  "nested braces in arguments survive",
+  parseToolCalls('<tool_call>{"name":"add_note","arguments":{"text":"use {braces} here"}}</tool_call>')[0]
+    .arguments.text === "use {braces} here",
+);
+check("unknown tool names are ignored", parseToolCalls('{"name":"rm_rf","arguments":{}}').length === 0);
+check("plain prose yields no calls", parseToolCalls("The capital of France is Paris.").length === 0);
+check("duplicate identical calls collapse", parseToolCalls(canonical + canonical).length === 1);
+check(
+  "two distinct calls both parse",
+  parseToolCalls(
+    '<tool_call>{"name":"calculate","arguments":{"expression":"1+1"}}</tool_call>' +
+      '<tool_call>{"name":"list_notes","arguments":{}}</tool_call>',
+  ).length === 2,
+);
+check(
+  "stripToolCalls leaves the prose",
+  stripToolCalls("Let me check.\n" + canonical) === "Let me check.",
+);
+
+console.log("— executors —");
+const notes = [];
+const ctx = { notes, now: "2026-08-23T12:00:00Z", startTimer: () => "t1" };
+const timeOut = runTool({ name: "get_time", arguments: { timezone: "Asia/Tokyo" } }, ctx);
+check("get_time succeeds", timeOut.ok, timeOut.display);
+check("get_time is really Tokyo (21:00 on 23 Aug 2026)", /21:00/.test(timeOut.display), timeOut.display);
+check("get_time rejects a bogus zone", !runTool({ name: "get_time", arguments: { timezone: "Mars/Olympus" } }, ctx).ok);
+const calcOut = runTool({ name: "calculate", arguments: { expression: "12 * 12" } }, ctx);
+check("calculate result", calcOut.ok && calcOut.result.value === 144, calcOut.display);
+check("calculate failure is captured, not thrown", runTool({ name: "calculate", arguments: { expression: "oops" } }, ctx).ok === false);
+const noteOut = runTool({ name: "add_note", arguments: { text: "buy milk" } }, ctx);
+check("add_note stores the note", noteOut.ok && notes.length === 1 && notes[0] === "buy milk");
+check("list_notes reads it back", runTool({ name: "list_notes", arguments: {} }, ctx).result.count === 1);
+const timerOut = runTool({ name: "start_timer", arguments: { seconds: 90, label: "pasta" } }, ctx);
+check("start_timer succeeds", timerOut.ok && timerOut.result.seconds === 90, timerOut.display);
+check("start_timer rejects zero", !runTool({ name: "start_timer", arguments: { seconds: 0 } }, ctx).ok);
+check("start_timer caps at an hour", !runTool({ name: "start_timer", arguments: { seconds: 99999 } }, ctx).ok);
+check("unknown tool is reported, not thrown", runTool({ name: "nope", arguments: {} }, ctx).ok === false);
+check("tool message content is JSON", JSON.parse(toolMessageContent(calcOut)).value === 144);
+check("error outcomes serialise an error field", "error" in JSON.parse(toolMessageContent(runTool({ name: "nope" }, ctx))));
+check("six tools published", TOOL_NAMES.length === 6, TOOL_NAMES.join(","));
+
+console.log(`\n${checks - failed}/${checks} checks passed`);
+process.exit(failed ? 1 : 0);

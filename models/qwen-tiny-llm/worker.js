@@ -6,10 +6,17 @@
 
 import { TRANSFORMERS_URL } from "/web-ai-showcase/lib/webai.js";
 
+// The default model. The voice-agent page may ask for a larger sibling instead (opts.modelId) when
+// the visitor opts into deeper tool reasoning — every other page leaves it alone and gets 0.5B.
 const MODEL_ID = "onnx-community/Qwen2.5-0.5B-Instruct";
+const ALLOWED_MODELS = new Set([
+  "onnx-community/Qwen2.5-0.5B-Instruct",
+  "onnx-community/Qwen2.5-1.5B-Instruct",
+]);
 let generator = null;
 let mod = null;
 let loadedDevice = null;
+let loadedModelId = null;
 let stopper = null;
 
 function post(msg) {
@@ -30,31 +37,46 @@ async function probeGPU() {
   return { ok: true, shaderF16 };
 }
 
-async function ensureLoaded(device, dtype) {
-  if (generator) return;
+async function ensureLoaded(device, dtype, modelId) {
+  const wanted = modelId && ALLOWED_MODELS.has(modelId) ? modelId : MODEL_ID;
+  if (generator && loadedModelId === wanted) return;
+  if (generator) {
+    // Switching models: let the old session go before pulling a second set of weights into memory.
+    try {
+      await generator.dispose?.();
+    } catch { /* best effort */ }
+    generator = null;
+    loadedModelId = null;
+  }
   mod = await import(TRANSFORMERS_URL);
   const { pipeline } = mod;
   const dev = device === "wasm" ? "wasm" : "webgpu";
   const dt = dtype ?? (dev === "wasm" ? "q4" : "q4f16");
-  console.log(`[qwen worker] loading ${MODEL_ID} on ${dev} (${dt})`);
-  generator = await pipeline("text-generation", MODEL_ID, {
+  console.log(`[qwen worker] loading ${wanted} on ${dev} (${dt})`);
+  generator = await pipeline("text-generation", wanted, {
     device: dev,
     dtype: dt,
     progress_callback: (p) => post({ type: "progress", p }),
   });
   loadedDevice = dev;
+  loadedModelId = wanted;
   console.log(`[qwen worker] ready on ${dev}`);
-  post({ type: "ready", device: dev });
+  post({ type: "ready", device: dev, modelId: wanted });
 }
 
 async function chat(id, messages, opts) {
-  await ensureLoaded(opts?.device, opts?.dtype);
+  await ensureLoaded(opts?.device, opts?.dtype, opts?.modelId);
   const { TextStreamer } = mod;
 
-  // "See inside" — the exact templated prompt the model receives (chat markup + roles).
+  // "See inside" — the exact templated prompt the model receives (chat markup + roles). When the
+  // caller supplies tool schemas, Qwen2.5's own chat template serialises them into its <tools> block
+  // and documents the <tool_call> reply format; we then generate from that exact string so the
+  // pipeline can't re-template it. No tools ⇒ byte-for-byte the previous behaviour.
+  const tools = Array.isArray(opts?.tools) && opts.tools.length ? opts.tools : null;
   const template = generator.tokenizer.apply_chat_template(messages, {
     add_generation_prompt: true,
     tokenize: false,
+    ...(tools ? { tools } : {}),
   });
   post({ type: "prompt", id, template });
 
@@ -89,7 +111,7 @@ async function chat(id, messages, opts) {
     ...(stopper ? { stopping_criteria: stopper } : {}),
   };
 
-  const out = await generator(messages, genOpts);
+  const out = await generator(tools ? template : messages, genOpts);
   const ms = Math.round(performance.now() - t0);
   const full = out?.[0]?.generated_text;
   const text = Array.isArray(full) ? (full.at(-1)?.content ?? "") : String(full ?? "");
@@ -142,7 +164,7 @@ self.addEventListener("message", async (e) => {
     if (type === "probe") {
       post({ type: "probe-result", gpu: await probeGPU() });
     } else if (type === "load") {
-      await ensureLoaded(e.data.device, e.data.dtype);
+      await ensureLoaded(e.data.device, e.data.dtype, e.data.modelId);
     } else if (type === "chat") {
       await chat(e.data.id, e.data.messages, e.data.opts);
     } else if (type === "topk") {

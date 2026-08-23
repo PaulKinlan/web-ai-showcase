@@ -8,6 +8,7 @@ export class QwenEngine {
     this.worker = new Worker(WORKER_URL, { type: "module" });
     this.ready = false;
     this.device = null;
+    this.modelId = null;
     this.onProgress = null;
     this._loadWaiters = [];
     this._probeWaiters = [];
@@ -41,6 +42,7 @@ export class QwenEngine {
       case "ready":
         this.ready = true;
         this.device = msg.device;
+        if (msg.modelId) this.modelId = msg.modelId;
         for (const w of this._loadWaiters) w.resolve(msg.device);
         this._loadWaiters = [];
         break;
@@ -80,17 +82,33 @@ export class QwenEngine {
     });
   }
 
-  /** Load the model. opts.device "webgpu" (default) or "wasm" (honest slow fallback). */
+  /**
+   * Load the model. opts.device "webgpu" (default) or "wasm" (honest slow fallback).
+   * opts.modelId picks a sibling checkpoint (the voice-agent page offers 1.5B for deeper tool
+   * reasoning); omit it and you get the page default, exactly as before.
+   */
   load(onProgress, opts = {}) {
     if (onProgress) this.onProgress = onProgress;
-    if (this.ready) return Promise.resolve(this.device);
+    if (this.ready && (!opts.modelId || opts.modelId === this.modelId)) {
+      return Promise.resolve(this.device);
+    }
+    this.ready = false;
     return new Promise((resolve, reject) => {
       this._loadWaiters.push({ resolve, reject });
-      this.worker.postMessage({ type: "load", device: opts.device, dtype: opts.dtype });
+      this.worker.postMessage({
+        type: "load",
+        device: opts.device,
+        dtype: opts.dtype,
+        modelId: opts.modelId,
+      });
     });
   }
 
-  /** Stream a chat completion. onToken(token, tMs) fires per token; onPrompt(template) once. */
+  /**
+   * Stream a chat completion. onToken(token, tMs) fires per token; onPrompt(template) once.
+   * Pass `tools` (JSON-schema function definitions) to have Qwen2.5's chat template advertise them
+   * and reply with <tool_call> blocks; omit it for a plain chat turn.
+   */
   chat(messages, { onToken, onPrompt, ...opts } = {}) {
     const id = ++this._id;
     return new Promise((resolve, reject) => {
