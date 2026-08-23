@@ -540,7 +540,18 @@ export const EXECUTORS = {
   get_time({ timezone } = {}, ctx = {}) {
     const now = ctx.now ? new Date(ctx.now) : new Date();
     const local = Intl.DateTimeFormat().resolvedOptions().timeZone;
-    let zone = typeof timezone === "string" && timezone.trim() ? timezone.trim() : local;
+    // A SUPPLIED-but-unusable timezone is a failure, not a reason to fall back. A 1B model emits
+    // schema-invalid shapes like {"timezone":{"city":"Tokyo"}} or {"timezone":42}, and quietly
+    // answering with the browser's own zone turns "what time is it in Tokyo?" into a confident
+    // answer about somewhere else entirely. Only an ABSENT timezone means "local".
+    if (timezone != null && (typeof timezone !== "string" || !timezone.trim())) {
+      throw new Error(
+        `the timezone must be a string like "Asia/Tokyo", not ${
+          Array.isArray(timezone) ? "an array" : typeof timezone === "object" ? "an object" : JSON.stringify(timezone)
+        }`,
+      );
+    }
+    const zone = typeof timezone === "string" && timezone.trim() ? timezone.trim() : local;
     let fmt;
     try {
       fmt = new Intl.DateTimeFormat("en-GB", {

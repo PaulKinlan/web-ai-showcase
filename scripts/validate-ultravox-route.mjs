@@ -556,7 +556,7 @@ try {
       const turn = document.querySelector("#turns .turn");
       return {
         added: document.querySelectorAll("#turns .turn").length - before,
-        fetchedClip: fetched.some((u) => /jfk\.wav$/.test(u)),
+        fetchedClip: fetched.some((u) => /jfk\\.wav$/.test(u)),
         userContent: (globalThis.__lastMessages ?? []).find((m) => m.role === "user")?.content ?? null,
         answer: turn?.querySelector('[data-role="answer"]')?.textContent.trim() ?? "",
         nodes: turn ? [...turn.querySelectorAll(".flow .node")].map((n) => n.dataset.key + ":" + n.dataset.state) : [],
@@ -685,6 +685,32 @@ try {
       JSON.stringify(overflow.afterReset),
     );
 
+    // ---- a stalled generation must fail, not hang the page forever ----
+    // Regression (PR #3 Codex round 15): generate() had no deadline, so a WebGPU or worker hang left
+    // the page permanently busy — controls disabled, microphone audio discarded, and no error
+    // anywhere. The deadline is an INACTIVITY one, so a slow-but-alive device is never cut off.
+    const stall = await evaluate(sessionId, `(async () => {
+      const mod = await import("/web-ai-showcase/models/ultravox-audio-llm/ultravox.js");
+      // A worker that accepts messages and never answers — no network needed, and deterministic.
+      const RealWorker = self.Worker;
+      self.Worker = class { addEventListener() {} postMessage() {} terminate() {} };
+      const e = new mod.UltravoxEngine();
+      self.Worker = RealWorker;
+      e.ready = true;                       // pretend a model is loaded
+      const started = Date.now();
+      const outcome = await Promise.race([
+        e.generate({ messages: [], tools: [], maxTokens: 8 }).then(() => "resolved", (err) => err.name),
+        new Promise((r) => setTimeout(() => r("still-pending"), 4000)),
+      ]);
+      e.dispose();
+      return { outcome, waited: Date.now() - started };
+    })()`, 40_000);
+    check(
+      `${name}: a generation that gets no reply does not resolve early or silently`,
+      stall.outcome === "still-pending",
+      JSON.stringify(stall),
+    );
+
     // ---- timers run on wall-clock time and announce together ----
     // Regression (PR #3 Codex round 14): countdowns measured on performance.now() could stall while
     // the machine slept, and two timers finishing in the same tick each cleared the shared live
@@ -784,7 +810,40 @@ console.log("\n===== source guards (not behavioural proof) =====");
     /streamTail = streamTail[\s\S]{0,200}streamReset\(\)/.test(reset),
     reset.replace(/\s+/g, " ").slice(0, 120),
   );
+  const engine = readFileSync(new URL("../models/ultravox-audio-llm/ultravox.js", import.meta.url), "utf8");
+  // Codex round 15: a generation with no deadline left the page permanently busy on a WebGPU hang.
+  check("a stall deadline is armed for every generation", /GENERATE_STALL_MS/.test(engine) && /rearm\(\);/.test(engine));
+  check(
+    "each streamed token re-arms it, so a slow-but-alive device is never cut off",
+    /case "token": \{[\s\S]{0,160}rearm\?\.\(\)/.test(engine),
+  );
+  check(
+    "a stalled generation tears the worker down so Retry can recover",
+    /GenerationStalledError[\s\S]{0,240}this\._fatal\(err\)/.test(engine),
+  );
+
   check("stream-reset acknowledges only after the queued reset runs", /\.then\(\(\) => post\(\{ type: "stream-ready"/.test(reset));
+}
+
+// A validator that lies is worse than no validator. Snippets sent to the page live in template
+// literals, where an "invalid" escape silently COLLAPSES — `/\\s+/` arrives as `/s+/`, which strips
+// the letter s instead of whitespace, and `/setTimeout\\(/` arrives as an unterminated group that
+// throws at parse time and makes the whole evaluate return undefined. Both happened here. This scan
+// fails the run rather than letting a weakened assertion pass quietly.
+{
+  const selfSrc = readFileSync(new URL(import.meta.url), "utf8");
+  const offenders = [];
+  for (const m of selfSrc.matchAll(/`([^`]*)`/gs)) {
+    const line = selfSrc.slice(0, m.index).split("\n").length;
+    for (const esc of new Set(m[1].match(/\\./g) ?? [])) {
+      if (!"nrt`$\\".includes(esc[1])) offenders.push(`line ${line}: ${esc}`);
+    }
+  }
+  check(
+    "no template literal in this file carries a collapsing escape",
+    offenders.length === 0,
+    offenders.join(", "),
+  );
 }
 
 console.log(`\n${checks - failed}/${checks} checks passed`);

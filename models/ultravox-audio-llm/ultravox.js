@@ -3,6 +3,13 @@
 
 const WORKER_URL = "/web-ai-showcase/models/ultravox-audio-llm/worker.js";
 
+// How long a generation may go with NO word from the worker before it is declared stuck. This is an
+// INACTIVITY deadline, not a total budget: every streamed token re-arms it, so a slow-but-alive
+// device is never cut off, while a WebGPU hang — which produces silence, not slowness — is caught.
+// Without it a stalled worker left the page permanently `busy`: controls disabled, microphone audio
+// discarded, and no error anywhere, which is the worst failure mode this page has.
+const GENERATE_STALL_MS = 45_000;
+
 export class UltravoxEngine {
   constructor() {
     this.worker = null;
@@ -50,7 +57,10 @@ export class UltravoxEngine {
   _rejectAll(err) {
     for (const w of this._loadWaiters) w.reject(err);
     this._loadWaiters = [];
-    for (const [, p] of this._pending) p.reject(err);
+    for (const [, p] of this._pending) {
+      p.disarm?.();
+      p.reject(err);
+    }
     this._pending.clear();
   }
 
@@ -70,15 +80,22 @@ export class UltravoxEngine {
         for (const w of this._loadWaiters) w.resolve(msg);
         this._loadWaiters = [];
         break;
-      case "prompt":
-        this._pending.get(msg.id)?.onPrompt?.(msg.template);
+      case "prompt": {
+        const p = this._pending.get(msg.id);
+        p?.rearm?.();
+        p?.onPrompt?.(msg.template);
         break;
-      case "token":
-        this._pending.get(msg.id)?.onToken?.(msg.token, msg.n);
+      }
+      case "token": {
+        const p = this._pending.get(msg.id);
+        p?.rearm?.();
+        p?.onToken?.(msg.token, msg.n);
         break;
+      }
       case "result": {
         const p = this._pending.get(msg.id);
         if (p) {
+          p.disarm?.();
           this._pending.delete(msg.id);
           p.resolve(msg);
         }
@@ -86,7 +103,9 @@ export class UltravoxEngine {
       }
       case "error":
         if (msg.id != null && this._pending.has(msg.id)) {
-          this._pending.get(msg.id).reject(new Error(msg.message));
+          const p = this._pending.get(msg.id);
+          p.disarm?.();
+          p.reject(new Error(msg.message));
           this._pending.delete(msg.id);
         } else {
           this._rejectAll(new Error(msg.message));
@@ -129,7 +148,28 @@ export class UltravoxEngine {
     }
     const id = ++this._id;
     return new Promise((resolve, reject) => {
-      this._pending.set(id, { resolve, reject, onPrompt, onToken });
+      let timer = null;
+      const disarm = () => {
+        if (timer !== null) clearTimeout(timer);
+        timer = null;
+      };
+      const rearm = () => {
+        disarm();
+        timer = setTimeout(() => {
+          this._pending.delete(id);
+          const err = new Error(
+            `The model stopped responding (no output for ${Math.round(GENERATE_STALL_MS / 1000)}s). ` +
+              "The worker was reset — load it again and retry.",
+          );
+          err.name = "GenerationStalledError";
+          reject(err);
+          // A worker that has gone quiet mid-generation cannot be trusted to finish anything else,
+          // so tear it down. The next load() builds a fresh one (see _spawn).
+          this._fatal(err);
+        }, GENERATE_STALL_MS);
+      };
+      this._pending.set(id, { resolve, reject, onPrompt, onToken, rearm, disarm });
+      rearm();
       const payload = { type: "generate", id, messages, tools, audio, maxTokens };
       this.worker.postMessage(payload, audio ? [audio.buffer] : []);
     });

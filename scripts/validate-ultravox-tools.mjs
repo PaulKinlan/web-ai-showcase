@@ -445,5 +445,29 @@ console.log("— the audio placeholder is the page's to emit —");
   );
 }
 
+// Regression (PR #3 Codex round 15): a 1B model emits schema-invalid shapes, and a SUPPLIED but
+// unusable timezone was silently replaced by the browser's own zone — turning "what time is it in
+// Tokyo?" into a confident answer about somewhere else. Only an ABSENT timezone means local.
+console.log("— a supplied timezone must be a usable string —");
+{
+  const ctx = { now: "2026-08-23T12:00:00Z" };
+  const objArg = runTool({ name: "get_time", arguments: { timezone: { city: "Tokyo" } } }, ctx);
+  check("an object timezone is refused, not silently localised", objArg.ok === false, objArg.display ?? objArg.error);
+  check("and the refusal says what was wrong", /must be a string/i.test(objArg.error ?? ""), objArg.error);
+  check("a numeric timezone is refused", runTool({ name: "get_time", arguments: { timezone: 42 } }, ctx).ok === false);
+  check("an array timezone is refused", runTool({ name: "get_time", arguments: { timezone: ["Asia/Tokyo"] } }, ctx).ok === false);
+  check("a blank timezone is refused", runTool({ name: "get_time", arguments: { timezone: "   " } }, ctx).ok === false);
+  // The legitimate paths must be untouched.
+  const omitted = runTool({ name: "get_time", arguments: {} }, ctx);
+  check("an OMITTED timezone still means local, and succeeds", omitted.ok === true, omitted.display);
+  const explicitNull = runTool({ name: "get_time", arguments: { timezone: null } }, ctx);
+  check("an explicit null also means local", explicitNull.ok === true, explicitNull.display);
+  const tokyo = runTool({ name: "get_time", arguments: { timezone: "Asia/Tokyo" } }, ctx);
+  check("a real zone still works", tokyo.ok && /21:00/.test(tokyo.display), tokyo.display);
+  check("an unknown zone STRING is still its own error", /is not a time zone I know/.test(
+    runTool({ name: "get_time", arguments: { timezone: "Mars/Olympus" } }, ctx).error ?? "",
+  ));
+}
+
 console.log(`\n${checks - failed}/${checks} checks passed`);
 process.exit(failed ? 1 : 0);

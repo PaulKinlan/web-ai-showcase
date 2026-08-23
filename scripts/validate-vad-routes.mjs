@@ -24,7 +24,7 @@
 //
 // Run: node scripts/validate-vad-routes.mjs
 
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CDP, closePage, DESKTOP, launchChrome, MOBILE, openPage, setViewport, startServer } from "./browser.mjs";
@@ -170,7 +170,7 @@ try {
         return {
           disabled: !!el.disabled,
           label: (el.textContent || "").trim().slice(0, 40),
-          reason: document.body.innerText.replace(/\s+/g, " "),
+          reason: document.body.innerText.replace(/\\s+/g, " "),
           bodyGrew: document.body.textContent.length !== before,
         };
       })()`);
@@ -216,6 +216,27 @@ try {
     server?.server?.close();
   } catch { /* noop */ }
   rmSync(PROFILE_DIR, { recursive: true, force: true });
+}
+
+// A validator that lies is worse than no validator. Snippets sent to the page live in template
+// literals, where an "invalid" escape silently COLLAPSES — `/\\s+/` arrives as `/s+/`, which strips
+// the letter s instead of whitespace, and `/setTimeout\\(/` arrives as an unterminated group that
+// throws at parse time and makes the whole evaluate return undefined. Both happened here. This scan
+// fails the run rather than letting a weakened assertion pass quietly.
+{
+  const selfSrc = readFileSync(new URL(import.meta.url), "utf8");
+  const offenders = [];
+  for (const m of selfSrc.matchAll(/`([^`]*)`/gs)) {
+    const line = selfSrc.slice(0, m.index).split("\n").length;
+    for (const esc of new Set(m[1].match(/\\./g) ?? [])) {
+      if (!"nrt`$\\".includes(esc[1])) offenders.push(`line ${line}: ${esc}`);
+    }
+  }
+  check(
+    "no template literal in this file carries a collapsing escape",
+    offenders.length === 0,
+    offenders.join(", "),
+  );
 }
 
 console.log(`\n${checks - failed}/${checks} checks passed`);
