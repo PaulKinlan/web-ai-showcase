@@ -15,6 +15,7 @@ import {
   MAX_NOTE_CHARS,
   parseToolCalls,
   runTool,
+  stripReservedAudioTokens,
   stripToolCalls,
   SYSTEM_PROMPT,
   TOOL_NAMES,
@@ -426,6 +427,22 @@ console.log("— each volume side keeps its own system —");
   near("explicit uk to us gallon", gal.value, 1.2009499);
   check("keeps both explicit labels as given", gal.from === "uk gallon" && gal.to === "us gallon", `${gal.from} / ${gal.to}`);
   check("a non-volume conversion carries no system", convert(1, "km", "miles").system === undefined);
+}
+
+// Regression (PR #3 Codex round 14): the page documents <|audio|> on screen, so a visitor types it.
+// Concatenated with the placeholder the page adds, the processor gets TWO placeholders for one PCM
+// recording, the expanded audio positions stop matching the audio features, and the turn fails.
+console.log("— the audio placeholder is the page's to emit —");
+{
+  check("a typed placeholder is removed", !stripReservedAudioTokens("What is this? <|audio|>").includes(AUDIO_PLACEHOLDER));
+  check("the rest of the question survives", stripReservedAudioTokens("What is this? <|audio|>") === "What is this?");
+  check("several are all removed", stripReservedAudioTokens("<|audio|>a<|audio|>b<|audio|>") === "a b");
+  check("ordinary text is untouched", stripReservedAudioTokens("summarise the clip") === "summarise the clip");
+  check("empty in, empty out", stripReservedAudioTokens("") === "" && stripReservedAudioTokens(null) === "");
+  check(
+    "a lookalike that is not the token is left alone",
+    stripReservedAudioTokens("the <audio> element") === "the <audio> element",
+  );
 }
 
 console.log(`\n${checks - failed}/${checks} checks passed`);

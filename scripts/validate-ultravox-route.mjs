@@ -81,6 +81,7 @@ const stubEngine = (firstText, secondText, audioFrames = 26) => `
     let pass = 0;
     uv.engines.llm.generate = async (opts = {}) => {
       pass++;
+      globalThis.__lastMessages = opts.messages;
       const text = pass === 1 ? ${JSON.stringify(firstText)} : ${JSON.stringify(secondText)};
       opts.onPrompt?.("<|start_header_id|>user<|end_header_id|>\\n\\n" + "<|audio|>".repeat(${audioFrames}));
       return { text, prepMs: 40, genMs: 120, promptTokens: 180, audioFrames: ${audioFrames}, newTokens: 24, device: "webgpu" };
@@ -459,7 +460,6 @@ try {
     })()`);
     check(`${name}: generate() without a loaded model rejects with a readable reason`, /not loaded/i.test(noModel), noModel);
 
-    check(`${name}: nine turns logged`, (await evaluate(sessionId, `document.querySelectorAll("#turns .turn").length`)) === 9);
     // ---- pagehide must cancel a microphone startup still in flight ----
     // Regression (PR #3 Codex round 11): pagehide called stopListening() or mic.stop(), neither of
     // which can cancel an unresolved permission request. With the back-forward cache the page comes
@@ -525,6 +525,66 @@ try {
       JSON.stringify(orphan.before) === JSON.stringify(orphan.after),
       JSON.stringify(orphan),
     );
+
+    // ---- the REAL bundled-clip control, not the debug hook ----
+    // Regression (PR #3 Codex round 14): every clip turn above calls runTurn() with a synthetic
+    // Float32Array, so #runClip's own path — the urlToMono16k() fetch and decode of the bundled WAV,
+    // reading the prompt field, the clipPreparing state transitions — was never exercised, and a
+    // missing or broken clip asset would still have produced a green run. Driven for real here; only
+    // the model's output is stubbed, as everywhere else.
+    await evaluate(sessionId, stubEngine(
+      '{"name":"calculate","parameters":{"expression":"2 + 2"}}',
+      "That comes to four.",
+    ));
+    const clipRun = await evaluate(sessionId, `(async () => {
+      const before = document.querySelectorAll("#turns .turn").length;
+      // A prompt containing the reserved placeholder the page documents on screen: the page must
+      // strip it rather than hand the processor two placeholders for one recording.
+      document.getElementById("clipPrompt").value = "What is 2 + 2? <|audio|>";
+      const fetched = [];
+      const realFetch = window.fetch;
+      window.fetch = (...args) => { fetched.push(String(args[0])); return realFetch.apply(window, args); };
+      document.getElementById("runClip").click();
+      const deadline = Date.now() + 30000;
+      while (Date.now() < deadline && document.querySelectorAll("#turns .turn").length === before) {
+        await new Promise((r) => setTimeout(r, 150));
+      }
+      while (Date.now() < deadline && globalThis.__ultravox.state().busy) {
+        await new Promise((r) => setTimeout(r, 150));
+      }
+      window.fetch = realFetch;
+      const turn = document.querySelector("#turns .turn");
+      return {
+        added: document.querySelectorAll("#turns .turn").length - before,
+        fetchedClip: fetched.some((u) => /jfk\.wav$/.test(u)),
+        userContent: (globalThis.__lastMessages ?? []).find((m) => m.role === "user")?.content ?? null,
+        answer: turn?.querySelector('[data-role="answer"]')?.textContent.trim() ?? "",
+        nodes: turn ? [...turn.querySelectorAll(".flow .node")].map((n) => n.dataset.key + ":" + n.dataset.state) : [],
+        clipEnabledAgain: !document.getElementById("runClip").disabled,
+      };
+    })()`, 60_000);
+    check(`${name}: clicking the real clip button runs a turn`, clipRun.added === 1, JSON.stringify(clipRun.nodes));
+    check(
+      `${name}: it actually fetched and decoded the bundled WAV`,
+      clipRun.fetchedClip === true,
+      clipRun.fetchedClip ? "" : "no request for jfk.wav was made",
+    );
+    check(`${name}: Silero is honestly marked unused for a pre-cut clip`, clipRun.nodes.includes("vad:skipped"), clipRun.nodes.join(" "));
+    check(`${name}: the tool ran and the answer rendered`, /four/i.test(clipRun.answer), clipRun.answer);
+    // Asserted on the prompt the MODEL was actually given, not on rendered text — a DOM assertion
+    // here would pass vacuously if the page happened to render nothing.
+    check(
+      `${name}: the visitor's question reached the model`,
+      /What is 2 \+ 2\?/.test(clipRun.userContent ?? ""),
+      JSON.stringify(clipRun.userContent),
+    );
+    check(
+      `${name}: with EXACTLY one audio placeholder — the page's, never the visitor's`,
+      (clipRun.userContent ?? "").split("<|audio|>").length - 1 === 1,
+      JSON.stringify(clipRun.userContent),
+    );
+    check(`${name}: the clip control is usable again afterwards`, clipRun.clipEnabledAgain === true);
+    await evaluate(sessionId, `document.getElementById("clipPrompt").value = ""`);
 
     // ---- a suspended audio context is a FAILED start, for every caller ----
     // Regression (PR #3 Codex round 13): start() resolved and only recorded `suspended` as a
@@ -624,6 +684,40 @@ try {
       overflow.afterReset?.awaitingResync === true,
       JSON.stringify(overflow.afterReset),
     );
+
+    // ---- timers run on wall-clock time and announce together ----
+    // Regression (PR #3 Codex round 14): countdowns measured on performance.now() could stall while
+    // the machine slept, and two timers finishing in the same tick each cleared the shared live
+    // region on the same frame — so only the last was ever spoken, and both were already flagged as
+    // announced, so the lost one was never announced at all.
+    const timers = await evaluate(sessionId, `(async () => {
+      const uv = globalThis.__ultravox;
+      // Two timers that are already due: the tool is driven for real, the clock is not faked.
+      uv.toolCtx.startTimer(0.1, "pasta");
+      uv.toolCtx.startTimer(0.1, "eggs");
+      await new Promise((r) => setTimeout(r, 1400));
+      return {
+        announced: document.getElementById("announcer").textContent,
+        rows: [...document.querySelectorAll("#timers .timer")].map((t) => t.textContent),
+        done: [...document.querySelectorAll("#timers .timer")].filter((t) => t.dataset.done === "1").length,
+      };
+    })()`, 30_000);
+    check(`${name}: both timers reach done`, timers.done === 2, JSON.stringify(timers.rows));
+    check(
+      `${name}: BOTH finished timers are named in one announcement`,
+      /pasta/.test(timers.announced) && /eggs/.test(timers.announced),
+      timers.announced,
+    );
+    check(
+      `${name}: and it is a single combined message, not two that overwrite each other`,
+      /2 timers finished/i.test(timers.announced),
+      timers.announced,
+    );
+
+    // Counted LAST, so it covers every turn this pass drove — it sat mid-file before and silently
+    // excluded anything added after it.
+    const turnCount = await evaluate(sessionId, `document.querySelectorAll("#turns .turn").length`);
+    check(`${name}: every driven turn is logged`, turnCount === 10, `got ${turnCount}, want 10`);
 
     check(`${name}: still no console errors`, page.errors.length === 0, page.errors.join(" | "));
     await closePage(cdp, page.targetId);

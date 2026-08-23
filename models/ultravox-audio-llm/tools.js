@@ -655,3 +655,18 @@ export const SYSTEM_PROMPT =
 
 /** The placeholder the Ultravox processor replaces with the audio embedding frames. */
 export const AUDIO_PLACEHOLDER = "<|audio|>";
+
+/**
+ * Strip reserved audio placeholders out of visitor-typed text.
+ *
+ * The page documents `<|audio|>` on screen, so someone WILL type it. Concatenating it with the one
+ * the page adds gives the processor two placeholders for a single PCM recording: the expanded audio
+ * positions no longer line up with the audio feature sequence and the turn fails instead of
+ * answering. The token is the page's to emit, never the visitor's.
+ */
+export function stripReservedAudioTokens(text) {
+  return String(text ?? "")
+    .replace(/<\|audio\|>/g, " ")
+    .replace(/[ \t]{2,}/g, " ")
+    .trim();
+}

@@ -10,6 +10,7 @@ import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
 import {
   AUDIO_PLACEHOLDER,
   parseToolCalls,
+  stripReservedAudioTokens,
   runTool,
   stripToolCalls,
   SYSTEM_PROMPT,
@@ -95,14 +96,21 @@ function renderNotes() {
 
 function renderTimers() {
   const box = $("timers");
+  const justFinished = [];
   box.replaceChildren();
   for (const t of timers) {
-    const left = Math.max(0, Math.ceil((t.endsAt - performance.now()) / 1000));
+    // Wall-clock, not performance.now(): a countdown measured on a clock that can stall while the
+    // machine sleeps would show five minutes left after a ten-minute nap. A timer must expire on
+    // elapsed real time.
+    const left = Math.max(0, Math.ceil((t.endsAt - Date.now()) / 1000));
     // One polite announcement on the transition to zero. Making the countdown itself live would read
     // every second aloud; saying nothing means a screen-reader user never learns the timer finished.
+    // Collected, not announced here: two timers finishing in the same tick would each clear the live
+    // region and schedule on the same frame, so only the last would be spoken — and both are already
+    // flagged, so the lost one would never be announced at all.
     if (left === 0 && !t.announced) {
       t.announced = true;
-      announce(`Timer finished: ${t.label}.`);
+      justFinished.push(t.label);
     }
     const row = document.createElement("div");
     row.className = "timer";
@@ -116,11 +124,15 @@ function renderTimers() {
     box.append(row);
   }
   $("timersEmpty").hidden = timers.length > 0;
+  if (justFinished.length === 1) announce(`Timer finished: ${justFinished[0]}.`);
+  else if (justFinished.length > 1) {
+    announce(`${justFinished.length} timers finished: ${justFinished.join(", ")}.`);
+  }
 }
 
 function startTimer(seconds, label) {
   const id = `t${++timerSeq}`;
-  timers.push({ id, label, endsAt: performance.now() + seconds * 1000 });
+  timers.push({ id, label, endsAt: Date.now() + seconds * 1000 });
   renderTimers();
   return id;
 }
@@ -811,8 +823,11 @@ async function runTurn({ audio, seconds = 0, voicedSec = null, prompt = null, tr
     }
     setPhase("listening back", "1");
 
-    // The audio IS the user turn. Any text sits alongside the placeholder, never replacing it.
-    const userContent = prompt ? `${prompt}\n${AUDIO_PLACEHOLDER}` : AUDIO_PLACEHOLDER;
+    // The audio IS the user turn. Any text sits alongside the placeholder, never replacing it — and
+    // the visitor's text cannot contribute a placeholder of its own (the page documents the token on
+    // screen, so it does get typed; two placeholders for one recording breaks the turn).
+    const askText = stripReservedAudioTokens(prompt);
+    const userContent = askText ? `${askText}\n${AUDIO_PLACEHOLDER}` : AUDIO_PLACEHOLDER;
     const messages = [
       { role: "system", content: SYSTEM_PROMPT },
       { role: "user", content: userContent },
