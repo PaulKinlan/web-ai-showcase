@@ -39,6 +39,9 @@ const MAX_UTTER_SAMPLES = Math.round(MAX_UTTER_SEC * 16000);
 const engines = { llm: new UltravoxEngine(), vad: new VadEngine() };
 const ENGINE_FACTORIES = { llm: () => new UltravoxEngine(), vad: () => new VadEngine() };
 const ready = { llm: false, vad: false };
+// Bumped whenever the VAD engine is replaced. Microphone startup awaits a permission prompt that can
+// outlast a Release/Clear, so anything begun before a reset must check it is still the current one.
+let vadGeneration = 0;
 let device = null;
 let busy = false;
 let listening = false;
@@ -53,6 +56,7 @@ function resetEngine(kind, reason = "Model released") {
   ready[kind] = false;
   if (kind === "llm") device = null;
   if (kind === "vad") {
+    vadGeneration++;
     staleVadReplies = 0;
     pending.length = 0;
     engines.vad.onStream = onVadStream;
@@ -83,6 +87,12 @@ function renderTimers() {
   box.replaceChildren();
   for (const t of timers) {
     const left = Math.max(0, Math.ceil((t.endsAt - performance.now()) / 1000));
+    // One polite announcement on the transition to zero. Making the countdown itself live would read
+    // every second aloud; saying nothing means a screen-reader user never learns the timer finished.
+    if (left === 0 && !t.announced) {
+      t.announced = true;
+      announce(`Timer finished: ${t.label}.`);
+    }
     const row = document.createElement("div");
     row.className = "timer";
     row.dataset.done = left === 0 ? "1" : "0";
@@ -464,32 +474,50 @@ async function startListening() {
 }
 
 async function beginListening() {
+  const generation = vadGeneration;
+  const engine = engines.vad;
   try {
-    await engines.vad.streamReset();
+    await engine.streamReset();
   } catch (err) {
     $("status").textContent = `Couldn't reset the VAD: ${err.message}`;
     $("status").classList.add("err");
     return;
   }
-  mic = new LiveMic({
+  if (generation !== vadGeneration) return; // released while we were resetting
+  const pendingMic = new LiveMic({
     onFrames: (frames) => {
+      // Bound to the engine that was current when capture started. After a Release/Clear these
+      // frames would otherwise reach a fresh, loader-unready engine and streamChunk() would fetch
+      // Silero again behind the visitor's back, with the loader still saying download-required.
+      if (generation !== vadGeneration) return;
       if (pending.length >= MAX_PENDING) {
         $("micNote").textContent = "Dropping audio — the VAD worker is behind on this device.";
         return;
       }
       pending.push(frames);
-      engines.vad.streamChunk(frames);
+      engine.streamChunk(frames);
     },
   });
+  mic = pendingMic;
   try {
-    await mic.start();
+    await pendingMic.start();
   } catch (err) {
     try {
-      mic.stop();
+      pendingMic.stop();
     } catch { /* nothing to release */ }
-    mic = null;
+    if (mic === pendingMic) mic = null;
     $("micFallback").hidden = false;
     $("micNote").textContent = `Microphone unavailable (${err.name || "error"}).`;
+    return;
+  }
+  // The permission prompt can outlast a Release/Clear. If the engine was replaced while we waited,
+  // close the microphone we just opened rather than streaming into a model that is no longer loaded.
+  if (generation !== vadGeneration) {
+    try {
+      pendingMic.stop();
+    } catch { /* already gone */ }
+    if (mic === pendingMic) mic = null;
+    $("micNote").textContent = "Listening cancelled — the voice detector was released.";
     return;
   }
   listening = true;
@@ -643,11 +671,13 @@ async function runTurn({ audio, seconds = 0, voicedSec = null, prompt = null, tr
   const t0 = performance.now();
 
   try {
-    card.stage(
-      "vad",
-      "done",
-      source === "clip" ? "clip" : `${voicedSec != null ? voicedSec.toFixed(1) : seconds.toFixed(1)}s voiced`,
-    );
+    if (source === "clip") {
+      // The clip is decoded and handed straight to Ultravox — endpointing is what Silero is FOR, and
+      // a pre-cut file needs none. Showing that stage as "done" would credit a model that never ran.
+      card.stage("vad", "skipped", "Silero not used");
+    } else {
+      card.stage("vad", "done", `${voicedSec != null ? voicedSec.toFixed(1) : seconds.toFixed(1)}s voiced`);
+    }
     setPhase("listening back", "1");
 
     // The audio IS the user turn. Any text sits alongside the placeholder, never replacing it.
@@ -749,7 +779,7 @@ async function runTurn({ audio, seconds = 0, voicedSec = null, prompt = null, tr
     });
     const answer = stripToolCalls(second.text).trim() || outcome.display;
     card.answer.textContent = answer;
-    announce(`${call.name} ran. ${answer}`);
+    announce(outcome.ok ? `${call.name} ran. ${answer}` : `${call.name} was not run. ${answer}`);
     card.stage("answer", "done", `${second.genMs} ms`);
     readout(card, [
       ["audio", `${seconds.toFixed(1)} s → ${first.audioFrames} positions`],

@@ -187,6 +187,13 @@ try {
     check(`${name}: a no-tool turn is labelled, not hidden`, /No tool call in that reply/.test(t2.body), t2.body.slice(-160));
     check(`${name}: a no-tool turn still answers`, t2.answer.includes("serve their country"), t2.answer);
     check(`${name}: a no-tool turn marks the tool stage skipped`, t2.nodes.includes("tool:skipped"), t2.nodes.join(" "));
+    // Regression (PR #3 Codex round 5): the clip is handed straight to Ultravox, so crediting Silero
+    // with a "done" endpoint stage would claim a model ran that never did.
+    check(
+      `${name}: a clip turn does NOT credit Silero with running`,
+      t2.nodes.includes("vad:skipped"),
+      t2.nodes.join(" "),
+    );
 
     // ---- turn 3: the model returns nothing usable ----
     // Regression (PR #3 Codex round 4): an empty generation was rendered as a completed "direct
@@ -209,7 +216,25 @@ try {
     })()`);
     check(`${name}: the clip is enabled when not listening`, clipGating.beforeDisabled === false);
 
-    check(`${name}: three turns logged`, (await evaluate(sessionId, `document.querySelectorAll("#turns .turn").length`)) === 3);
+    // ---- a refused tool must not be announced as having run ----
+    // Regression (PR #3 Codex round 5): the live region said "<tool> ran" regardless of outcome, so
+    // assistive-technology users were told a side effect happened when the call had been rejected.
+    await evaluate(sessionId, stubEngine(
+      '{"name":"get_time","parameters":{"timezone":"Mars/Olympus"}}',
+      "I could not look that up.",
+    ));
+    await evaluate(sessionId, `globalThis.__ultravox.runTurn({ audio: new Float32Array(16000), seconds: 1, source: "clip" })`);
+    await waitFor(sessionId, `!globalThis.__ultravox.state().busy`, 20_000, "turn 4");
+    const t4 = await evaluate(sessionId, turnSnapshot);
+    check(`${name}: a rejected tool is marked failed`, t4.nodes.includes("tool:fail"), t4.nodes.join(" "));
+    const announced = await evaluate(sessionId, `document.getElementById("announcer").textContent`);
+    check(
+      `${name}: a rejected tool is NOT announced as having run`,
+      /was not run/i.test(announced) && !/get_time ran/i.test(announced),
+      announced,
+    );
+
+    check(`${name}: four turns logged`, (await evaluate(sessionId, `document.querySelectorAll("#turns .turn").length`)) === 4);
     check(`${name}: still no console errors`, page.errors.length === 0, page.errors.join(" | "));
     await closePage(cdp, page.targetId);
   }
