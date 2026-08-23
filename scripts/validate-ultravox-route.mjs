@@ -234,7 +234,23 @@ try {
       announced,
     );
 
-    check(`${name}: four turns logged`, (await evaluate(sessionId, `document.querySelectorAll("#turns .turn").length`)) === 4);
+    // ---- a rejected tool plus an empty second reply must not render "undefined" ----
+    // Regression (PR #3 Codex round 7): failed outcomes carry `error`, not `display`, so the
+    // fallback produced the literal string "undefined" and announced it as the answer.
+    await evaluate(sessionId, stubEngine('{"name":"get_time","parameters":{"timezone":"Mars/Olympus"}}', ""));
+    await evaluate(sessionId, `globalThis.__ultravox.runTurn({ audio: new Float32Array(16000), seconds: 1, source: "clip" })`);
+    await waitFor(sessionId, `!globalThis.__ultravox.state().busy`, 20_000, "turn 5");
+    const t5 = await evaluate(sessionId, turnSnapshot);
+    check(`${name}: never renders the string "undefined"`, !/undefined/.test(t5.answer), JSON.stringify(t5.answer));
+    check(
+      `${name}: an empty reply after a rejected tool falls back to the error`,
+      t5.answer.length > 0 || t5.nodes.includes("answer:fail"),
+      `${t5.answer} | ${t5.nodes.join(" ")}`,
+    );
+    const ann5 = await evaluate(sessionId, `document.getElementById("announcer").textContent`);
+    check(`${name}: and never announces "undefined"`, !/undefined/.test(ann5), ann5);
+
+    check(`${name}: five turns logged`, (await evaluate(sessionId, `document.querySelectorAll("#turns .turn").length`)) === 5);
     check(`${name}: still no console errors`, page.errors.length === 0, page.errors.join(" | "));
     await closePage(cdp, page.targetId);
   }

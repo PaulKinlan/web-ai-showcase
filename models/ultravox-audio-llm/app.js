@@ -529,11 +529,28 @@ async function beginListening() {
     $("micNote").textContent = "Listening cancelled — the voice detector was released.";
     return;
   }
+  // start() can resolve with the audio context still suspended (autoplay policy, mobile Safari), in
+  // which case no audio ever arrives. Saying "mic is open" then would be a straightforward lie.
+  if (pendingMic.suspended) {
+    try {
+      pendingMic.stop();
+    } catch { /* already gone */ }
+    if (mic === pendingMic) mic = null;
+    $("status").textContent =
+      "The browser kept the audio engine suspended, so no sound is reaching the page. " +
+      "Tap Start listening again — a direct tap usually releases it.";
+    $("status").classList.add("err");
+    $("micNote").textContent = "Audio engine suspended — capture did not start.";
+    return;
+  }
   listening = true;
   staleVadReplies = 0;
   resetEndpointer();
+  // A previous failure may have shown the no-microphone panel; capture is plainly working now.
+  $("micFallback").hidden = true;
   $("listen").innerHTML = '<span class="rec-dot"></span>Stop listening';
   $("micNote").textContent = "Mic is open. Speak, then pause.";
+  $("status").classList.remove("err");
   setPhase("listening", "1");
 }
 
@@ -559,8 +576,12 @@ if (!LiveMic.supported()) {
 }
 $("hangLabel").textContent = `${HANG_SEC.toFixed(1)} s`;
 addEventListener("pagehide", () => {
+  // Closing the track is not enough: with the back-forward cache the page comes BACK, and it would
+  // return showing "Stop listening" over a microphone that no longer exists — the next press would
+  // only clear that stale state instead of reopening capture. Tear the whole thing down.
   try {
-    mic?.stop();
+    if (listening) stopListening();
+    else mic?.stop();
   } catch { /* noop */ }
 });
 
@@ -786,10 +807,25 @@ async function runTurn({ audio, seconds = 0, voicedSec = null, prompt = null, tr
       maxTokens: 128,
       onToken: (_tok, n) => card.stage("answer", "pending", `Ultravox… ${n} tok`),
     });
-    const answer = stripToolCalls(second.text).trim() || outcome.display;
-    card.answer.textContent = answer;
-    announce(outcome.ok ? `${call.name} ran. ${answer}` : `${call.name} was not run. ${answer}`);
-    card.stage("answer", "done", `${second.genMs} ms`);
+    // A REFUSED tool carries `error`, not `display` — falling back to display rendered the literal
+    // string "undefined" and announced it, while marking the stage done.
+    const fallback = outcome.ok ? outcome.display : outcome.error;
+    const answer = stripToolCalls(second.text).trim() || fallback || "";
+    if (answer) {
+      card.answer.textContent = answer;
+      card.stage("answer", "done", `${second.genMs} ms`);
+    } else {
+      card.stage("answer", "fail", "no output");
+      const p = document.createElement("p");
+      p.className = "status err";
+      p.textContent = "The model produced no answer after the tool step. Try again.";
+      card.body.append(p);
+    }
+    announce(
+      answer
+        ? (outcome.ok ? `${call.name} ran. ${answer}` : `${call.name} was not run. ${answer}`)
+        : "The model produced no answer after the tool step.",
+    );
     readout(card, [
       ["audio", `${seconds.toFixed(1)} s → ${first.audioFrames} positions`],
       ["hear", `${first.genMs} ms`],

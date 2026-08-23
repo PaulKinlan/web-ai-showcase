@@ -241,7 +241,18 @@ export class LiveMic {
     mute.gain.value = 0;
     this._node.connect(mute);
     mute.connect(this._ctx.destination);
-    this.running = true;
+
+    // A context created AFTER an await (permission prompt, model reset) is outside the user-gesture
+    // chain, and browsers under an autoplay policy — mobile Safari especially — start it suspended.
+    // onaudioprocess then never fires, so start() would resolve and the caller would report an open
+    // mic that produces nothing. Resume it, time-boxed, and report honestly if it stays suspended.
+    if (this._ctx.state === "suspended") {
+      try {
+        await Promise.race([this._ctx.resume(), new Promise((r) => setTimeout(r, 800))]);
+      } catch { /* reported via this.suspended below */ }
+    }
+    this.suspended = this._ctx.state === "suspended";
+    this.running = !this.suspended;
   }
   stop() {
     this.running = false;

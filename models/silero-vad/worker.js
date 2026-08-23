@@ -224,6 +224,12 @@ async function streamChunk(id, pcm) {
   post({ type: "stream", id, probs, last, frameSec: FRAME / SR }, [probs.buffer]);
 }
 
+// stream-chunk carries the recurrent state forward across calls, so two invocations running at once
+// would each read and write `streamState` and the later chunk could start from an obsolete one —
+// corrupting the probabilities that decide where an utterance ends. Message handlers are async, so
+// nothing serialises them for us: chain the streaming work onto a single tail.
+let streamTail = Promise.resolve();
+
 self.addEventListener("message", async (e) => {
   const d = e.data;
   try {
@@ -235,7 +241,10 @@ self.addEventListener("message", async (e) => {
       await streamReset();
       post({ type: "stream-ready", id: d.id });
     } else if (d.type === "stream-chunk") {
-      await streamChunk(d.id, d.pcm);
+      streamTail = streamTail
+        .then(() => streamChunk(d.id, d.pcm))
+        .catch((err) => post({ type: "error", id: d?.id, message: String(err?.message ?? err) }));
+      await streamTail;
     }
   } catch (err) {
     post({ type: "error", id: d?.id, message: String(err?.message ?? err) });
