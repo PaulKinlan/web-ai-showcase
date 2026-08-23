@@ -67,7 +67,9 @@ export const TOOL_SCHEMAS = [
             type: "string",
             description:
               'Arithmetic only, e.g. "18 * 7", "(120 + 45) / 3", "sqrt(144)", "80 * 15 / 100". ' +
-              'Never write a percent sign for a percentage — "15% of 80" will not parse.',
+              'Never write a percent sign for a percentage — "15% of 80" will not parse. ' +
+              'round/sqrt/abs/floor/ceil take exactly one argument; to round to N decimals write ' +
+              '"round(x * 100) / 100".',
           },
         },
         required: ["expression"],
@@ -124,15 +126,19 @@ export const TOOL_NAMES = TOOL_SCHEMAS.map((t) => t.function.name);
 // untrusted input; it never becomes code. Anything outside the grammar throws.
 // ---------------------------------------------------------------------------
 
+// Each entry carries its arity. JavaScript silently ignores surplus arguments, so round(1.234, 2)
+// reached Math.round as Math.round(1.234, 2) and returned 1 — a calculator confidently reporting the
+// wrong number, which is the one thing this tool must never do. Extra arguments now fail loudly and
+// the model is told why.
 const FUNCS = {
-  sqrt: Math.sqrt,
-  abs: Math.abs,
-  round: Math.round,
-  floor: Math.floor,
-  ceil: Math.ceil,
-  min: Math.min,
-  max: Math.max,
-  pow: Math.pow,
+  sqrt: { fn: Math.sqrt, min: 1, max: 1 },
+  abs: { fn: Math.abs, min: 1, max: 1 },
+  round: { fn: Math.round, min: 1, max: 1 },
+  floor: { fn: Math.floor, min: 1, max: 1 },
+  ceil: { fn: Math.ceil, min: 1, max: 1 },
+  pow: { fn: Math.pow, min: 2, max: 2 },
+  min: { fn: Math.min, min: 1, max: Infinity },
+  max: { fn: Math.max, min: 1, max: Infinity },
 };
 const CONSTS = { pi: Math.PI, e: Math.E };
 
@@ -226,13 +232,26 @@ export function evaluateExpression(src) {
     if (tok.t === "name") {
       pos++;
       if (Object.hasOwn(CONSTS, tok.v)) return CONSTS[tok.v];
-      const fn = Object.hasOwn(FUNCS, tok.v) ? FUNCS[tok.v] : null;
-      if (!fn) throw new Error(`unknown name "${tok.v}"`);
+      const spec = Object.hasOwn(FUNCS, tok.v) ? FUNCS[tok.v] : null;
+      if (!spec) throw new Error(`unknown name "${tok.v}"`);
       eat("(");
       const args = [expr()];
       while (peek() && peek().t === ",") { pos++; args.push(expr()); }
       eat(")");
-      return fn(...args);
+      if (args.length < spec.min || args.length > spec.max) {
+        const wants = spec.max === Infinity
+          ? `at least ${spec.min}`
+          : spec.min === spec.max
+          ? `exactly ${spec.min}`
+          : `${spec.min} to ${spec.max}`;
+        throw new Error(
+          `${tok.v}() takes ${wants} argument${spec.max === 1 ? "" : "s"}, got ${args.length}` +
+            (tok.v === "round" && args.length === 2
+              ? ' — to round to N decimals write "round(x * 100) / 100"'
+              : ""),
+        );
+      }
+      return spec.fn(...args);
     }
     throw new Error(`unexpected token "${tok.t}"`);
   }

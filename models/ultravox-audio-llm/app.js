@@ -210,6 +210,9 @@ createModelLoader({
   onDispose: () => {
     ready.llm = false;
     device = null;
+    // Ultravox is the only thing that can answer, so listening on without it just burns the
+    // microphone and drops every completed utterance into the "not on this device" error.
+    if (listening) stopListening();
     reportReadiness();
   },
 });
@@ -497,6 +500,11 @@ async function beginListening() {
         // quietly stitching it is the worst option. Abandon this turn and say so.
         const wasCollecting = inSpeech;
         resetEndpointer();
+        // Clearing the endpointer alone was not enough: `pending` still held the queued audio, so as
+        // soon as one reply freed a slot the backlog resumed and could form a new utterance spanning
+        // the very gap the UI had just said was discarded. Discard the queued work too.
+        staleVadReplies += pending.length;
+        pending.length = 0;
         setPhase(listening ? "listening" : "idle", listening ? "1" : "0");
         $("micNote").textContent = wasCollecting
           ? "This device can't keep up — that turn was discarded rather than sent with a gap. Try again."

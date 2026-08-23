@@ -288,5 +288,35 @@ const timerDesc = TOOL_SCHEMAS.find((t) => t.function.name === "start_timer").fu
 check("start_timer does not promise a sound it never makes", !/\bring/i.test(timerDesc), timerDesc);
 check("start_timer says what it actually does", /counts down|makes no sound/i.test(timerDesc), timerDesc);
 
+// Regression (PR #3 Codex round 8): JavaScript silently drops surplus arguments, so round(1.234, 2)
+// became Math.round(1.234, 2) === 1 and sqrt(9, 16) became 3. A calculator that answers confidently
+// with the wrong number is worse than one that refuses, so surplus arguments now throw.
+throws("round() rejects a second (decimals) argument", () => evaluateExpression("round(1.234, 2)"));
+throws("sqrt() rejects a surplus argument", () => evaluateExpression("sqrt(9, 16)"));
+throws("abs() rejects a surplus argument", () => evaluateExpression("abs(-3, 4)"));
+throws("floor() rejects a surplus argument", () => evaluateExpression("floor(1.5, 2)"));
+throws("ceil() rejects a surplus argument", () => evaluateExpression("ceil(1.5, 2)"));
+throws("pow() rejects a single argument", () => evaluateExpression("pow(2)"));
+throws("pow() rejects three arguments", () => evaluateExpression("pow(2, 3, 4)"));
+near("the documented rounding form still works", evaluateExpression("round(1.234 * 100) / 100"), 1.23);
+near("pow() with its two arguments still works", evaluateExpression("pow(2, 10)"), 1024);
+near("min() is still variadic", evaluateExpression("min(5, 2, 9)"), 2);
+near("max() is still variadic", evaluateExpression("max(3, 9, 4)"), 9);
+near("max() of one argument is allowed", evaluateExpression("max(7)"), 7);
+{
+  let msg = "";
+  try { evaluateExpression("round(1.234, 2)"); } catch (err) { msg = String(err.message); }
+  check("the arity error names the function and the counts", /round\(\) takes exactly 1 argument, got 2/.test(msg), msg);
+  check("the arity error teaches the working form", /round\(x \* 100\) \/ 100/.test(msg), msg);
+  const out = runTool({ name: "calculate", arguments: { expression: "round(1.234, 2)" } }, {});
+  check("runTool surfaces the arity refusal rather than a wrong number", out.ok === false, out.display);
+}
+{
+  const exprDesc = TOOL_SCHEMAS.find((t) => t.function.name === "calculate")
+    .function.parameters.properties.expression.description;
+  check("the expression schema warns about one-argument functions", /take[s]? exactly one argument/i.test(exprDesc), exprDesc);
+  check("the expression schema teaches the rounding form", /round\(x \* 100\) \/ 100/.test(exprDesc), exprDesc);
+}
+
 console.log(`\n${checks - failed}/${checks} checks passed`);
 process.exit(failed ? 1 : 0);

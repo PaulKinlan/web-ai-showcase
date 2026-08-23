@@ -16,7 +16,7 @@
 // every pixel of rendering are the page's own code. Real audio-in inference still needs a WebGPU
 // browser with a microphone — see the unverified banner on the page itself.
 
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -280,6 +280,43 @@ try {
     server?.server?.close();
   } catch { /* noop */ }
   rmSync(PROFILE_DIR, { recursive: true, force: true });
+}
+
+// ---------------------------------------------------------------------------
+// Source guards for the three paths this GPU-less, microphone-less runner cannot enter.
+// These are NOT proof of behaviour — they are regression guards that the fixed code path is still
+// present. The behavioural proof needs the device pass named in the unverified banner.
+// ---------------------------------------------------------------------------
+console.log("\n===== source guards (not behavioural proof) =====");
+{
+  const app = readFileSync(new URL("../models/ultravox-audio-llm/app.js", import.meta.url), "utf8");
+  const vadWorker = readFileSync(new URL("../models/silero-vad/worker.js", import.meta.url), "utf8");
+
+  // Codex round 8: resetting the endpointer left `pending` full, so the backlog could resume and
+  // form a new utterance across the gap the UI had just called discarded.
+  const overflow = app.slice(app.indexOf("This device can't keep up") - 1600, app.indexOf("This device can't keep up"));
+  check(
+    "a VAD overflow purges the queued audio, not just the endpointer",
+    /staleVadReplies \+= pending\.length;[\s\S]{0,80}pending\.length = 0;/.test(overflow),
+  );
+
+  // Codex round 8: releasing the LLM left the microphone open, so every completed utterance fell
+  // into the "not on this device" error.
+  const llmDispose = app.slice(app.indexOf("onDispose: () => {\n    ready.llm = false;"));
+  check(
+    "releasing Ultravox also stops the microphone",
+    /ready\.llm = false;[\s\S]{0,400}if \(listening\) stopListening\(\);/.test(llmDispose.slice(0, 600)),
+  );
+
+  // Codex round 8: a stream-reset off the serialisation queue could acknowledge a fresh session
+  // while an older queued inference wrote the previous session's recurrent state back over it.
+  const reset = vadWorker.slice(vadWorker.indexOf('d.type === "stream-reset"'), vadWorker.indexOf('d.type === "stream-chunk"'));
+  check(
+    "stream-reset joins the same serialisation queue as stream-chunk",
+    /streamTail = streamTail[\s\S]{0,200}streamReset\(\)/.test(reset),
+    reset.replace(/\s+/g, " ").slice(0, 120),
+  );
+  check("stream-reset acknowledges only after the queued reset runs", /\.then\(\(\) => post\(\{ type: "stream-ready"/.test(reset));
 }
 
 console.log(`\n${checks - failed}/${checks} checks passed`);
