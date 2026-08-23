@@ -42,6 +42,10 @@ const ready = { llm: false, vad: false };
 // Bumped whenever the VAD engine is replaced. Microphone startup awaits a permission prompt that can
 // outlast a Release/Clear, so anything begun before a reset must check it is still the current one.
 let vadGeneration = 0;
+// Bumped by anything that should abandon a microphone startup already in flight. vadGeneration alone
+// was not enough: releasing the LLM while the permission prompt was open left it unchanged, so
+// beginListening() went on to open the microphone for a model that no longer existed.
+let captureGeneration = 0;
 let device = null;
 let busy = false;
 let listening = false;
@@ -54,9 +58,16 @@ function resetEngine(kind, reason = "Model released") {
   } catch { /* already gone */ }
   engines[kind] = ENGINE_FACTORIES[kind]();
   ready[kind] = false;
-  if (kind === "llm") device = null;
+  if (kind === "llm") {
+    device = null;
+    // Ultravox is the only thing on this page that can answer, so tearing it down must also abandon
+    // a microphone startup already in flight. `listening` cannot cover that case — during the
+    // permission prompt it is still false — and vadGeneration does not move when only the LLM goes.
+    captureGeneration++;
+  }
   if (kind === "vad") {
     vadGeneration++;
+    captureGeneration++;
     staleVadReplies = 0;
     pending.length = 0;
     engines.vad.onStream = onVadStream;
@@ -210,8 +221,9 @@ createModelLoader({
   onDispose: () => {
     ready.llm = false;
     device = null;
-    // Ultravox is the only thing that can answer, so listening on without it just burns the
-    // microphone and drops every completed utterance into the "not on this device" error.
+    // An already-open microphone has to be closed too — otherwise it stays live and drops every
+    // completed utterance into the "not on this device" error. (A startup still in flight is
+    // cancelled by the capture-generation bump in resetEngine.)
     if (listening) stopListening();
     reportReadiness();
   },
@@ -478,6 +490,10 @@ async function startListening() {
 
 async function beginListening() {
   const generation = vadGeneration;
+  const capture = captureGeneration;
+  // Either counter moving means this startup was overtaken — the VAD was replaced, or the model that
+  // consumes the audio was released.
+  const cancelled = () => generation !== vadGeneration || capture !== captureGeneration;
   const engine = engines.vad;
   try {
     await engine.streamReset();
@@ -486,13 +502,13 @@ async function beginListening() {
     $("status").classList.add("err");
     return;
   }
-  if (generation !== vadGeneration) return; // released while we were resetting
+  if (cancelled()) return; // released while we were resetting
   const pendingMic = new LiveMic({
     onFrames: (frames) => {
       // Bound to the engine that was current when capture started. After a Release/Clear these
       // frames would otherwise reach a fresh, loader-unready engine and streamChunk() would fetch
       // Silero again behind the visitor's back, with the loader still saying download-required.
-      if (generation !== vadGeneration) return;
+      if (cancelled()) return;
       if (pending.length >= MAX_PENDING) {
         // Dropping samples mid-utterance would leave a hole: later frames get appended after a
         // missing span and Ultravox would hear a SPLICED command — "set a timer for five… minutes"
@@ -529,12 +545,12 @@ async function beginListening() {
   }
   // The permission prompt can outlast a Release/Clear. If the engine was replaced while we waited,
   // close the microphone we just opened rather than streaming into a model that is no longer loaded.
-  if (generation !== vadGeneration) {
+  if (cancelled()) {
     try {
       pendingMic.stop();
     } catch { /* already gone */ }
     if (mic === pendingMic) mic = null;
-    $("micNote").textContent = "Listening cancelled — the voice detector was released.";
+    $("micNote").textContent = "Listening cancelled — a model this needs was released.";
     return;
   }
   // start() can resolve with the audio context still suspended (autoplay policy, mobile Safari), in
@@ -790,10 +806,30 @@ async function runTurn({ audio, seconds = 0, voicedSec = null, prompt = null, tr
     }
 
     const call = calls[0];
-    card.stage("tool", "pending", call.name);
-    addBlock(card, "parsed tool call", JSON.stringify(call, null, 2));
-    const outcome = runTool(call, toolCtx);
-    card.stage("tool", outcome.ok ? "done" : "fail", `${call.name}${outcome.ok ? " ✓" : " ✗"}`);
+    // The prompt asks for exactly one call per reply, and every executor MUTATES page state. Running
+    // an arbitrary prefix would leave one timer started and the second silently dropped, with neither
+    // the model nor the visitor told. Nothing runs; the model is given the reason and answers from it.
+    const multi = calls.length > 1;
+    card.stage("tool", "pending", multi ? `${calls.length} calls` : call.name);
+    addBlock(
+      card,
+      multi ? `parsed ${calls.length} tool calls — none run` : "parsed tool call",
+      JSON.stringify(multi ? calls : call, null, 2),
+    );
+    const outcome = multi
+      ? {
+        ok: false,
+        name: call.name,
+        error: `That reply contained ${calls.length} tool calls (${
+          calls.map((c) => c.name).join(", ")
+        }). Only one tool may be called per reply, so none of them were run. Call exactly one tool.`,
+      }
+      : runTool(call, toolCtx);
+    card.stage(
+      "tool",
+      outcome.ok ? "done" : "fail",
+      multi ? `${calls.length} calls ✗ none run` : `${call.name}${outcome.ok ? " ✓" : " ✗"}`,
+    );
     addBlock(
       card,
       outcome.ok ? "what the tool returned" : "the tool failed (the model is told, and explains)",
@@ -923,6 +959,10 @@ if (isLocalHost()) {
     engines,
     toolCtx,
     state: () => ({ ready: { ...ready }, busy, listening, device, notes: [...notes] }),
+    // Exposed so the headless runner can prove the cancellation counter moves on release without a
+    // microphone or a permission prompt, which it has neither of.
+    captureGeneration: () => captureGeneration,
+    releaseLLM: () => resetEngine("llm", "Released by the validator"),
     markReady: (which) => {
       ready[which] = true;
       reportReadiness();

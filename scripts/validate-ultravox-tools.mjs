@@ -318,5 +318,56 @@ near("max() of one argument is allowed", evaluateExpression("max(7)"), 7);
   check("the expression schema teaches the rounding form", /round\(x \* 100\) \/ 100/.test(exprDesc), exprDesc);
 }
 
+// Regression (PR #3 Codex round 9): stripToolCalls used its own regexes rather than the rule
+// parseToolCalls applies, so it erased ANY fenced block and ANY whole-message object starting with
+// "name". Ask the model to answer in JSON and the page reported "no usable output" for a reply that
+// had a perfectly good answer in it. It must now remove exactly what would have been executed.
+console.log("— stripToolCalls removes only what would have run —");
+{
+  const answerFence = 'Here you go:\n```json\n{"summary":"a speech about service","words":42}\n```';
+  check("a fenced NON-tool answer survives", stripToolCalls(answerFence).includes('"summary"'), stripToolCalls(answerFence));
+  const bareAnswer = '{"name":"Kennedy","role":"president"}';
+  check(
+    "a whole-message object whose name is not a tool survives",
+    stripToolCalls(bareAnswer) === bareAnswer,
+    stripToolCalls(bareAnswer),
+  );
+  const realCall = '{"name":"get_time","parameters":{"timezone":"Asia/Tokyo"}}';
+  check("a real whole-message call is still removed", stripToolCalls(realCall) === "", stripToolCalls(realCall));
+  check(
+    "a real fenced call is still removed",
+    stripToolCalls('```json\n' + realCall + '\n```') === "",
+    stripToolCalls('```json\n' + realCall + '\n```'),
+  );
+  const wrapped = 'Sure.<tool_call>' + realCall + '</tool_call>';
+  check("a <tool_call> wrapper around a real call is removed", stripToolCalls(wrapped) === "Sure.", stripToolCalls(wrapped));
+  const bogusWrapper = 'Sure.<tool_call>{"name":"not_a_tool","parameters":{}}</tool_call>';
+  check(
+    "a <tool_call> wrapper around something we do not recognise is kept, not silently eaten",
+    stripToolCalls(bogusWrapper).includes("not_a_tool"),
+    stripToolCalls(bogusWrapper),
+  );
+  const quoted = 'The JSON would be {"name":"start_timer","parameters":{"seconds":60}} — say the word and I will run it.';
+  check("JSON the model merely quoted is not executed", parseToolCalls(quoted).length === 0);
+  check(
+    "and the quoted JSON stays in the answer instead of being blanked",
+    stripToolCalls(quoted) === quoted,
+    stripToolCalls(quoted),
+  );
+  check("special tokens are always markup and always go", stripToolCalls("<|python_tag|>Hi<|eot_id|>") === "Hi");
+  check("strip and parse agree that an empty reply is empty", stripToolCalls("") === "" && parseToolCalls("").length === 0);
+}
+
+// Regression (PR #3 Codex round 9): the page must not execute an arbitrary prefix of a multi-call
+// reply. parseToolCalls deliberately returns them all — the REFUSAL is the page's job (app.js), and
+// what this asserts is that the parser keeps handing over the evidence it needs to refuse.
+{
+  const two = '<tool_call>{"name":"start_timer","parameters":{"seconds":60}}</tool_call>' +
+    '<tool_call>{"name":"start_timer","parameters":{"seconds":300}}</tool_call>';
+  const parsed = parseToolCalls(two);
+  check("two distinct calls are both reported, so the page can refuse knowingly", parsed.length === 2, String(parsed.length));
+  check("the two calls keep their distinct arguments", parsed[0].arguments.seconds === 60 && parsed[1].arguments.seconds === 300);
+}
+
 console.log(`\n${checks - failed}/${checks} checks passed`);
 process.exit(failed ? 1 : 0);

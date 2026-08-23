@@ -250,7 +250,50 @@ try {
     const ann5 = await evaluate(sessionId, `document.getElementById("announcer").textContent`);
     check(`${name}: and never announces "undefined"`, !/undefined/.test(ann5), ann5);
 
-    check(`${name}: five turns logged`, (await evaluate(sessionId, `document.querySelectorAll("#turns .turn").length`)) === 5);
+    // ---- a multi-call reply must run NOTHING ----
+    // Regression (PR #3 Codex round 9): the page took calls[0] and silently dropped the rest, so two
+    // requested timers became one started timer and one vanished request, with neither the model nor
+    // the visitor told. Every executor mutates page state, so a partial prefix is the worst outcome.
+    const timersBefore = await evaluate(sessionId, `document.querySelectorAll("#timers li").length`);
+    await evaluate(sessionId, stubEngine(
+      '<tool_call>{"name":"start_timer","parameters":{"seconds":60}}</tool_call>' +
+        '<tool_call>{"name":"start_timer","parameters":{"seconds":300}}</tool_call>',
+      "I can only start one at a time — which first?",
+    ));
+    await evaluate(sessionId, `globalThis.__ultravox.runTurn({ audio: new Float32Array(16000), seconds: 1, source: "clip" })`);
+    await waitFor(sessionId, `!globalThis.__ultravox.state().busy`, 20_000, "turn 6");
+    const t6 = await evaluate(sessionId, turnSnapshot);
+    check(`${name}: a multi-call reply is marked failed`, t6.nodes.includes("tool:fail"), t6.nodes.join(" "));
+    check(
+      `${name}: NO timer was started from a multi-call reply`,
+      (await evaluate(sessionId, `document.querySelectorAll("#timers li").length`)) === timersBefore,
+    );
+    check(
+      `${name}: the page says both calls were discarded`,
+      /none run/i.test(await evaluate(sessionId, `document.querySelector("#turns .turn").textContent`)),
+      t6.nodes.join(" "),
+    );
+    check(`${name}: and still answers rather than dead-ending`, t6.answer.length > 0, t6.answer);
+
+    // ---- releasing the LLM must cancel a microphone startup already in flight ----
+    // Regression (PR #3 Codex round 9): cancellation keyed on vadGeneration alone, which releasing
+    // Ultravox never advanced, so a startup awaiting the permission prompt went on to open the
+    // microphone for a model that no longer existed. Driven here through the same counter the real
+    // permission path checks.
+    const cancelled = await evaluate(sessionId, `(() => {
+      const uv = globalThis.__ultravox;
+      const before = uv.captureGeneration();
+      uv.releaseLLM();
+      return { before, after: uv.captureGeneration(), listening: uv.state().listening, llmReady: uv.state().ready.llm };
+    })()`);
+    check(
+      `${name}: releasing Ultravox advances the capture generation, cancelling any pending startup`,
+      cancelled.after > cancelled.before,
+      JSON.stringify(cancelled),
+    );
+    check(`${name}: and leaves the page not listening`, cancelled.listening === false && cancelled.llmReady === false);
+
+    check(`${name}: six turns logged`, (await evaluate(sessionId, `document.querySelectorAll("#turns .turn").length`)) === 6);
     check(`${name}: still no console errors`, page.errors.length === 0, page.errors.join(" | "));
     await closePage(cdp, page.targetId);
   }

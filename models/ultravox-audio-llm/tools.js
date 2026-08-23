@@ -481,15 +481,29 @@ export function parseToolCalls(text, names = TOOL_NAMES) {
   return out;
 }
 
-/** Strip tool-call markup so what's left is the model's prose, if any. */
-export function stripToolCalls(text) {
-  return String(text ?? "")
+/**
+ * Strip tool-call markup so what's left is the model's prose, if any.
+ *
+ * This must remove EXACTLY what parseToolCalls would have acted on and nothing else, so it asks
+ * parseToolCalls rather than re-implementing the rule with regexes. The regex version erased any
+ * fenced block and any whole-message object starting with "name" — so "summarise the clip as JSON"
+ * came back empty and the page reported no usable output for a reply that had a perfectly good
+ * answer in it. Special tokens are always markup and always go.
+ */
+export function stripToolCalls(text, names = TOOL_NAMES) {
+  const clean = String(text ?? "")
     .replace(/<\|python_tag\|>/g, "")
-    .replace(/<\|eom_id\|>|<\|eot_id\|>/g, "")
-    .replace(/<tool_call>[\s\S]*?(?:<\/tool_call>|$)/g, "")
-    .replace(/```(?:json|tool_call)?[\s\S]*?```/g, "")
-    .replace(/^\s*\{\s*"name"\s*:[\s\S]*\}\s*$/, "")
-    .trim();
+    .replace(/<\|eom_id\|>|<\|eot_id\|>/g, "");
+  // An explicit <tool_call> wrapper is removed only when it holds a call we recognise. A wrapper
+  // around anything else is the model's own text; deleting it would lose content it meant to say.
+  const stripped = clean.replace(
+    /<tool_call>[\s\S]*?(?:<\/tool_call>|$)/g,
+    (block) => (parseToolCalls(block, names).length ? "" : block),
+  );
+  // The whole-message channel: parseToolCalls acts on a bare object or a lone fence only when it
+  // spans the entire message, so re-asking it here removes precisely what would have been executed
+  // and leaves an ordinary structured answer — or JSON the model was merely quoting — intact.
+  return parseToolCalls(stripped, names).length ? "" : stripped.trim();
 }
 
 // ---------------------------------------------------------------------------
