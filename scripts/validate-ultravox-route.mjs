@@ -188,7 +188,28 @@ try {
     check(`${name}: a no-tool turn still answers`, t2.answer.includes("serve their country"), t2.answer);
     check(`${name}: a no-tool turn marks the tool stage skipped`, t2.nodes.includes("tool:skipped"), t2.nodes.join(" "));
 
-    check(`${name}: two turns logged`, (await evaluate(sessionId, `document.querySelectorAll("#turns .turn").length`)) === 2);
+    // ---- turn 3: the model returns nothing usable ----
+    // Regression (PR #3 Codex round 4): an empty generation was rendered as a completed "direct
+    // answer" — a blank turn dressed up as a success.
+    await evaluate(sessionId, stubEngine("", "unused"));
+    await evaluate(sessionId, `globalThis.__ultravox.runTurn({ audio: new Float32Array(16000), seconds: 1, source: "clip" })`);
+    await waitFor(sessionId, `!globalThis.__ultravox.state().busy`, 20_000, "turn 3");
+    const t3 = await evaluate(sessionId, turnSnapshot);
+    check(`${name}: an empty generation is marked failed`, t3.nodes.includes("answer:fail"), t3.nodes.join(" "));
+    check(`${name}: an empty generation says so`, /no usable output/i.test(t3.body), t3.body.slice(-160));
+    check(`${name}: an empty generation renders no fake answer`, t3.answer === "", JSON.stringify(t3.answer));
+
+    // ---- the clip is a separate mode from listening ----
+    // Regression (PR #3 Codex round 4): sending the clip mid-utterance set busy while the partially
+    // collected utterance stayed live, so the next command was spliced onto a stale fragment.
+    const clipGating = await evaluate(sessionId, `(() => {
+      const uv = globalThis.__ultravox;
+      const before = document.getElementById("runClip").disabled;
+      return { beforeDisabled: before };
+    })()`);
+    check(`${name}: the clip is enabled when not listening`, clipGating.beforeDisabled === false);
+
+    check(`${name}: three turns logged`, (await evaluate(sessionId, `document.querySelectorAll("#turns .turn").length`)) === 3);
     check(`${name}: still no console errors`, page.errors.length === 0, page.errors.join(" | "));
     await closePage(cdp, page.targetId);
   }

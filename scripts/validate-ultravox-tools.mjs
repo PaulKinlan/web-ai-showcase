@@ -202,6 +202,33 @@ check(
   SYSTEM_PROMPT,
 );
 
+// Regression (PR #3 Codex round 4): unparseable arguments were silently replaced with {}, which
+// CHANGES the request — get_time with a mangled timezone became a successful LOCAL time lookup and
+// the model would then state the wrong city's time with full confidence.
+const malformed = parseToolCalls('{"name":"get_time","arguments":"{not json"}')[0];
+check("a malformed arguments string is flagged, not emptied", !!malformed?.argsError, JSON.stringify(malformed));
+const malformedRun = runTool(malformed, {});
+check("a call with unreadable arguments is refused", malformedRun.ok === false, malformedRun.display ?? malformedRun.error);
+check(
+  "the refusal tells the model not to guess",
+  /do not guess/i.test(malformedRun.error),
+  malformedRun.error,
+);
+check(
+  "a well-formed stringified arguments object still runs",
+  runTool(parseToolCalls('<tool_call>{"name":"calculate","arguments":"{\\"expression\\":\\"3*3\\"}"}</tool_call>')[0], {}).result?.value === 9,
+);
+
+// Regression (PR #3 Codex round 4): the schema invited percentage questions the evaluator cannot
+// parse. Neither natural form works, so the description must tell the model to use division.
+throws("a percent sign in a percentage does not parse", () => evaluateExpression("15% * 80"));
+throws('"15% of 80" does not parse', () => evaluateExpression("15% of 80"));
+near("the documented form does parse", evaluateExpression("80 * 15 / 100"), 12);
+near("a bare % is still remainder", evaluateExpression("17 % 5"), 2);
+const calcDesc = TOOL_SCHEMAS.find((t) => t.function.name === "calculate").function.description;
+check("the calculate schema documents the division form", /80 \* 15 \/ 100/.test(calcDesc), calcDesc);
+check("the calculate schema warns off the percent sign", /no percent sign/i.test(calcDesc), calcDesc);
+
 console.log("— executors —");
 const notes = [];
 const ctx = { notes, now: "2026-08-23T12:00:00Z", startTimer: () => "t1" };

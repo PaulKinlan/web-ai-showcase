@@ -171,7 +171,10 @@ function updateControls() {
   const held = busy || clipPreparing;
   const canListen = ready.llm && ready.vad && LiveMic.supported() && !held && !micStarting;
   $("listen").disabled = (!canListen && !listening) || micStarting;
-  $("runClip").disabled = !ready.llm || held;
+  // Sending the clip mid-utterance would set busy, and onVadStream skips frames while busy WITHOUT
+  // clearing the partially collected utterance — so the next live command would be spliced onto a
+  // stale fragment. Simplest correct answer: the clip is a separate mode from listening.
+  $("runClip").disabled = !ready.llm || held || listening || micStarting;
   $("clipPrompt").disabled = !ready.llm || held;
 }
 
@@ -662,6 +665,7 @@ async function runTurn({ audio, seconds = 0, voicedSec = null, prompt = null, tr
       audio: audio.slice(), // transferred to the worker
       maxTokens: 192,
       onPrompt: (t) => (template1 = t),
+      onToken: (_tok, n) => card.stage("hear", "pending", `Ultravox… ${n} tok`),
     });
     card.stage("hear", "done", `heard ${first.genMs} ms`);
     addAudioFootprint(card, first.audioFrames, first.promptTokens, seconds);
@@ -670,9 +674,30 @@ async function runTurn({ audio, seconds = 0, voicedSec = null, prompt = null, tr
 
     const calls = parseToolCalls(first.text);
     if (!calls.length) {
+      const direct = stripToolCalls(first.text) || (first.text || "").trim();
+      if (!direct) {
+        // Nothing at all came back — no tool call, no prose, or only special tokens. Rendering that
+        // as a completed "direct answer" would be a blank turn dressed up as a success.
+        card.stage("tool", "skipped", "no tool call");
+        card.stage("answer", "fail", "no output");
+        const p = document.createElement("p");
+        p.className = "status err";
+        p.textContent =
+          "The model produced no usable output for that turn — no tool call and no answer. " +
+          "Try again, or say it a little differently.";
+        card.body.append(p);
+        announce("The model produced no output for that turn.");
+        readout(card, [
+          ["audio", `${seconds.toFixed(1)} s → ${first.audioFrames} positions`],
+          ["generate", `${first.genMs} ms`],
+          ["tokens", first.newTokens],
+          ["backend", (device || "–").toUpperCase()],
+          truncated && ["note", `cut at the ${MAX_UTTER_SEC}s cap`],
+        ]);
+        return;
+      }
       card.stage("tool", "skipped", "no tool call");
       card.stage("answer", "done", "direct answer");
-      const direct = stripToolCalls(first.text) || (first.text || "").trim();
       card.answer.textContent = direct;
       announce(`Answered without a tool: ${direct}`);
       const note = document.createElement("p");
@@ -689,6 +714,9 @@ async function runTurn({ audio, seconds = 0, voicedSec = null, prompt = null, tr
         ["tokens", first.newTokens],
         ["backend", (device || "–").toUpperCase()],
         ["total", `${Math.round(performance.now() - t0)} ms`],
+        // The tool branch discloses this; the direct-answer branch must too, or the user is never
+        // told the end of their command was cut off.
+        truncated && ["note", `cut at the ${MAX_UTTER_SEC}s cap`],
       ]);
       return;
     }
@@ -717,6 +745,7 @@ async function runTurn({ audio, seconds = 0, voicedSec = null, prompt = null, tr
       tools: TOOL_SCHEMAS,
       audio: audio.slice(),
       maxTokens: 128,
+      onToken: (_tok, n) => card.stage("answer", "pending", `Ultravox… ${n} tok`),
     });
     const answer = stripToolCalls(second.text).trim() || outcome.display;
     card.answer.textContent = answer;

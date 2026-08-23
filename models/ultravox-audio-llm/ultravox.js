@@ -45,6 +45,9 @@ export class UltravoxEngine {
       case "prompt":
         this._pending.get(msg.id)?.onPrompt?.(msg.template);
         break;
+      case "token":
+        this._pending.get(msg.id)?.onToken?.(msg.token, msg.n);
+        break;
       case "result": {
         const p = this._pending.get(msg.id);
         if (p) {
@@ -84,10 +87,10 @@ export class UltravoxEngine {
    * Generate from a message list plus (optionally) a 16 kHz mono Float32Array of audio.
    * The audio is TRANSFERRED, so the caller must pass a copy it no longer needs.
    */
-  generate({ messages, tools, audio, maxTokens, onPrompt }) {
+  generate({ messages, tools, audio, maxTokens, onPrompt, onToken }) {
     const id = ++this._id;
     return new Promise((resolve, reject) => {
-      this._pending.set(id, { resolve, reject, onPrompt });
+      this._pending.set(id, { resolve, reject, onPrompt, onToken });
       const payload = { type: "generate", id, messages, tools, audio, maxTokens };
       this.worker.postMessage(payload, audio ? [audio.buffer] : []);
     });

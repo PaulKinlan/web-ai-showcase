@@ -57,13 +57,17 @@ export const TOOL_SCHEMAS = [
     function: {
       name: "calculate",
       description:
-        "Evaluate an arithmetic expression. Use for any sum, percentage, or number question.",
+        "Evaluate an arithmetic expression. Use for any sum or number question. There is no percent " +
+        "sign: write percentages as division, e.g. 15% of 80 is \"80 * 15 / 100\". A bare % means " +
+        "remainder, as in \"17 % 5\".",
       parameters: {
         type: "object",
         properties: {
           expression: {
             type: "string",
-            description: 'Arithmetic only, e.g. "18 * 7", "(120 + 45) / 3", "sqrt(144)".',
+            description:
+              'Arithmetic only, e.g. "18 * 7", "(120 + 45) / 3", "sqrt(144)", "80 * 15 / 100". ' +
+              'Never write a percent sign for a percentage — "15% of 80" will not parse.',
           },
         },
         required: ["expression"],
@@ -400,14 +404,26 @@ export function parseToolCalls(text, names = TOOL_NAMES) {
     const name = obj.name ?? obj.function?.name ?? obj.tool ?? obj.tool_name;
     if (typeof name !== "string" || !names.includes(name)) return;
     let args = obj.arguments ?? obj.function?.arguments ?? obj.parameters ?? obj.args ?? {};
+    let argsError = null;
     if (typeof args === "string") {
-      try { args = JSON.parse(args); } catch { args = {}; }
+      // Emptying unparseable arguments CHANGES THE REQUEST. get_time with a mangled timezone would
+      // become a perfectly successful lookup of the LOCAL time, and the model would then state the
+      // wrong city's time with complete confidence. Carry the failure instead of erasing it.
+      try {
+        args = JSON.parse(args);
+      } catch (err) {
+        argsError = `the arguments were not valid JSON: ${String(err?.message ?? err)}`;
+        args = {};
+      }
     }
-    if (!args || typeof args !== "object" || Array.isArray(args)) args = {};
-    const key = name + JSON.stringify(args);
+    if (!args || typeof args !== "object" || Array.isArray(args)) {
+      argsError ??= "the arguments were not a JSON object";
+      args = {};
+    }
+    const key = name + JSON.stringify(args) + (argsError ?? "");
     if (seen.has(key)) return;
     seen.add(key);
-    out.push({ name, arguments: args });
+    out.push({ name, arguments: args, ...(argsError ? { argsError } : {}) });
   };
 
   // Llama emits the call after a <|python_tag|> marker when Environment: ipython is set.
@@ -549,6 +565,16 @@ export function runTool(call, ctx = {}) {
   const fn = Object.hasOwn(EXECUTORS, call?.name) ? EXECUTORS[call.name] : null;
   const t0 = (globalThis.performance?.now?.() ?? 0);
   if (!fn) return { ok: false, name: call?.name ?? "(none)", error: `no such tool: ${call?.name}`, ms: 0 };
+  // Refuse a call we could not read, rather than running a different one than was asked for.
+  if (call.argsError) {
+    return {
+      ok: false,
+      name: call.name,
+      arguments: {},
+      error: `${call.name} was not called — ${call.argsError}. Say so; do not guess the arguments.`,
+      ms: 0,
+    };
+  }
   try {
     const { result, display } = fn(call.arguments ?? {}, ctx);
     return { ok: true, name: call.name, arguments: call.arguments ?? {}, result, display, ms: Math.round((globalThis.performance?.now?.() ?? 0) - t0) };

@@ -110,10 +110,25 @@ async function generate(id, { messages, tools, audio, maxTokens }) {
   const audioFrames = inputs.audio_token_len ? Number(inputs.audio_token_len[0]) : 0;
 
   const t1 = performance.now();
+  // Stream. A 1B model producing up to 192 tokens on WebGPU is several seconds of silence
+  // otherwise, and a stage label that never changes is indistinguishable from a hang. The final
+  // decode below is still what gets parsed — the stream is purely for the visible progress.
+  let streamed = 0;
+  const streamer = mod.TextStreamer
+    ? new mod.TextStreamer(processor.tokenizer, {
+      skip_prompt: true,
+      skip_special_tokens: false,
+      callback_function: (token) => {
+        streamed++;
+        post({ type: "token", id, token, n: streamed, t: performance.now() - t1 });
+      },
+    })
+    : undefined;
   const outputIds = await model.generate({
     ...inputs,
     max_new_tokens: Math.max(1, Math.min(512, maxTokens ?? 192)),
     do_sample: false, // greedy — sampling makes a 1B model mangle the call JSON
+    ...(streamer ? { streamer } : {}),
   });
   const genMs = Math.round(performance.now() - t1);
 
