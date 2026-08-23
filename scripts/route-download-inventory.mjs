@@ -45,7 +45,14 @@ const FAMILIES = {
       "MediaPipe Tasks fetches the .task/.tflite bundle; download managed inside the WASM runtime",
   },
   "raw-ort": {
-    test: (t) => /onnxruntime-web|InferenceSession|\bort\.(InferenceSession|env)/.test(t),
+    // Match ACTUAL ORT usage — an import of the library or its API — not the bare string
+    // "onnxruntime-web", which also appears as loader METADATA (`runtime: "onnxruntime-web"`) on
+    // pages whose real download runtime is something else entirely. That string alone was enough to
+    // classify a Transformers.js route as raw-ort, which then reported the wrong byte-control and
+    // resume semantics for the biggest download on the page.
+    test: (t) =>
+      /onnxruntime-web@|from ["'][^"']*onnxruntime-web|import\(["'][^"']*onnxruntime-web|InferenceSession|\bort\.(InferenceSession|env)/
+        .test(t),
     byteControl: "site-controlled",
     // refined below: resumable only if it goes through lib/model-download.js
     resume: "restart-only",
@@ -104,10 +111,21 @@ function readAll(dir) {
   return { text, files };
 }
 
+// This inventory's denominator is BUILT demo routes — the same set the conformance gate counts — so
+// it is driven by models.json, not by what happens to exist on disk. An unpublished draft with a
+// directory but no catalogue entry would otherwise inflate the adoption metric (328) past the built
+// count it is meant to be comparable with (327), which makes the two numbers quietly incomparable.
+const BUILT_SLUGS = new Set(
+  JSON.parse(readFileSync(new URL("../models.json", import.meta.url), "utf8"))
+    .models.filter((m) => m.status === "built")
+    .map((m) => m.slug),
+);
+
 for (const slug of readdirSync(MODELS).sort()) {
   const dir = join(MODELS, slug);
   if (!statSync(dir).isDirectory()) continue;
   if (!existsSync(join(dir, "index.html"))) continue; // built route
+  if (!BUILT_SLUGS.has(slug)) continue; // unpublished draft — not part of the built denominator
   const { text } = readAll(dir);
 
   // multi-model page = a subpage that loads ≥2 model groups concurrently

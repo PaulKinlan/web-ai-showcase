@@ -1,0 +1,704 @@
+// The tool layer for the Ultravox demo: schemas the Llama-3.2 chat template understands, local
+// executors that really change page state, a no-eval arithmetic evaluator, and a parser for the
+// function-call JSON the model emits.
+//
+// Llama-3.2 (Ultravox's language backbone) does NOT use Qwen's <tool_call> wrapper. Its template
+// asks for a bare object {"name": ..., "parameters": {...}}, optionally prefixed with the
+// <|python_tag|> special token. The parser below accepts both, plus the fenced/near-miss shapes a
+// 1B model produces in practice.
+//
+// Nothing here touches the network or the DOM. Executors receive a `ctx` bag supplied by the page,
+// so this module stays pure and unit-testable in Node (scripts/validate-ultravox-tools.mjs).
+
+/**
+ * Tool schemas in the OpenAI-function shape the Llama-3.2 chat template serialises into the first
+ * user turn. Keep the set SMALL and the descriptions blunt — a 1B model picks better from six sharp
+ * tools than from twenty vague ones. Descriptions are read aloud back to the user by the model, so
+ * they must describe what the tool ACTUALLY does.
+ */
+export const TOOL_SCHEMAS = [
+  {
+    type: "function",
+    function: {
+      name: "get_time",
+      description:
+        "Get the current date and time, optionally in another city's time zone. Use for any question about what time or date it is.",
+      parameters: {
+        type: "object",
+        properties: {
+          timezone: {
+            type: "string",
+            description:
+              'IANA time zone such as "Europe/London", "America/New_York" or "Asia/Tokyo". Omit for the local time zone.',
+          },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "start_timer",
+      description:
+        "Start a countdown timer that counts down on the page and shows 'done' when it finishes (it makes no sound). Use whenever the user asks to be timed or reminded in N seconds or minutes, UP TO ONE HOUR — for anything longer, say you can't set it rather than calling this.",
+      parameters: {
+        type: "object",
+        properties: {
+          seconds: {
+            type: "number",
+            description: "Duration of the timer in seconds. Must be between 1 and 3600 (one hour).",
+            minimum: 1,
+            maximum: 3600,
+          },
+          label: { type: "string", description: "Short name for the timer, e.g. \"pasta\"." },
+        },
+        required: ["seconds"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "calculate",
+      description:
+        "Evaluate an arithmetic expression. Use for any sum or number question. There is no percent " +
+        "sign: write percentages as division, e.g. 15% of 80 is \"80 * 15 / 100\". A bare % means " +
+        "remainder, as in \"17 % 5\".",
+      parameters: {
+        type: "object",
+        properties: {
+          expression: {
+            type: "string",
+            description:
+              'Arithmetic only, e.g. "18 * 7", "(120 + 45) / 3", "sqrt(144)", "80 * 15 / 100". ' +
+              'Never write a percent sign for a percentage — "15% of 80" will not parse. ' +
+              'round/sqrt/abs/floor/ceil take exactly one argument; to round to N decimals write ' +
+              '"round(x * 100) / 100".',
+          },
+        },
+        required: ["expression"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "convert_units",
+      description:
+        "Convert a value between units of length, mass, temperature, volume, or speed.",
+      parameters: {
+        type: "object",
+        properties: {
+          value: { type: "number", description: "The number to convert." },
+          from: { type: "string", description: 'Source unit, e.g. "km", "kg", "celsius", "mph".' },
+          to: {
+            type: "string",
+            description:
+              'Target unit, e.g. "miles", "lb", "fahrenheit", "kph". Pints, gallons and cups default to US; say "imperial pints" or "uk gallons" for the imperial ones.',
+          },
+        },
+        required: ["value", "from", "to"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "add_note",
+      description: "Save a short note to the on-page notepad. Use when the user asks to remember, note, or write something down.",
+      parameters: {
+        type: "object",
+        properties: { text: { type: "string", description: "The note text." } },
+        required: ["text"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_notes",
+      description: "Read back every note saved so far.",
+      parameters: { type: "object", properties: {}, required: [] },
+    },
+  },
+];
+
+export const TOOL_NAMES = TOOL_SCHEMAS.map((t) => t.function.name);
+
+// ---------------------------------------------------------------------------
+// Safe arithmetic — a recursive-descent parser, NOT eval()/Function(). A model-authored string is
+// untrusted input; it never becomes code. Anything outside the grammar throws.
+// ---------------------------------------------------------------------------
+
+// Each entry carries its arity. JavaScript silently ignores surplus arguments, so round(1.234, 2)
+// reached Math.round as Math.round(1.234, 2) and returned 1 — a calculator confidently reporting the
+// wrong number, which is the one thing this tool must never do. Extra arguments now fail loudly and
+// the model is told why.
+const FUNCS = {
+  sqrt: { fn: Math.sqrt, min: 1, max: 1 },
+  abs: { fn: Math.abs, min: 1, max: 1 },
+  round: { fn: Math.round, min: 1, max: 1 },
+  floor: { fn: Math.floor, min: 1, max: 1 },
+  ceil: { fn: Math.ceil, min: 1, max: 1 },
+  pow: { fn: Math.pow, min: 2, max: 2 },
+  min: { fn: Math.min, min: 1, max: Infinity },
+  max: { fn: Math.max, min: 1, max: Infinity },
+};
+const CONSTS = { pi: Math.PI, e: Math.E };
+
+function tokenize(src) {
+  const tokens = [];
+  let i = 0;
+  while (i < src.length) {
+    const c = src[i];
+    if (/\s/.test(c)) { i++; continue; }
+    if (/[0-9.]/.test(c)) {
+      let j = i;
+      while (j < src.length && /[0-9._]/.test(src[j])) j++;
+      const raw = src.slice(i, j).replace(/_/g, "");
+      const num = Number(raw);
+      if (!Number.isFinite(num)) throw new Error(`not a number: "${raw}"`);
+      tokens.push({ t: "num", v: num });
+      i = j;
+      continue;
+    }
+    if (/[a-zA-Z]/.test(c)) {
+      let j = i;
+      while (j < src.length && /[a-zA-Z0-9]/.test(src[j])) j++;
+      tokens.push({ t: "name", v: src.slice(i, j).toLowerCase() });
+      i = j;
+      continue;
+    }
+    if ("+-*/%^(),".includes(c)) { tokens.push({ t: c }); i++; continue; }
+    // '×' and '÷' show up in spoken-then-transcribed maths often enough to be worth accepting.
+    if (c === "×") { tokens.push({ t: "*" }); i++; continue; }
+    if (c === "÷") { tokens.push({ t: "/" }); i++; continue; }
+    throw new Error(`unexpected character "${c}"`);
+  }
+  return tokens;
+}
+
+/** Evaluate an arithmetic expression safely. Throws on anything that isn't plain maths. */
+export function evaluateExpression(src) {
+  if (typeof src !== "string" || !src.trim()) throw new Error("empty expression");
+  if (src.length > 200) throw new Error("expression too long");
+  const tokens = tokenize(src);
+  let pos = 0;
+  const peek = () => tokens[pos];
+  const eat = (t) => {
+    if (!tokens[pos] || tokens[pos].t !== t) throw new Error(`expected "${t}"`);
+    return tokens[pos++];
+  };
+
+  // expr := term (('+'|'-') term)*
+  function expr() {
+    let left = term();
+    while (peek() && (peek().t === "+" || peek().t === "-")) {
+      const op = tokens[pos++].t;
+      const right = term();
+      left = op === "+" ? left + right : left - right;
+    }
+    return left;
+  }
+  // term := unary (('*'|'/'|'%') unary)*
+  function term() {
+    let left = unary();
+    while (peek() && (peek().t === "*" || peek().t === "/" || peek().t === "%")) {
+      const op = tokens[pos++].t;
+      const right = unary();
+      if ((op === "/" || op === "%") && right === 0) throw new Error("division by zero");
+      left = op === "*" ? left * right : op === "/" ? left / right : left % right;
+    }
+    return left;
+  }
+  // unary := ('-'|'+') unary | power
+  //
+  // The sign sits ABOVE exponentiation, which is what every calculator and maths convention does:
+  // -2^2 is -(2^2) = -4, not (-2)^2 = 4. Getting this backwards made the agent confidently report
+  // the wrong number for any negative power.
+  function unary() {
+    if (peek() && peek().t === "-") { pos++; return -unary(); }
+    if (peek() && peek().t === "+") { pos++; return unary(); }
+    return power();
+  }
+  // power := primary ('^' unary)?   (right-associative; the exponent may carry its own sign)
+  function power() {
+    const base = primary();
+    if (peek() && peek().t === "^") { pos++; return Math.pow(base, unary()); }
+    return base;
+  }
+  // primary := num | const | func '(' args ')' | '(' expr ')'
+  function primary() {
+    const tok = peek();
+    if (!tok) throw new Error("unexpected end of expression");
+    if (tok.t === "num") { pos++; return tok.v; }
+    if (tok.t === "(") { pos++; const v = expr(); eat(")"); return v; }
+    if (tok.t === "name") {
+      pos++;
+      if (Object.hasOwn(CONSTS, tok.v)) return CONSTS[tok.v];
+      const spec = Object.hasOwn(FUNCS, tok.v) ? FUNCS[tok.v] : null;
+      if (!spec) throw new Error(`unknown name "${tok.v}"`);
+      eat("(");
+      const args = [expr()];
+      while (peek() && peek().t === ",") { pos++; args.push(expr()); }
+      eat(")");
+      if (args.length < spec.min || args.length > spec.max) {
+        const wants = spec.max === Infinity
+          ? `at least ${spec.min}`
+          : spec.min === spec.max
+          ? `exactly ${spec.min}`
+          : `${spec.min} to ${spec.max}`;
+        throw new Error(
+          `${tok.v}() takes ${wants} argument${spec.max === 1 ? "" : "s"}, got ${args.length}` +
+            (tok.v === "round" && args.length === 2
+              ? ' — to round to N decimals write "round(x * 100) / 100"'
+              : ""),
+        );
+      }
+      return spec.fn(...args);
+    }
+    throw new Error(`unexpected token "${tok.t}"`);
+  }
+
+  const value = expr();
+  if (pos !== tokens.length) throw new Error("trailing input after the expression");
+  if (!Number.isFinite(value)) throw new Error("result is not a finite number");
+  return value;
+}
+
+// ---------------------------------------------------------------------------
+// Unit conversion — an explicit table. Unknown units fail loudly rather than guessing.
+// ---------------------------------------------------------------------------
+
+// Everything linear converts through a base unit: value * factor = base.
+const LINEAR = {
+  length: {
+    base: "m",
+    units: {
+      // Spoken input reaches the model as sound and comes back as ordinary words, so the metric
+      // names need the same spelled-out coverage the imperial ones already had — "three metres to
+      // feet" was failing while "three feet to metres" worked.
+      mm: 0.001, millimetre: 0.001, millimetres: 0.001, millimeter: 0.001, millimeters: 0.001,
+      cm: 0.01, centimetre: 0.01, centimetres: 0.01, centimeter: 0.01, centimeters: 0.01,
+      m: 1, metre: 1, metres: 1, meter: 1, meters: 1,
+      km: 1000, kilometre: 1000, kilometres: 1000, kilometer: 1000, kilometers: 1000,
+      in: 0.0254, inch: 0.0254, inches: 0.0254,
+      ft: 0.3048, foot: 0.3048, feet: 0.3048,
+      yd: 0.9144, yard: 0.9144, yards: 0.9144,
+      mi: 1609.344, mile: 1609.344, miles: 1609.344,
+    },
+  },
+  mass: {
+    base: "kg",
+    units: {
+      mg: 1e-6, g: 0.001, gram: 0.001, grams: 0.001, kg: 1, kilogram: 1, kilograms: 1,
+      t: 1000, tonne: 1000, tonnes: 1000,
+      oz: 0.028349523125, ounce: 0.028349523125, ounces: 0.028349523125,
+      lb: 0.45359237, lbs: 0.45359237, pound: 0.45359237, pounds: 0.45359237,
+      st: 6.35029318, stone: 6.35029318,
+    },
+  },
+  // Volume is the one dimension where the same WORD means different things: a US pint is 473 ml, an
+  // imperial pint 568 ml. Bare "pint"/"gallon" resolve to US (the commoner usage in these datasets)
+  // but the system is named in the result and the display, so "2 litres in pints" can never quietly
+  // answer in the wrong one. Explicit uk-/imperial- and us- names override.
+  volume: {
+    base: "l",
+    units: {
+      ml: 0.001, l: 1, litre: 1, litres: 1, liter: 1, liters: 1,
+      cup: 0.2365882365, cups: 0.2365882365,
+      pt: 0.473176473, pint: 0.473176473, pints: 0.473176473,
+      "us pint": 0.473176473, "us pints": 0.473176473, "us pt": 0.473176473,
+      "imperial pint": 0.56826125, "imperial pints": 0.56826125,
+      "uk pint": 0.56826125, "uk pints": 0.56826125,
+      gal: 3.785411784, gallon: 3.785411784, gallons: 3.785411784,
+      "us gallon": 3.785411784, "us gallons": 3.785411784, "us gal": 3.785411784,
+      "imperial gallon": 4.54609, "imperial gallons": 4.54609,
+      "uk gallon": 4.54609, "uk gallons": 4.54609,
+    },
+  },
+  speed: {
+    base: "mps",
+    units: {
+      mps: 1, kph: 0.2777777778, kmh: 0.2777777778, "km/h": 0.2777777778,
+      mph: 0.44704, knot: 0.514444, knots: 0.514444,
+    },
+  },
+};
+
+const TEMP = new Set(["c", "celsius", "centigrade", "f", "fahrenheit", "k", "kelvin"]);
+
+function normUnit(u) {
+  return String(u ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/^degrees?\s+/, "")
+    .replace(/\.$/, "")
+    .replace(/[-_]+/g, " ") // "us-pint" / "imperial_gallon" → "us pint" / "imperial gallon"
+    .replace(/\s+/g, " ");
+}
+
+/** Names whose meaning depends on the measurement system, so the answer must say which one it used. */
+const AMBIGUOUS_VOLUME = new Set(["pt", "pint", "pints", "gal", "gallon", "gallons", "cup", "cups"]);
+
+function volumeSystem(unit) {
+  if (/^(imperial|uk) /.test(unit)) return "imperial";
+  if (/^us /.test(unit) || AMBIGUOUS_VOLUME.has(unit)) return "US";
+  return null;
+}
+
+function toCelsius(v, u) {
+  if (u === "c" || u === "celsius" || u === "centigrade") return v;
+  if (u === "f" || u === "fahrenheit") return (v - 32) * (5 / 9);
+  return v - 273.15; // kelvin
+}
+function fromCelsius(v, u) {
+  if (u === "c" || u === "celsius" || u === "centigrade") return v;
+  if (u === "f" || u === "fahrenheit") return v * (9 / 5) + 32;
+  return v + 273.15;
+}
+
+/** Convert between units. Returns { value, from, to, dimension }. Throws on unknown/mismatched units. */
+export function convert(value, from, to) {
+  const num = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(num)) throw new Error(`"${value}" is not a number`);
+  const f = normUnit(from);
+  const t = normUnit(to);
+  if (!f || !t) throw new Error("both a source and a target unit are required");
+  if (TEMP.has(f) || TEMP.has(t)) {
+    if (!TEMP.has(f) || !TEMP.has(t)) throw new Error(`can't convert ${f} to ${t}`);
+    return { value: fromCelsius(toCelsius(num, f), t), from: f, to: t, dimension: "temperature" };
+  }
+  for (const [dimension, spec] of Object.entries(LINEAR)) {
+    const a = spec.units[f];
+    const b = spec.units[t];
+    // Both units must live in the SAME dimension — a half match (km → kg) keeps looking, then fails.
+    if (a != null && b != null) {
+      const conv = { value: (num * a) / b, from: f, to: t, dimension };
+      if (dimension === "volume") {
+        // Each side keeps its OWN system. Picking one system and stamping it on both produced a flat
+        // contradiction — "1 pint" to "imperial pint" computed with the US pint (correctly, since a
+        // bare pint is US here) and then reported "1 imperial pint = 0.832674 imperial pint", which
+        // the model would repeat to the user with complete confidence.
+        const fromSystem = volumeSystem(f);
+        const toSystem = volumeSystem(t);
+        // Label the ambiguous side so the model repeats the system back to the user.
+        if (AMBIGUOUS_VOLUME.has(f) && fromSystem) conv.from = `${fromSystem} ${f}`;
+        if (AMBIGUOUS_VOLUME.has(t) && toSystem) conv.to = `${toSystem} ${t}`;
+        if (fromSystem && toSystem) {
+          conv.system = fromSystem === toSystem ? fromSystem : `${fromSystem} → ${toSystem}`;
+        } else if (fromSystem || toSystem) {
+          conv.system = fromSystem ?? toSystem;
+        }
+      }
+      return conv;
+    }
+  }
+  throw new Error(`don't know how to convert "${from}" to "${to}"`);
+}
+
+// ---------------------------------------------------------------------------
+// Parsing the model's output
+// ---------------------------------------------------------------------------
+
+/** Pull the first balanced {...} object out of `text` starting at `from`. Returns [json, endIndex]. */
+function firstObject(text, from = 0) {
+  const start = text.indexOf("{", from);
+  if (start === -1) return null;
+  let depth = 0;
+  let inStr = false;
+  let esc = false;
+  for (let i = start; i < text.length; i++) {
+    const c = text[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (c === "\\") esc = true;
+      else if (c === '"') inStr = false;
+      continue;
+    }
+    if (c === '"') inStr = true;
+    else if (c === "{") depth++;
+    else if (c === "}" && --depth === 0) return [text.slice(start, i + 1), i + 1];
+  }
+  return null;
+}
+
+/**
+ * Extract tool calls from raw model output. Llama-3.2 is *supposed* to emit a bare
+ * `{"name": …, "parameters": {…}}` object (optionally after `<|python_tag|>`), and a 1B model often
+ * nearly does — so we also accept Qwen-style <tool_call> wrappers and fenced ```json blocks, as long
+ * as the name is one we published. Returns [] when the model answered directly; the page reports
+ * that honestly rather than retrying until it looks like tool use worked.
+ */
+export function parseToolCalls(text, names = TOOL_NAMES) {
+  const out = [];
+  const seen = new Set();
+  const consider = (raw) => {
+    let obj;
+    try { obj = JSON.parse(raw); } catch { return; }
+    if (!obj || typeof obj !== "object") return;
+    const name = obj.name ?? obj.function?.name ?? obj.tool ?? obj.tool_name;
+    if (typeof name !== "string" || !names.includes(name)) return;
+    let args = obj.arguments ?? obj.function?.arguments ?? obj.parameters ?? obj.args ?? {};
+    let argsError = null;
+    if (typeof args === "string") {
+      // Emptying unparseable arguments CHANGES THE REQUEST. get_time with a mangled timezone would
+      // become a perfectly successful lookup of the LOCAL time, and the model would then state the
+      // wrong city's time with complete confidence. Carry the failure instead of erasing it.
+      try {
+        args = JSON.parse(args);
+      } catch (err) {
+        argsError = `the arguments were not valid JSON: ${String(err?.message ?? err)}`;
+        args = {};
+      }
+    }
+    if (!args || typeof args !== "object" || Array.isArray(args)) {
+      argsError ??= "the arguments were not a JSON object";
+      args = {};
+    }
+    const key = name + JSON.stringify(args) + (argsError ?? "");
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({ name, arguments: args, ...(argsError ? { argsError } : {}) });
+  };
+
+  // Llama emits the call after a <|python_tag|> marker when Environment: ipython is set.
+  const raw = String(text ?? "");
+  // Markers the model wraps a call in. Stripping them leaves what it actually "said".
+  const src = raw.replace(/<\|python_tag\|>/g, " ").replace(/<\|eom_id\|>|<\|eot_id\|>/g, " ");
+
+  // 1. An explicit <tool_call> block is an unambiguous request to act (closing tag optional — small
+  //    models truncate it), so it counts wherever it appears.
+  const tagged = /<tool_call>([\s\S]*?)(?:<\/tool_call>|$)/g;
+  let m;
+  while ((m = tagged.exec(src)) !== null) {
+    // EVERY object in the wrapper, not just the first. A small model packs two calls into one
+    // wrapper — concatenated objects, or a JSON array of them — and reading only the first meant the
+    // page saw a single call and executed it, bypassing the multi-call refusal entirely. The refusal
+    // can only work if the parser reports everything the model asked for.
+    let at = 0;
+    for (;;) {
+      const found = firstObject(m[1], at);
+      if (!found) break;
+      consider(found[0]);
+      at = found[1];
+    }
+  }
+  if (out.length) return out;
+
+  // 2+3. Otherwise the call must BE the whole message, not something the message mentions.
+  //
+  // This matters for safety, not tidiness: asked to "show me the JSON for a timer but don't run it",
+  // a model produces exactly that JSON inside a sentence. Executing it would run an action the user
+  // explicitly declined. Llama-3.2's canonical format is a bare object emitted alone, so requiring
+  // the object to span the entire trimmed output keeps every genuine call working while making
+  // prose-that-quotes-JSON inert.
+  const trimmed = src.trim();
+  const fenceOnly = /^```(?:json|tool_call)?\s*([\s\S]*?)```$/.exec(trimmed);
+  const candidate = fenceOnly ? fenceOnly[1].trim() : trimmed;
+  const found = firstObject(candidate);
+  if (found && found[0].trim() === candidate.trim()) consider(found[0]);
+  return out;
+}
+
+/**
+ * Strip tool-call markup so what's left is the model's prose, if any.
+ *
+ * This must remove EXACTLY what parseToolCalls would have acted on and nothing else, so it asks
+ * parseToolCalls rather than re-implementing the rule with regexes. The regex version erased any
+ * fenced block and any whole-message object starting with "name" — so "summarise the clip as JSON"
+ * came back empty and the page reported no usable output for a reply that had a perfectly good
+ * answer in it. Special tokens are always markup and always go.
+ */
+export function stripToolCalls(text, names = TOOL_NAMES) {
+  const clean = String(text ?? "")
+    .replace(/<\|python_tag\|>/g, "")
+    .replace(/<\|eom_id\|>|<\|eot_id\|>/g, "");
+  // An explicit <tool_call> wrapper is removed only when it holds a call we recognise. A wrapper
+  // around anything else is the model's own text; deleting it would lose content it meant to say.
+  const stripped = clean.replace(
+    /<tool_call>[\s\S]*?(?:<\/tool_call>|$)/g,
+    (block) => (parseToolCalls(block, names).length ? "" : block),
+  );
+  // The whole-message channel: parseToolCalls acts on a bare object or a lone fence only when it
+  // spans the entire message, so re-asking it here removes precisely what would have been executed
+  // and leaves an ordinary structured answer — or JSON the model was merely quoting — intact.
+  return parseToolCalls(stripped, names).length ? "" : stripped.trim();
+}
+
+// ---------------------------------------------------------------------------
+// Executors — each returns a JSON-serialisable result that goes back to the model as a
+// `role: "tool"` message, plus a human-readable `display` line for the page.
+// ---------------------------------------------------------------------------
+
+/** Notes are capped so one dictated ramble can't dominate the notepad or the model's context. */
+export const MAX_NOTE_CHARS = 200;
+
+function fmtNumber(n) {
+  if (!Number.isFinite(n)) return String(n);
+  const rounded = Math.round(n * 1e6) / 1e6;
+  return String(rounded);
+}
+
+export const EXECUTORS = {
+  get_time({ timezone } = {}, ctx = {}) {
+    const now = ctx.now ? new Date(ctx.now) : new Date();
+    const local = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    // A SUPPLIED-but-unusable timezone is a failure, not a reason to fall back. A 1B model emits
+    // schema-invalid shapes like {"timezone":{"city":"Tokyo"}} or {"timezone":42}, and quietly
+    // answering with the browser's own zone turns "what time is it in Tokyo?" into a confident
+    // answer about somewhere else entirely. Only an ABSENT timezone means "local".
+    if (timezone != null && (typeof timezone !== "string" || !timezone.trim())) {
+      throw new Error(
+        `the timezone must be a string like "Asia/Tokyo", not ${
+          Array.isArray(timezone) ? "an array" : typeof timezone === "object" ? "an object" : JSON.stringify(timezone)
+        }`,
+      );
+    }
+    const zone = typeof timezone === "string" && timezone.trim() ? timezone.trim() : local;
+    let fmt;
+    try {
+      fmt = new Intl.DateTimeFormat("en-GB", {
+        timeZone: zone,
+        dateStyle: "full",
+        timeStyle: "short",
+      });
+    } catch {
+      // An unknown zone is a real failure — say so instead of silently answering for somewhere else.
+      throw new Error(`"${zone}" is not a time zone I know`);
+    }
+    const formatted = fmt.format(now);
+    return { result: { timezone: zone, datetime: formatted, iso: now.toISOString() }, display: formatted };
+  },
+
+  start_timer({ seconds, label } = {}, ctx = {}) {
+    const secs = Math.round(Number(seconds));
+    if (!Number.isFinite(secs) || secs <= 0) throw new Error("a timer needs a positive number of seconds");
+    if (secs > 3600) throw new Error("timers are capped at one hour in this demo");
+    const name = typeof label === "string" && label.trim() ? label.trim().slice(0, 40) : "timer";
+    const id = ctx.startTimer ? ctx.startTimer(secs, name) : null;
+    return {
+      result: { started: true, seconds: secs, label: name, id },
+      display: `${name} — ${secs}s, counting down on the page`,
+    };
+  },
+
+  calculate({ expression } = {}) {
+    const value = evaluateExpression(expression);
+    return { result: { expression: String(expression), value }, display: `${expression} = ${fmtNumber(value)}` };
+  },
+
+  convert_units({ value, from, to } = {}) {
+    const c = convert(value, from, to);
+    return {
+      result: {
+        value: c.value,
+        from: c.from,
+        to: c.to,
+        dimension: c.dimension,
+        ...(c.system ? { system: c.system } : {}),
+      },
+      display: `${fmtNumber(Number(value))} ${c.from} = ${fmtNumber(c.value)} ${c.to}`,
+    };
+  },
+
+  add_note({ text } = {}, ctx = {}) {
+    // Coercing here saved the literal string "[object Object]" for a shape like
+    // {"text":{"note":"buy milk"}} and then CONFIRMED the note to the model, which would repeat the
+    // confirmation to the user. Same class as the timezone fix: a malformed call must be visible.
+    if (typeof text !== "string" || !text.trim()) {
+      throw new Error(
+        `the note text must be a non-empty string, not ${
+          text == null
+            ? "nothing"
+            : Array.isArray(text)
+            ? "an array"
+            : typeof text === "object"
+            ? "an object"
+            : JSON.stringify(text)
+        }`,
+      );
+    }
+    const raw = String(text ?? "").trim();
+    if (!raw) throw new Error("nothing to note down");
+    // Truncate ONCE and report the stored value: the model must be told what the page actually
+    // holds, or a follow-up list_notes contradicts the confirmation it just gave.
+    const note = raw.slice(0, MAX_NOTE_CHARS);
+    const truncated = note.length < raw.length;
+    const notes = ctx.notes ?? [];
+    notes.push(note);
+    ctx.onNotesChanged?.(notes);
+    return {
+      result: { saved: true, note, truncated, total: notes.length },
+      display: `saved "${note}"${truncated ? ` (truncated to ${MAX_NOTE_CHARS} chars)` : ""} (${notes.length} total)`,
+    };
+  },
+
+  list_notes(_args, ctx = {}) {
+    const notes = ctx.notes ?? [];
+    return {
+      result: { notes, count: notes.length },
+      display: notes.length ? notes.map((n, i) => `${i + 1}. ${n}`).join(" · ") : "the notepad is empty",
+    };
+  },
+};
+
+/**
+ * Run one parsed call. Never throws: a tool failure is a real result the model should see and
+ * explain, so it comes back as { ok:false, error } rather than blowing up the turn.
+ */
+export function runTool(call, ctx = {}) {
+  const fn = Object.hasOwn(EXECUTORS, call?.name) ? EXECUTORS[call.name] : null;
+  const t0 = (globalThis.performance?.now?.() ?? 0);
+  if (!fn) return { ok: false, name: call?.name ?? "(none)", error: `no such tool: ${call?.name}`, ms: 0 };
+  // Refuse a call we could not read, rather than running a different one than was asked for.
+  if (call.argsError) {
+    return {
+      ok: false,
+      name: call.name,
+      arguments: {},
+      error: `${call.name} was not called — ${call.argsError}. Say so; do not guess the arguments.`,
+      ms: 0,
+    };
+  }
+  try {
+    const { result, display } = fn(call.arguments ?? {}, ctx);
+    return { ok: true, name: call.name, arguments: call.arguments ?? {}, result, display, ms: Math.round((globalThis.performance?.now?.() ?? 0) - t0) };
+  } catch (err) {
+    return { ok: false, name: call.name, arguments: call.arguments ?? {}, error: String(err?.message ?? err), ms: Math.round((globalThis.performance?.now?.() ?? 0) - t0) };
+  }
+}
+
+/** The content string handed back to the model as the `tool` message. */
+export function toolMessageContent(outcome) {
+  return JSON.stringify(outcome.ok ? outcome.result : { error: outcome.error });
+}
+
+/**
+ * The system prompt. Deliberately terse: a 1B model follows short rules far better than long ones.
+ * Note what it does NOT say — there is no mention of a transcript, because there isn't one. The
+ * user's audio reaches the model as embeddings, so it hears the recording rather than reading it.
+ */
+export const SYSTEM_PROMPT =
+  "You are a voice assistant running entirely in the user's browser. You hear the user's voice " +
+  "directly. When a tool can answer, call exactly one tool. When you get a tool result, reply with " +
+  "one short spoken-style sentence stating the answer. Never invent a tool result.";
+
+/** The placeholder the Ultravox processor replaces with the audio embedding frames. */
+export const AUDIO_PLACEHOLDER = "<|audio|>";
+
+/**
+ * Strip reserved audio placeholders out of visitor-typed text.
+ *
+ * The page documents `<|audio|>` on screen, so someone WILL type it. Concatenating it with the one
+ * the page adds gives the processor two placeholders for a single PCM recording: the expanded audio
+ * positions no longer line up with the audio feature sequence and the turn fails instead of
+ * answering. The token is the page's to emit, never the visitor's.
+ */
+export function stripReservedAudioTokens(text) {
+  return String(text ?? "")
+    .replace(/<\|audio\|>/g, " ")
+    .replace(/[ \t]{2,}/g, " ")
+    .trim();
+}

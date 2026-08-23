@@ -70,6 +70,23 @@ export class VadEngine {
     });
   }
 
+  /**
+   * Reject everything in flight, then terminate the worker. Worker.terminate() fires no error event,
+   * so without this an awaited load()/run() would hang forever. The engine is NOT reusable
+   * afterwards — construct a new one.
+   */
+  dispose(reason = "Engine disposed") {
+    this.ready = false;
+    const err = new Error(reason);
+    for (const w of this._loadWaiters) w.reject(err);
+    this._loadWaiters = [];
+    for (const [, pending] of this._pending) pending.reject(err);
+    this._pending.clear();
+    try {
+      this.worker.terminate();
+    } catch { /* already gone */ }
+  }
+
   /** Analyse a whole 16 kHz mono clip. Returns { probs, frameSec, segments, ms, durationS, speechRatio, device }. */
   run(pcm, opts) {
     const id = ++this._id;
@@ -90,10 +107,17 @@ export class VadEngine {
     });
   }
 
-  /** Feed a chunk of 16 kHz samples to the live path; results arrive via onStream. */
+  /**
+   * Feed a chunk of 16 kHz samples to the live path; results arrive via onStream.
+   * Returns the request id. Both the `stream` reply and any `error` carry the same id, so a caller
+   * that needs to pair probabilities with the exact PCM it sent — or to drop a chunk that failed —
+   * can correlate instead of counting replies. Existing callers may ignore the return value.
+   */
   streamChunk(pcm) {
     const copy = pcm.slice();
-    this.worker.postMessage({ type: "stream-chunk", id: ++this._id, pcm: copy }, [copy.buffer]);
+    const id = ++this._id;
+    this.worker.postMessage({ type: "stream-chunk", id, pcm: copy }, [copy.buffer]);
+    return id;
   }
 }
 
@@ -224,7 +248,31 @@ export class LiveMic {
     mute.gain.value = 0;
     this._node.connect(mute);
     mute.connect(this._ctx.destination);
-    this.running = true;
+
+    // A context created AFTER an await (permission prompt, model reset) is outside the user-gesture
+    // chain, and browsers under an autoplay policy — mobile Safari especially — start it suspended.
+    // onaudioprocess then never fires, so start() would resolve and the caller would report an open
+    // mic that produces nothing. Resume it, time-boxed, and report honestly if it stays suspended.
+    if (this._ctx.state === "suspended") {
+      try {
+        await Promise.race([this._ctx.resume(), new Promise((r) => setTimeout(r, 800))]);
+      } catch { /* reported via this.suspended below */ }
+    }
+    this.suspended = this._ctx.state === "suspended";
+    this.running = !this.suspended;
+    if (this.suspended) {
+      // THROW rather than resolve. Reporting this only as a property meant each caller had to
+      // remember to check it, and one published route did not: it set listening = true and showed
+      // "Live" over a context that will never deliver a frame. A start that cannot capture is a
+      // failed start, so every caller's existing error path surfaces it without having to know.
+      this.stop();
+      const err = new Error(
+        "The browser kept the audio engine suspended, so no sound reaches the page. " +
+          "Tap the button again — a direct tap usually releases it.",
+      );
+      err.name = "AudioContextSuspendedError";
+      throw err;
+    }
   }
   stop() {
     this.running = false;

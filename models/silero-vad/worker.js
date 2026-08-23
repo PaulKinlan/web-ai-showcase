@@ -224,6 +224,12 @@ async function streamChunk(id, pcm) {
   post({ type: "stream", id, probs, last, frameSec: FRAME / SR }, [probs.buffer]);
 }
 
+// stream-chunk carries the recurrent state forward across calls, so two invocations running at once
+// would each read and write `streamState` and the later chunk could start from an obsolete one —
+// corrupting the probabilities that decide where an utterance ends. Message handlers are async, so
+// nothing serialises them for us: chain the streaming work onto a single tail.
+let streamTail = Promise.resolve();
+
 self.addEventListener("message", async (e) => {
   const d = e.data;
   try {
@@ -232,10 +238,20 @@ self.addEventListener("message", async (e) => {
     } else if (d.type === "run") {
       await runClip(d.id, d.pcm, d.opts);
     } else if (d.type === "stream-reset") {
-      await streamReset();
-      post({ type: "stream-ready", id: d.id });
+      // The reset MUST join the same queue. Off it, a reset could zero the state and acknowledge
+      // readiness while an earlier queued inference was still running — and that inference would
+      // then write its previous-session state back over the fresh one, so the new microphone
+      // session would start from the old session's recurrent state.
+      streamTail = streamTail
+        .then(() => streamReset())
+        .then(() => post({ type: "stream-ready", id: d.id }))
+        .catch((err) => post({ type: "error", id: d?.id, message: String(err?.message ?? err) }));
+      await streamTail;
     } else if (d.type === "stream-chunk") {
-      await streamChunk(d.id, d.pcm);
+      streamTail = streamTail
+        .then(() => streamChunk(d.id, d.pcm))
+        .catch((err) => post({ type: "error", id: d?.id, message: String(err?.message ?? err) }));
+      await streamTail;
     }
   } catch (err) {
     post({ type: "error", id: d?.id, message: String(err?.message ?? err) });
