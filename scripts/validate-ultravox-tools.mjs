@@ -469,5 +469,39 @@ console.log("— a supplied timezone must be a usable string —");
   ));
 }
 
+// Regression (PR #3 Codex round 16): a schema-invalid note body was coerced, so {"text":{...}} saved
+// the literal string "[object Object]" and the tool then CONFIRMED it — the model would repeat that
+// confirmation to the user. Same class as the round-15 timezone fix.
+console.log("— a note body must be a real string —");
+{
+  const notes = [];
+  const ctx = { notes };
+  const objNote = runTool({ name: "add_note", arguments: { text: { note: "buy milk" } } }, ctx);
+  check("an object note body is refused", objNote.ok === false, objNote.error);
+  check("and nothing was written to the notepad", notes.length === 0, JSON.stringify(notes));
+  check("the refusal says what was wrong", /non-empty string/i.test(objNote.error ?? ""), objNote.error);
+  check("a numeric note body is refused", runTool({ name: "add_note", arguments: { text: 42 } }, ctx).ok === false);
+  check("a blank note body is refused", runTool({ name: "add_note", arguments: { text: "   " } }, ctx).ok === false);
+  check("a missing note body is refused", runTool({ name: "add_note", arguments: {} }, ctx).ok === false);
+  check("no refusal wrote anything", notes.length === 0, JSON.stringify(notes));
+  const good = runTool({ name: "add_note", arguments: { text: "buy milk" } }, ctx);
+  check("a real note still saves", good.ok && notes[0] === "buy milk", JSON.stringify(notes));
+}
+
+// Regression (PR #3 Codex round 16): the schema told the model to use start_timer for ANY duration
+// while the executor capped it at an hour, so "remind me in 90 minutes" followed the advertised API
+// and still failed. The limit has to be in the schema the model reads.
+{
+  const timer = TOOL_SCHEMAS.find((t) => t.function.name === "start_timer").function;
+  check("the description discloses the one-hour cap", /one hour/i.test(timer.description), timer.description);
+  check("it tells the model what to do instead", /say you can't set it/i.test(timer.description), timer.description);
+  const secs = timer.parameters.properties.seconds;
+  check("the seconds parameter carries the numeric bound", secs.maximum === 3600 && secs.minimum === 1, JSON.stringify(secs));
+  check("and says so in words too", /3600|one hour/i.test(secs.description), secs.description);
+  // The executor and the schema must agree — a documented cap that does not match is worse.
+  check("3600s is accepted", runTool({ name: "start_timer", arguments: { seconds: 3600 } }, {}).ok === true);
+  check("3601s is refused", runTool({ name: "start_timer", arguments: { seconds: 3601 } }, {}).ok === false);
+}
+
 console.log(`\n${checks - failed}/${checks} checks passed`);
 process.exit(failed ? 1 : 0);

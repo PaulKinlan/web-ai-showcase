@@ -1,6 +1,8 @@
 // Front-end helpers for the Ultravox page: the worker handshake, a real WebGPU probe for the honest
 // unsupported state, and the widget CSS. All inference lives in worker.js.
 
+import { WorkerClient } from "/web-ai-showcase/lib/worker-protocol.js";
+
 const WORKER_URL = "/web-ai-showcase/models/ultravox-audio-llm/worker.js";
 
 // How long a generation may go with NO word from the worker before it is declared stuck. This is an
@@ -9,183 +11,170 @@ const WORKER_URL = "/web-ai-showcase/models/ultravox-audio-llm/worker.js";
 // Without it a stalled worker left the page permanently `busy`: controls disabled, microphone audio
 // discarded, and no error anywhere, which is the worst failure mode this page has.
 const GENERATE_STALL_MS = 45_000;
+// Loading has the same failure mode and needed the same guard: a cold ~1.5 GB fetch or a WebGPU
+// session creation that stalls without throwing left the shared loader stuck in "downloading" with
+// no Retry and nothing on the page. Progress re-arms this too, so a slow link is never cut off.
+const LOAD_STALL_MS = 120_000;
 
 export class UltravoxEngine {
   constructor() {
-    this.worker = null;
+    this.client = null;
     this.ready = false;
     this.device = null;
+    this.dtype = null;
     this.onProgress = null;
-    this._loadWaiters = [];
-    this._probeWaiters = [];
-    this._pending = new Map();
-    this._id = 0;
     this._disposed = false;
     this._spawn();
   }
 
   /**
-   * Build the worker. Called again after a FATAL worker error — a module worker whose graph 404s or
-   * fails to parse never becomes usable, and the old code left that dead worker installed: the
-   * loader offered Retry, load() posted into it, and the promise simply never settled. A fatal error
-   * now tears the worker down, so the next load() gets a fresh one and Retry can actually recover.
+   * Build the worker client. Called again after a FATAL worker error — a module worker whose graph
+   * 404s or fails to parse never becomes usable, and leaving that dead client installed meant the
+   * loader offered Retry, load() posted into it, and the promise simply never settled.
    */
   _spawn() {
     if (this._disposed) return;
-    this.worker = new Worker(WORKER_URL, { type: "module" });
-    this.worker.addEventListener("message", (e) => this._onMessage(e.data));
-    this.worker.addEventListener("error", (e) => {
-      this._fatal(new Error(e.message || "Worker failed to start"));
+    this.client = new WorkerClient({
+      url: WORKER_URL,
+      name: "ultravox",
+      maxInFlight: 1,
+      maxQueue: 4,
+      onState: (state) => {
+        // "error" is terminal for a WorkerClient: drop it so the next load() builds a fresh one.
+        if (state === "error" || state === "terminated") {
+          this.ready = false;
+          this.device = null;
+          if (!this._disposed) this.client = null;
+        }
+      },
     });
   }
 
-  /** A failure the worker cannot continue past: reject everything and discard the worker. */
-  _fatal(err) {
-    this.ready = false;
-    this.device = null;
-    const dead = this.worker;
-    this.worker = null;
+  /** A deadline that RE-ARMS on progress: slow-but-alive is fine, silence is not. */
+  _deadline(ms) {
+    const ctrl = new AbortController();
+    let timer = null;
+    const stop = () => {
+      if (timer !== null) clearTimeout(timer);
+      timer = null;
+    };
+    const bump = () => {
+      stop();
+      timer = setTimeout(() => {
+        const err = new Error(
+          `The model stopped responding (no output for ${Math.round(ms / 1000)}s). ` +
+            "The worker was reset — load it again and retry.",
+        );
+        err.name = "StalledError";
+        ctrl.abort(err);
+      }, ms);
+    };
+    bump();
+    return { signal: ctrl.signal, bump, stop, reason: () => ctrl.signal.reason };
+  }
+
+  async probeGPU() {
+    if (this._disposed) return { ok: false, reason: "disposed" };
+    if (!this.client) this._spawn();
     try {
-      dead?.terminate();
-    } catch { /* already gone */ }
-    this._rejectAll(err);
-    // A probe that can never answer must not hang the honest-capability gate either.
-    for (const w of this._probeWaiters) w.resolve(false);
-    this._probeWaiters = [];
-  }
-
-  _rejectAll(err) {
-    for (const w of this._loadWaiters) w.reject(err);
-    this._loadWaiters = [];
-    for (const [, p] of this._pending) {
-      p.disarm?.();
-      p.reject(err);
-    }
-    this._pending.clear();
-  }
-
-  _onMessage(msg) {
-    switch (msg.type) {
-      case "progress":
-        this.onProgress?.(msg.p);
-        break;
-      case "probe-result":
-        for (const w of this._probeWaiters) w.resolve(msg.gpu);
-        this._probeWaiters = [];
-        break;
-      case "ready":
-        this.ready = true;
-        this.device = msg.device;
-        this.dtype = msg.dtype;
-        for (const w of this._loadWaiters) w.resolve(msg);
-        this._loadWaiters = [];
-        break;
-      case "prompt": {
-        const p = this._pending.get(msg.id);
-        p?.rearm?.();
-        p?.onPrompt?.(msg.template);
-        break;
-      }
-      case "token": {
-        const p = this._pending.get(msg.id);
-        p?.rearm?.();
-        p?.onToken?.(msg.token, msg.n);
-        break;
-      }
-      case "result": {
-        const p = this._pending.get(msg.id);
-        if (p) {
-          p.disarm?.();
-          this._pending.delete(msg.id);
-          p.resolve(msg);
-        }
-        break;
-      }
-      case "error":
-        if (msg.id != null && this._pending.has(msg.id)) {
-          const p = this._pending.get(msg.id);
-          p.disarm?.();
-          p.reject(new Error(msg.message));
-          this._pending.delete(msg.id);
-        } else {
-          this._rejectAll(new Error(msg.message));
-        }
-        break;
+      return await this.client.request("probe", {});
+    } catch {
+      // A probe that cannot answer must not hang the honest-capability gate.
+      return { ok: false, reason: "worker-unavailable" };
     }
   }
 
-  probeGPU() {
-    if (this._disposed) return Promise.resolve(false);
-    if (!this.worker) this._spawn();
-    return new Promise((resolve) => {
-      this._probeWaiters.push({ resolve });
-      this.worker.postMessage({ type: "probe" });
-    });
-  }
-
-  load(onProgress) {
+  async load(onProgress) {
     if (onProgress) this.onProgress = onProgress;
-    if (this.ready) return Promise.resolve({ device: this.device, dtype: this.dtype });
-    if (this._disposed) return Promise.reject(new Error("Engine disposed"));
-    // Retry after a fatal error lands here with no worker; build a fresh one rather than posting
+    if (this.ready) return { device: this.device, dtype: this.dtype };
+    if (this._disposed) throw new Error("Engine disposed");
+    // Retry after a fatal error lands here with no client; build a fresh one rather than posting
     // into the corpse and waiting forever.
-    if (!this.worker) this._spawn();
-    return new Promise((resolve, reject) => {
-      this._loadWaiters.push({ resolve, reject });
-      this.worker.postMessage({ type: "load" });
-    });
+    if (!this.client) this._spawn();
+    const dl = this._deadline(LOAD_STALL_MS);
+    try {
+      const res = await this.client.request("load", {}, {
+        signal: dl.signal,
+        onProgress: (p) => {
+          // Every byte of progress re-arms the clock — a cold 1.5 GB download on a slow link is
+          // slow, not stuck, and only genuine silence should fail it.
+          dl.bump();
+          if (p?.kind === "download") this.onProgress?.(p.p);
+        },
+      });
+      this.ready = true;
+      this.device = res?.device ?? null;
+      this.dtype = res?.dtype ?? null;
+      return res;
+    } catch (err) {
+      if (dl.signal.aborted) {
+        this._fatal(dl.reason() ?? err);
+        throw dl.reason() ?? err;
+      }
+      throw err;
+    } finally {
+      dl.stop();
+    }
   }
 
   /**
    * Generate from a message list plus (optionally) a 16 kHz mono Float32Array of audio.
    * The audio is TRANSFERRED, so the caller must pass a copy it no longer needs.
    */
-  generate({ messages, tools, audio, maxTokens, onPrompt, onToken }) {
+  async generate({ messages, tools, audio, maxTokens, onPrompt, onToken }) {
     // Never silently start a fresh worker here: a generate without a loaded model would sit waiting
     // while the page believed a turn was running. Fail loudly and let the loader's Retry reload.
-    if (!this.worker || !this.ready) {
-      return Promise.reject(new Error("The model is not loaded — reload it and try again."));
+    if (!this.client || !this.ready) {
+      throw new Error("The model is not loaded — reload it and try again.");
     }
-    const id = ++this._id;
-    return new Promise((resolve, reject) => {
-      let timer = null;
-      const disarm = () => {
-        if (timer !== null) clearTimeout(timer);
-        timer = null;
-      };
-      const rearm = () => {
-        disarm();
-        timer = setTimeout(() => {
-          this._pending.delete(id);
-          const err = new Error(
-            `The model stopped responding (no output for ${Math.round(GENERATE_STALL_MS / 1000)}s). ` +
-              "The worker was reset — load it again and retry.",
-          );
-          err.name = "GenerationStalledError";
-          reject(err);
-          // A worker that has gone quiet mid-generation cannot be trusted to finish anything else,
-          // so tear it down. The next load() builds a fresh one (see _spawn).
-          this._fatal(err);
-        }, GENERATE_STALL_MS);
-      };
-      this._pending.set(id, { resolve, reject, onPrompt, onToken, rearm, disarm });
-      rearm();
-      const payload = { type: "generate", id, messages, tools, audio, maxTokens };
-      this.worker.postMessage(payload, audio ? [audio.buffer] : []);
-    });
+    const dl = this._deadline(GENERATE_STALL_MS);
+    try {
+      return await this.client.request(
+        "generate",
+        { messages, tools, audio, maxTokens },
+        {
+          transfer: audio ? [audio.buffer] : undefined,
+          signal: dl.signal,
+          onProgress: (p) => {
+            dl.bump();
+            if (p?.kind === "prompt") onPrompt?.(p.template);
+            else if (p?.kind === "token") onToken?.(p.token, p.n);
+          },
+        },
+      );
+    } catch (err) {
+      if (dl.signal.aborted) {
+        // A worker that has gone quiet mid-generation cannot be trusted to finish anything else.
+        this._fatal(dl.reason() ?? err);
+        throw dl.reason() ?? err;
+      }
+      throw err;
+    } finally {
+      dl.stop();
+    }
+  }
+
+  /** A failure the worker cannot continue past: discard the client so the next load() respawns. */
+  _fatal(err) {
+    this.ready = false;
+    this.device = null;
+    const dead = this.client;
+    this.client = null;
+    try {
+      dead?.terminate?.(err);
+    } catch { /* already gone */ }
   }
 
   /** Reject anything in flight, then terminate. Not reusable afterwards — construct a new one. */
   dispose(reason = "Engine disposed") {
     this._disposed = true;
     this.ready = false;
-    this._rejectAll(new Error(reason));
-    for (const w of this._probeWaiters) w.resolve(false);
-    this._probeWaiters = [];
+    this.device = null;
+    const dead = this.client;
+    this.client = null;
     try {
-      this.worker?.terminate();
+      dead?.terminate?.(new Error(reason));
     } catch { /* already gone */ }
-    this.worker = null;
   }
 }
 

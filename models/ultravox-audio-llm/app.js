@@ -606,9 +606,13 @@ async function beginListening() {
             });
         }
         setPhase(listening ? "listening" : "idle", listening ? "1" : "0");
-        $("micNote").textContent = wasCollecting
+        const overflowNote = wasCollecting
           ? "This device can't keep up — that turn was discarded rather than sent with a gap. Try again."
           : "Dropping audio — the voice detector is behind on this device.";
+        micNote(overflowNote);
+        // #micNote is an ordinary span, so a screen-reader user was never told their command had
+        // been dropped and would wait for a tool action that is never coming. Say it out loud.
+        announce(overflowNote);
         return;
       }
       // Tag the chunk with the state at capture time, then send. The id ties the two together.

@@ -15,6 +15,7 @@
 // exact call shape published on the model card.
 
 import { TRANSFORMERS_URL } from "/web-ai-showcase/lib/webai.js";
+import { serveWorker } from "/web-ai-showcase/lib/worker-protocol.js";
 
 const MODEL_ID = "onnx-community/ultravox-v0_5-llama-3_2-1b-ONNX";
 
@@ -31,10 +32,6 @@ let processor = null;
 let model = null;
 let device = null;
 
-function post(msg) {
-  self.postMessage(msg);
-}
-
 // navigator.gpu existing is NOT enough — headless and locked-down browsers expose the object but
 // return no adapter. Ask for one so the page can show an honest unsupported state.
 async function probeGPU() {
@@ -48,8 +45,8 @@ async function probeGPU() {
   }
 }
 
-async function ensureLoaded() {
-  if (model) return;
+async function ensureLoaded(onProgress) {
+  if (model) return { device, modelId: MODEL_ID, dtype: DTYPE };
   const gpu = await probeGPU();
   if (!gpu.ok) {
     // ~1.5 GB of 4-bit weights through the WASM EP is not a slow path, it is an unusable one, and a
@@ -64,16 +61,16 @@ async function ensureLoaded() {
   const { UltravoxProcessor, UltravoxModel } = mod;
   console.log(`[ultravox worker] loading ${MODEL_ID} on webgpu`, DTYPE);
   processor = await UltravoxProcessor.from_pretrained(MODEL_ID, {
-    progress_callback: (p) => post({ type: "progress", p }),
+    progress_callback: (p) => onProgress?.({ kind: "download", p }),
   });
   model = await UltravoxModel.from_pretrained(MODEL_ID, {
     device: "webgpu",
     dtype: DTYPE,
-    progress_callback: (p) => post({ type: "progress", p }),
+    progress_callback: (p) => onProgress?.({ kind: "download", p }),
   });
   device = "webgpu";
   console.log("[ultravox worker] ready");
-  post({ type: "ready", device, modelId: MODEL_ID, dtype: DTYPE });
+  return { device, modelId: MODEL_ID, dtype: DTYPE };
 }
 
 /**
@@ -94,10 +91,10 @@ function template(messages, tools) {
  * no new audio). Returns the decoded continuation plus the numbers that prove audio really entered
  * the context: how many embedding frames it occupied and how long the prompt became.
  */
-async function generate(id, { messages, tools, audio, maxTokens }) {
-  await ensureLoaded();
+async function generate({ messages, tools, audio, maxTokens }, { signal, onProgress }) {
+  await ensureLoaded(onProgress);
   const text = template(messages, tools);
-  post({ type: "prompt", id, template: text });
+  onProgress({ kind: "prompt", template: text });
 
   const t0 = performance.now();
   // processor(text, audio) → { input_ids, attention_mask, audio_values, audio_token_len }. The
@@ -120,12 +117,17 @@ async function generate(id, { messages, tools, audio, maxTokens }) {
       skip_special_tokens: false,
       callback_function: (token) => {
         streamed++;
-        post({ type: "token", id, token, n: streamed, t: performance.now() - t1 });
+        onProgress({ kind: "token", token, n: streamed, t: performance.now() - t1 });
       },
     })
     : undefined;
+  // Cooperative cancellation: the shared protocol aborts a superseded or timed-out request, and
+  // transformers.js checks this callback between decoding steps.
   const outputIds = await model.generate({
     ...inputs,
+    stopping_criteria: signal
+      ? [{ _call: () => signal.aborted, callback_function: () => signal.aborted }]
+      : undefined,
     max_new_tokens: Math.max(1, Math.min(512, maxTokens ?? 192)),
     do_sample: false, // greedy — sampling makes a 1B model mangle the call JSON
     ...(streamer ? { streamer } : {}),
@@ -139,9 +141,7 @@ async function generate(id, { messages, tools, audio, maxTokens }) {
   const raw = decoded[0] ?? "";
   const newTokens = outputIds.dims.at(-1) - promptLen;
 
-  post({
-    type: "result",
-    id,
+  return {
     text: raw,
     prepMs,
     genMs,
@@ -149,21 +149,25 @@ async function generate(id, { messages, tools, audio, maxTokens }) {
     audioFrames,
     newTokens,
     device,
-  });
+  };
 }
 
-self.addEventListener("message", async (e) => {
-  const d = e.data;
-  try {
-    if (d.type === "probe") {
-      post({ type: "probe-result", gpu: await probeGPU() });
-    } else if (d.type === "load") {
-      await ensureLoaded();
-    } else if (d.type === "generate") {
-      await generate(d.id, d);
-    }
-  } catch (err) {
-    console.error("[ultravox worker] error", err);
-    post({ type: "error", id: d?.id, message: String(err?.message ?? err) });
-  }
+// The shared worker protocol (lib/worker-protocol.js): typed + versioned messages, per-request ids,
+// cooperative AbortSignal cancellation, streamed progress, and a deterministic dispose that frees the
+// model before the worker is terminated. CLAUDE.md requires new demos to use it rather than a
+// bespoke handshake.
+serveWorker({
+  methods: {
+    probe: () => probeGPU(),
+    load: (_payload, { onProgress }) => ensureLoaded(onProgress),
+    generate,
+  },
+  onDispose() {
+    try {
+      model?.dispose?.();
+    } catch { /* already gone */ }
+    model = null;
+    processor = null;
+    device = null;
+  },
 });

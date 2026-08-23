@@ -420,20 +420,20 @@ try {
     const recovery = await evaluate(sessionId, `(async () => {
       const { UltravoxEngine } = await import("/web-ai-showcase/models/ultravox-audio-llm/ultravox.js");
       const e = new UltravoxEngine();
-      const before = !!e.worker;
+      const before = !!e.client;
       // Simulate the fatal case: a module worker whose graph never starts.
       e._fatal(new Error("Worker failed to start"));
-      const afterFatal = { worker: !!e.worker, ready: e.ready };
+      const afterFatal = { worker: !!e.client, ready: e.ready };
       // The loader's Retry calls load() again — it must get a FRESH worker, not hang forever.
       const p = e.load();
-      const respawned = !!e.worker;
+      const respawned = !!e.client;
       let settled = "pending";
       await Promise.race([
         p.then(() => (settled = "resolved"), () => (settled = "rejected")),
         new Promise((r) => setTimeout(r, 1200)),
       ]);
       e.dispose();
-      return { before, afterFatal, respawned, settled, disposedWorker: !!e.worker };
+      return { before, afterFatal, respawned, settled, disposedWorker: !!e.client };
     })()`, 40_000);
     check(`${name}: a fresh engine starts with a worker`, recovery.before === true);
     check(
@@ -699,7 +699,7 @@ try {
       e.ready = true;                       // pretend a model is loaded
       const started = Date.now();
       const outcome = await Promise.race([
-        e.generate({ messages: [], tools: [], maxTokens: 8 }).then(() => "resolved", (err) => err.name),
+        e.generate({ messages: [], tools: [], maxTokens: 8 }).then(() => "resolved", (err) => err.name + ": " + err.message),
         new Promise((r) => setTimeout(() => r("still-pending"), 4000)),
       ]);
       e.dispose();
@@ -812,15 +812,24 @@ console.log("\n===== source guards (not behavioural proof) =====");
   );
   const engine = readFileSync(new URL("../models/ultravox-audio-llm/ultravox.js", import.meta.url), "utf8");
   // Codex round 15: a generation with no deadline left the page permanently busy on a WebGPU hang.
-  check("a stall deadline is armed for every generation", /GENERATE_STALL_MS/.test(engine) && /rearm\(\);/.test(engine));
   check(
-    "each streamed token re-arms it, so a slow-but-alive device is never cut off",
-    /case "token": \{[\s\S]{0,160}rearm\?\.\(\)/.test(engine),
+    "both loading AND generating carry an inactivity deadline",
+    /GENERATE_STALL_MS/.test(engine) && /LOAD_STALL_MS/.test(engine),
   );
   check(
-    "a stalled generation tears the worker down so Retry can recover",
-    /GenerationStalledError[\s\S]{0,240}this\._fatal\(err\)/.test(engine),
+    "progress re-arms the deadline, so a slow-but-alive device is never cut off",
+    /onProgress:[\s\S]{0,120}dl\.bump\(\)/.test(engine),
   );
+  check(
+    "a stalled request tears the worker down so Retry can recover",
+    /dl\.signal\.aborted[\s\S]{0,120}this\._fatal\(/.test(engine),
+  );
+  // Codex round 16: the shared worker protocol, not a bespoke handshake (CLAUDE.md invariant 15).
+  check("the engine uses the shared WorkerClient", /WorkerClient/.test(engine) && /lib\/worker-protocol\.js/.test(engine));
+  const uvWorker = readFileSync(new URL("../models/ultravox-audio-llm/worker.js", import.meta.url), "utf8");
+  check("the worker is served through serveWorker()", /serveWorker\(\{/.test(uvWorker));
+  check("it frees the model on dispose", /onDispose\(\)[\s\S]{0,160}model\?\.dispose/.test(uvWorker));
+  check("generation honours the abort signal", /stopping_criteria[\s\S]{0,120}signal\.aborted/.test(uvWorker));
 
   check("stream-reset acknowledges only after the queued reset runs", /\.then\(\(\) => post\(\{ type: "stream-ready"/.test(reset));
 }

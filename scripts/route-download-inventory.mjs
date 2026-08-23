@@ -111,10 +111,21 @@ function readAll(dir) {
   return { text, files };
 }
 
+// This inventory's denominator is BUILT demo routes — the same set the conformance gate counts — so
+// it is driven by models.json, not by what happens to exist on disk. An unpublished draft with a
+// directory but no catalogue entry would otherwise inflate the adoption metric (328) past the built
+// count it is meant to be comparable with (327), which makes the two numbers quietly incomparable.
+const BUILT_SLUGS = new Set(
+  JSON.parse(readFileSync(new URL("../models.json", import.meta.url), "utf8"))
+    .models.filter((m) => m.status === "built")
+    .map((m) => m.slug),
+);
+
 for (const slug of readdirSync(MODELS).sort()) {
   const dir = join(MODELS, slug);
   if (!statSync(dir).isDirectory()) continue;
   if (!existsSync(join(dir, "index.html"))) continue; // built route
+  if (!BUILT_SLUGS.has(slug)) continue; // unpublished draft — not part of the built denominator
   const { text } = readAll(dir);
 
   // multi-model page = a subpage that loads ≥2 model groups concurrently

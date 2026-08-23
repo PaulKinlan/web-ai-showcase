@@ -28,8 +28,15 @@ for (const r of committed.routes) {
   bySlug.set(r.slug, r);
 }
 
-// 1) the inventory's route set must exactly equal the built demo routes on disk.
+// 1) the inventory's route set must exactly equal the BUILT demo routes.
+// "Built" means the catalogue says so, not merely that a directory exists: an unpublished draft with
+// a route on disk but no models.json entry is not part of this denominator, and counting it made the
+// adoption metric (328) incomparable with the built-demo count every other gate reports (327).
+const CATALOGUE_BUILT = new Set(
+  JSON.parse(readFileSync("models.json", "utf8")).models.filter((m) => m.status === "built").map((m) => m.slug),
+);
 const builtRoutes = readdirSync("models").filter((s) => {
+  if (!CATALOGUE_BUILT.has(s)) return false;
   try {
     return statSync(join("models", s)).isDirectory() && existsSync(join("models", s, "index.html"));
   } catch {

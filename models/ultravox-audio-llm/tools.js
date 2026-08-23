@@ -41,11 +41,16 @@ export const TOOL_SCHEMAS = [
     function: {
       name: "start_timer",
       description:
-        "Start a countdown timer that counts down on the page and shows 'done' when it finishes (it makes no sound). Use whenever the user asks to be timed or reminded in N seconds or minutes.",
+        "Start a countdown timer that counts down on the page and shows 'done' when it finishes (it makes no sound). Use whenever the user asks to be timed or reminded in N seconds or minutes, UP TO ONE HOUR — for anything longer, say you can't set it rather than calling this.",
       parameters: {
         type: "object",
         properties: {
-          seconds: { type: "number", description: "Duration of the timer in seconds." },
+          seconds: {
+            type: "number",
+            description: "Duration of the timer in seconds. Must be between 1 and 3600 (one hour).",
+            minimum: 1,
+            maximum: 3600,
+          },
           label: { type: "string", description: "Short name for the timer, e.g. \"pasta\"." },
         },
         required: ["seconds"],
@@ -599,6 +604,22 @@ export const EXECUTORS = {
   },
 
   add_note({ text } = {}, ctx = {}) {
+    // Coercing here saved the literal string "[object Object]" for a shape like
+    // {"text":{"note":"buy milk"}} and then CONFIRMED the note to the model, which would repeat the
+    // confirmation to the user. Same class as the timezone fix: a malformed call must be visible.
+    if (typeof text !== "string" || !text.trim()) {
+      throw new Error(
+        `the note text must be a non-empty string, not ${
+          text == null
+            ? "nothing"
+            : Array.isArray(text)
+            ? "an array"
+            : typeof text === "object"
+            ? "an object"
+            : JSON.stringify(text)
+        }`,
+      );
+    }
     const raw = String(text ?? "").trim();
     if (!raw) throw new Error("nothing to note down");
     // Truncate ONCE and report the stored value: the model must be told what the page actually
