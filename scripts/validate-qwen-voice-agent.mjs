@@ -206,7 +206,54 @@ try {
     const t4 = await evaluate(sessionId, turnSnapshot);
     check(`${name}: add_note wrote to the on-page notepad`, t4.notes.some((n) => n.includes("hunter2")), JSON.stringify(t4.notes));
 
-    check(`${name}: four turns are logged`, (await evaluate(sessionId, `document.querySelectorAll("#turns .turn").length`)) === 4);
+    // ---- turn 5: Whisper hears nothing — the turn must RESOLVE, not look stuck ----
+    // Regression (PR #3 Codex review): the early return left llm1/tool/llm2 pinned at "pending", so
+    // a finished turn read as a pipeline still working.
+    await evaluate(sessionId, `(() => {
+      const va = globalThis.__voiceAgent;
+      va.engines.asr.transcribe = async () => ({ text: "   ", device: "wasm", ms: 12 });
+      return true;
+    })()`);
+    await evaluate(sessionId, `globalThis.__voiceAgent.runTurn({ audio: new Float32Array(16000), seconds: 1, source: "mic" })`);
+    await waitFor(sessionId, `!globalThis.__voiceAgent.state().busy`, 20_000, "turn 5");
+    const t5 = await evaluate(sessionId, turnSnapshot);
+    check(
+      `${name}: a silent turn leaves NO stage pending`,
+      t5.nodes.every((n) => !n.endsWith(":pending")),
+      t5.nodes.join(" "),
+    );
+    check(
+      `${name}: a silent turn marks the downstream stages skipped`,
+      t5.nodes.filter((n) => n.endsWith(":skipped")).length === 3,
+      t5.nodes.join(" "),
+    );
+    check(`${name}: a silent turn says what to do next`, /try again/i.test(t5.answer), t5.answer);
+
+    // ---- switching the reasoning model must drop readiness, not inherit it ----
+    // Regression (PR #3 Codex review): a superseded loader's onReady flipped ready.llm for a
+    // checkpoint that was never fetched, which would then download outside any visible loader.
+    await evaluate(sessionId, `globalThis.__voiceAgent.markReady("llm")`);
+    check(`${name}: llm reads ready before the switch`, (await evaluate(sessionId, `globalThis.__voiceAgent.state().ready.llm`)) === true);
+    await evaluate(sessionId, `(() => {
+      const sel = document.getElementById("modelSize");
+      sel.value = "onnx-community/Qwen2.5-1.5B-Instruct";
+      sel.dispatchEvent(new Event("change"));
+      return true;
+    })()`);
+    await new Promise((r) => setTimeout(r, 1500));
+    const afterSwitch = await evaluate(sessionId, `globalThis.__voiceAgent.state()`);
+    check(`${name}: switching selects the new checkpoint`, afterSwitch.currentModelId.includes("1.5B"), afterSwitch.currentModelId);
+    check(`${name}: switching clears readiness rather than inheriting it`, afterSwitch.ready.llm === false);
+    check(
+      `${name}: the remounted loader advertises the new checkpoint`,
+      await evaluate(sessionId, `document.getElementById("loader-llm").innerHTML.includes("Qwen2.5-1.5B-Instruct")`),
+    );
+    check(
+      `${name}: nothing auto-downloaded after the switch`,
+      (await evaluate(sessionId, `document.querySelector("#loader-llm .model-loader").dataset.state`)) !== "downloading",
+    );
+
+    check(`${name}: five turns are logged`, (await evaluate(sessionId, `document.querySelectorAll("#turns .turn").length`)) === 5);
     check(`${name}: still no console errors after four turns`, page.errors.length === 0, page.errors.join(" | "));
 
     await closePage(cdp, page.targetId);

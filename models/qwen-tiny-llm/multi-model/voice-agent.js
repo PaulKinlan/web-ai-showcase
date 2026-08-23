@@ -37,6 +37,26 @@ const engines = {
 };
 
 const ready = { vad: false, asr: false, llm: false };
+
+// The shared loader always renders a "Clear cached model" action, and routes it through the demo's
+// dispose(). With no dispose the files vanish while the engine stays live and `ready` stays true —
+// so a subsequent Download short-circuits on the still-ready worker and the loader reports
+// ready/validated over an empty cache. Terminating the worker and building a fresh engine is the
+// only honest reset: the next load has to fetch again.
+const ENGINE_FACTORIES = {
+  vad: () => new VadEngine(),
+  asr: () => new WhisperEngine(),
+  llm: () => new QwenEngine(),
+};
+
+function resetEngine(kind) {
+  try {
+    engines[kind]?.worker?.terminate();
+  } catch { /* already gone */ }
+  engines[kind] = ENGINE_FACTORIES[kind]();
+  ready[kind] = false;
+  if (kind === "vad") engines.vad.onStream = onVadStream;
+}
 let llmDevice = null; // the real backend, learned from the loader — never assumed
 let asrDevice = null;
 let currentModelId = "onnx-community/Qwen2.5-0.5B-Instruct";
@@ -143,6 +163,11 @@ createModelLoader({
     ready.vad = true;
     reportReadiness();
   },
+  dispose: () => resetEngine("vad"),
+  onDispose: () => {
+    if (listening) stopListening(); // the mic would be feeding a worker that no longer exists
+    reportReadiness();
+  },
 });
 
 createModelLoader({
@@ -157,14 +182,29 @@ createModelLoader({
   load: async (onProgress) => ({ device: await engines.asr.load(onProgress) }),
   onReady: (r) => {
     ready.asr = true;
-    asrDevice = r?.device ?? "wasm";
+    asrDevice = r?.device ?? null; // never assert a backend the model has not reported
+    reportReadiness();
+  },
+  dispose: () => resetEngine("asr"),
+  onDispose: () => {
+    asrDevice = null;
     reportReadiness();
   },
 });
 
+// Switching checkpoints re-mounts the loader, which replaces its DOM but CANNOT cancel a load
+// already in flight. Without a guard the abandoned load's onReady still fires and flips ready.llm
+// for a checkpoint that was never fetched — controls enable, and the next turn asks the worker for
+// the newly selected id, pulling up to 1.22 GB outside any visible loader. Two defences: a
+// generation token so a stale completion is ignored, and a hard engine teardown so the abandoned
+// download actually stops rather than finishing in the background.
+let llmGeneration = 0;
+
 function mountLlmLoader(modelId) {
+  const generation = ++llmGeneration;
   currentModelId = modelId;
   ready.llm = false;
+  llmDevice = null;
   reportReadiness();
   createModelLoader({
     mount: $("loader-llm"),
@@ -177,8 +217,16 @@ function mountLlmLoader(modelId) {
     },
     load: (onProgress) => engines.llm.load(onProgress, { modelId }),
     onReady: (device) => {
+      if (generation !== llmGeneration) return; // a superseded loader finished after a switch
       ready.llm = true;
       llmDevice = device ? String(device) : null;
+      reportReadiness();
+    },
+    dispose: () => resetEngine("llm"),
+    onDispose: () => {
+      if (generation !== llmGeneration) return;
+      ready.llm = false;
+      llmDevice = null;
       reportReadiness();
     },
   });
@@ -186,7 +234,11 @@ function mountLlmLoader(modelId) {
 mountLlmLoader(currentModelId);
 
 $("modelSize").addEventListener("change", (e) => {
-  if (busy) return;
+  if (busy) {
+    e.target.value = currentModelId; // a switch mid-turn would swap the model under the turn
+    return;
+  }
+  resetEngine("llm"); // terminate the in-flight load before the new loader starts its own
   mountLlmLoader(e.target.value);
 });
 
@@ -346,7 +398,7 @@ function concat(chunks, total) {
   return out;
 }
 
-engines.vad.onStream = (msg) => {
+function onVadStream(msg) {
   const chunk = pending.shift();
   if (!chunk) return;
   const p = msg.probs;
@@ -388,7 +440,8 @@ engines.vad.onStream = (msg) => {
       }
     }
   }
-};
+}
+engines.vad.onStream = onVadStream;
 
 async function startListening() {
   if (!LiveMic.supported()) {
@@ -406,9 +459,12 @@ async function startListening() {
     onFrames: (frames) => {
       // frames is always a whole number of 512-sample frames. Keep our own copy for the utterance
       // buffer; the engine transfers its own copy to the worker.
+      // Every chunk we submit WILL come back, so dropping an already-submitted one would pair the
+      // worker's answer with the wrong audio and silently skew every later turn boundary. When the
+      // backlog is full we refuse the INCOMING chunk instead, keeping the FIFO exactly 1:1.
       if (pending.length >= MAX_PENDING) {
-        pending.shift(); // the VAD is behind — drop the oldest rather than grow without bound
         $("micNote").textContent = "Dropping audio — the VAD worker is behind on this device.";
+        return;
       }
       pending.push(frames);
       engines.vad.streamChunk(frames);
@@ -417,6 +473,12 @@ async function startListening() {
   try {
     await mic.start();
   } catch (err) {
+    // start() may have already been granted the stream and failed later while wiring the audio
+    // graph. Dropping the reference without stop() would leave the mic light on with no way for
+    // the visitor — or the pagehide handler — to turn it off.
+    try {
+      mic.stop();
+    } catch { /* nothing to release */ }
     mic = null;
     $("micFallback").hidden = false;
     $("micNote").textContent = `Microphone unavailable (${err.name || "error"}).`;
@@ -584,7 +646,15 @@ async function runTurn({ audio, seconds = 0, text = null, truncated = false, sou
       asrDevice = asr.device || asrDevice;
       if (!heard || !/[a-z0-9]/i.test(heard)) {
         card.stage("asr", "fail", "Whisper — nothing");
+        // The turn is over, so the downstream stages must SAY they never ran. Left "pending" they
+        // read as a pipeline still working, and the page looks hung when it is simply finished.
+        card.stage("llm1", "skipped", "Qwen — skipped");
+        card.stage("tool", "skipped", "no tool");
+        card.stage("llm2", "skipped", "no answer");
         card.heard.innerHTML = '<em class="muted">Whisper heard no words in that clip.</em>';
+        card.answer.textContent = listening
+          ? "Nothing to act on — still listening, try again."
+          : "Nothing to act on — start listening or type a command to try again.";
         readout(card, [["asr", `${timings.asr} ms`], ["backend", backendLabel(asrDevice)]]);
         return;
       }
