@@ -75,7 +75,11 @@ export const TOOL_SCHEMAS = [
         properties: {
           value: { type: "number", description: "The number to convert." },
           from: { type: "string", description: 'Source unit, e.g. "km", "kg", "celsius", "mph".' },
-          to: { type: "string", description: 'Target unit, e.g. "miles", "lb", "fahrenheit", "kph".' },
+          to: {
+            type: "string",
+            description:
+              'Target unit, e.g. "miles", "lb", "fahrenheit", "kph". Pints, gallons and cups default to US; say "imperial pints" or "uk gallons" for the imperial ones.',
+          },
         },
         required: ["value", "from", "to"],
       },
@@ -251,13 +255,23 @@ const LINEAR = {
       st: 6.35029318, stone: 6.35029318,
     },
   },
+  // Volume is the one dimension where the same WORD means different things: a US pint is 473 ml, an
+  // imperial pint 568 ml. Bare "pint"/"gallon" resolve to US (the commoner usage in these datasets)
+  // but the system is named in the result and the display, so "2 litres in pints" can never quietly
+  // answer in the wrong one. Explicit uk-/imperial- and us- names override.
   volume: {
     base: "l",
     units: {
       ml: 0.001, l: 1, litre: 1, litres: 1, liter: 1, liters: 1,
       cup: 0.2365882365, cups: 0.2365882365,
       pt: 0.473176473, pint: 0.473176473, pints: 0.473176473,
+      "us pint": 0.473176473, "us pints": 0.473176473, "us pt": 0.473176473,
+      "imperial pint": 0.56826125, "imperial pints": 0.56826125,
+      "uk pint": 0.56826125, "uk pints": 0.56826125,
       gal: 3.785411784, gallon: 3.785411784, gallons: 3.785411784,
+      "us gallon": 3.785411784, "us gallons": 3.785411784, "us gal": 3.785411784,
+      "imperial gallon": 4.54609, "imperial gallons": 4.54609,
+      "uk gallon": 4.54609, "uk gallons": 4.54609,
     },
   },
   speed: {
@@ -272,7 +286,22 @@ const LINEAR = {
 const TEMP = new Set(["c", "celsius", "centigrade", "f", "fahrenheit", "k", "kelvin"]);
 
 function normUnit(u) {
-  return String(u ?? "").trim().toLowerCase().replace(/^degrees?\s+/, "").replace(/\.$/, "");
+  return String(u ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/^degrees?\s+/, "")
+    .replace(/\.$/, "")
+    .replace(/[-_]+/g, " ") // "us-pint" / "imperial_gallon" → "us pint" / "imperial gallon"
+    .replace(/\s+/g, " ");
+}
+
+/** Names whose meaning depends on the measurement system, so the answer must say which one it used. */
+const AMBIGUOUS_VOLUME = new Set(["pt", "pint", "pints", "gal", "gallon", "gallons", "cup", "cups"]);
+
+function volumeSystem(unit) {
+  if (/^(imperial|uk) /.test(unit)) return "imperial";
+  if (/^us /.test(unit) || AMBIGUOUS_VOLUME.has(unit)) return "US";
+  return null;
 }
 
 function toCelsius(v, u) {
@@ -301,7 +330,19 @@ export function convert(value, from, to) {
     const a = spec.units[f];
     const b = spec.units[t];
     // Both units must live in the SAME dimension — a half match (km → kg) keeps looking, then fails.
-    if (a != null && b != null) return { value: (num * a) / b, from: f, to: t, dimension };
+    if (a != null && b != null) {
+      const conv = { value: (num * a) / b, from: f, to: t, dimension };
+      if (dimension === "volume") {
+        const system = volumeSystem(t) ?? volumeSystem(f);
+        if (system) {
+          conv.system = system;
+          // Label the ambiguous side so the model repeats the system back to the user.
+          if (AMBIGUOUS_VOLUME.has(t)) conv.to = `${system} ${t}`;
+          if (AMBIGUOUS_VOLUME.has(f)) conv.from = `${system} ${f}`;
+        }
+      }
+      return conv;
+    }
   }
   throw new Error(`don't know how to convert "${from}" to "${to}"`);
 }
@@ -449,7 +490,13 @@ export const EXECUTORS = {
   convert_units({ value, from, to } = {}) {
     const c = convert(value, from, to);
     return {
-      result: { value: c.value, from: c.from, to: c.to, dimension: c.dimension },
+      result: {
+        value: c.value,
+        from: c.from,
+        to: c.to,
+        dimension: c.dimension,
+        ...(c.system ? { system: c.system } : {}),
+      },
       display: `${fmtNumber(Number(value))} ${c.from} = ${fmtNumber(c.value)} ${c.to}`,
     };
   },

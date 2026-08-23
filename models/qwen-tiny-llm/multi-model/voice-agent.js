@@ -49,18 +49,44 @@ const ENGINE_FACTORIES = {
   llm: () => new QwenEngine(),
 };
 
-function resetEngine(kind) {
+function resetEngine(kind, reason = "Model released") {
+  // dispose() REJECTS anything in flight before terminating. Terminating alone fires no error event,
+  // so an awaited chat()/transcribe() would hang and leave the page pinned at busy = true with every
+  // control disabled, even after the model was reloaded.
   try {
-    engines[kind]?.worker?.terminate();
+    engines[kind]?.dispose?.(reason);
   } catch { /* already gone */ }
   engines[kind] = ENGINE_FACTORIES[kind]();
   ready[kind] = false;
-  if (kind === "vad") engines.vad.onStream = onVadStream;
+  if (kind === "vad") {
+    staleVadReplies = 0;
+    pending.length = 0;
+    engines.vad.onStream = onVadStream;
+
+/**
+ * VadEngine routes worker errors through its _pending map, but streamChunk() registers nothing
+ * there — so a failed LIVE inference is swallowed and the mic keeps saying "listening" while no
+ * probability, and therefore no turn boundary, can ever arrive. Watch the worker directly.
+ */
+function watchVadErrors() {
+  const worker = engines.vad.worker;
+  worker.addEventListener("message", (e) => {
+    if (e.data?.type !== "error" || !listening) return;
+    stopListening();
+    $("status").textContent = `Voice detection failed, so listening stopped: ${e.data.message}`;
+    $("status").classList.add("err");
+    $("micNote").textContent = "Press Start listening to try again.";
+  });
+}
+watchVadErrors();
+    watchVadErrors();
+  }
 }
 let llmDevice = null; // the real backend, learned from the loader — never assumed
 let asrDevice = null;
 let currentModelId = "onnx-community/Qwen2.5-0.5B-Instruct";
 let busy = false; // a turn is in flight — we don't start another until it finishes
+let clipPreparing = false; // the bundled clip is decoding; it has already reserved the next turn
 let listening = false; // declared up here: updateControls() runs before the mic section is reached
 
 // ---------------------------------------------------------------------------
@@ -142,11 +168,15 @@ function reportReadiness() {
 }
 
 function updateControls() {
-  const canListen = ready.vad && ready.asr && ready.llm && LiveMic.supported() && !busy;
-  $("listen").disabled = !canListen && !listening;
-  $("typedGo").disabled = !ready.llm || busy;
-  $("runClip").disabled = !(ready.vad && ready.asr && ready.llm) || busy;
-  for (const b of $("examples").querySelectorAll("button")) b.disabled = !ready.llm || busy;
+  const held = busy || clipPreparing;
+  const canListen = ready.vad && ready.asr && ready.llm && LiveMic.supported() && !held && !micStarting;
+  $("listen").disabled = (!canListen && !listening) || micStarting;
+  $("typedGo").disabled = !ready.llm || held;
+  // The text input is disabled alongside its button: leaving it live let Enter bypass the readiness
+  // gate entirely and start an unrequested multi-hundred-megabyte download.
+  $("typedCmd").disabled = !ready.llm || held;
+  $("runClip").disabled = !(ready.vad && ready.asr && ready.llm) || held;
+  for (const b of $("examples").querySelectorAll("button")) b.disabled = !ready.llm || held;
 }
 
 createModelLoader({
@@ -346,6 +376,19 @@ function backendLabel(dev) {
   return dev ? String(dev).toUpperCase() : "–";
 }
 
+/**
+ * Turn cards are prepended to a plain list, so a screen-reader user is never told the answer arrived.
+ * Announce the FINAL answer only — a per-token live region would read the reply letter by letter.
+ */
+function announce(text) {
+  const region = $("announcer");
+  region.textContent = "";
+  // A same-text update is not re-announced; the empty tick guarantees the change is observed.
+  requestAnimationFrame(() => {
+    region.textContent = text;
+  });
+}
+
 function setPhase(text, kind = "0") {
   const el = $("phase");
   el.textContent = text;
@@ -356,7 +399,11 @@ function setPhase(text, kind = "0") {
 // Mic + endpointing
 // ---------------------------------------------------------------------------
 let mic = null;
+let micStarting = false; // a second press while permission is pending would open a second stream
 const pending = []; // chunks submitted to the VAD worker, awaiting their probabilities (FIFO)
+// Replies for chunks submitted before a stop() are still in flight; they must not be paired with a
+// new session's audio, so we count them off instead of letting the FIFO drift across sessions.
+let staleVadReplies = 0;
 const MAX_PENDING = 64; // if the worker stalls we drop audio rather than growing without bound
 
 // Utterance accumulation
@@ -399,6 +446,10 @@ function concat(chunks, total) {
 }
 
 function onVadStream(msg) {
+  if (staleVadReplies > 0) {
+    staleVadReplies--; // a reply for audio submitted before the last stop — never re-pair it
+    return;
+  }
   const chunk = pending.shift();
   if (!chunk) return;
   const p = msg.probs;
@@ -444,10 +495,23 @@ function onVadStream(msg) {
 engines.vad.onStream = onVadStream;
 
 async function startListening() {
+  if (micStarting || listening) return;
   if (!LiveMic.supported()) {
     $("micFallback").hidden = false;
     return;
   }
+  micStarting = true;
+  $("listen").disabled = true;
+  $("micNote").textContent = "Asking for microphone access…";
+  try {
+    await beginListening();
+  } finally {
+    micStarting = false;
+    updateControls();
+  }
+}
+
+async function beginListening() {
   try {
     await engines.vad.streamReset();
   } catch (err) {
@@ -485,6 +549,7 @@ async function startListening() {
     return;
   }
   listening = true;
+  staleVadReplies = 0;
   resetEndpointer();
   $("listen").innerHTML = '<span class="rec-dot"></span>Stop listening';
   $("listen").classList.remove("secondary");
@@ -499,6 +564,7 @@ function stopListening() {
     mic?.stop();
   } catch { /* already gone */ }
   mic = null;
+  staleVadReplies += pending.length; // these WILL still arrive — consume them, don't re-pair them
   pending.length = 0;
   resetEndpointer();
   $("listen").textContent = "🎙️ Start listening";
@@ -610,6 +676,18 @@ function readout(card, parts) {
 /** One end-to-end turn. `audio` may be null for a typed command (the ASR stage is then skipped). */
 async function runTurn({ audio, seconds = 0, text = null, truncated = false, source = "mic" }) {
   if (busy) return;
+  // The single readiness gate for EVERY entry path — mic, Enter, example chips, bundled clip. The
+  // worker's ensureLoaded() would otherwise start a 483 MB (or 1.22 GB) download the moment a turn
+  // ran, outside the loader's explicit Download action and with no progress anywhere on the page.
+  const missing = [!ready.llm && "Qwen", audio && !ready.asr && "Whisper"].filter(Boolean);
+  if (missing.length) {
+    $("status").textContent =
+      `${missing.join(" and ")} ${missing.length > 1 ? "are" : "is"} not on this device yet — ` +
+      "use the Download button above first; nothing is fetched behind your back.";
+    $("status").classList.add("err");
+    return;
+  }
+  $("status").classList.remove("err");
   busy = true;
   updateControls();
   const card = newTurnCard();
@@ -644,7 +722,9 @@ async function runTurn({ audio, seconds = 0, text = null, truncated = false, sou
       timings.asr = Math.round(performance.now() - a0);
       heard = (asr.text || "").trim();
       asrDevice = asr.device || asrDevice;
-      if (!heard || !/[a-z0-9]/i.test(heard)) {
+      // Whisper is multilingual and this page claims no English-only restriction, so test for any
+      // Unicode letter or number — an ASCII-only test discarded Arabic, Chinese, Greek, Cyrillic…
+      if (!heard || !/[\p{L}\p{N}]/u.test(heard)) {
         card.stage("asr", "fail", "Whisper — nothing");
         // The turn is over, so the downstream stages must SAY they never ran. Left "pending" they
         // read as a pipeline still working, and the page looks hung when it is simply finished.
@@ -655,6 +735,7 @@ async function runTurn({ audio, seconds = 0, text = null, truncated = false, sou
         card.answer.textContent = listening
           ? "Nothing to act on — still listening, try again."
           : "Nothing to act on — start listening or type a command to try again.";
+        announce("Whisper heard no words in that clip.");
         readout(card, [["asr", `${timings.asr} ms`], ["backend", backendLabel(asrDevice)]]);
         return;
       }
@@ -701,6 +782,7 @@ async function runTurn({ audio, seconds = 0, text = null, truncated = false, sou
       card.stage("llm2", "done", "direct answer");
       const direct = stripToolCalls(rawFirst) || rawFirst;
       card.answer.textContent = direct;
+      announce(`Answered without a tool: ${direct}`);
       const note = document.createElement("p");
       note.className = "muted";
       note.style.fontSize = ".82rem";
@@ -756,6 +838,7 @@ async function runTurn({ audio, seconds = 0, text = null, truncated = false, sou
       outcome.display ||
       "(the model returned nothing on the second pass)";
     card.answer.textContent = answer;
+    announce(`${call.name} ran. ${answer}`);
     card.stage("llm2", "done", `Qwen ${timings.llm2} ms`);
     readout(card, [
       audio && ["heard", `${seconds.toFixed(1)} s`],
@@ -809,15 +892,23 @@ for (const b of $("examples").querySelectorAll("button")) {
 }
 
 $("runClip").addEventListener("click", async () => {
-  if (busy) return;
-  $("runClip").disabled = true;
+  if (busy || clipPreparing) return;
+  // Decoding is async. Without reserving the turn first, another command could start meanwhile and
+  // the clip's own runTurn would then hit `busy` and vanish silently, with no card and no error.
+  clipPreparing = true;
+  updateControls();
+  setPhase("decoding clip", "1");
   try {
     const { pcm } = await urlToMono16k("../../whisper-speech-to-text/jfk.wav");
+    clipPreparing = false;
+    updateControls();
     await runTurn({ audio: pcm, seconds: pcm.length / 16000, source: "clip" });
   } catch (err) {
     $("status").textContent = `Couldn't decode the bundled clip: ${err.message}`;
     $("status").classList.add("err");
   } finally {
+    clipPreparing = false;
+    setPhase(listening ? "listening" : "idle", listening ? "1" : "0");
     updateControls();
   }
 });

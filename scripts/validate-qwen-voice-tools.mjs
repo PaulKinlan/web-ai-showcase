@@ -75,6 +75,24 @@ throws("rejects a cross-dimension convert", () => convert(1, "km", "kg"));
 throws("rejects an unknown unit", () => convert(1, "furlong", "m"));
 throws("rejects a non-number value", () => convert("banana", "m", "ft"));
 
+// Regression (PR #3 Codex review round 2): "pint" and "gallon" mean different volumes in the US and
+// the UK. Bare names resolve to US, but the answer must NAME the system so it can never quietly
+// answer in the wrong one, and explicit imperial names must be honoured.
+near("2 litres → pints defaults to US", convert(2, "litres", "pints").value, 4.226753, 1e-5);
+check("a bare pint names its system", convert(2, "litres", "pints").system === "US");
+check("a bare pint is labelled in the result", convert(2, "litres", "pints").to === "US pints", convert(2, "litres", "pints").to);
+near("imperial pints are a different number", convert(2, "litres", "imperial pints").value, 3.519508, 1e-5);
+near('"uk pints" is the same as imperial', convert(2, "litres", "uk pints").value, 3.519508, 1e-5);
+near("hyphenated us-gallon still parses", convert(1, "us-gallon", "litres").value, 3.785412, 1e-5);
+near("imperial gallons differ from US", convert(1, "imperial gallons", "litres").value, 4.54609, 1e-5);
+check(
+  "an imperial answer is labelled imperial",
+  convert(2, "litres", "imperial pints").system === "imperial",
+);
+check("non-volume conversions carry no system label", convert(1, "km", "miles").system === undefined);
+const pintOut = runTool({ name: "convert_units", arguments: { value: 2, from: "litres", to: "pints" } }, {});
+check("the displayed conversion names the system", /US pints/.test(pintOut.display), pintOut.display);
+
 console.log("— tool-call parsing —");
 const canonical = '<tool_call>\n{"name": "get_time", "arguments": {"timezone": "Asia/Tokyo"}}\n</tool_call>';
 check("canonical <tool_call>", JSON.stringify(parseToolCalls(canonical)) ===

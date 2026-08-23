@@ -70,6 +70,23 @@ export class VadEngine {
     });
   }
 
+  /**
+   * Reject everything in flight, then terminate the worker. Worker.terminate() fires no error event,
+   * so without this an awaited load()/run() would hang forever. The engine is NOT reusable
+   * afterwards — construct a new one.
+   */
+  dispose(reason = "Engine disposed") {
+    this.ready = false;
+    const err = new Error(reason);
+    for (const w of this._loadWaiters) w.reject(err);
+    this._loadWaiters = [];
+    for (const [, pending] of this._pending) pending.reject(err);
+    this._pending.clear();
+    try {
+      this.worker.terminate();
+    } catch { /* already gone */ }
+  }
+
   /** Analyse a whole 16 kHz mono clip. Returns { probs, frameSec, segments, ms, durationS, speechRatio, device }. */
   run(pcm, opts) {
     const id = ++this._id;

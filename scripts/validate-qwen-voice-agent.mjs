@@ -151,7 +151,48 @@ try {
     );
 
     check(`${name}: the validator hook is present on localhost`, await evaluate(sessionId, `!!globalThis.__voiceAgent`));
+
+    // ---- readiness gate, BEFORE anything is marked ready ----
+    // Regression (PR #3 Codex review round 2): the text input stayed enabled while its button was
+    // disabled, so Enter reached runTurn and the worker's ensureLoaded() started a 483 MB download
+    // outside the loader's explicit Download action.
+    check(
+      `${name}: the command input is disabled while Qwen is absent`,
+      await evaluate(sessionId, `document.getElementById("typedCmd").disabled`),
+    );
+    await evaluate(sessionId, `(() => {
+      const el = document.getElementById("typedCmd");
+      el.value = "what time is it in Tokyo?";
+      el.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      return true;
+    })()`);
+    await new Promise((r) => setTimeout(r, 800));
+    check(
+      `${name}: Enter cannot start a turn while Qwen is absent`,
+      (await evaluate(sessionId, `document.querySelectorAll("#turns .turn").length`)) === 0,
+    );
+    check(
+      `${name}: refusing says the model must be downloaded first`,
+      /not on this device yet/i.test(await evaluate(sessionId, `document.getElementById("status").textContent`)),
+      await evaluate(sessionId, `document.getElementById("status").textContent`),
+    );
+    check(
+      `${name}: the refusal did not start a download`,
+      (await evaluate(sessionId, `[...document.querySelectorAll(".model-loader")].map(l=>l.dataset.state).join(",")`))
+        .split(",").every((st) => st !== "downloading"),
+    );
+    check(
+      `${name}: an answer live region exists for assistive tech`,
+      await evaluate(sessionId, `document.getElementById("announcer")?.getAttribute("aria-live") === "polite"`),
+    );
     check(`${name}: six tools advertised`, (await evaluate(sessionId, `document.querySelectorAll("#toollist li").length`)) === 6);
+    // The repo rule is that a multi-model page must run every advertised stage or stay explicitly
+    // unverified and unpublished. Nothing here has run end to end, so the page must say so and the
+    // catalogue must not link it.
+    check(
+      `${name}: the page declares itself unverified`,
+      /not yet been run end to end/i.test(await evaluate(sessionId, `document.getElementById("content").innerText`)),
+    );
 
     // ---- turn 1: a real tool call that changes page state ----
     await evaluate(sessionId, stubEngines(
@@ -253,7 +294,22 @@ try {
       (await evaluate(sessionId, `document.querySelector("#loader-llm .model-loader").dataset.state`)) !== "downloading",
     );
 
-    check(`${name}: five turns are logged`, (await evaluate(sessionId, `document.querySelectorAll("#turns .turn").length`)) === 5);
+    // ---- a non-Latin transcript is speech ----
+    // Regression (PR #3 Codex review round 2): the /[a-z0-9]/ test discarded Arabic, Chinese, Greek
+    // and Cyrillic transcripts as "heard no words", though Whisper is multilingual and the page
+    // claims no English-only restriction.
+    await evaluate(sessionId, stubEngines(
+      "東京は何時ですか",
+      '<tool_call>{"name":"get_time","arguments":{"timezone":"Asia/Tokyo"}}</tool_call>',
+      "東京の現在時刻です。",
+    ));
+    await evaluate(sessionId, `globalThis.__voiceAgent.runTurn({ audio: new Float32Array(16000), seconds: 1, source: "mic" })`);
+    await waitFor(sessionId, `!globalThis.__voiceAgent.state().busy`, 20_000, "turn 6");
+    const t6 = await evaluate(sessionId, turnSnapshot);
+    check(`${name}: a Japanese transcript is not discarded`, t6.heard.includes("東京"), t6.heard);
+    check(`${name}: a non-Latin turn still reaches the tool`, t6.nodes.includes("tool:done"), t6.nodes.join(" "));
+
+    check(`${name}: six turns are logged`, (await evaluate(sessionId, `document.querySelectorAll("#turns .turn").length`)) === 6);
     check(`${name}: still no console errors after four turns`, page.errors.length === 0, page.errors.join(" | "));
 
     await closePage(cdp, page.targetId);

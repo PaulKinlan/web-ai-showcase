@@ -129,6 +129,20 @@ export class QwenEngine {
   stop() {
     this.worker.postMessage({ type: "stop" });
   }
+
+  /**
+   * Reject everything in flight, then terminate the worker. Worker.terminate() fires no error event,
+   * so without this an awaited load()/chat() would hang forever and leave the caller stuck "busy".
+   * The engine is NOT reusable afterwards — construct a new one.
+   */
+  dispose(reason = "Engine disposed") {
+    this.ready = false;
+    this.modelId = null;
+    this._rejectAll(new Error(reason));
+    try {
+      this.worker.terminate();
+    } catch { /* already gone */ }
+  }
 }
 
 /** Probe WebGPU on the main thread too, for instant UI gating before we ever load. */
