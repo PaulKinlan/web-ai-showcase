@@ -1,23 +1,25 @@
 #!/usr/bin/env node
-// Unit tests for the voice-agent tool layer (models/qwen-tiny-llm/multi-model/tools.js).
+// Unit tests for the Ultravox tool layer (models/ultravox-audio-llm/tools.js).
 //
 // These are the parts that must be right no matter what the model says: the arithmetic evaluator
 // (which parses untrusted model output and must NEVER reach eval), the unit table, and the
 // <tool_call> parser that has to cope with a 0.5B model's near-miss formatting.
 //
-// Pure Node, no browser, no network. Run: node scripts/validate-qwen-voice-tools.mjs
+// Pure Node, no browser, no network. Run: node scripts/validate-ultravox-tools.mjs
 
 import {
+  AUDIO_PLACEHOLDER,
   convert,
   evaluateExpression,
   MAX_NOTE_CHARS,
   parseToolCalls,
   runTool,
   stripToolCalls,
+  SYSTEM_PROMPT,
   TOOL_NAMES,
   TOOL_SCHEMAS,
   toolMessageContent,
-} from "../models/qwen-tiny-llm/multi-model/tools.js";
+} from "../models/ultravox-audio-llm/tools.js";
 
 let checks = 0;
 let failed = 0;
@@ -132,6 +134,40 @@ check(
 check(
   "stripToolCalls leaves the prose",
   stripToolCalls("Let me check.\n" + canonical) === "Let me check.",
+);
+
+// Llama-3.2 (Ultravox's backbone) does not use Qwen's <tool_call> wrapper — it emits a bare object,
+// often behind a <|python_tag|> marker, and names the arguments "parameters".
+check(
+  "llama bare {name, parameters}",
+  parseToolCalls('{"name": "get_time", "parameters": {"timezone": "Asia/Tokyo"}}')[0]?.arguments.timezone === "Asia/Tokyo",
+);
+check(
+  "llama <|python_tag|> prefix",
+  parseToolCalls('<|python_tag|>{"name": "calculate", "parameters": {"expression": "2+2"}}')[0]?.name === "calculate",
+);
+check(
+  "python_tag with trailing eom",
+  parseToolCalls('<|python_tag|>{"name":"list_notes","parameters":{}}<|eom_id|>')[0]?.name === "list_notes",
+);
+check(
+  "prose before a bare call still parses",
+  parseToolCalls('Sure, let me check.\n{"name": "list_notes", "parameters": {}}')[0]?.name === "list_notes",
+);
+check(
+  "stripToolCalls removes a bare llama call",
+  stripToolCalls('{"name": "list_notes", "parameters": {}}') === "",
+  JSON.stringify(stripToolCalls('{"name": "list_notes", "parameters": {}}')),
+);
+check(
+  "stripToolCalls removes the python_tag marker",
+  !/python_tag/.test(stripToolCalls('<|python_tag|>{"name":"list_notes","parameters":{}}')),
+);
+check("the audio placeholder is the one the processor expects", AUDIO_PLACEHOLDER === "<|audio|>", AUDIO_PLACEHOLDER);
+check(
+  "the system prompt does not claim a transcript",
+  !/transcript/i.test(SYSTEM_PROMPT),
+  SYSTEM_PROMPT,
 );
 
 console.log("— executors —");

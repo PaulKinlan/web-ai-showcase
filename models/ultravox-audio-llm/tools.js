@@ -1,14 +1,20 @@
-// The tool layer for the voice-agent demo: schemas the Qwen chat template understands, local
+// The tool layer for the Ultravox demo: schemas the Llama-3.2 chat template understands, local
 // executors that really change page state, a no-eval arithmetic evaluator, and a parser for the
-// <tool_call> blocks Qwen2.5 emits.
+// function-call JSON the model emits.
+//
+// Llama-3.2 (Ultravox's language backbone) does NOT use Qwen's <tool_call> wrapper. Its template
+// asks for a bare object {"name": ..., "parameters": {...}}, optionally prefixed with the
+// <|python_tag|> special token. The parser below accepts both, plus the fenced/near-miss shapes a
+// 1B model produces in practice.
 //
 // Nothing here touches the network or the DOM. Executors receive a `ctx` bag supplied by the page,
-// so this module stays pure and unit-testable in Node (scripts/validate-qwen-voice-tools.mjs).
+// so this module stays pure and unit-testable in Node (scripts/validate-ultravox-tools.mjs).
 
 /**
- * Tool schemas in the OpenAI-function shape the Qwen2.5 chat template serialises into its
- * <tools></tools> block. Keep the set SMALL and the descriptions blunt — a 0.5B model picks better
- * from six sharp tools than from twenty vague ones.
+ * Tool schemas in the OpenAI-function shape the Llama-3.2 chat template serialises into the first
+ * user turn. Keep the set SMALL and the descriptions blunt — a 1B model picks better from six sharp
+ * tools than from twenty vague ones. Descriptions are read aloud back to the user by the model, so
+ * they must describe what the tool ACTUALLY does.
  */
 export const TOOL_SCHEMAS = [
   {
@@ -374,10 +380,11 @@ function firstObject(text, from = 0) {
 }
 
 /**
- * Extract tool calls from raw model output. Qwen2.5 is *supposed* to emit
- * `<tool_call>{"name":…,"arguments":{…}}</tool_call>`, and a 0.5B model often nearly does — so we
- * also accept a fenced ```json block or a bare object, as long as it has a name we published.
- * Returns [] when the model answered directly; the page reports that honestly rather than retrying.
+ * Extract tool calls from raw model output. Llama-3.2 is *supposed* to emit a bare
+ * `{"name": …, "parameters": {…}}` object (optionally after `<|python_tag|>`), and a 1B model often
+ * nearly does — so we also accept Qwen-style <tool_call> wrappers and fenced ```json blocks, as long
+ * as the name is one we published. Returns [] when the model answered directly; the page reports
+ * that honestly rather than retrying until it looks like tool use worked.
  */
 export function parseToolCalls(text, names = TOOL_NAMES) {
   const out = [];
@@ -399,7 +406,8 @@ export function parseToolCalls(text, names = TOOL_NAMES) {
     out.push({ name, arguments: args });
   };
 
-  const src = String(text ?? "");
+  // Llama emits the call after a <|python_tag|> marker when Environment: ipython is set.
+  const src = String(text ?? "").replace(/<\|python_tag\|>/g, " ");
   // 1. The canonical <tool_call> blocks (closing tag optional — small models truncate it).
   const tagged = /<tool_call>([\s\S]*?)(?:<\/tool_call>|$)/g;
   let m;
@@ -431,8 +439,11 @@ export function parseToolCalls(text, names = TOOL_NAMES) {
 /** Strip tool-call markup so what's left is the model's prose, if any. */
 export function stripToolCalls(text) {
   return String(text ?? "")
+    .replace(/<\|python_tag\|>/g, "")
+    .replace(/<\|eom_id\|>|<\|eot_id\|>/g, "")
     .replace(/<tool_call>[\s\S]*?(?:<\/tool_call>|$)/g, "")
     .replace(/```(?:json|tool_call)?[\s\S]*?```/g, "")
+    .replace(/^\s*\{\s*"name"\s*:[\s\S]*\}\s*$/, "")
     .trim();
 }
 
@@ -547,9 +558,15 @@ export function toolMessageContent(outcome) {
   return JSON.stringify(outcome.ok ? outcome.result : { error: outcome.error });
 }
 
-/** The system prompt. Deliberately terse: a 0.5B model follows short rules far better than long ones. */
+/**
+ * The system prompt. Deliberately terse: a 1B model follows short rules far better than long ones.
+ * Note what it does NOT say — there is no mention of a transcript, because there isn't one. The
+ * user's audio reaches the model as embeddings, so it hears the recording rather than reading it.
+ */
 export const SYSTEM_PROMPT =
-  "You are a voice assistant running entirely in the user's browser. The user speaks; their words " +
-  "reach you as a transcript, so expect the odd mis-heard word. When a tool can answer, call exactly " +
-  "one tool. When you get a tool result, reply with one short spoken-style sentence stating the " +
-  "answer. Never invent a tool result.";
+  "You are a voice assistant running entirely in the user's browser. You hear the user's voice " +
+  "directly. When a tool can answer, call exactly one tool. When you get a tool result, reply with " +
+  "one short spoken-style sentence stating the answer. Never invent a tool result.";
+
+/** The placeholder the Ultravox processor replaces with the audio embedding frames. */
+export const AUDIO_PLACEHOLDER = "<|audio|>";
