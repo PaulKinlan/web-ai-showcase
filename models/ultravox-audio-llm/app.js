@@ -343,6 +343,10 @@ function drawMeter() {
 }
 addEventListener("resize", drawMeter);
 
+function micNote(text) {
+  $("micNote").textContent = text;
+}
+
 function setPhase(text, kind = "0") {
   const el = $("phase");
   el.textContent = text;
@@ -376,6 +380,15 @@ let utterance = [];
 let utterLen = 0;
 const preroll = [];
 let prerollLen = 0;
+
+// Set while a turn is generating, because capture is NOT collecting then. Resuming the moment the
+// turn ends would take whatever the visitor happens to be saying mid-sentence and endpoint the TAIL
+// of it as a complete command — "…for five minutes" arriving as the whole request, which is exactly
+// the sort of half-heard instruction that could start the wrong timer. Cleared only after a real
+// silence gap proves we are at a boundary again.
+let awaitingResync = false;
+let resyncSilent = 0;
+const RESYNC_FRAMES = Math.ceil(HANG_SEC / FRAME_SEC);
 
 function resetEndpointer() {
   inSpeech = false;
@@ -420,7 +433,28 @@ function onVadStream(msg) {
     for (let i = 0; i < frame.length; i++) sumSq += frame[i] * frame[i];
     pushFrame(Math.sqrt(sumSq / Math.max(1, frame.length)), p[f]);
 
-    if (busy) continue;
+    if (busy) {
+      // Not collecting: the answer is still generating. Remember that the stream has a hole in it.
+      if (!awaitingResync) {
+        awaitingResync = true;
+        resyncSilent = 0;
+        resetEndpointer();
+        micNote("Still answering — speech during this gap isn't collected. Wait for the answer.");
+      }
+      continue;
+    }
+    if (awaitingResync) {
+      // Wait for a genuine pause before trusting the stream again, so a sentence that began during
+      // the gap is never mistaken for a complete command.
+      resyncSilent = p[f] < STOP_PROB ? resyncSilent + 1 : 0;
+      if (resyncSilent < RESYNC_FRAMES) continue;
+      awaitingResync = false;
+      resyncSilent = 0;
+      resetEndpointer();
+      micNote("Mic is open. Speak, then pause.");
+      setPhase("listening", "1");
+      continue;
+    }
 
     if (!inSpeech) {
       pushPreroll(frame.slice());
@@ -580,6 +614,8 @@ async function beginListening() {
 
 function stopListening() {
   listening = false;
+  awaitingResync = false;
+  resyncSilent = 0;
   try {
     mic?.stop();
   } catch { /* already gone */ }
@@ -854,10 +890,25 @@ async function runTurn({ audio, seconds = 0, voicedSec = null, prompt = null, tr
     // A REFUSED tool carries `error`, not `display` — falling back to display rendered the literal
     // string "undefined" and announced it, while marking the stage done.
     const fallback = outcome.ok ? outcome.display : outcome.error;
-    const answer = stripToolCalls(second.text).trim() || fallback || "";
-    if (answer) {
-      card.answer.textContent = answer;
+    const generated = stripToolCalls(second.text).trim();
+    const answer = generated || fallback || "";
+    if (generated) {
+      card.answer.textContent = generated;
       card.stage("answer", "done", `${second.genMs} ms`);
+    } else if (fallback) {
+      // The model said nothing on the second pass. The tool's own line still answers the question,
+      // so it is worth showing — but marking the stage "done" and presenting it as the reply would
+      // be a generation the model never produced. This page's whole claim is that what you read is
+      // what the model said, so the fallback is shown and LABELLED as the tool's own output.
+      card.answer.textContent = fallback;
+      card.answer.dataset.source = "tool";
+      card.stage("answer", "fail", "no reply — showing the tool result");
+      const note = document.createElement("p");
+      note.className = "status err";
+      note.textContent = outcome.ok
+        ? "Ultravox produced no reply after the tool ran, so the line above is the tool's own output, not the model's words."
+        : "Ultravox produced no reply, so the line above is why the tool was refused, not the model's words.";
+      card.body.append(note);
     } else {
       card.stage("answer", "fail", "no output");
       const p = document.createElement("p");
@@ -866,8 +917,10 @@ async function runTurn({ audio, seconds = 0, voicedSec = null, prompt = null, tr
       card.body.append(p);
     }
     announce(
-      answer
-        ? (outcome.ok ? `${call.name} ran. ${answer}` : `${call.name} was not run. ${answer}`)
+      generated
+        ? (outcome.ok ? `${call.name} ran. ${generated}` : `${call.name} was not run. ${generated}`)
+        : answer
+        ? `${call.name} ${outcome.ok ? "ran" : "was not run"}, but the model produced no reply. The tool reported: ${answer}`
         : "The model produced no answer after the tool step.",
     );
     readout(card, [
@@ -963,6 +1016,14 @@ if (isLocalHost()) {
     // microphone or a permission prompt, which it has neither of.
     captureGeneration: () => captureGeneration,
     releaseLLM: () => resetEngine("llm", "Released by the validator"),
+    // Feed the endpointer real VAD frames. This drives the SAME code path the worker drives — no
+    // state is spoofed, only the speech probabilities the model would have returned — so the
+    // endpointer and its post-busy resync gate can be tested without a microphone.
+    feedVad: (probs) => {
+      pending.push(new Float32Array(probs.length * 512));
+      onVadStream({ probs: Float32Array.from(probs) });
+    },
+    endpointer: () => ({ inSpeech, awaitingResync, utterLen, voicedFrames, pending: pending.length }),
     markReady: (which) => {
       ready[which] = true;
       reportReadiness();

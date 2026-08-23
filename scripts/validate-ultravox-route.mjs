@@ -56,6 +56,14 @@ async function evaluate(sessionId, expression, timeoutMs = 30_000) {
   return result?.value;
 }
 
+// announce() clears the live region and re-fills it on the next frame, so reading it the instant a
+// turn ends can catch the empty gap. Waiting for non-empty text also stops these assertions passing
+// vacuously — a `!/undefined/` check is trivially true of "".
+async function announcement(sessionId) {
+  await waitFor(sessionId, `document.getElementById("announcer").textContent.trim().length > 0`, 5000, "an announcement");
+  return await evaluate(sessionId, `document.getElementById("announcer").textContent`);
+}
+
 async function waitFor(sessionId, expression, timeoutMs, label) {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
@@ -227,7 +235,7 @@ try {
     await waitFor(sessionId, `!globalThis.__ultravox.state().busy`, 20_000, "turn 4");
     const t4 = await evaluate(sessionId, turnSnapshot);
     check(`${name}: a rejected tool is marked failed`, t4.nodes.includes("tool:fail"), t4.nodes.join(" "));
-    const announced = await evaluate(sessionId, `document.getElementById("announcer").textContent`);
+    const announced = await announcement(sessionId);
     check(
       `${name}: a rejected tool is NOT announced as having run`,
       /was not run/i.test(announced) && !/get_time ran/i.test(announced),
@@ -247,8 +255,38 @@ try {
       t5.answer.length > 0 || t5.nodes.includes("answer:fail"),
       `${t5.answer} | ${t5.nodes.join(" ")}`,
     );
-    const ann5 = await evaluate(sessionId, `document.getElementById("announcer").textContent`);
+    const ann5 = await announcement(sessionId);
     check(`${name}: and never announces "undefined"`, !/undefined/.test(ann5), ann5);
+
+    // ---- an empty reply after a SUCCESSFUL tool must not be dressed up as the model's answer ----
+    // Regression (PR #3 Codex round 10): every successful tool supplies a non-empty display line, so
+    // an empty second generation silently became "answer: done" showing text the model never
+    // produced. The tool result is still worth showing — it just must not be presented as the reply.
+    await evaluate(sessionId, stubEngine('{"name":"calculate","parameters":{"expression":"6 * 7"}}', ""));
+    await evaluate(sessionId, `globalThis.__ultravox.runTurn({ audio: new Float32Array(16000), seconds: 1, source: "clip" })`);
+    await waitFor(sessionId, `!globalThis.__ultravox.state().busy`, 20_000, "empty answer after a successful tool");
+    const tEmpty = await evaluate(sessionId, turnSnapshot);
+    const emptySource = await evaluate(
+      sessionId,
+      `document.querySelector("#turns .turn [data-role=answer]")?.dataset.source ?? ""`,
+    );
+    check(
+      `${name}: an empty reply after a SUCCESSFUL tool is NOT marked done`,
+      tEmpty.nodes.includes("answer:fail"),
+      tEmpty.nodes.join(" "),
+    );
+    check(
+      `${name}: the tool result is labelled as the tool's output, not the model's words`,
+      emptySource === "tool" && /not the model's words/.test(tEmpty.body),
+      `${emptySource} | ${tEmpty.body.slice(0, 140)}`,
+    );
+    check(`${name}: the answer itself is still shown`, /42/.test(tEmpty.answer), tEmpty.answer);
+    const annEmpty = await announcement(sessionId);
+    check(
+      `${name}: and it is not announced as the model's reply`,
+      /no reply/i.test(annEmpty),
+      annEmpty,
+    );
 
     // ---- a multi-call reply must run NOTHING ----
     // Regression (PR #3 Codex round 9): the page took calls[0] and silently dropped the rest, so two
@@ -293,7 +331,63 @@ try {
     );
     check(`${name}: and leaves the page not listening`, cancelled.listening === false && cancelled.llmReady === false);
 
-    check(`${name}: six turns logged`, (await evaluate(sessionId, `document.querySelectorAll("#turns .turn").length`)) === 6);
+    // ---- capture must not resume mid-sentence after a busy turn ----
+    // Regression (PR #3 Codex round 10): frames arriving while a turn generated were discarded with
+    // the UI still saying "Mic is open". Speech that began during that gap resumed mid-sentence, so
+    // its TAIL could be endpointed as a whole command — "…for five minutes" arriving as the request.
+    // Driven through the real endpointer with real probabilities; only the model output is stubbed.
+    await evaluate(sessionId, `(() => {
+      const uv = globalThis.__ultravox;
+      // The release test above tore the LLM down, so re-arm it before driving another turn.
+      uv.markReady("llm");
+      uv.markReady("vad");
+      uv.engines.llm.generate = async () => {
+        await new Promise((r) => setTimeout(r, 1500));
+        return { text: "Done.", prepMs: 10, genMs: 20, promptTokens: 100, audioFrames: 8, newTokens: 3, device: "webgpu" };
+      };
+      uv.runTurn({ audio: new Float32Array(16000), seconds: 1, source: "clip" });
+      return true;
+    })()`);
+    await waitFor(sessionId, `globalThis.__ultravox.state().busy`, 5000, "the slow turn to start");
+    // Speech arriving mid-generation: recorded as a hole, never accumulated.
+    await evaluate(sessionId, `globalThis.__ultravox.feedVad(Array(10).fill(0.95))`);
+    const during = await evaluate(sessionId, `globalThis.__ultravox.endpointer()`);
+    check(
+      `${name}: speech during a busy turn is not collected`,
+      during.awaitingResync === true && during.inSpeech === false && during.utterLen === 0,
+      JSON.stringify(during),
+    );
+    check(
+      `${name}: and the mic note says so instead of "Mic is open"`,
+      /isn't collected/i.test(await evaluate(sessionId, `document.getElementById("micNote").textContent`)),
+      await evaluate(sessionId, `document.getElementById("micNote").textContent`),
+    );
+    await waitFor(sessionId, `!globalThis.__ultravox.state().busy`, 15_000, "the slow turn to finish");
+    // The visitor is still talking as the turn ends. The tail must NOT become a new utterance.
+    await evaluate(sessionId, `globalThis.__ultravox.feedVad(Array(20).fill(0.95))`);
+    const tail = await evaluate(sessionId, `globalThis.__ultravox.endpointer()`);
+    check(
+      `${name}: a sentence already in progress is NOT picked up mid-way`,
+      tail.inSpeech === false && tail.utterLen === 0 && tail.awaitingResync === true,
+      JSON.stringify(tail),
+    );
+    // A real pause re-syncs, and normal endpointing resumes from the next sentence.
+    await evaluate(sessionId, `globalThis.__ultravox.feedVad(Array(30).fill(0.02))`);
+    const synced = await evaluate(sessionId, `globalThis.__ultravox.endpointer()`);
+    check(`${name}: a genuine silence gap re-syncs capture`, synced.awaitingResync === false, JSON.stringify(synced));
+    check(
+      `${name}: and the mic note goes back to inviting speech`,
+      /Mic is open/i.test(await evaluate(sessionId, `document.getElementById("micNote").textContent`)),
+    );
+    await evaluate(sessionId, `globalThis.__ultravox.feedVad(Array(6).fill(0.95))`);
+    const resumed = await evaluate(sessionId, `globalThis.__ultravox.endpointer()`);
+    check(
+      `${name}: the NEXT sentence is collected normally`,
+      resumed.inSpeech === true && resumed.utterLen > 0,
+      JSON.stringify(resumed),
+    );
+
+    check(`${name}: eight turns logged`, (await evaluate(sessionId, `document.querySelectorAll("#turns .turn").length`)) === 8);
     check(`${name}: still no console errors`, page.errors.length === 0, page.errors.join(" | "));
     await closePage(cdp, page.targetId);
   }
