@@ -108,7 +108,15 @@ try {
   server = await startServer();
   chrome = await launchChrome({
     userDataDir: PROFILE_DIR,
-    extraArgs: [`--host-resolver-rules=MAP ${REMOTE_HOST} 127.0.0.1`],
+    extraArgs: [
+      `--host-resolver-rules=MAP ${REMOTE_HOST} 127.0.0.1`,
+      // A fake capture device, auto-granted. This is what lets the microphone path be driven for
+      // real — LiveMic, its resample, and the endpointer's overflow handling all run as written,
+      // with only the VAD transport stubbed (no model can be fetched here).
+      "--use-fake-device-for-media-stream",
+      "--use-fake-ui-for-media-stream",
+      "--autoplay-policy=no-user-gesture-required",
+    ],
   });
   cdp = new CDP(chrome.ws);
   const base = `http://127.0.0.1:${server.port}/web-ai-showcase/${ROUTE}`;
@@ -516,6 +524,105 @@ try {
       `${name}: a reply for a chunk that was never queued changes nothing`,
       JSON.stringify(orphan.before) === JSON.stringify(orphan.after),
       JSON.stringify(orphan),
+    );
+
+    // ---- a suspended audio context is a FAILED start, for every caller ----
+    // Regression (PR #3 Codex round 13): start() resolved and only recorded `suspended` as a
+    // property, so each caller had to remember to check it — and the published silero-vad/wild
+    // route did not: it showed "Live" over a context that will never deliver a frame. Driven here
+    // against the shared class with a context that refuses to resume.
+    const suspended = await evaluate(sessionId, `(async () => {
+      const { LiveMic } = await import("/web-ai-showcase/models/silero-vad/vad.js");
+      const Real = self.AudioContext;
+      class NeverResumes extends Real {
+        get state() { return "suspended"; }
+        async resume() { /* the autoplay policy wins */ }
+      }
+      self.AudioContext = NeverResumes;
+      try {
+        await new LiveMic({ onFrames() {} }).start();
+        return { outcome: "resolved" };
+      } catch (err) {
+        return { outcome: "threw", name: err.name, message: err.message };
+      } finally {
+        self.AudioContext = Real;
+      }
+    })()`, 40_000);
+    check(
+      `${name}: LiveMic.start() FAILS on a context that stays suspended`,
+      suspended.outcome === "threw",
+      JSON.stringify(suspended),
+    );
+    check(
+      `${name}: with a name callers can branch on`,
+      suspended.name === "AudioContextSuspendedError",
+      suspended.name,
+    );
+    check(
+      `${name}: and a message that tells the visitor what to do`,
+      /tap the button again/i.test(suspended.message || ""),
+      suspended.message,
+    );
+
+    // ---- VAD overflow must drain and reset the WORKER, not just forget the bookkeeping ----
+    // Regression (PR #3 Codex round 13): pending.clear() cannot unsend the stream-chunk messages
+    // already sitting on the worker's serialised tail — they keep mutating Silero's recurrent state
+    // — so accepting new audio immediately could splice the discarded command's tail into a fresh
+    // utterance. Driven with a REAL microphone (Chrome's fake capture device) through the real
+    // LiveMic and the real overflow branch; only the VAD transport is stubbed, since no model can
+    // be fetched in this container.
+    const overflow = await evaluate(sessionId, `(async () => {
+      const uv = globalThis.__ultravox;
+      uv.stopListening();
+      let sent = 0, resets = 0, releaseReset = null;
+      uv.engines.vad.streamChunk = () => ++sent;          // ids, but never any reply — the backlog grows
+      // beginListening() awaits a reset before opening the mic, so only the OVERFLOW-triggered reset
+      // (the second call) is held open; holding the first would just stall startup.
+      uv.engines.vad.streamReset = () => {
+        resets++;
+        if (resets === 1) return Promise.resolve();
+        return new Promise((r) => (releaseReset = r));
+      };
+      uv.markReady("llm"); uv.markReady("vad");
+      await uv.startListening();
+      const deadline = Date.now() + 25000;
+      while (Date.now() < deadline && !uv.endpointer().vadResetting) {
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      const atOverflow = { ...uv.endpointer(), sent, resets };
+      const sentAtOverflow = sent;
+      await new Promise((r) => setTimeout(r, 700));       // frames keep arriving from the fake mic
+      const whileResetting = { ...uv.endpointer(), sentSince: sent - sentAtOverflow };
+      releaseReset?.();
+      await new Promise((r) => setTimeout(r, 700));
+      const afterReset = { ...uv.endpointer(), sentSince: sent - sentAtOverflow };
+      uv.stopListening();
+      return { atOverflow, whileResetting, afterReset };
+    })()`, 60_000);
+    check(
+      `${name}: the real microphone path reaches the overflow branch`,
+      overflow.atOverflow?.vadResetting === true && overflow.atOverflow.sent >= 64,
+      JSON.stringify(overflow.atOverflow),
+    );
+    check(
+      `${name}: overflow requests a worker stream reset, not just a local clear`,
+      overflow.atOverflow?.resets === 2,
+      JSON.stringify(overflow.atOverflow),
+    );
+    check(
+      `${name}: NO audio is sent while the reset is queued behind the backlog`,
+      overflow.whileResetting?.sentSince === 0,
+      JSON.stringify(overflow.whileResetting),
+    );
+    check(
+      `${name}: capture resumes once the reset is acknowledged`,
+      overflow.afterReset?.sentSince > 0,
+      JSON.stringify(overflow.afterReset),
+    );
+    check(
+      `${name}: and stays quarantined until a genuine silence gap`,
+      overflow.afterReset?.awaitingResync === true,
+      JSON.stringify(overflow.afterReset),
     );
 
     check(`${name}: still no console errors`, page.errors.length === 0, page.errors.join(" | "));

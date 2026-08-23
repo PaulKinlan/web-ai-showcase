@@ -260,6 +260,19 @@ export class LiveMic {
     }
     this.suspended = this._ctx.state === "suspended";
     this.running = !this.suspended;
+    if (this.suspended) {
+      // THROW rather than resolve. Reporting this only as a property meant each caller had to
+      // remember to check it, and one published route did not: it set listening = true and showed
+      // "Live" over a context that will never deliver a frame. A start that cannot capture is a
+      // failed start, so every caller's existing error path surfaces it without having to know.
+      this.stop();
+      const err = new Error(
+        "The browser kept the audio engine suspended, so no sound reaches the page. " +
+          "Tap the button again — a direct tap usually releases it.",
+      );
+      err.name = "AudioContextSuspendedError";
+      throw err;
+    }
   }
   stop() {
     this.running = false;

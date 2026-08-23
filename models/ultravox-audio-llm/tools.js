@@ -372,12 +372,19 @@ export function convert(value, from, to) {
     if (a != null && b != null) {
       const conv = { value: (num * a) / b, from: f, to: t, dimension };
       if (dimension === "volume") {
-        const system = volumeSystem(t) ?? volumeSystem(f);
-        if (system) {
-          conv.system = system;
-          // Label the ambiguous side so the model repeats the system back to the user.
-          if (AMBIGUOUS_VOLUME.has(t)) conv.to = `${system} ${t}`;
-          if (AMBIGUOUS_VOLUME.has(f)) conv.from = `${system} ${f}`;
+        // Each side keeps its OWN system. Picking one system and stamping it on both produced a flat
+        // contradiction — "1 pint" to "imperial pint" computed with the US pint (correctly, since a
+        // bare pint is US here) and then reported "1 imperial pint = 0.832674 imperial pint", which
+        // the model would repeat to the user with complete confidence.
+        const fromSystem = volumeSystem(f);
+        const toSystem = volumeSystem(t);
+        // Label the ambiguous side so the model repeats the system back to the user.
+        if (AMBIGUOUS_VOLUME.has(f) && fromSystem) conv.from = `${fromSystem} ${f}`;
+        if (AMBIGUOUS_VOLUME.has(t) && toSystem) conv.to = `${toSystem} ${t}`;
+        if (fromSystem && toSystem) {
+          conv.system = fromSystem === toSystem ? fromSystem : `${fromSystem} → ${toSystem}`;
+        } else if (fromSystem || toSystem) {
+          conv.system = fromSystem ?? toSystem;
         }
       }
       return conv;

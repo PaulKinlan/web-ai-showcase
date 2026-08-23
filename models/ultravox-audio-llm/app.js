@@ -68,6 +68,7 @@ function resetEngine(kind, reason = "Model released") {
   if (kind === "vad") {
     vadGeneration++;
     captureGeneration++;
+    vadResetting = false;
     pending.clear();
     engines.vad.onStream = onVadStream;
     watchVadErrors();
@@ -374,6 +375,13 @@ let mic = null;
 const pending = new Map();
 const MAX_PENDING = 64;
 let feedSeq = 0; // only used by the localhost debug hook's feedVad
+// True while a post-overflow stream reset is queued behind the chunks already sitting on the
+// worker's serialised tail. Clearing `pending` forgets the bookkeeping but CANNOT unsend those
+// messages: they keep running and keep mutating Silero's recurrent state, so accepting new audio
+// immediately would splice the discarded command's tail into a fresh utterance. Frames are dropped
+// until the reset is acknowledged, which — because the reset joins the same tail — means until the
+// backlog has actually drained.
+let vadResetting = false;
 
 let inSpeech = false;
 let startRun = 0;
@@ -557,6 +565,8 @@ async function beginListening() {
       // frames would otherwise reach a fresh, loader-unready engine and streamChunk() would fetch
       // Silero again behind the visitor's back, with the loader still saying download-required.
       if (cancelled()) return;
+      // Nothing is sent while the worker is draining and resetting — see `vadResetting`.
+      if (vadResetting) return;
       if (pending.size >= MAX_PENDING) {
         // Dropping samples mid-utterance would leave a hole: later frames get appended after a
         // missing span and Ultravox would hear a SPLICED command — "set a timer for five… minutes"
@@ -569,6 +579,20 @@ async function beginListening() {
         // the very gap the UI had just said was discarded. Discard the queued work too; their replies
         // no longer match anything and are ignored on arrival.
         pending.clear();
+        // Quarantine the endpointer too: after the reset lands, capture waits for a genuine silence
+        // gap before trusting the stream, so the tail of the discarded command cannot start a turn.
+        awaitingResync = true;
+        resyncSilent = 0;
+        if (!vadResetting) {
+          vadResetting = true;
+          const gen = captureGeneration;
+          engine.streamReset()
+            .catch(() => { /* a failing VAD is reported by watchVadErrors */ })
+            .finally(() => {
+              // A reset that lands after a Release/Clear must not un-pause a stream nobody wants.
+              if (gen === captureGeneration) vadResetting = false;
+            });
+        }
         setPhase(listening ? "listening" : "idle", listening ? "1" : "0");
         $("micNote").textContent = wasCollecting
           ? "This device can't keep up — that turn was discarded rather than sent with a gap. Try again."
@@ -588,6 +612,14 @@ async function beginListening() {
       pendingMic.stop();
     } catch { /* nothing to release */ }
     if (mic === pendingMic) mic = null;
+    if (err?.name === "AudioContextSuspendedError") {
+      // start() now fails closed on a suspended context, so this is the honest report rather than a
+      // "mic is open" line over silence.
+      $("status").textContent = err.message;
+      $("status").classList.add("err");
+      $("micNote").textContent = "Audio engine suspended — capture did not start.";
+      return;
+    }
     $("micFallback").hidden = false;
     $("micNote").textContent = `Microphone unavailable (${err.name || "error"}).`;
     return;
@@ -602,20 +634,8 @@ async function beginListening() {
     $("micNote").textContent = "Listening cancelled — a model this needs was released.";
     return;
   }
-  // start() can resolve with the audio context still suspended (autoplay policy, mobile Safari), in
-  // which case no audio ever arrives. Saying "mic is open" then would be a straightforward lie.
-  if (pendingMic.suspended) {
-    try {
-      pendingMic.stop();
-    } catch { /* already gone */ }
-    if (mic === pendingMic) mic = null;
-    $("status").textContent =
-      "The browser kept the audio engine suspended, so no sound is reaching the page. " +
-      "Tap Start listening again — a direct tap usually releases it.";
-    $("status").classList.add("err");
-    $("micNote").textContent = "Audio engine suspended — capture did not start.";
-    return;
-  }
+  // A suspended audio context is now a THROWN start failure (handled in the catch above), not a
+  // silently-resolved one, so there is nothing to re-check here.
   listening = true;
   pending.clear();
   resetEndpointer();
@@ -631,6 +651,7 @@ function stopListening() {
   listening = false;
   awaitingResync = false;
   resyncSilent = 0;
+  vadResetting = false;
   try {
     mic?.stop();
   } catch { /* already gone */ }
@@ -1048,7 +1069,16 @@ if (isLocalHost()) {
       pending.set(id, { pcm: new Float32Array(probs.length * 512), busy: capturedWhileBusy });
       onVadStream({ id, probs: Float32Array.from(probs) });
     },
-    endpointer: () => ({ inSpeech, awaitingResync, utterLen, voicedFrames, pending: pending.size }),
+    endpointer: () => ({
+      inSpeech,
+      awaitingResync,
+      utterLen,
+      voicedFrames,
+      pending: pending.size,
+      vadResetting,
+    }),
+    startListening,
+    stopListening,
     markReady: (which) => {
       ready[which] = true;
       reportReadiness();

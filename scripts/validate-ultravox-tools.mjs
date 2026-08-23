@@ -402,5 +402,31 @@ console.log("— packed multi-call wrappers —");
   );
 }
 
+// Regression (PR #3 Codex round 13): one system was picked and stamped on BOTH sides, so converting
+// a bare "pint" to an "imperial pint" computed with the US pint (right) and then reported
+// "1 imperial pint = 0.832674 imperial pint" (a flat contradiction the model would repeat).
+console.log("— each volume side keeps its own system —");
+{
+  const mixed = convert(1, "pint", "imperial pint");
+  near("a bare pint converts as a US pint", mixed.value, 0.8326742);
+  check("the source is labelled US", mixed.from === "US pint", mixed.from);
+  check("the target stays imperial", mixed.to === "imperial pint", mixed.to);
+  check("and the two are never the same label", mixed.from !== mixed.to, `${mixed.from} / ${mixed.to}`);
+  check("the reported system names both", /US/.test(mixed.system) && /imperial/.test(mixed.system), mixed.system);
+
+  const back = convert(1, "imperial pint", "pint");
+  near("the reverse direction agrees", back.value, 1.2009499);
+  check("with the sides swapped", back.from === "imperial pint" && back.to === "US pint", `${back.from} / ${back.to}`);
+
+  // The ordinary cases must be untouched: one system, one label.
+  const litres = convert(2, "litres", "pints");
+  near("litres to pints is unchanged", litres.value, 4.2267528);
+  check("and reports a single system", litres.system === "US" && litres.to === "US pints", `${litres.system} ${litres.to}`);
+  const gal = convert(1, "uk gallon", "us gallon");
+  near("explicit uk to us gallon", gal.value, 1.2009499);
+  check("keeps both explicit labels as given", gal.from === "uk gallon" && gal.to === "us gallon", `${gal.from} / ${gal.to}`);
+  check("a non-volume conversion carries no system", convert(1, "km", "miles").system === undefined);
+}
+
 console.log(`\n${checks - failed}/${checks} checks passed`);
 process.exit(failed ? 1 : 0);
