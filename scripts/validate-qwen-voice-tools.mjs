@@ -10,10 +10,12 @@
 import {
   convert,
   evaluateExpression,
+  MAX_NOTE_CHARS,
   parseToolCalls,
   runTool,
   stripToolCalls,
   TOOL_NAMES,
+  TOOL_SCHEMAS,
   toolMessageContent,
 } from "../models/qwen-tiny-llm/multi-model/tools.js";
 
@@ -135,6 +137,32 @@ check("unknown tool is reported, not thrown", runTool({ name: "nope", arguments:
 check("tool message content is JSON", JSON.parse(toolMessageContent(calcOut)).value === 144);
 check("error outcomes serialise an error field", "error" in JSON.parse(toolMessageContent(runTool({ name: "nope" }, ctx))));
 check("six tools published", TOOL_NAMES.length === 6, TOOL_NAMES.join(","));
+
+// Regression (PR #3 review): a note longer than the cap was stored truncated but reported back to
+// the model in full, so a follow-up list_notes contradicted the confirmation the model had just
+// given. What is stored and what is reported must be the same string.
+const longNotes = [];
+const longCtx = { notes: longNotes };
+const long = "x".repeat(MAX_NOTE_CHARS + 50);
+const longOut = runTool({ name: "add_note", arguments: { text: long } }, longCtx);
+check("an over-long note is stored truncated", longNotes[0].length === MAX_NOTE_CHARS, String(longNotes[0].length));
+check(
+  "the truncated note is what the model is told",
+  longOut.result.note === longNotes[0],
+  `reported ${longOut.result.note.length} chars, stored ${longNotes[0].length}`,
+);
+check("truncation is flagged to the model", longOut.result.truncated === true);
+check(
+  "list_notes agrees with what add_note reported",
+  runTool({ name: "list_notes", arguments: {} }, longCtx).result.notes[0] === longOut.result.note,
+);
+check("a short note is not marked truncated", runTool({ name: "add_note", arguments: { text: "milk" } }, longCtx).result.truncated === false);
+
+// Regression (PR #3 review): the schema described a ring the demo never plays. Tool descriptions are
+// repeated to the user by the model, so a false one becomes a false promise.
+const timerDesc = TOOL_SCHEMAS.find((t) => t.function.name === "start_timer").function.description;
+check("start_timer does not promise a sound it never makes", !/\bring/i.test(timerDesc), timerDesc);
+check("start_timer says what it actually does", /counts down|makes no sound/i.test(timerDesc), timerDesc);
 
 console.log(`\n${checks - failed}/${checks} checks passed`);
 process.exit(failed ? 1 : 0);

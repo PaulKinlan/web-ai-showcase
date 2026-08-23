@@ -32,6 +32,7 @@ import {
 } from "./browser.mjs";
 
 const ROUTE = "models/qwen-tiny-llm/multi-model/";
+const REMOTE_HOST = "not-localhost.test"; // resolved to loopback by --host-resolver-rules
 const PROFILE_DIR = mkdtempSync(join(tmpdir(), "voice-agent-"));
 let checks = 0;
 let failed = 0;
@@ -103,7 +104,12 @@ const turnSnapshot = `
 
 try {
   server = await startServer();
-  chrome = await launchChrome({ userDataDir: PROFILE_DIR });
+  // MAP a non-local hostname onto the loopback server so the published-origin behaviour of the
+  // debug hook can be checked for real, rather than asserted from the source.
+  chrome = await launchChrome({
+    userDataDir: PROFILE_DIR,
+    extraArgs: [`--host-resolver-rules=MAP ${REMOTE_HOST} 127.0.0.1`],
+  });
   cdp = new CDP(chrome.ws);
   const base = `http://127.0.0.1:${server.port}/web-ai-showcase/${ROUTE}`;
 
@@ -144,7 +150,7 @@ try {
       loaders.join(", "),
     );
 
-    check(`${name}: the validator hook is present`, await evaluate(sessionId, `!!globalThis.__voiceAgent`));
+    check(`${name}: the validator hook is present on localhost`, await evaluate(sessionId, `!!globalThis.__voiceAgent`));
     check(`${name}: six tools advertised`, (await evaluate(sessionId, `document.querySelectorAll("#toollist li").length`)) === 6);
 
     // ---- turn 1: a real tool call that changes page state ----
@@ -205,6 +211,33 @@ try {
 
     await closePage(cdp, page.targetId);
   }
+
+  // ---- published-origin behaviour of the debug hook ----
+  // Regression (PR #3 review): __voiceAgent.markReady() flips readiness flags without a loader
+  // having finished — the exact "ready" lie the honest-state invariant exists to prevent. It must
+  // not exist off localhost. Served from the SAME loopback server under a non-local hostname.
+  console.log(`\n===== published origin (${REMOTE_HOST}) =====`);
+  const remote = await openPage(cdp, `http://${REMOTE_HOST}:${server.port}/web-ai-showcase/${ROUTE}`);
+  await setViewport(cdp, remote.sessionId, DESKTOP);
+  await new Promise((r) => setTimeout(r, 3000));
+  check(
+    "the debug hook is ABSENT on a non-localhost origin",
+    (await evaluate(remote.sessionId, `typeof globalThis.__voiceAgent`)) === "undefined",
+  );
+  check(
+    "readiness cannot be spoofed from the page on a non-localhost origin",
+    (await evaluate(remote.sessionId, `typeof globalThis.__voiceAgent?.markReady`)) === "undefined",
+  );
+  check(
+    "the page still renders normally there",
+    (await evaluate(remote.sessionId, `document.querySelectorAll("#toollist li").length`)) === 6,
+  );
+  check(
+    "loaders still reach honest states there",
+    (await evaluate(remote.sessionId, `[...document.querySelectorAll(".model-loader")].length`)) === 3,
+  );
+  check("no console errors on the published origin", remote.errors.length === 0, remote.errors.join(" | "));
+  await closePage(cdp, remote.targetId);
 } catch (err) {
   failed++;
   console.error("\nRUNNER ERROR:", err?.message ?? err);

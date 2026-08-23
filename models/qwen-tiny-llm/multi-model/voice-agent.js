@@ -759,14 +759,31 @@ drawMeter();
 
 // Lets scripts/validate-qwen-voice-agent.mjs drive a whole turn with substituted engines, so the
 // parse → real-tool-execution → render path is covered on a machine that can't download 600 MB of
-// weights. It only exposes what the page already does; it can't fabricate on-page output on its own.
-globalThis.__voiceAgent = {
-  runTurn,
-  engines,
-  toolCtx,
-  state: () => ({ ready: { ...ready }, busy, listening, currentModelId, notes: [...notes], timers: timers.length }),
-  markReady: (which) => {
-    ready[which] = true;
-    reportReadiness();
-  },
-};
+// weights.
+//
+// LOCAL ONLY. markReady() flips the readiness flags without a loader having actually finished, which
+// is exactly the "ready" lie the honest-state invariant exists to prevent — so the hook is never
+// attached on the published origin. The validator serves from 127.0.0.1, which is where it belongs.
+function isLocalHost() {
+  const h = location.hostname;
+  return h === "127.0.0.1" || h === "localhost" || h === "[::1]" || h === "" || h === "::1";
+}
+if (isLocalHost()) {
+  globalThis.__voiceAgent = {
+    runTurn,
+    engines,
+    toolCtx,
+    state: () => ({
+      ready: { ...ready },
+      busy,
+      listening,
+      currentModelId,
+      notes: [...notes],
+      timers: timers.length,
+    }),
+    markReady: (which) => {
+      ready[which] = true;
+      reportReadiness();
+    },
+  };
+}

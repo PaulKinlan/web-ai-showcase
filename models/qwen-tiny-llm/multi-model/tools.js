@@ -35,7 +35,7 @@ export const TOOL_SCHEMAS = [
     function: {
       name: "start_timer",
       description:
-        "Start a countdown timer that rings when it finishes. Use whenever the user asks to be timed or reminded in N seconds or minutes.",
+        "Start a countdown timer that counts down on the page and shows 'done' when it finishes (it makes no sound). Use whenever the user asks to be timed or reminded in N seconds or minutes.",
       parameters: {
         type: "object",
         properties: {
@@ -400,6 +400,9 @@ export function stripToolCalls(text) {
 // `role: "tool"` message, plus a human-readable `display` line for the page.
 // ---------------------------------------------------------------------------
 
+/** Notes are capped so one dictated ramble can't dominate the notepad or the model's context. */
+export const MAX_NOTE_CHARS = 200;
+
 function fmtNumber(n) {
   if (!Number.isFinite(n)) return String(n);
   const rounded = Math.round(n * 1e6) / 1e6;
@@ -452,12 +455,19 @@ export const EXECUTORS = {
   },
 
   add_note({ text } = {}, ctx = {}) {
-    const note = String(text ?? "").trim();
-    if (!note) throw new Error("nothing to note down");
+    const raw = String(text ?? "").trim();
+    if (!raw) throw new Error("nothing to note down");
+    // Truncate ONCE and report the stored value: the model must be told what the page actually
+    // holds, or a follow-up list_notes contradicts the confirmation it just gave.
+    const note = raw.slice(0, MAX_NOTE_CHARS);
+    const truncated = note.length < raw.length;
     const notes = ctx.notes ?? [];
-    notes.push(note.slice(0, 200));
+    notes.push(note);
     ctx.onNotesChanged?.(notes);
-    return { result: { saved: true, note, total: notes.length }, display: `saved "${note}" (${notes.length} total)` };
+    return {
+      result: { saved: true, note, truncated, total: notes.length },
+      display: `saved "${note}"${truncated ? ` (truncated to ${MAX_NOTE_CHARS} chars)` : ""} (${notes.length} total)`,
+    };
   },
 
   list_notes(_args, ctx = {}) {
