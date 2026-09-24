@@ -1,0 +1,419 @@
+# Model + runtime currency audit
+
+Generated 2026-09-24T09:03:28.516Z by `scripts/audit-model-currency.mjs`.
+
+- Built routes: **327** · scanned: **327** · unique HF repos health-checked: **346**
+  (324 cited · 286 weight-serving · 35 config/tokenizer-only)
+- transformers.js shared pin: **3.7.5** · latest published: **4.3.0** (recent stable: 3.8.1, 4.0.0, 4.0.1, 4.1.0, 4.2.0, 4.3.0)
+- Local version overrides: `4.2.0` on 7 route(s)
+- Checkpoint/pin findings: **46**
+
+## Findings by kind
+
+- taskDrift: 34
+- unauthorized: 7
+- gatedInformational: 4
+- noOnnx: 1
+
+## Findings
+
+- `Alibaba-NLP/gte-modernbert-base` — {"taskDrift":{"recorded":"feature-extraction","upstream":"sentence-similarity","reading":"same behaviour — demo drives the TJS feature-extraction pipeline; the card advertises retrieval"}}
+- `Alibaba-NLP/gte-reranker-modernbert-base` — {"taskDrift":{"recorded":"text-classification","upstream":"text-ranking","reading":"reranker driven as a classification pipeline (TJS has no text-ranking task)"}}
+- `Instemic/yolo-world-onnx` — {"taskDrift":{"recorded":"zero-shot-object-detection","upstream":"object-detection","reading":"demo runs the zero-shot detection pipeline (more specific than the card)"}}
+- `Neus/GFPGANv1.4` — {"taskDrift":{"recorded":"image-to-image","upstream":"text-to-image","reading":"card tag is a poor fit for this restoration model; demo uses image-to-image"}}
+- `PaddlePaddle/UVDoc_onnx` — {"taskDrift":{"recorded":"image-to-image","upstream":"image-to-text","reading":"card tag is a poor fit for this unwarping model; demo uses image-to-image"}}
+- `Snowflake/snowflake-arctic-embed-m-v2.0` — {"taskDrift":{"recorded":"feature-extraction","upstream":"sentence-similarity","reading":"same behaviour — demo drives the TJS feature-extraction pipeline; the card advertises retrieval"}}
+- `Snowflake/snowflake-arctic-embed-s` — {"taskDrift":{"recorded":"feature-extraction","upstream":"sentence-similarity","reading":"same behaviour — demo drives the TJS feature-extraction pipeline; the card advertises retrieval"}}
+- `Xenova/all-mpnet-base-v2` — {"taskDrift":{"recorded":"sentence-similarity","upstream":"feature-extraction","reading":"same behaviour — TJS pipeline name vs card tag"}}
+- `Xenova/bge-reranker-base` — {"taskDrift":{"recorded":"text-classification","upstream":"text-ranking","reading":"reranker driven as a classification pipeline (TJS has no text-ranking task)"}}
+- `Xenova/bge-small-en-v1.5` — {"taskDrift":{"recorded":"sentence-similarity","upstream":"feature-extraction","reading":"same behaviour — TJS pipeline name vs card tag"}}
+- `Xenova/clap-htsat-unfused` — {"taskDrift":{"recorded":"zero-shot-audio-classification","upstream":"feature-extraction","reading":"demo runs the zero-shot audio pipeline over the encoder"}}
+- `Xenova/hubert-base-ls960` — {"taskDrift":{"recorded":"audio-feature-extraction","upstream":"feature-extraction","reading":"same behaviour — TJS audio task name vs card tag"}}
+- `Xenova/mobilebert-uncased-mnli` — {"taskDrift":{"recorded":"text-classification","upstream":"zero-shot-classification","reading":"NLI checkpoint driven as classification"}}
+- `Xenova/wavlm-base-plus` — {"taskDrift":{"recorded":"audio-feature-extraction","upstream":"feature-extraction","reading":"same behaviour — TJS audio task name vs card tag"}}
+- `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1` — {"taskDrift":{"recorded":"text-classification","upstream":"text-ranking","reading":"reranker driven as a classification pipeline (TJS has no text-ranking task)"}}
+- `cross-encoder/stsb-TinyBERT-L4` — {"taskDrift":{"recorded":"text-classification","upstream":"text-ranking","reading":"reranker driven as a classification pipeline (TJS has no text-ranking task)"}}
+- `google/embeddinggemma-300m` — {"taskDrift":{"recorded":"feature-extraction","upstream":"sentence-similarity","reading":"same behaviour — demo drives the TJS feature-extraction pipeline; the card advertises retrieval"}}
+- `google/gemma-2-2b-it` — {"gatedInformational":"gated=manual — cited only; weights arrive via a CDN build"}
+- `google/gemma-3-1b-it` — {"gatedInformational":"gated=manual — cited only; weights arrive via a CDN build"}
+- `grazh/agentlans-flan-t5-small-simplifier-onnx-v2` — {"taskDrift":{"recorded":"text2text-generation","upstream":"text-generation","reading":"TJS seq2seq task vs card tag"}}
+- `jinaai/jina-clip-v2` — {"taskDrift":{"recorded":"zero-shot-image-classification","upstream":"feature-extraction","reading":"demo runs the zero-shot image pipeline over the encoder"}}
+- `jinaai/jina-reranker-v1-tiny-en` — {"taskDrift":{"recorded":"text-classification","upstream":"text-ranking","reading":"reranker driven as a classification pipeline (TJS has no text-ranking task)"}}
+- `jinaai/jina-reranker-v2-base-multilingual` — {"taskDrift":{"recorded":"text-classification","upstream":"text-ranking","reading":"reranker driven as a classification pipeline (TJS has no text-ranking task)"}}
+- `mediapipe/face-detector` — {"unauthorized":"HTTP 401 — private or non-HF identifier"}
+- `mediapipe/face-landmarker` — {"unauthorized":"HTTP 401 — private or non-HF identifier"}
+- `mediapipe/gesture-recognizer` — {"unauthorized":"HTTP 401 — private or non-HF identifier"}
+- `mediapipe/hand-landmarker` — {"unauthorized":"HTTP 401 — private or non-HF identifier"}
+- `mediapipe/image-segmenter` — {"unauthorized":"HTTP 401 — private or non-HF identifier"}
+- `mediapipe/interactive-segmenter` — {"unauthorized":"HTTP 401 — private or non-HF identifier"}
+- `mediapipe/pose-landmarker` — {"unauthorized":"HTTP 401 — private or non-HF identifier"}
+- `meta-llama/Llama-3.2-1B-Instruct` — {"gatedInformational":"gated=manual — cited only; weights arrive via a CDN build"}
+- `meta-llama/Llama-3.2-3B-Instruct` — {"gatedInformational":"gated=manual — cited only; weights arrive via a CDN build"}
+- `mixedbread-ai/mxbai-rerank-xsmall-v1` — {"taskDrift":{"recorded":"text-classification","upstream":"text-ranking","reading":"reranker driven as a classification pipeline (TJS has no text-ranking task)"}}
+- `naklitechie/mms-tts-as-ONNX` — {"taskDrift":{"recorded":"text-to-speech","upstream":"text-to-audio","reading":"same behaviour — TJS task name vs card tag"}}
+- `naklitechie/mms-tts-bn-ONNX` — {"taskDrift":{"recorded":"text-to-speech","upstream":"text-to-audio","reading":"same behaviour — TJS task name vs card tag"}}
+- `naklitechie/mms-tts-gu-ONNX` — {"taskDrift":{"recorded":"text-to-speech","upstream":"text-to-audio","reading":"same behaviour — TJS task name vs card tag"}}
+- `naklitechie/mms-tts-ml-ONNX` — {"taskDrift":{"recorded":"text-to-speech","upstream":"text-to-audio","reading":"same behaviour — TJS task name vs card tag"}}
+- `naklitechie/mms-tts-mr-ONNX` — {"taskDrift":{"recorded":"text-to-speech","upstream":"text-to-audio","reading":"same behaviour — TJS task name vs card tag"}}
+- `naklitechie/mms-tts-or-ONNX` — {"taskDrift":{"recorded":"text-to-speech","upstream":"text-to-audio","reading":"same behaviour — TJS task name vs card tag"}}
+- `naklitechie/mms-tts-pa-ONNX` — {"taskDrift":{"recorded":"text-to-speech","upstream":"text-to-audio","reading":"same behaviour — TJS task name vs card tag"}}
+- `naklitechie/mms-tts-ta-ONNX` — {"taskDrift":{"recorded":"text-to-speech","upstream":"text-to-audio","reading":"same behaviour — TJS task name vs card tag"}}
+- `naklitechie/mms-tts-te-ONNX` — {"taskDrift":{"recorded":"text-to-speech","upstream":"text-to-audio","reading":"same behaviour — TJS task name vs card tag"}}
+- `naklitechie/mms-tts-ur-ONNX` — {"taskDrift":{"recorded":"text-to-speech","upstream":"text-to-audio","reading":"same behaviour — TJS task name vs card tag"}}
+- `onnx-community/Phi-3.5-vision-instruct` — {"taskDrift":{"recorded":"image-text-to-text","upstream":"text-generation","reading":"card tag is a poor fit for this VLM; demo uses image-text-to-text"}}
+- `shibing624/macbert4csc-base-chinese` — {"taskDrift":{"recorded":"fill-mask","upstream":"text-generation","reading":"spell-correction checkpoint driven as fill-mask over masked spans"}}
+- `spotify/basic-pitch` — {"noOnnx":"no .onnx files in the repo"}
+
+## Catalogue dtype vs worker dtype (7)
+
+- `gemma-3-270m`: catalogue `fp32`, worker `q4f16+fp32` — catalogue-names-one-of-several
+- `bart-zero-shot`: catalogue `q4f16`, worker `q4f16+q8` — catalogue-names-one-of-several
+- `fashion-clip`: catalogue `fp32`, worker `fp32+q8` — catalogue-names-one-of-several
+- `granite`: catalogue `q8`, worker `q4f16+q8` — catalogue-names-one-of-several
+- `falcon3`: catalogue `q8`, worker `q4f16+q8` — catalogue-names-one-of-several
+- `ernie-4-5-0-3b`: catalogue `q8`, worker `q4f16+q8` — catalogue-names-one-of-several
+- `mms-tts-bengali`: catalogue `q8`, worker `fp32` — mismatch
+
+## Catalogue accuracy — cited `hfId` vs requested weights (11)
+
+- `mobilenetv3-small-100-lamb-in1k` (transformers.js): cites `timm/mobilenetv3_small_100.lamb_in1k`, requests `onnx-community/mobilenetv3_small_100.lamb_in1k` — same model — an ONNX/MLC build of the cited checkpoint
+- `stanford-deidentifier-base` (transformers.js): cites `StanfordAIMI/stanford-deidentifier-base`, requests `onnx-community/stanford-deidentifier-base-ONNX` — same model — an ONNX/MLC build of the cited checkpoint
+- `lfm2` (transformers.js): cites `LiquidAI/LFM2-350M`, requests `onnx-community/LFM2-350M-ONNX` — same model — an ONNX/MLC build of the cited checkpoint
+- `interactive-segmenter` (mediapipe): cites `mediapipe/interactive-segmenter`, requests `Xenova/mobilevit-small` — no name relation — verify the page's provenance claim
+- `manga-ocr` (raw-ort): cites `kha-white/manga-ocr-base`, requests `onnx-community/manga-ocr-base-ONNX` — same model — an ONNX/MLC build of the cited checkpoint
+- `mobilevit-small` (transformers.js): cites `apple/mobilevit-small`, requests `Xenova/mobilevit-small` — same model — an ONNX/MLC build of the cited checkpoint
+- `mobilenetv4-conv-small-e2400-r224-in1k` (transformers.js): cites `timm/mobilenetv4_conv_small.e2400_r224_in1k`, requests `onnx-community/mobilenetv4_conv_small.e2400_r224_in1k` — same model — an ONNX/MLC build of the cited checkpoint
+- `embeddinggemma` (transformers.js): cites `google/embeddinggemma-300m`, requests `onnx-community/embeddinggemma-300m-ONNX` — same model — an ONNX/MLC build of the cited checkpoint
+- `splade-sparse-retrieval` (raw-ort): cites `prithivida/Splade_PP_en_v1`, requests `devve1/Splade_PP_en_v2_onnx` — no name relation — verify the page's provenance claim
+- `speech-separation` (raw-ort): cites `JorisCos/ConvTasNet_Libri2Mix_sepclean_16k`, requests `welcomyou/convtasnet-libri2mix-16k-onnx` — no name relation — verify the page's provenance claim
+- `esm-protein` (unknown): cites `facebook/esm2_t6_8M_UR50D`, requests `Xenova/esm2_t6_8M_UR50D` — same model — an ONNX/MLC build of the cited checkpoint
+
+## Routes (runtime · requested weights)
+
+- `smolvlm-vision-language` (transformers.js, q4f16): no explicit model id in source · config-only: `HuggingFaceTB/SmolVLM-256M-Instruct`
+- `smolvlm2-video` (transformers.js, q4f16): no explicit model id in source · config-only: `HuggingFaceTB/SmolVLM2-256M-Video-Instruct`
+- `whisper-speech-to-text` (transformers.js, q8): `onnx-community/whisper-base_timestamped`
+- `kokoro-text-to-speech` (transformers.js, q8): `onnx-community/Kokoro-82M-v1.0-ONNX`
+- `speecht5-tts` (transformers.js, q8): `Xenova/speecht5_tts`
+- `qwen-tiny-llm` (transformers.js, q4f16): `onnx-community/Qwen2.5-0.5B-Instruct`
+- `glm-4` (transformers.js, q4f16): `onnx-community/glm-edge-1.5b-chat-ONNX`
+- `llama-3-2-1b-webllm` (webllm, q4f16_1): no explicit model id in source
+- `llama-3.2-webllm` (webllm, q4f16_1): no explicit model id in source
+- `gemma-2-2b-webllm` (webllm, q4f16_1): no explicit model id in source
+- `qwen3-webllm` (webllm, q4f16_1): no explicit model id in source
+- `gemma-3-webllm` (webllm, q4f16_1): no explicit model id in source
+- `gemma-3-270m` (transformers.js, fp32): `onnx-community/gemma-3-270m-it-ONNX`
+- `clip-zero-shot-image` (transformers.js, q8): `Xenova/clip-vit-base-patch16`
+- `depth-anything` (transformers.js, fp16): `onnx-community/depth-anything-v2-small`
+- `depth-pro-metric` (transformers.js, q4f16): `onnx-community/DepthPro-ONNX`
+- `rmbg-background-removal` (transformers.js, fp32): no explicit model id in source · config-only: `briaai/RMBG-1.4`
+- `ben2-background-removal` (transformers.js, fp16): no explicit model id in source · config-only: `onnx-community/BEN2-ONNX`
+- `modnet-portrait-matting` (transformers.js, fp32): no explicit model id in source · config-only: `Xenova/modnet`
+- `detr-object-detection` (transformers.js, q8): `Xenova/detr-resnet-50`
+- `rtdetr-detection` (transformers.js, q8): `onnx-community/rtdetr_r18vd`
+- `dfine-detection` (transformers.js, q8): `onnx-community/dfine_s_coco-ONNX`
+- `owlv2-zero-shot-detection` (transformers.js, q8): `Xenova/owlv2-base-patch16-ensemble`
+- `owlvit-detection` (transformers.js, q8): `Xenova/owlvit-base-patch32`
+- `grounding-dino` (transformers.js, q8): `onnx-community/grounding-dino-tiny-ONNX`
+- `swin2sr-super-resolution` (transformers.js, q8): `Xenova/swin2SR-classical-sr-x2-64`
+- `slimsam-segment-anything` (transformers.js, q8): no explicit model id in source · config-only: `Xenova/slimsam-77-uniform`
+- `sam2-segmentation` (transformers.js, fp16): `onnx-community/sam2.1-hiera-tiny-ONNX`
+- `minilm-embeddings` (transformers.js, q8): `Xenova/all-MiniLM-L6-v2`
+- `gte-embeddings` (transformers.js, q8): `Xenova/gte-small`
+- `sentiment-classifier` (transformers.js, q8): `Xenova/distilbert-base-uncased-finetuned-sst-2-english`
+- `news-topic-classification` (transformers.js, q8): `tarekziade/topic_classification`
+- `formality-detection` (transformers.js, fp32): `Deepchecks/roberta_base_formality_ranker_onnx`
+- `finbert-sentiment` (transformers.js, q8): `Xenova/finbert`
+- `distilbert-qa` (transformers.js, q8): `Xenova/distilbert-base-cased-distilled-squad`
+- `multilingual-qa` (transformers.js, q8): `onnx-community/xlm-roberta-base-finetuned-squad2-ONNX`
+- `ms-marco-reranker` (transformers.js, q8): `Xenova/ms-marco-MiniLM-L-6-v2`
+- `sts-similarity` (transformers.js, fp32): `cross-encoder/stsb-TinyBERT-L4`
+- `zero-shot-text` (transformers.js, q8): `Xenova/nli-deberta-v3-xsmall`
+- `florence2-vision` (transformers.js, fp16): no explicit model id in source · config-only: `onnx-community/Florence-2-base-ft`
+- `florence-2-large` (transformers.js, fp16): no explicit model id in source · config-only: `onnx-community/Florence-2-large`
+- `distilbart-summarization` (transformers.js, q8): `Xenova/distilbart-cnn-6-6`
+- `longt5-summarization` (transformers.js, q8): `Xenova/long-t5-tglobal-base`
+- `flan-t5-instruct` (transformers.js, q8): `Xenova/flan-t5-small`
+- `m2m100-translation` (transformers.js, q8): `Xenova/m2m100_418M`
+- `bert-fill-mask` (transformers.js, q8): `Xenova/bert-base-uncased`
+- `modernbert-fill-mask` (transformers.js, q8): `answerdotai/ModernBERT-base`
+- `bge-sentence-similarity` (transformers.js, q8): `Xenova/bge-small-en-v1.5`
+- `all-mpnet-base-v2` (transformers.js, q8): `Xenova/all-mpnet-base-v2`, `Xenova/ms-marco-MiniLM-L-6-v2`
+- `mobilenetv3-small-100-lamb-in1k` (transformers.js, fp32): `onnx-community/mobilenetv3_small_100.lamb_in1k`
+- `multilingual-e5-small` (transformers.js, q8): `Xenova/multilingual-e5-small`
+- `nomic-embeddings` (transformers.js, q8): `Xenova/nomic-embed-text-v1`
+- `gpt2-text-generation` (transformers.js, int8): `Xenova/gpt2`
+- `roberta-fill-mask` (transformers.js, q8): `Xenova/roberta-base` · config-only: `Xenova/roberta-base`
+- `qwen3-embedding-0-6b` (transformers.js, q8): `onnx-community/Qwen3-Embedding-0.6B-ONNX`
+- `distilbert-base-uncased` (transformers.js, q8): `Xenova/distilbert-base-uncased` · config-only: `Xenova/distilbert-base-uncased`
+- `nsfw-image-detection` (transformers.js, q8): `AdamCodd/vit-base-nsfw-detector`
+- `toxicity-detection` (transformers.js, q8): `Xenova/toxic-bert`
+- `multilingual-toxicity` (transformers.js, q8): `onnx-community/bert-multilingual-toxicity-classifier-ONNX`
+- `hate-speech-detection` (transformers.js, q8): `onnx-community/twitter-roberta-large-hate-latest-ONNX`
+- `offensive-language-detection` (transformers.js, q8): `onnx-community/hate_speech_en-ONNX`
+- `whisper-large-v3-turbo` (transformers.js, q4f16 (WebGPU) / q8 (WASM)): no explicit model id in source
+- `bge-reranker` (transformers.js, q8): `Xenova/bge-reranker-base`
+- `bge-reranker-v2` (transformers.js, q8): `onnx-community/bge-reranker-v2-m3-ONNX`
+- `gte-reranker-modernbert` (transformers.js, q8): `Alibaba-NLP/gte-reranker-modernbert-base`
+- `mxbai-rerank` (transformers.js, q8): `mixedbread-ai/mxbai-rerank-xsmall-v1`
+- `jina-reranker` (transformers.js, q8): `Xenova/all-MiniLM-L6-v2`, `jinaai/jina-reranker-v1-tiny-en`
+- `jina-reranker-v2` (transformers.js, q8): `jinaai/jina-reranker-v2-base-multilingual`
+- `mmarco-reranker` (transformers.js, fp32): `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1`
+- `mxbai-embed` (transformers.js, q8): `mixedbread-ai/mxbai-embed-large-v1`
+- `bart-zero-shot` (transformers.js, q4f16): `Xenova/bart-large-mnli`
+- `e5-embeddings` (transformers.js, q8): `Xenova/e5-small-v2`
+- `fashion-clip` (unknown, fp32): `Xenova/clip-vit-base-patch16`, `patrickjohncyh/fashion-clip`
+- `dinov2-image-features` (transformers.js, q8): `Xenova/dinov2-small`
+- `bio-clinicalbert` (transformers.js, q8): `onnx-community/Bio_ClinicalBERT-ONNX`
+- `tinyllama-chat` (transformers.js, q4f16): `Xenova/TinyLlama-1.1B-Chat-v1.0`
+- `nllb-200-translation` (transformers.js, q8): `Xenova/nllb-200-distilled-600M`
+- `all-distilroberta-v1` (transformers.js, fp32): `sentence-transformers/all-distilroberta-v1`
+- `moondream2-vlm` (transformers.js, q4f16): `Xenova/moondream2`
+- `fastvlm-vlm` (transformers.js, q4): `onnx-community/FastVLM-0.5B-ONNX`
+- `qwen2-vl` (transformers.js, q4f16): `onnx-community/Qwen2-VL-2B-Instruct`
+- `phi-3.5-vision` (transformers.js, q4f16): `onnx-community/Phi-3.5-vision-instruct`
+- `janus-pro` (transformers.js, q4f16): `onnx-community/Janus-Pro-1B-ONNX`
+- `paligemma` (transformers.js, q4f16): `onnx-community/paligemma2-3b-pt-224`
+- `nanollava-vlm` (transformers.js, q4f16): `Xenova/nanoLLaVA`
+- `moonshine-asr` (transformers.js, q8): `onnx-community/moonshine-base-ONNX`
+- `musicgen-text-to-audio` (transformers.js, q8): `Xenova/musicgen-small`
+- `bert-ner` (transformers.js, q8): `Xenova/bert-base-NER`
+- `biomedical-ner` (transformers.js, q8): `onnx-community/biomedical-ner-all-ONNX`
+- `japanese-xlsr-asr` (transformers.js, fp32): `FinDIT-Studio/wav2vec2-large-xlsr-53-japanese-onnx` · config-only: `jonatasgrosman/wav2vec2-large-xlsr-53-japanese`
+- `siglip-zero-shot` (transformers.js, q8): `Xenova/siglip-base-patch16-224`
+- `siglip2-zero-shot` (transformers.js, q8): `onnx-community/siglip2-base-patch16-224-ONNX`
+- `wav2vec2-asr` (transformers.js, q8): no explicit model id in source · config-only: `Xenova/wav2vec2-base-960h`
+- `stanford-deidentifier-base` (transformers.js, q8): `onnx-community/stanford-deidentifier-base-ONNX`
+- `distil-whisper-asr` (transformers.js, q8): `distil-whisper/distil-small.en`
+- `chinese-xlsr-asr` (transformers.js, q4): `onnx-community/wav2vec2-large-xlsr-53-chinese-zh-cn-ONNX`
+- `polish-voxpopuli-asr` (transformers.js, q4): `onnx-community/wav2vec2-base-10k-voxpopuli-ft-pl-ONNX`
+- `czech-voxpopuli-asr` (raw-ort, fp32): `OpenVoiceOS/wav2vec2-base-10k-voxpopuli-ft-cs-onnx`
+- `slovak-voxpopuli-asr` (raw-ort, fp32): `OpenVoiceOS/wav2vec2-base-10k-voxpopuli-ft-sk-onnx`
+- `slovenian-voxpopuli-asr` (raw-ort, fp32): `OpenVoiceOS/wav2vec2-base-10k-voxpopuli-ft-sl-onnx`
+- `german-voxpopuli-asr` (raw-ort, fp32): `OpenVoiceOS/wav2vec2-base-10k-voxpopuli-ft-de-onnx`
+- `dutch-voxpopuli-asr` (raw-ort, fp32): `OpenVoiceOS/wav2vec2-base-10k-voxpopuli-ft-nl-onnx`
+- `romanian-voxpopuli-asr` (raw-ort, fp32): `OpenVoiceOS/wav2vec2-base-10k-voxpopuli-ft-ro-onnx`
+- `hungarian-voxpopuli-asr` (raw-ort, fp32): `OpenVoiceOS/wav2vec2-base-10k-voxpopuli-ft-hu-onnx`
+- `croatian-voxpopuli-asr` (raw-ort, fp32): `OpenVoiceOS/wav2vec2-base-10k-voxpopuli-ft-hr-onnx`
+- `opus-mt-nl-en` (transformers.js, q8): `Xenova/opus-mt-nl-en`
+- `table-transformer` (transformers.js, q8): `Xenova/table-transformer-detection`, `Xenova/table-transformer-structure-recognition`
+- `clipseg-text-segmentation` (transformers.js, q8): no explicit model id in source · config-only: `Xenova/clipseg-rd64-refined`
+- `nomic-embed-vision-v1-5` (transformers.js, q8): no explicit model id in source · config-only: `nomic-ai/nomic-embed-text-v1.5`, `nomic-ai/nomic-embed-vision-v1.5`
+- `roberta-emotions` (transformers.js, q8): `SamLowe/roberta-base-go_emotions-onnx`
+- `emotion-classification` (transformers.js, q8): `onnx-community/emotion-english-distilroberta-base-ONNX`
+- `irony-detection` (transformers.js, q8): `Xenova/twitter-roberta-base-irony`
+- `clickbait-detection` (transformers.js, q8): `CoolpantsMcBadass/headline-classifier`
+- `stance-detection` (transformers.js, q8): `Factiverse/factiverse_stance_detection_ort_quantized`
+- `wav2vec2-large-xlsr-53-gender-recognition-librispeech` (transformers.js, q8): `Xenova/wav2vec2-large-xlsr-53-gender-recognition-librispeech`
+- `labse-embeddings` (transformers.js, q8): `Xenova/LaBSE`, `Xenova/nllb-200-distilled-600M`
+- `phi-3-5-mini-webllm` (webllm, q4f16_1): no explicit model id in source
+- `phi-4-webllm` (webllm, q4f16_1): no explicit model id in source
+- `yolos-detection` (transformers.js, q8): `Xenova/detr-resnet-50`, `Xenova/yolos-tiny`
+- `marianmt-translation` (transformers.js, q8): `Xenova/opus-mt-en-de`
+- `mbert-language-detection` (transformers.js, q8): `onnx-community/language_detection-ONNX`
+- `language-identification` (transformers.js, q8): `onnx-community/xlm-roberta-base-language-detection-ONNX`
+- `multilingual-sentiment` (transformers.js, q8): `onnx-community/twitter-xlm-roberta-base-sentiment-ONNX`
+- `chinese-spell-check` (transformers.js, fp32): `shibing624/macbert4csc-base-chinese`
+- `albert-fill-mask` (transformers.js, q8): `Xenova/albert-base-v2`
+- `ast-audio-classification` (transformers.js, q8): `Xenova/ast-finetuned-audioset-10-10-0.4593`
+- `silero-vad` (raw-ort, fp32): `onnx-community/silero-vad`
+- `pitch-detection` (raw-ort, fp32): `niobures/CREPE`
+- `speech-emotion-recognition` (transformers.js, q8): `onnx-community/wav2vec2-base-Speech_Emotion_Recognition-ONNX`
+- `smollm2-chat` (transformers.js, q4f16): `HuggingFaceTB/SmolLM2-360M-Instruct`
+- `smollm3` (transformers.js, q4f16): `HuggingFaceTB/SmolLM3-3B-ONNX`
+- `lfm2` (transformers.js, q4f16): `onnx-community/LFM2-350M-ONNX`
+- `deepseek-r1-webllm` (webllm, q4f16_1): no explicit model id in source
+- `stablelm-webllm` (webllm, q4f16_1): no explicit model id in source
+- `qwen25-coder-webllm` (webllm, q4f16_1): no explicit model id in source
+- `mistral-webllm` (webllm, q4f16_1): no explicit model id in source
+- `face-landmarker` (mediapipe, no dtype): no explicit model id in source
+- `hand-landmarker` (mediapipe, no dtype): no explicit model id in source
+- `pose-landmarker` (mediapipe, no dtype): no explicit model id in source
+- `gesture-recognizer` (mediapipe, no dtype): no explicit model id in source
+- `image-segmenter` (mediapipe, no dtype): no explicit model id in source
+- `interactive-segmenter` (mediapipe, float32): `Xenova/mobilevit-small`
+- `face-detector` (mediapipe, no dtype): no explicit model id in source
+- `vit-image-classification` (transformers.js, q8): `Xenova/vit-base-patch16-224`
+- `convnext-classification` (transformers.js, q8): `Xenova/convnext-tiny-224`
+- `resnet-classification` (transformers.js, q8): `Xenova/resnet-50`
+- `beit-classification` (transformers.js, q8): `Xenova/beit-base-patch16-224`
+- `mobilenet-classification` (transformers.js, fp32): `onnx-community/mobilenet_v2_1.0_224`
+- `food-classification` (transformers.js, q8): `onnx-community/swin-finetuned-food101-ONNX`
+- `document-type-classification` (transformers.js, q8): `Xenova/dit-base-finetuned-rvlcdip`
+- `vit-gpt2-captioning` (transformers.js, q8): `Xenova/vit-gpt2-image-captioning`
+- `manga-ocr` (raw-ort, uint8+q8): `onnx-community/manga-ocr-base-ONNX`
+- `trocr-ocr` (transformers.js, q8): `Xenova/trocr-small-printed`
+- `nougat-ocr` (transformers.js, q8): `Xenova/nougat-small`
+- `donut-docvqa` (transformers.js, q8): `Xenova/donut-base-finetuned-docvqa`
+- `clap-zero-shot-audio` (transformers.js, q8): `Xenova/clap-htsat-unfused`
+- `segformer-semantic` (transformers.js, q8): `Xenova/segformer-b0-finetuned-ade-512-512`
+- `mdeberta-zero-shot` (transformers.js, q8): `MoritzLaurer/mDeBERTa-v3-base-mnli-xnli`
+- `trocr-handwriting` (transformers.js, q8): `Xenova/trocr-small-handwritten`
+- `trocr-base-printed` (transformers.js, q8): `Xenova/trocr-base-printed`
+- `phishing-email-detection` (transformers.js, q8): `onnx-community/phishing-email-detection-distilbert_v2.4.1-ONNX`
+- `granite-embedding-multilingual` (transformers.js, q8): `onnx-community/granite-embedding-97m-multilingual-r2-ONNX`
+- `speaker-diarization` (transformers.js, fp32): `onnx-community/pyannote-segmentation-3.0`
+- `pos-tagging` (transformers.js, q8): `Xenova/french-camembert-postag-model`
+- `jina-embeddings` (transformers.js, q8): `Xenova/jina-embeddings-v2-base-en`
+- `code-embeddings` (transformers.js, q8): `jinaai/jina-embeddings-v2-base-code`
+- `dpt-depth` (transformers.js, fp16): `Xenova/dpt-hybrid-midas`
+- `face-parsing` (transformers.js, q8): `Xenova/face-parsing`
+- `segformer-b2-clothes` (transformers.js, q8): `Xenova/segformer_b2_clothes`
+- `multilingual-embeddings` (transformers.js, q8): `Xenova/m2m100_418M`, `Xenova/paraphrase-multilingual-MiniLM-L12-v2`
+- `bge-m3-embeddings` (transformers.js, q8): `Xenova/bge-m3`, `Xenova/m2m100_418M`
+- `arctic-embed-v2` (transformers.js, q8): `Snowflake/snowflake-arctic-embed-m-v2.0`, `Xenova/m2m100_418M`
+- `camembert-ner` (transformers.js, q8): `Xenova/camembert-ner`
+- `rtdetr-v2-r18vd` (transformers.js, q8): `onnx-community/rtdetr_v2_r18vd-ONNX`
+- `chinese-roberta-wwm-fill-mask` (transformers.js, q8): `Xenova/bert-base-chinese`, `onnx-community/chinese-roberta-wwm-ext-ONNX`
+- `mms-tts` (transformers.js, q8): `Xenova/mms-tts-ara`, `Xenova/mms-tts-deu`, `Xenova/mms-tts-eng`, `Xenova/mms-tts-fra`, `Xenova/mms-tts-hin`, `Xenova/mms-tts-kor`, `Xenova/mms-tts-por`, `Xenova/mms-tts-rus`, `Xenova/mms-tts-spa`, `Xenova/mms-tts-vie`, `Xenova/mms-tts-yor`
+- `mms-tts-german` (transformers.js, q8): `Xenova/mms-tts-deu`
+- `mms-tts-french` (transformers.js, q8): `Xenova/mms-tts-fra`
+- `mms-tts-spanish` (transformers.js, q8): `Xenova/mms-tts-spa`
+- `mms-tts-arabic` (transformers.js, q8): `Xenova/mms-tts-ara`
+- `mms-tts-vietnamese` (transformers.js, q8): `Xenova/mms-tts-vie`
+- `mms-tts-hindi` (transformers.js, q8): `Xenova/mms-tts-hin`
+- `mms-tts-tamil` (transformers.js, fp32): `naklitechie/mms-tts-ta-ONNX`
+- `mms-tts-gujarati` (transformers.js, fp32): `naklitechie/mms-tts-gu-ONNX`
+- `mms-tts-telugu` (transformers.js, fp32): `naklitechie/mms-tts-te-ONNX`
+- `mms-tts-marathi` (transformers.js, fp32): `naklitechie/mms-tts-mr-ONNX`
+- `mms-tts-punjabi` (transformers.js, fp32): `naklitechie/mms-tts-pa-ONNX`
+- `mms-tts-malayalam` (transformers.js, fp32): `naklitechie/mms-tts-ml-ONNX`
+- `mms-tts-urdu` (transformers.js, fp32): `naklitechie/mms-tts-ur-ONNX`
+- `mms-tts-odia` (transformers.js, fp32): `naklitechie/mms-tts-or-ONNX`
+- `mms-tts-assamese` (transformers.js, fp32): `naklitechie/mms-tts-as-ONNX`
+- `mms-tts-russian` (transformers.js, q8): `Xenova/mms-tts-rus`
+- `mms-tts-yoruba` (transformers.js, q8): `Xenova/mms-tts-yor`
+- `dinov2-registers` (transformers.js, q8): `onnx-community/dinov2-with-registers-small`
+- `autonlp-gibberish-detector-492513457` (unknown, fp32): `Xenova/distilbert-base-uncased-finetuned-sst-2-english`, `madhurjindal/autonlp-Gibberish-Detector-492513457` · config-only: `madhurjindal/autonlp-Gibberish-Detector-492513457`
+- `bert-base-turkish-cased-ner` (transformers.js, fp32): no explicit model id in source · config-only: `akdeniz27/bert-base-turkish-cased-ner`
+- `pii-detection-redaction` (transformers.js, q8): `phatvo/deberta_finetuned_pii-ONNX`
+- `mobilevit-small` (transformers.js, fp32): `Xenova/mobilevit-small`
+- `mobilenetv4-conv-small-e2400-r224-in1k` (transformers.js, fp32): `onnx-community/mobilenetv4_conv_small.e2400_r224_in1k`
+- `depth-anything-v2-large` (transformers.js, fp16): `onnx-community/depth-anything-v2-large`
+- `gliner-zero-shot-ner` (raw-ort, q8): `onnx-community/gliner_small-v2.1`
+- `neobert` (transformers.js, q8): `onnx-community/NeoBERT-ONNX`
+- `detr-panoptic` (transformers.js, q8): `Xenova/detr-resnet-50-panoptic`
+- `mobileclip-zero-shot` (transformers.js, fp16/q8): `Xenova/mobileclip_s0`
+- `facial-expression` (transformers.js, q8): `Xenova/facial_emotions_image_detection`
+- `spoken-language-id` (transformers.js, q8): `Xenova/mms-lid-126`
+- `yolov10-detection` (raw-ort, fp32): `onnx-community/yolov10n`
+- `xlm-roberta-fill-mask` (transformers.js, q8): `Xenova/xlm-roberta-base`
+- `camembert-fill-mask` (transformers.js, q8): `Xenova/camembert-base`, `Xenova/xlm-roberta-base`
+- `german-bert-fill-mask` (transformers.js, q8): `Xenova/bert-base-multilingual-cased`, `onnx-community/distilbert-base-german-cased-ONNX`
+- `portuguese-bert-fill-mask` (transformers.js, fp32): `Xenova/bert-base-multilingual-cased`, `luiseduardobrito/bert-base-portuguese-cased-onnx`
+- `chinese-bert-fill-mask` (transformers.js, q8): `Xenova/bert-base-chinese`
+- `outetts` (transformers.js, q8): `onnx-community/OuteTTS-0.2-500M`
+- `vitpose-pose` (transformers.js, q8): `onnx-community/vitpose-base-simple`
+- `altclip-multilingual` (transformers.js, q8): no explicit model id in source · config-only: `jinaai/jina-clip-v2`
+- `qwen2.5-0.5b-wasm` (transformers.js, q8): `onnx-community/Qwen2.5-0.5B-Instruct`
+- `byt5-byte-level` (transformers.js, q8): `onnx-community/byt5-small-ONNX`
+- `mt5-multilingual` (transformers.js, q8): `Xenova/mt5-small`
+- `ai-image-detection` (transformers.js, q8): `onnx-community/SMOGY-Ai-images-detector-ONNX`
+- `ai-text-detection` (transformers.js, q8): `onnx-community/roberta-base-openai-detector-ONNX`
+- `model2vec-static-embeddings` (transformers.js, fp32): no explicit model id in source · config-only: `minishlab/potion-base-8M`
+- `arctic-embed` (transformers.js, q8): `Snowflake/snowflake-arctic-embed-s`
+- `text-simplification` (transformers.js, q8): `grazh/agentlans-flan-t5-small-simplifier-onnx-v2`
+- `grammar-correction` (transformers.js, q8): `Xenova/grammar-synthesis-small`
+- `gte-large-embeddings` (transformers.js, q8): `Xenova/gte-large`
+- `age-estimation` (transformers.js, q8): `jdp8/vit-age-classifier`
+- `paraphrase-generation` (transformers.js, q8): `Felladrin/onnx-chatgpt_paraphraser_on_T5_base`
+- `multilingual-ner` (transformers.js, q8): `Xenova/bert-base-multilingual-cased-ner-hrl`
+- `multilingual-zero-shot` (transformers.js, q8): `MoritzLaurer/mDeBERTa-v3-base-mnli-xnli`
+- `xlmr-multilingual-ner` (transformers.js, q8): `tjruesch/xlm-roberta-base-ner-hrl-onnx`
+- `gte-modernbert-embeddings` (transformers.js, q8): `Alibaba-NLP/gte-modernbert-base`
+- `embeddinggemma` (transformers.js, q8): `onnx-community/embeddinggemma-300m-ONNX`
+- `speech-commands` (transformers.js, q8): `Xenova/ast-finetuned-speech-commands-v2`
+- `yolo11-detection` (raw-ort, fp32): `webnn/yolo11n`
+- `spam-detection` (transformers.js, q8): `onnx-community/tanaos-spam-detection-v1-ONNX`
+- `bart-large-cnn-summarization` (transformers.js, q8): `Xenova/bart-large-cnn`
+- `t5-base-text2text` (transformers.js, q8): `Xenova/t5-base`
+- `codebert-fill-mask` (transformers.js, q8): `onnx-community/CodeBERTa-small-v1-ONNX`
+- `dialogpt-conversational` (transformers.js, q8): no explicit model id in source · config-only: `onnx-community/DialoGPT-small-ONNX`
+- `mbart-translation` (transformers.js, q8): `Xenova/mbart-large-50-many-to-many-mmt`
+- `qwen2.5-vl` (transformers.js, q4f16): `onnx-community/Qwen2.5-VL-3B-Instruct-ONNX`
+- `face-embedding` (raw-ort, fp32): `astaileyyoung/facenet-onnx`
+- `text-to-sql` (transformers.js, q8): `Xenova/t5-small-awesome-text-to-sql`
+- `surface-normals` (raw-ort, q8): `onnx-community/sapiens-normal-0.3b`
+- `olmo-2-webllm` (webllm, q4f16_1): no explicit model id in source
+- `granite` (transformers.js, q8): `onnx-community/granite-3.0-2b-instruct`
+- `falcon3` (transformers.js, q8): `onnx-community/Falcon3-1B-Instruct`
+- `yolo-world` (transformers.js, fp32+fp16): `Instemic/yolo-world-onnx` · config-only: `Xenova/clip-vit-base-patch32`
+- `starcoder-fim` (transformers.js, q8): `onnx-community/tiny_starcoder_py-ONNX`
+- `headline-generation` (transformers.js, q8): `ldenoue/Title_Generation_T5Small_Model`
+- `wavlm-features` (transformers.js, q8): no explicit model id in source · config-only: `Xenova/wavlm-base-plus`
+- `hubert-features` (transformers.js, q8): no explicit model id in source · config-only: `Xenova/hubert-base-ls960`
+- `ijepa-features` (transformers.js, q8): `onnx-community/ijepa_vith14_1k`
+- `scene-text-detection` (raw-ort, fp32): `breezedeus/cnstd-ppocr-en_PP-OCRv3_det`
+- `craft-text-detection` (raw-ort, fp32): `inference4j/craft-mlt-25k`
+- `speaker-verification` (transformers.js, q8): no explicit model id in source · config-only: `Xenova/wavlm-base-plus-sv`
+- `mgp-str-ocr` (transformers.js, q8): `onnx-community/mgp-str-base`
+- `xlsr-multilingual-asr` (transformers.js, q4): `onnx-community/wav2vec2-large-xlsr-53-russian-ONNX`
+- `nuextract-extraction` (transformers.js, q4): `onnx-community/NuExtract-1.5-tiny-ONNX`
+- `spanish-sentiment` (transformers.js, q8): `Xenova/robertuito-sentiment-analysis`
+- `german-sentiment` (transformers.js, fp32): `oliverguhr/german-sentiment-bert` · config-only: `google-bert/bert-base-german-cased`
+- `metric3d-depth` (transformers.js, fp16): `onnx-community/metric3d-vit-small`
+- `french-xlsr-asr` (transformers.js, fp32): `Poulpidot/wav2vec2-large-xlsr-53-french-onnx`
+- `spanish-xlsr-asr` (transformers.js, fp32): `FinDIT-Studio/wav2vec2-large-xlsr-53-spanish-onnx` · config-only: `jonatasgrosman/wav2vec2-large-xlsr-53-spanish`
+- `korean-xlsr-asr` (transformers.js, fp32): `FinDIT-Studio/wav2vec2-large-xlsr-53-korean-onnx` · config-only: `jonatasgrosman/wav2vec2-large-xlsr-53-spanish`
+- `italian-xlsr-asr` (transformers.js, fp32): `FinDIT-Studio/wav2vec2-large-xlsr-53-italian-onnx` · config-only: `jonatasgrosman/wav2vec2-large-xlsr-53-italian`
+- `thai-xlsr-asr` (transformers.js, fp32): `BlackHand013/Wav2Vec2-large-xlsr-53-th-onnx` · config-only: `airesearch/wav2vec2-large-xlsr-53-th`
+- `finnish-voxpopuli-asr` (transformers.js, fp32): `KalleLaht/wav2vec2-large-uralic-voxpopuli-v2-finnish-ONNX` · config-only: `Finnish-NLP/wav2vec2-large-uralic-voxpopuli-v2-finnish`
+- `portuguese-xlsr-asr` (transformers.js, fp32): `FinDIT-Studio/wav2vec2-large-xlsr-53-portuguese-onnx` · config-only: `jonatasgrosman/wav2vec2-large-xlsr-53-portuguese`
+- `smoldocling-document` (transformers.js, q4): no explicit model id in source · config-only: `docling-project/SmolDocling-256M-preview`
+- `japanese-wrime-emotion` (transformers.js, fp32): `arajun/ruri-v3-30m-wrime-onnx`
+- `ernie-4-5-0-3b` (transformers.js, q8): `onnx-community/ERNIE-4.5-0.3B-ONNX`
+- `mobilellm-r1` (transformers.js, q4): `onnx-community/MobileLLM-R1-360M-ONNX`
+- `apertus-1-5b` (transformers.js, q4): `onnx-community/Apertus-v1.1-1.5B-Instruct-QAD-INT4-ONNX`
+- `ddcolor-image-colorization` (raw-ort, fp16): `edgetools/ddcolor`
+- `nafnet-image-deblurring` (raw-ort, fp32): `opencv/deblurring_nafnet`
+- `real-esrgan-super-resolution` (raw-ort, fp32): `SceneWorks/real-esrgan-onnx`
+- `gfpgan-face-restoration` (raw-ort, fp32): `Neus/GFPGANv1.4`
+- `instrument-classification` (transformers.js, q8): `onnx-community/Musical-Instrument-Classification-ONNX`
+- `baguettotron` (transformers.js, q8): `onnx-community/Baguettotron-ONNX`
+- `smollm2-135m` (transformers.js, q8): `HuggingFaceTB/SmolLM2-135M-Instruct`
+- `lama-image-inpainting` (raw-ort, fp32): `Carve/LaMa-ONNX`
+- `iat-low-light-enhancement` (raw-ort, fp32): `Pezhgorski/IAT-ONNX`
+- `microdehaze-image-dehazing` (raw-ort, fp32): `Vive-k-kumar/micro-dehaze-net`
+- `informative-drawings-lineart` (raw-ort, fp32): `rocca/informative-drawings-line-art-onnx`
+- `yolov8-pose` (raw-ort, fp32): `Xenova/yolov8n-pose`
+- `bloomz-multilingual` (transformers.js, q8): `Xenova/bloomz-560m`
+- `uvdoc-document-dewarping` (raw-ort, fp32): `PaddlePaddle/UVDoc_onnx`
+- `scunet-image-denoising` (raw-ort, fp32): `Heliosoph/scunet-onnx`
+- `qwen3-0-6b-wasm` (transformers.js, q8): `onnx-community/Qwen3-0.6B-ONNX`
+- `aliked-lightglue-matching` (raw-ort, fp32): `bukuroo/ALIKED-LightGlue-ONNX`
+- `animegan-cartoonization` (raw-ort, fp32): `vumichien/AnimeGANv2_Hayao`
+- `granite-4-350m` (transformers.js, q4): `onnx-community/granite-4.0-350m-ONNX-web`
+- `gtcrn-speech-enhancement` (raw-ort, fp32): `bitsydarel/gtcrn-onnx`
+- `fast-neural-style-transfer` (raw-ort, fp32): `onnxmodelzoo/candy-9`
+- `raft-optical-flow` (raw-ort, fp32): `opencv/optical_flow_estimation_raft`
+- `person-reid` (raw-ort, fp32): `opencv/person_reid_youtureid`
+- `face-image-quality` (raw-ort, fp32): `opencv/face_image_quality_assessment_ediffiqa`
+- `basic-pitch-transcription` (raw-ort, fp32): `spotify/basic-pitch`
+- `dwpose-wholebody` (raw-ort, fp32): `yzd-v/DWPose`
+- `human-action-recognition` (unknown, q8): `onnx-community/Human-Action-Recognition-VIT-Base-patch16-224-ONNX`
+- `grapheme-to-phoneme` (unknown, fp32): `Santyyy/g2p_multilingual_byT5_tiny_16_layers_100-onnx`
+- `textual-entailment-nli` (unknown, q8): `onnx-community/nli-deberta-v3-xsmall-ONNX`
+- `splade-sparse-retrieval` (raw-ort, fp32): `devve1/Splade_PP_en_v2_onnx`
+- `speech-separation` (raw-ort, fp32): `welcomyou/convtasnet-libri2mix-16k-onnx`
+- `esm-protein` (unknown, q8): `Xenova/esm2_t6_8M_UR50D`
+- `prompt-injection-detection` (unknown, fp32): `protectai/deberta-v3-base-prompt-injection-v2`
+- `colbert-late-interaction` (raw-ort, fp32): `answerdotai/answerai-colbert-small-v1`
+- `quickdraw-sketch-recognition` (raw-ort, fp32): `VinayHajare/quickdraw-mobilevit-small-onnx`
+- `music-genre-classification` (transformers.js, q8): `onnx-community/Musical-genres-Classification-Hubert-V1-ONNX`
+- `math-formula-ocr` (transformers.js, q8): `Xenova/texify`
+- `music-source-separation` (raw-ort, fp32): `MrCitron/demucs-v4-onnx`
+- `bird-species-classification` (transformers.js, fp32): `dennisjooo/Birds-Classifier-EfficientNetB2`
+- `code-language-id` (transformers.js, q8): `onnx-community/CodeBERTa-language-id-ONNX`
+- `educational-quality-scorer` (transformers.js, q8): no explicit model id in source · config-only: `onnx-community/fineweb-edu-classifier-ONNX`
+- `signature-detection` (transformers.js, q4f16): `onnx-community/yolos-base-signature-detection-ONNX`
+- `protein-mutation-oracle` (transformers.js, q8): no explicit model id in source · config-only: `Xenova/esm2_t12_35M_UR50D`
+- `llama2-c-stories` (transformers.js, int8): `Xenova/llama2.c-stories15M`
+- `codegen-350m` (transformers.js, q8): `Xenova/codegen-350M-mono`
+- `mms-forced-alignment` (transformers.js, q4): `onnx-community/mms-300m-1130-forced-aligner-ONNX` · config-only: `onnx-community/mms-300m-1130-forced-aligner-ONNX`
+- `fashion-clip-search` (transformers.js, fp32): `patrickjohncyh/fashion-clip` · config-only: `patrickjohncyh/fashion-clip`
+- `lamini-neo` (transformers.js, int8): `Xenova/LaMini-Neo-125M`
+- `mobilebert-nli` (transformers.js, int8): `Xenova/mobilebert-uncased-mnli`
+- `mms-tts-portuguese` (transformers.js, q8): `Xenova/mms-tts-por`
+- `mms-tts-romanian` (transformers.js, q8): `Xenova/mms-tts-ron`
+- `codegen-350m-multi` (transformers.js, q8): `Xenova/codegen-350M-multi`
+- `mms-tts-bengali` (transformers.js, q8): `naklitechie/mms-tts-bn-ONNX`
