@@ -9,8 +9,11 @@
 //      share an id (duplicate).
 //   3. any artifact is malformed (schema/validateSuite/validateCritique), or a suiteHash doesn't match
 //      its assertions.
-//   4. a suite present on origin/main lost or WEAKENED an assertion (normalized text changed / removed)
-//      without a record in conformance-migrations.json — immutable means fix the demo, never weaken.
+//   4. a suite present on origin/main lost or CHANGED an assertion (normalized text changed /
+//      removed) without a record in conformance-migrations.json — immutable means fix the demo,
+//      never weaken. The record's action must be one of remove|weaken|correct (see
+//      CONFORMANCE_MIGRATION_ACTIONS in conformance-lib.mjs): a factual correction of an assertion
+//      derived from wrong metadata is not a weakening and must not be mislabelled as one.
 //   5. a demo the action TOUCHED (its page HTML/JS changed vs origin/main) has a support class left
 //      "untested"/"broken" — a touched demo must be validated on both classes.
 //   6. any support class regressed non-monotonically: a class that was "ok" on origin/main is now
@@ -40,10 +43,13 @@ import { join } from "node:path";
 import {
   builtModels,
   computeSuiteHash,
+  CONFORMANCE_MIGRATION_ACTIONS,
   evaluateRecordedOutcome,
   loadCatalogue,
+  migratedAssertion,
   normalizeAssertion,
   repoRoot,
+  validateConformanceMigrations,
   validateCritique,
   validateSuite,
 } from "./conformance-lib.mjs";
@@ -89,16 +95,12 @@ function touchedDemos() {
 
 function loadConfMigrations() {
   const p = join(repoRoot, "conformance-migrations.json");
-  if (!existsSync(p)) return [];
+  if (!existsSync(p)) return { migrations: [], errors: [] };
   const arr = JSON.parse(readFileSync(p, "utf8"));
-  if (!Array.isArray(arr)) throw new Error("conformance-migrations.json must be an array");
-  return arr;
+  // Structure is enforced here, not only documented in schemas/: an unargued or mislabelled record
+  // is the audit-trail hole the immutability rule exists to prevent (web-ai-showcase-9tw).
+  return { migrations: Array.isArray(arr) ? arr : [], errors: validateConformanceMigrations(arr) };
 }
-const migratedAssertion = (migs, suiteId, assertionId) =>
-  migs.some((m) =>
-    m.suiteId === suiteId && m.assertionId === assertionId &&
-    ["remove", "weaken"].includes(m.action)
-  );
 
 // ── Rules 8 + 9: the recorded OUTCOME is part of the gate ───────────────────────────────────────
 // Thin IO wrapper over evaluateRecordedOutcome() in conformance-lib.mjs. The decision logic is a
@@ -139,7 +141,10 @@ function main() {
   const catalogue = loadCatalogue();
   const built = builtModels(catalogue);
   const builtSlugs = new Set(built.map((m) => m.slug));
-  const migrations = loadConfMigrations();
+  const { migrations, errors: migrationErrors } = loadConfMigrations();
+  // A malformed or under-argued migration record fails the gate outright: if the audit trail is
+  // broken, every "it's recorded" claim downstream is worthless.
+  for (const e of migrationErrors) failures.push(`migration record invalid — ${e}`);
 
   // Enumerate on-disk suites + critiques.
   const suiteFiles = [];
@@ -200,7 +205,10 @@ function main() {
       if (!cn) {
         if (!migratedAssertion(migrations, suite.id, ba.id)) {
           failures.push(
-            `WEAKENED (${slug}): assertion "${ba.id}" was REMOVED without a conformance-migrations.json record. Immutable — fix the demo, never delete the assertion.`,
+            `WEAKENED (${slug}): assertion "${ba.id}" was REMOVED without a conformance-migrations.json record. ` +
+              `Immutable — fix the demo, never delete the assertion. Record it with action ${
+                CONFORMANCE_MIGRATION_ACTIONS.join("|")
+              }.`,
           );
         }
         continue;
@@ -209,7 +217,11 @@ function main() {
         JSON.stringify(bn) !== JSON.stringify(cn) && !migratedAssertion(migrations, suite.id, ba.id)
       ) {
         failures.push(
-          `WEAKENED (${slug}): assertion "${ba.id}" CHANGED vs origin/main without a migration record. Adding assertions is allowed; changing/weakening one is not.`,
+          `WEAKENED (${slug}): assertion "${ba.id}" CHANGED vs origin/main without a migration record. ` +
+            `Adding assertions is allowed; changing one needs a conformance-migrations.json record with ` +
+            `action ${
+              CONFORMANCE_MIGRATION_ACTIONS.join("|")
+            } (use "correct" when the old assertion was factually wrong).`,
         );
       }
     }
