@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 // Route-complete mms-tts-bengali acceptance: real browser inference on every published route at
 // desktop and mobile. Advertised stage driven for real:
-//   Xenova/mms-tts-bn-ONNX  (all routes — MMS-TTS Portuguese VITS synthesis, WASM q8, ~38 MB)
+//   naklitechie/mms-tts-bn-ONNX  (all routes — MMS-TTS Bengali VITS synthesis, WASM fp32, ~114 MB)
 // The harness owns one fresh Chrome process tree per route cell while reusing its own cache profile
 // (proving cached auto-init); every wait has a hard deadline. Every route is driven through real
-// controls: a Portuguese sample chip + the Speak button produce a real waveform. The wild rung
+// controls: Bengali text + the Speak button produce a real waveform. The wild rung
 // generates 4 stochastic-prosody runs and reports the timing spread.
 import { execFileSync } from "node:child_process";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
@@ -18,6 +18,7 @@ import {
   MOBILE,
   openPage,
   repoRoot,
+  screenshot,
   setViewport,
   startServer,
 } from "./browser.mjs";
@@ -26,9 +27,11 @@ const WRITE_RUN = process.argv.includes("--write-run");
 const RUN_RECORD = join(repoRoot, "models/mms-tts-bengali/acceptance-run.json");
 const PROFILE_DIR = join(homedir(), ".cache", "webai-validator-profiles", "mms-tts-bengali");
 mkdirSync(PROFILE_DIR, { recursive: true });
+const EVIDENCE_DIR = process.env.BENGALI_EVIDENCE_DIR || join(PROFILE_DIR, "evidence");
+mkdirSync(EVIDENCE_DIR, { recursive: true });
 if (WRITE_RUN) rmSync(RUN_RECORD, { force: true });
 
-const STAGE = "Xenova/mms-tts-bn-ONNX"; // the one advertised model stage
+const STAGE = "naklitechie/mms-tts-bn-ONNX"; // the one advertised model stage
 const ROUTES = {
   overview: "models/mms-tts-bengali/",
   basics: "models/mms-tts-bengali/basics/",
@@ -127,7 +130,7 @@ async function ensureReady(cdp, sessionId, label) {
   throw new Error(`hard timeout after 840000ms: ${label} model download/init`);
 }
 
-// Set a Portuguese sample line (chip click is the real control; fall back to typing), then Speak.
+// Enter a Bengali sample line, then drive the real Speak control.
 async function speakOnce(cdp, sessionId, text, label) {
   await evaluate(
     cdp,
@@ -135,11 +138,17 @@ async function speakOnce(cdp, sessionId, text, label) {
     `(() => {
       const chips = [...document.querySelectorAll('#samples .chip')];
       const t = document.querySelector('#text');
-      if (t) { t.value = ${JSON.stringify(text)}; t.dispatchEvent(new Event('input', { bubbles: true })); }
+      if (t) { t.value = ${
+      JSON.stringify(text)
+    }; t.dispatchEvent(new Event('input', { bubbles: true })); }
       return true;
     })()`,
   );
-  await evaluate(cdp, sessionId, `(() => { document.querySelector('#run').click(); return true; })()`);
+  await evaluate(
+    cdp,
+    sessionId,
+    `(() => { document.querySelector('#run').click(); return true; })()`,
+  );
   await waitFor(
     cdp,
     sessionId,
@@ -228,6 +237,12 @@ async function exercise(cdp, page, rung, viewport) {
     page.errors.length === 0 && page.netFailures.length === 0,
     JSON.stringify({ errors: page.errors, network: page.netFailures }),
   );
+  await evaluate(
+    cdp,
+    sid,
+    `document.querySelector('#readout, #spread')?.scrollIntoView({block:'center'})`,
+  );
+  await screenshot(cdp, sid, join(EVIDENCE_DIR, `${viewport}-${rung}.png`));
 }
 
 try {
