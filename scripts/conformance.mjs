@@ -50,8 +50,19 @@ const outDir = join(repoRoot, "reports", "conformance");
 
 function sourceCheck(slug, test) {
   const { all } = modelSource(slug);
-  const re = new RegExp(test.pattern, "i");
-  const hit = re.test(all);
+  let hit = false;
+  try {
+    const re = new RegExp(test.pattern, "i");
+    hit = re.test(all);
+  } catch {
+    try {
+      const normalized = test.pattern.replace(/\\\\/g, "\\");
+      const re = new RegExp(normalized, "i");
+      hit = re.test(all);
+    } catch {
+      hit = all.toLowerCase().includes(test.pattern.toLowerCase());
+    }
+  }
   return test.mode === "absent" ? !hit : hit;
 }
 
@@ -277,7 +288,8 @@ async function main() {
   }
 
   const { server, port } = await startServer();
-  const chrome = await launchChrome();
+  const wantWebGPU = process.argv.includes("--webgpu");
+  const chrome = await launchChrome({ webgpu: wantWebGPU });
   const cdp = new CDP(chrome.ws);
   const runs = [];
   try {
