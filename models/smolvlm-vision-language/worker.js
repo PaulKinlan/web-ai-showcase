@@ -5,7 +5,6 @@
 
 import { TRANSFORMERS_URL } from "/web-ai-showcase/lib/webai.js";
 
-const MODEL_ID = "HuggingFaceTB/SmolVLM-256M-Instruct";
 let processor = null;
 let model = null;
 let mod = null;

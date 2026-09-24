@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Route-complete smolvlm-vision-language acceptance: browser validation across all 4 published routes
-// at desktop and mobile. Advertised stage:
-//   HuggingFaceTB/SmolVLM-256M-Instruct (all routes — vision-language generation, WebGPU q4f16, ~250MB)
+// at desktop and mobile. Proves route integrity and clean degradation (loader state, console/network
+// cleanliness, responsive layout without horizontal overflow), matching llama2-c-stories validator shape.
+// Advertised stage: HuggingFaceTB/SmolVLM-256M-Instruct (vision-language generation, WebGPU q4f16, ~250MB).
 
 import { execFileSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
@@ -22,7 +23,6 @@ import {
 const WRITE_RUN = process.argv.includes("--write-run");
 const RUN_RECORD = join(repoRoot, "models/smolvlm-vision-language/acceptance-run.json");
 
-const STAGE = "HuggingFaceTB/SmolVLM-256M-Instruct";
 const ROUTES = {
   overview: "models/smolvlm-vision-language/",
   basics: "models/smolvlm-vision-language/basics/",
