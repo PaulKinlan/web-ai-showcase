@@ -28,18 +28,38 @@ function catalogue() {
   return JSON.parse(read("models.json")).models;
 }
 
-test("catalogue integrates exactly one verified pending family without changing denominator", () => {
+// This previously pinned the literal catalogue totals of the day it was written
+// (2679 = 314 built + 2302 pending + 63 blocked). That is a snapshot, not an invariant: the
+// catalogue is meant to grow wave after wave, so the assertion guaranteed its own failure and duly
+// broke at 2692 = 327 + 2299 + 66. What it was reaching for is that integrating a family MOVES an
+// entry between statuses rather than inflating the denominator behind it — so assert the partition
+// itself, which holds at any size. Losing a published demo is covered properly by
+// scripts/check-routes.mjs rule 5, which diffs the built count against the real origin/main
+// baseline and demands a migration record for any drop.
+test("catalogue statuses partition the denominator, and this family is integrated", () => {
   const models = catalogue();
-  assert.equal(models.length, 2679);
-  assert.deepEqual(
-    Object.fromEntries(
-      ["built", "pending", "blocked"].map((status) => [
-        status,
-        models.filter((model) => model.status === status).length,
-      ]),
-    ),
-    { built: 314, pending: 2302, blocked: 63 },
+  // Name the offender FIRST: an unknown status also breaks the sum below, so checking the
+  // partition first would report "2691 !== 2692" and leave you hunting for which entry moved.
+  const unknown = [...new Set(models.map((m) => m.status))].filter(
+    (s) => !["built", "pending", "blocked"].includes(s),
   );
+  assert.deepEqual(unknown, [], `unexpected status value(s): ${unknown.join(", ")}`);
+
+  const counts = Object.fromEntries(
+    ["built", "pending", "blocked"].map((status) => [
+      status,
+      models.filter((model) => model.status === status).length,
+    ]),
+  );
+  assert.equal(
+    counts.built + counts.pending + counts.blocked,
+    models.length,
+    `built+pending+blocked must equal the catalogue length (${
+      JSON.stringify(counts)
+    } vs ${models.length})`,
+  );
+  assert.ok(counts.built > 0 && counts.pending > 0);
+
   const model = models.find((entry) => entry.slug === "interactive-segmenter");
   assert.equal(model.status, "built");
   assert.equal(model.hfId, "mediapipe/interactive-segmenter");
