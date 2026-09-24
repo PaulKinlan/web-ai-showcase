@@ -1,7 +1,10 @@
 // Front-end helpers for the CodeGen pages. Thin: owns the worker handshake + renderers.
 // All inference (the pipeline decode loop) runs in worker.js, off the main thread.
 
-const WORKER_URL = "/web-ai-showcase/models/codegen-350m/worker.js";
+// Must point at THIS family's worker: it loads Xenova/codegen-350M-multi. Pointing at the mono
+// worker made every multi page decode with the mono checkpoint while its copy, catalogue entry and
+// acceptance record claimed multi (bead web-ai-showcase-utx).
+const WORKER_URL = "/web-ai-showcase/models/codegen-350m-multi/worker.js";
 
 export class CodegenEngine {
   constructor() {

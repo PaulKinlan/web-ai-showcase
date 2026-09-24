@@ -21,9 +21,18 @@ function post(msg) {
 
 async function makePipeline() {
   const { pipeline } = mod;
+  // model_file_name is required for THIS repo: Xenova/codegen-350M-multi was exported before the
+  // onnx/model*.onnx convention and ships only the split decoder files (decoder_model,
+  // decoder_model_merged, decoder_with_past_model and their _quantized/_fp16 variants). Without an
+  // explicit name transformers.js resolves the default onnx/model_quantized.onnx, gets a 404, and
+  // initialisation fails — which is why this worker was dead code and the family silently ran the
+  // mono checkpoint (bead web-ai-showcase-utx). decoder_model_merged is the generation-ready variant
+  // (past key/values merged in), and dtype q8 resolves to decoder_model_merged_quantized.onnx, which
+  // exists (356 MB). Verified loading and real generation.
   return pipeline("text-generation", "Xenova/codegen-350M-multi", {
     device,
     dtype: DTYPE,
+    model_file_name: "decoder_model_merged",
     progress_callback: (p) => post({ type: "progress", p }),
   });
 }
