@@ -611,3 +611,93 @@ export function evaluateRecordedOutcome(
 }
 
 export { isMediaPipe, repoRoot };
+
+// ── Conformance-migration vocabulary (the immutable-suite escape hatch) ──────────────────────────
+// An assertion that CHANGES or DISAPPEARS versus origin/main needs a record in
+// conformance-migrations.json. The label IS the audit trail, so the vocabulary has to distinguish
+// intent honestly:
+//   remove  — the assertion no longer applies (deletion)
+//   weaken  — genuine reduction in coverage
+//   correct — the assertion was DERIVED FROM WRONG METADATA and the demo was always honest
+//
+// Before `correct` existed, check-conformance.mjs honoured only remove|weaken, so a factual
+// correction had to be mislabelled "weaken" — the opposite of what happened, which pollutes the
+// very trail the immutability rule exists to protect (web-ai-showcase-9tw, the mms-tts-bengali
+// declares-quantisation case). This is the single source of truth for the vocabulary: the gate and
+// schemas/conformance-migration.schema.json both derive from it, so they cannot drift.
+export const CONFORMANCE_MIGRATION_ACTIONS = ["remove", "weaken", "correct"];
+
+// A deviation from immutability has to be argued, not asserted: every record carries a reason, and
+// the two actions that claim a change to assertion CONTENT must also cite evidence.
+const MIGRATION_ACTIONS_NEEDING_EVIDENCE = new Set(["weaken", "correct"]);
+
+/**
+ * Honoured migration for this assertion? Pure, so every branch is unit-tested.
+ */
+export function migratedAssertion(migrations, suiteId, assertionId) {
+  if (!Array.isArray(migrations)) return false;
+  return migrations.some((m) =>
+    m && m.suiteId === suiteId && m.assertionId === assertionId &&
+    CONFORMANCE_MIGRATION_ACTIONS.includes(m.action)
+  );
+}
+
+/**
+ * Structural validation for conformance-migrations.json (mirrors validateSuite / validateCritique):
+ * catches a malformed or under-argued record in the gate, while the JSON Schema under schemas/ stays
+ * the human-facing contract.
+ */
+export function validateConformanceMigrations(migrations) {
+  const errs = [];
+  if (!Array.isArray(migrations)) return ["conformance-migrations.json must be an array"];
+
+  const seen = new Set();
+  migrations.forEach((m, i) => {
+    const at = `conformance-migrations.json[${i}]`;
+    if (!m || typeof m !== "object") {
+      errs.push(`${at} must be an object`);
+      return;
+    }
+    const id = `${m.suiteId ?? "?"}/${m.assertionId ?? "?"}`;
+    if (typeof m.suiteId !== "string" || !m.suiteId) errs.push(`${at} (${id}): missing suiteId`);
+    if (typeof m.assertionId !== "string" || !m.assertionId) {
+      errs.push(`${at} (${id}): missing assertionId`);
+    }
+    if (!CONFORMANCE_MIGRATION_ACTIONS.includes(m.action)) {
+      errs.push(
+        `${at} (${id}): action "${m.action}" is not one of ${
+          CONFORMANCE_MIGRATION_ACTIONS.join("|")
+        }`,
+      );
+    }
+    // An unargued record is not a record: a bare action with no reason is exactly the audit-trail
+    // hole this file exists to prevent.
+    if (typeof m.reason !== "string" || m.reason.trim().length < 20) {
+      errs.push(`${at} (${id}): reason must be a substantive sentence (>= 20 characters)`);
+    }
+    if (
+      MIGRATION_ACTIONS_NEEDING_EVIDENCE.has(m.action) &&
+      (typeof m.evidence !== "string" || m.evidence.trim().length < 20)
+    ) {
+      errs.push(
+        `${at} (${id}): action "${m.action}" needs evidence (>= 20 characters) — a correction or ` +
+          "a weakening has to be demonstrated, not asserted",
+      );
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(m.date ?? ""))) {
+      errs.push(`${at} (${id}): date must be YYYY-MM-DD`);
+    }
+    for (const k of ["fromTest", "toTest"]) {
+      if (k in m && typeof m[k] !== "string") errs.push(`${at} (${id}): ${k} must be a string`);
+    }
+    for (const k of ["fromSuiteHash", "toSuiteHash"]) {
+      if (k in m && !/^sha256:[0-9a-f]{64}$/.test(String(m[k]))) {
+        errs.push(`${at} (${id}): ${k} must be sha256:<64 hex>`);
+      }
+    }
+    const key = `${m.suiteId}|${m.assertionId}|${m.action}`;
+    if (seen.has(key)) errs.push(`${at} (${id}): duplicate ${m.action} record`);
+    seen.add(key);
+  });
+  return errs;
+}
