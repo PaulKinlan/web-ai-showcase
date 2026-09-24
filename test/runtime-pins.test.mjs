@@ -3,15 +3,27 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { execSync } from "node:child_process";
+import {
+  ALLOWLIST_PATH,
+  checkRuntimePins,
+  MIN_EVIDENCE_LENGTH,
+  MIN_REASON_LENGTH,
+  PIN_SCAN_TARGETS,
+  REVIEWED_ON_DATE_RE,
+  SEMVER_VERSION_RE,
+} from "../scripts/audit-model-currency.mjs";
 
 const ROOT = new URL("..", import.meta.url).pathname;
-const ALLOWLIST_PATH = join(ROOT, "scripts/runtime-pin-allowlist.json");
-const PIN_SCAN_TARGETS = "models/ lib/ public/ scripts/ search/ models.json sw.js";
 
 test("runtime-pin-allowlist.json exists, parses, and has required structure", () => {
   assert.ok(existsSync(ALLOWLIST_PATH), "missing scripts/runtime-pin-allowlist.json");
   const data = JSON.parse(readFileSync(ALLOWLIST_PATH, "utf8"));
   assert.ok(data.transformers?.shared, "transformers.shared must be defined");
+  assert.match(
+    data.transformers.shared,
+    SEMVER_VERSION_RE,
+    "transformers.shared must be semver",
+  );
   assert.ok(
     Array.isArray(data.transformers?.allowedLocalOverrides),
     "allowedLocalOverrides must be an array",
@@ -26,24 +38,44 @@ test("runtime-pin-allowlist.json exists, parses, and has required structure", ()
   for (const o of data.transformers.allowedLocalOverrides) {
     assert.match(
       o.version,
-      /^[0-9]+\.[0-9]+\.[0-9]+$/,
+      SEMVER_VERSION_RE,
       `override version ${o.version} must be semver`,
     );
     assert.ok(
       Array.isArray(o.slugs) && o.slugs.length > 0,
       "override entry needs non-empty slugs array",
     );
-    assert.ok(String(o.reason).length > 10, "override entry needs a documented reason");
-    assert.ok(String(o.evidence).length > 5, "override entry needs documented evidence");
-    assert.match(o.reviewedOn, /^\d{4}-\d{2}-\d{2}$/, "reviewedOn must be YYYY-MM-DD");
+    for (const slug of o.slugs) {
+      assert.ok(
+        existsSync(join(ROOT, "models", slug)),
+        `override slug "${slug}" must name an existing models/ directory`,
+      );
+    }
+    assert.ok(
+      String(o.reason).trim().length > MIN_REASON_LENGTH,
+      `override entry needs a documented reason (> ${MIN_REASON_LENGTH} chars)`,
+    );
+    assert.ok(
+      String(o.evidence).trim().length > MIN_EVIDENCE_LENGTH,
+      `override entry needs documented evidence (> ${MIN_EVIDENCE_LENGTH} chars)`,
+    );
+    assert.match(o.reviewedOn, REVIEWED_ON_DATE_RE, "reviewedOn must be YYYY-MM-DD");
   }
 
   for (const v of data.onnxruntimeWeb.allowedVersions) {
-    assert.match(v.version, /^[0-9]+\.[0-9]+\.[0-9]+$/, `version ${v.version} must be semver`);
-    assert.ok(String(v.reason).length > 10, `entry ${v.version} needs a documented reason`);
-    assert.ok(String(v.evidence).length > 5, `entry ${v.version} needs documented evidence`);
-    assert.match(v.reviewedOn, /^\d{4}-\d{2}-\d{2}$/, "reviewedOn must be YYYY-MM-DD");
+    assert.match(v.version, SEMVER_VERSION_RE, `version ${v.version} must be semver`);
+    assert.ok(
+      String(v.reason).trim().length > MIN_REASON_LENGTH,
+      `entry ${v.version} needs a documented reason (> ${MIN_REASON_LENGTH} chars)`,
+    );
+    assert.ok(
+      String(v.evidence).trim().length > MIN_EVIDENCE_LENGTH,
+      `entry ${v.version} needs documented evidence (> ${MIN_EVIDENCE_LENGTH} chars)`,
+    );
+    assert.match(v.reviewedOn, REVIEWED_ON_DATE_RE, "reviewedOn must be YYYY-MM-DD");
   }
+
+  assert.deepEqual(checkRuntimePins(), []);
 });
 
 test("all onnxruntime-web versions in the repository are in the allowlist", () => {
@@ -164,3 +196,73 @@ test("MUTANT PROOF: checkRuntimePins catches allowlist entry missing reason", ()
     writeFileSync(p, orig, "utf8");
   }
 });
+
+test("MUTANT PROOF: checkRuntimePins catches stub reason (<= MIN_REASON_LENGTH chars)", () => {
+  const p = join(ROOT, "scripts/runtime-pin-allowlist.json");
+  const orig = readFileSync(p, "utf8");
+  const data = JSON.parse(orig);
+  data.transformers.allowedLocalOverrides[0].reason = "too short";
+  writeFileSync(p, JSON.stringify(data, null, 2), "utf8");
+  try {
+    assert.throws(
+      () => execSync("node scripts/audit-model-currency.mjs --check", { cwd: ROOT, stdio: "pipe" }),
+      /Command failed/,
+      "expected --check to fail when reason is <= MIN_REASON_LENGTH chars",
+    );
+  } finally {
+    writeFileSync(p, orig, "utf8");
+  }
+});
+
+test("MUTANT PROOF: checkRuntimePins catches invalid reviewedOn date", () => {
+  const p = join(ROOT, "scripts/runtime-pin-allowlist.json");
+  const orig = readFileSync(p, "utf8");
+  const data = JSON.parse(orig);
+  data.transformers.allowedLocalOverrides[0].reviewedOn = "soon";
+  writeFileSync(p, JSON.stringify(data, null, 2), "utf8");
+  try {
+    assert.throws(
+      () => execSync("node scripts/audit-model-currency.mjs --check", { cwd: ROOT, stdio: "pipe" }),
+      /Command failed/,
+      "expected --check to fail when reviewedOn is not YYYY-MM-DD",
+    );
+  } finally {
+    writeFileSync(p, orig, "utf8");
+  }
+});
+
+test("MUTANT PROOF: checkRuntimePins catches duplicate version in allowedLocalOverrides", () => {
+  const p = join(ROOT, "scripts/runtime-pin-allowlist.json");
+  const orig = readFileSync(p, "utf8");
+  const data = JSON.parse(orig);
+  const dup = JSON.parse(JSON.stringify(data.transformers.allowedLocalOverrides[0]));
+  data.transformers.allowedLocalOverrides.push(dup);
+  writeFileSync(p, JSON.stringify(data, null, 2), "utf8");
+  try {
+    assert.throws(
+      () => execSync("node scripts/audit-model-currency.mjs --check", { cwd: ROOT, stdio: "pipe" }),
+      /Command failed/,
+      "expected --check to fail when duplicate version exists in allowedLocalOverrides",
+    );
+  } finally {
+    writeFileSync(p, orig, "utf8");
+  }
+});
+
+test("MUTANT PROOF: checkRuntimePins catches nonexistent model directory in override slugs", () => {
+  const p = join(ROOT, "scripts/runtime-pin-allowlist.json");
+  const orig = readFileSync(p, "utf8");
+  const data = JSON.parse(orig);
+  data.transformers.allowedLocalOverrides[0].slugs.push("nonexistent-model-slug-xyz");
+  writeFileSync(p, JSON.stringify(data, null, 2), "utf8");
+  try {
+    assert.throws(
+      () => execSync("node scripts/audit-model-currency.mjs --check", { cwd: ROOT, stdio: "pipe" }),
+      /Command failed/,
+      "expected --check to fail when nonexistent model slug is listed",
+    );
+  } finally {
+    writeFileSync(p, orig, "utf8");
+  }
+});
+

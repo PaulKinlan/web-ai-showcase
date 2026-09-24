@@ -21,16 +21,22 @@
 // completeness claim. Network-dependent; an offline run reports `error` rather than guessing.
 
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { execSync } from "node:child_process";
+import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { classifyTaskPair } from "./model-task-vocabulary.mjs";
 
 const ROOT = new URL("..", import.meta.url).pathname;
 const SNAPSHOT = ROOT + "inventory/model-currency.json";
 const REPORT_JSON = ROOT + "reports/model-currency.json";
 const REPORT_MD = ROOT + "reports/model-currency.md";
-const ALLOWLIST_PATH = ROOT + "scripts/runtime-pin-allowlist.json";
+export const ALLOWLIST_PATH = ROOT + "scripts/runtime-pin-allowlist.json";
 export const PIN_SCAN_TARGETS = "models/ lib/ public/ scripts/ search/ models.json sw.js";
+export const MIN_REASON_LENGTH = 10;
+export const MIN_EVIDENCE_LENGTH = 5;
+export const REVIEWED_ON_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+export const SEMVER_VERSION_RE = /^[0-9]+\.[0-9]+\.[0-9]+$/;
 
 const args = process.argv.slice(2);
 const CHECK_ONLY = args.includes("--check");
@@ -220,7 +226,7 @@ const DTYPE_TOKENS = {
 async function transformerPins() {
   const references = {};
   const raw = execSync(
-    `grep -rhoE '@huggingface/transformers@[0-9]+\\.[0-9]+\\.[0-9]+' ${PIN_SCAN_TARGETS} 2>/dev/null || true`,
+    `grep -I -rhoE '@huggingface/transformers@[0-9]+\\.[0-9]+\\.[0-9]+' ${PIN_SCAN_TARGETS} 2>/dev/null || true`,
     { cwd: ROOT, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
   );
   for (const line of raw.split("\n")) {
@@ -229,7 +235,7 @@ async function transformerPins() {
   }
   const localOverrides = {};
   const files = execSync(
-    `grep -rlE '@huggingface/transformers@[0-9]+\\.[0-9]+\\.[0-9]+' models/ 2>/dev/null || true`,
+    `grep -I -rlE '@huggingface/transformers@[0-9]+\\.[0-9]+\\.[0-9]+' models/ 2>/dev/null || true`,
     { cwd: ROOT, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
   ).trim().split("\n").filter(Boolean);
   for (const rel of files) {
@@ -261,18 +267,7 @@ async function transformerPins() {
   };
 }
 
-// --- main ------------------------------------------------------------------------------
-const cat = JSON.parse(await readFile(ROOT + "models.json", "utf8"));
-const built = cat.models.filter((m) => m.status === "built");
-const selected = SLUG ? built.filter((m) => m.slug === SLUG) : built;
-if (SLUG && selected.length === 0) {
-  console.error(`no built route with slug ${SLUG}`);
-  process.exit(2);
-}
-const targets = selected.slice(0, LIMIT === Infinity ? undefined : LIMIT);
-const routeRecords = {};
-
-function checkRuntimePins() {
+export function checkRuntimePins() {
   if (!existsSync(ALLOWLIST_PATH)) {
     return ["missing scripts/runtime-pin-allowlist.json — runtime pin allowlist required"];
   }
@@ -285,56 +280,121 @@ function checkRuntimePins() {
 
   // Structural validation: every entry must be self-justifying by construction
   if (
-    !allowlist.transformers?.shared || !Array.isArray(allowlist.transformers?.allowedLocalOverrides)
+    !allowlist.transformers?.shared || !SEMVER_VERSION_RE.test(allowlist.transformers.shared) ||
+    !Array.isArray(allowlist.transformers?.allowedLocalOverrides)
   ) {
-    return ["scripts/runtime-pin-allowlist.json: missing transformers configuration"];
+    return ["scripts/runtime-pin-allowlist.json: missing or invalid transformers configuration"];
   }
+
+  const seenOverrideVersions = new Set();
   for (const o of allowlist.transformers.allowedLocalOverrides) {
-    if (
-      !o.version || !Array.isArray(o.slugs) || o.slugs.length === 0 || !o.reason || !o.evidence ||
-      !o.reviewedOn
-    ) {
+    if (!o.version || !SEMVER_VERSION_RE.test(o.version)) {
+      return [`scripts/runtime-pin-allowlist.json: override version "${o.version}" must be semver`];
+    }
+    if (seenOverrideVersions.has(o.version)) {
       return [
-        `scripts/runtime-pin-allowlist.json: invalid transformers override entry for "${o.version}" (needs version, slugs array, reason, evidence, reviewedOn)`,
+        `scripts/runtime-pin-allowlist.json: duplicate override entry for version "${o.version}"`,
+      ];
+    }
+    seenOverrideVersions.add(o.version);
+
+    if (!Array.isArray(o.slugs) || o.slugs.length === 0) {
+      return [
+        `scripts/runtime-pin-allowlist.json: override for "${o.version}" needs non-empty slugs array`,
+      ];
+    }
+    for (const slug of o.slugs) {
+      const modelDir = join(ROOT, "models", slug);
+      if (!existsSync(modelDir) || !statSync(modelDir).isDirectory()) {
+        return [
+          `scripts/runtime-pin-allowlist.json: override for "${o.version}" names nonexistent model directory "models/${slug}"`,
+        ];
+      }
+    }
+    if (!o.reason || String(o.reason).trim().length <= MIN_REASON_LENGTH) {
+      return [
+        `scripts/runtime-pin-allowlist.json: override for "${o.version}" needs documented reason (> ${MIN_REASON_LENGTH} chars)`,
+      ];
+    }
+    if (!o.evidence || String(o.evidence).trim().length <= MIN_EVIDENCE_LENGTH) {
+      return [
+        `scripts/runtime-pin-allowlist.json: override for "${o.version}" needs documented evidence (> ${MIN_EVIDENCE_LENGTH} chars)`,
+      ];
+    }
+    if (!o.reviewedOn || !REVIEWED_ON_DATE_RE.test(o.reviewedOn)) {
+      return [
+        `scripts/runtime-pin-allowlist.json: override for "${o.version}" reviewedOn must be YYYY-MM-DD date`,
       ];
     }
   }
+
   if (
     !Array.isArray(allowlist.onnxruntimeWeb?.allowedVersions) ||
     allowlist.onnxruntimeWeb.allowedVersions.length === 0
   ) {
     return ["scripts/runtime-pin-allowlist.json: missing onnxruntimeWeb.allowedVersions array"];
   }
+
+  const seenOrtVersions = new Set();
   for (const o of allowlist.onnxruntimeWeb.allowedVersions) {
-    if (!o.version || !o.reason || !o.evidence || !o.reviewedOn) {
+    if (!o.version || !SEMVER_VERSION_RE.test(o.version)) {
       return [
-        `scripts/runtime-pin-allowlist.json: invalid onnxruntimeWeb entry for "${o.version}" (needs version, reason, evidence, reviewedOn)`,
+        `scripts/runtime-pin-allowlist.json: onnxruntimeWeb version "${o.version}" must be semver`,
+      ];
+    }
+    if (seenOrtVersions.has(o.version)) {
+      return [
+        `scripts/runtime-pin-allowlist.json: duplicate onnxruntimeWeb entry for version "${o.version}"`,
+      ];
+    }
+    seenOrtVersions.add(o.version);
+
+    if (!o.reason || String(o.reason).trim().length <= MIN_REASON_LENGTH) {
+      return [
+        `scripts/runtime-pin-allowlist.json: onnxruntimeWeb "${o.version}" needs documented reason (> ${MIN_REASON_LENGTH} chars)`,
+      ];
+    }
+    if (!o.evidence || String(o.evidence).trim().length <= MIN_EVIDENCE_LENGTH) {
+      return [
+        `scripts/runtime-pin-allowlist.json: onnxruntimeWeb "${o.version}" needs documented evidence (> ${MIN_EVIDENCE_LENGTH} chars)`,
+      ];
+    }
+    if (!o.reviewedOn || !REVIEWED_ON_DATE_RE.test(o.reviewedOn)) {
+      return [
+        `scripts/runtime-pin-allowlist.json: onnxruntimeWeb "${o.version}" reviewedOn must be YYYY-MM-DD date`,
       ];
     }
   }
-  if (!allowlist.webLlm?.shared || !allowlist.webLlm?.evidence || !allowlist.webLlm?.reviewedOn) {
+
+  if (
+    !allowlist.webLlm?.shared || !allowlist.webLlm?.evidence || !allowlist.webLlm?.reviewedOn ||
+    String(allowlist.webLlm.evidence).trim().length <= MIN_EVIDENCE_LENGTH ||
+    !REVIEWED_ON_DATE_RE.test(allowlist.webLlm.reviewedOn)
+  ) {
     return [
-      "scripts/runtime-pin-allowlist.json: missing webLlm configuration (needs shared, evidence, reviewedOn)",
+      "scripts/runtime-pin-allowlist.json: invalid webLlm configuration (needs shared, evidence > 5 chars, reviewedOn YYYY-MM-DD)",
     ];
   }
   if (
     !allowlist.mediapipe?.shared || !allowlist.mediapipe?.evidence ||
-    !allowlist.mediapipe?.reviewedOn
+    !allowlist.mediapipe?.reviewedOn ||
+    String(allowlist.mediapipe.evidence).trim().length <= MIN_EVIDENCE_LENGTH ||
+    !REVIEWED_ON_DATE_RE.test(allowlist.mediapipe.reviewedOn)
   ) {
     return [
-      "scripts/runtime-pin-allowlist.json: missing mediapipe configuration (needs shared, evidence, reviewedOn)",
+      "scripts/runtime-pin-allowlist.json: invalid mediapipe configuration (needs shared, evidence > 5 chars, reviewedOn YYYY-MM-DD)",
     ];
   }
 
   const errors = [];
 
-  // 1. Check onnxruntime-web versions
+  // 1. Check onnxruntime-web versions (using grep -I)
   const allowedOrt = new Set(
     (allowlist.onnxruntimeWeb?.allowedVersions || []).map((v) => v.version),
   );
   try {
     const raw = execSync(
-      `grep -rhoE 'onnxruntime-web@[0-9]+\\.[0-9]+\\.[0-9]+' ${PIN_SCAN_TARGETS} 2>/dev/null || true`,
+      `grep -I -rhoE 'onnxruntime-web@[0-9]+\\.[0-9]+\\.[0-9]+' ${PIN_SCAN_TARGETS} 2>/dev/null || true`,
       { cwd: ROOT, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
     );
     const foundOrt = new Set();
@@ -353,7 +413,7 @@ function checkRuntimePins() {
     errors.push(`failed to scan onnxruntime-web versions: ${e.message}`);
   }
 
-  // 2. Check @huggingface/transformers versions with route-scoping
+  // 2. Check @huggingface/transformers versions with route-scoping (using grep -I)
   const allowedTjsShared = allowlist.transformers.shared;
   const tjsOverrideMap = new Map();
   for (const o of allowlist.transformers.allowedLocalOverrides) {
@@ -362,7 +422,7 @@ function checkRuntimePins() {
 
   try {
     const raw = execSync(
-      `grep -rnE '@huggingface/transformers@[0-9]+\\.[0-9]+\\.[0-9]+' ${PIN_SCAN_TARGETS} 2>/dev/null || true`,
+      `grep -I -rnE '@huggingface/transformers@[0-9]+\\.[0-9]+\\.[0-9]+' ${PIN_SCAN_TARGETS} 2>/dev/null || true`,
       { cwd: ROOT, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
     );
     for (const line of raw.split("\n")) {
@@ -424,6 +484,18 @@ function checkRuntimePins() {
 
   return errors;
 }
+
+// --- main ------------------------------------------------------------------------------
+async function main() {
+  const cat = JSON.parse(await readFile(ROOT + "models.json", "utf8"));
+  const built = cat.models.filter((m) => m.status === "built");
+  const selected = SLUG ? built.filter((m) => m.slug === SLUG) : built;
+  if (SLUG && selected.length === 0) {
+    console.error(`no built route with slug ${SLUG}`);
+    process.exit(2);
+  }
+  const targets = selected.slice(0, LIMIT === Infinity ? undefined : LIMIT);
+  const routeRecords = {};
 
 if (CHECK_ONLY) {
   // Offline gate: no network. Asserts only what committed evidence can support —
@@ -939,20 +1011,32 @@ const md = [
   ),
   ``,
 ].join("\n");
-await writeFile(REPORT_MD, md);
-console.error(`Wrote ${REPORT_JSON}, ${REPORT_MD}, refreshed ${SNAPSHOT}`);
-console.log(JSON.stringify(
-  {
-    scope: report.scope,
-    tally,
-    dtypeAudit: dtypeAudit.length,
-    catalogueAccuracy: accuracy.length,
-    transformers: {
-      shared: tjs.shared,
-      latest: tjs.latest,
-      overrides: Object.keys(tjs.localOverrides),
+  await writeFile(REPORT_MD, md);
+  console.error(`Wrote ${REPORT_JSON}, ${REPORT_MD}, refreshed ${SNAPSHOT}`);
+  console.log(JSON.stringify(
+    {
+      scope: report.scope,
+      tally,
+      dtypeAudit: dtypeAudit.length,
+      catalogueAccuracy: accuracy.length,
+      transformers: {
+        shared: tjs.shared,
+        latest: tjs.latest,
+        overrides: Object.keys(tjs.localOverrides),
+      },
     },
-  },
-  null,
-  2,
-));
+    null,
+    2,
+  ));
+}
+
+const isMain = typeof process !== "undefined" && process.argv?.[1]
+  ? resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+  : Boolean(import.meta.main);
+if (isMain) {
+  main().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}
+
