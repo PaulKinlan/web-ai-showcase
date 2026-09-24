@@ -165,7 +165,10 @@ try {
   // than 1 keeps the check meaningful instead of vacuous; if sampling ever returns to this path, the
   // count moves and this fails again.
   check(
-    "fixture: disposal not queued behind stalled memory API",
+    // Named for what it now tests: the release path makes no native memory call at all, and disposal
+    // still completes while the API is stalled. The stronger property is that any future sampling on
+    // this path moves the count and fails the check.
+    "fixture: release path makes no native memory call and disposal still completes",
     await evaluate(cdp, sid, "window.__dispose.counters().disposeCalls===1 && nativeCalls===0"),
   );
   await closePage(cdp, fixture.targetId);
