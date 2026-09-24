@@ -230,12 +230,15 @@ async function exercise(cdp, page, rung, viewport) {
       // the fix constrains the control so native picker behaviour survives.
       const requested = ${mobile ? MOBILE.width : DESKTOP.width};
       const vw = window.innerWidth;
-      const panelContentRight = (el) => {
+      const panelContentEdges = (el) => {
         const panel = el.closest('.panel');
         if (!panel || panel === el) return null;
         const pr = panel.getBoundingClientRect();
         const cs = getComputedStyle(panel);
-        return pr.right - parseFloat(cs.paddingRight || 0) - parseFloat(cs.borderRightWidth || 0);
+        return {
+          left: pr.left + parseFloat(cs.paddingLeft || 0) + parseFloat(cs.borderLeftWidth || 0),
+          right: pr.right - parseFloat(cs.paddingRight || 0) - parseFloat(cs.borderRightWidth || 0),
+        };
       };
       const controls = [...document.querySelectorAll('button, input, select, textarea, label, output')]
         .filter((el) => {
@@ -246,11 +249,18 @@ async function exercise(cdp, page, rung, viewport) {
       const escaping = [];
       for (const el of controls) {
         const r = el.getBoundingClientRect();
-        const pcr = panelContentRight(el);
-        const overViewport = +(r.right - vw).toFixed(2);
-        const overPanel = pcr === null ? null : +(r.right - pcr).toFixed(2);
-        if (overViewport > 1 || (overPanel !== null && overPanel > 1)) {
-          escaping.push({ tag: el.tagName.toLowerCase(), id: el.id || null, overViewport, overPanel });
+        const edges = panelContentEdges(el);
+        // Symmetric bounds: a control may escape to the LEFT as well as the right (negative margin, a
+        // transform, or an unconstrained row), and the recorded recipe requires containment within
+        // the panel's left content edge, not only r.right within the right edge.
+        const overViewportRight = +(r.right - vw).toFixed(2);
+        const overViewportLeft = +(0 - r.left).toFixed(2);
+        const overPanelRight = edges === null ? null : +(r.right - edges.right).toFixed(2);
+        const overPanelLeft = edges === null ? null : +(edges.left - r.left).toFixed(2);
+        if (overViewportRight > 1 || overViewportLeft > 1 ||
+          (overPanelRight !== null && overPanelRight > 1) || (overPanelLeft !== null && overPanelLeft > 1)) {
+          escaping.push({ tag: el.tagName.toLowerCase(), id: el.id || null,
+            overViewportRight, overViewportLeft, overPanelRight, overPanelLeft });
         }
       }
       return {
