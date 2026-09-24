@@ -23,6 +23,7 @@
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { execSync } from "node:child_process";
+import { classifyTaskPair } from "./model-task-vocabulary.mjs";
 
 const ROOT = new URL("..", import.meta.url).pathname;
 const SNAPSHOT = ROOT + "inventory/model-currency.json";
@@ -132,34 +133,9 @@ async function signalsFor(slug) {
   return out;
 }
 
-// Review aid, not a verdict: mismatches between the transformers.js pipeline a demo drives and
-// the upstream card's own tag. Only listed pairs are pre-cleared as vocabulary differences.
-const VOCABULARY_PAIRS = {
-  "feature-extraction -> sentence-similarity":
-    "same behaviour — demo drives the TJS feature-extraction pipeline; the card advertises retrieval",
-  "sentence-similarity -> feature-extraction": "same behaviour — TJS pipeline name vs card tag",
-  "text-classification -> text-ranking":
-    "reranker driven as a classification pipeline (TJS has no text-ranking task)",
-  "text-classification -> zero-shot-classification": "NLI checkpoint driven as classification",
-  "text-to-speech -> text-to-audio": "same behaviour — TJS task name vs card tag",
-  "audio-feature-extraction -> feature-extraction":
-    "same behaviour — TJS audio task name vs card tag",
-  "zero-shot-audio-classification -> feature-extraction":
-    "demo runs the zero-shot audio pipeline over the encoder",
-  "zero-shot-image-classification -> feature-extraction":
-    "demo runs the zero-shot image pipeline over the encoder",
-  "zero-shot-object-detection -> object-detection":
-    "demo runs the zero-shot detection pipeline (more specific than the card)",
-  "text2text-generation -> text-generation": "TJS seq2seq task vs card tag",
-  "image-to-image -> text-to-image":
-    "card tag is a poor fit for this restoration model; demo uses image-to-image",
-  "image-to-image -> image-to-text":
-    "card tag is a poor fit for this unwarping model; demo uses image-to-image",
-  "image-text-to-text -> text-generation":
-    "card tag is a poor fit for this VLM; demo uses image-text-to-text",
-  "fill-mask -> text-generation":
-    "spell-correction checkpoint driven as fill-mask over masked spans",
-};
+// The vocabulary map lives in ./model-task-vocabulary.mjs — a committed list of (transformers.js
+// task, Hub pipeline_tag) pairs that mean the same thing, each with its reason. Mismatches that are in
+// the map are recorded on the route as vocabularyEquivalent; anything else is still reported here.
 
 // --- HF API ----------------------------------------------------------------------------
 let nextSlot = 0; // global pacing so a sweep never trips HuggingFace rate limiting
@@ -509,14 +485,25 @@ for (const id of sweep) {
   for (const rt of perRoute.filter((x) => x.hfId === id)) {
     if (r.task && rt.task && r.task !== rt.task) {
       // `task` records the transformers.js pipeline the demo drives; the card records the author's
-      // upstream tag. Flagged for review, never judged here.
-      const key = rt.task + " -> " + r.task;
-      f.taskDrift = {
-        recorded: rt.task,
-        upstream: r.task,
-        reading: VOCABULARY_PAIRS[key] ??
-          "review — confirm the page's claim matches how it is used",
-      };
+      // upstream tag. A recorded equivalence is knowledge, not a finding: it is kept on the route (so
+      // reports/model-currency.json still shows the two vocabularies and why they agree) and omitted
+      // from the findings list, which then contains only what a human still has to look at. An
+      // unrecorded mismatch is reported exactly as before — the map is a whitelist, not a blanket
+      // excuse (web-ai-showcase-4hv).
+      const pair = classifyTaskPair(rt.task, r.task);
+      if (pair.equivalent) {
+        rt.vocabularyEquivalent = {
+          recorded: rt.task,
+          upstream: r.task,
+          rationale: pair.rationale,
+        };
+      } else {
+        f.taskDrift = {
+          recorded: rt.task,
+          upstream: r.task,
+          reading: "review — confirm the page's claim matches how it is used",
+        };
+      }
     }
   }
   const drift = prev[id]?.sha && r.sha && prev[id].sha !== r.sha
@@ -633,6 +620,21 @@ const rateLimited = findings.filter((f) => f.kinds.includes("rateLimited")).leng
 const deferredCount = findings.filter((f) => f.kinds.includes("deferred")).length;
 const tally = {};
 for (const f of findings) for (const k of f.kinds) tally[k] = (tally[k] || 0) + 1;
+
+// Recorded vocabulary equivalences: knowledge that the audit would otherwise have to re-report on
+// every sweep. Grouped so the report shows the pairs and the reason, not just their absence.
+const equivalenceGroups = new Map();
+for (const rt of perRoute) {
+  const eq = rt.vocabularyEquivalent;
+  if (!eq) continue;
+  const key = `${eq.recorded} -> ${eq.upstream}`;
+  const entry = equivalenceGroups.get(key) || { count: 0, rationale: eq.rationale };
+  entry.count += 1;
+  equivalenceGroups.set(key, entry);
+}
+const equivalences = [...equivalenceGroups.entries()].sort((a, b) =>
+  b[1].count - a[1].count || a[0].localeCompare(b[0])
+);
 const report = {
   generated: new Date().toISOString(),
   scope: {
@@ -691,6 +693,19 @@ const md = [
     ).join(", ") || "none"
   }`,
   `- Checkpoint/pin findings: **${findings.length}**`,
+  ...(equivalences.length
+    ? [
+      ``,
+      `### Recorded vocabulary equivalences (${equivalences.reduce((n, [, e]) => n + e.count, 0)} routes)`,
+      ``,
+      "The transformers.js task a demo drives and the Hub `pipeline_tag` on the card are two" +
+        " vocabularies for the same work. These pairs are recorded in `scripts/model-task-vocabulary.mjs`" +
+        " as equivalent, with the reason, so they are reported as neither drift nor a defect — and an" +
+        " unrecorded mismatch is still reported:",
+      ``,
+      ...equivalences.map(([pair, e]) => `- \`${pair}\` × ${e.count} — ${e.rationale}`),
+    ]
+    : []),
   ``,
   `## Findings by kind`,
   ``,

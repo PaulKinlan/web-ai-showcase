@@ -1,58 +1,43 @@
 # Model + runtime currency audit
 
-Generated 2026-09-24T15:25:41.211Z by `scripts/audit-model-currency.mjs`.
+Generated 2026-09-24T16:37:49.664Z by `scripts/audit-model-currency.mjs`.
 
 - Built routes: **327** · scanned: **327** · unique HF repos health-checked: **340**
   (324 cited · 309 weight-serving · 35 config/tokenizer-only)
 - transformers.js shared pin: **3.7.5** · latest published: **4.3.0** (recent stable: 3.8.1, 4.0.0, 4.0.1, 4.1.0, 4.2.0, 4.3.0)
 - Local version overrides: `4.2.0` on 7 route(s)
-- Checkpoint/pin findings: **38**
+- Checkpoint/pin findings: **5**
+
+### Recorded vocabulary equivalences (34 routes)
+
+The transformers.js task a demo drives and the Hub `pipeline_tag` on the card are two vocabularies for the same work. These pairs are recorded in `scripts/model-task-vocabulary.mjs` as equivalent, with the reason, so they are reported as neither drift nor a defect — and an unrecorded mismatch is still reported:
+
+- `text-to-speech -> text-to-audio` × 10 — same behaviour — TJS task name vs card tag
+- `text-classification -> text-ranking` × 7 — reranker driven as a classification pipeline (TJS has no text-ranking task)
+- `feature-extraction -> sentence-similarity` × 4 — same behaviour — demo drives the TJS feature-extraction pipeline; the card advertises retrieval
+- `audio-feature-extraction -> feature-extraction` × 2 — same behaviour — TJS audio task name vs card tag
+- `sentence-similarity -> feature-extraction` × 2 — same behaviour — TJS pipeline name vs card tag; the embedding is the retrieval model
+- `fill-mask -> text-generation` × 1 — spell-correction checkpoint driven as fill-mask over masked spans
+- `image-text-to-text -> text-generation` × 1 — card tag is a poor fit for this VLM; demo uses image-text-to-text
+- `image-to-image -> image-to-text` × 1 — card tag is a poor fit for this unwarping model; demo uses image-to-image
+- `image-to-image -> text-to-image` × 1 — card tag is a poor fit for this restoration model; demo uses image-to-image
+- `text-classification -> zero-shot-classification` × 1 — NLI checkpoint driven as classification
+- `text2text-generation -> text-generation` × 1 — TJS seq2seq task vs card tag
+- `zero-shot-audio-classification -> feature-extraction` × 1 — demo runs the zero-shot audio pipeline over the encoder
+- `zero-shot-image-classification -> feature-extraction` × 1 — demo runs the zero-shot image pipeline over the encoder
+- `zero-shot-object-detection -> object-detection` × 1 — demo runs the zero-shot detection pipeline (more specific than the card)
 
 ## Findings by kind
 
-- taskDrift: 34
-- gatedInformational: 4
+- gatedInformational: 5
 
 ## Findings
 
-- `Alibaba-NLP/gte-modernbert-base` — {"taskDrift":{"recorded":"feature-extraction","upstream":"sentence-similarity","reading":"same behaviour — demo drives the TJS feature-extraction pipeline; the card advertises retrieval"}}
-- `Alibaba-NLP/gte-reranker-modernbert-base` — {"taskDrift":{"recorded":"text-classification","upstream":"text-ranking","reading":"reranker driven as a classification pipeline (TJS has no text-ranking task)"}}
-- `Instemic/yolo-world-onnx` — {"taskDrift":{"recorded":"zero-shot-object-detection","upstream":"object-detection","reading":"demo runs the zero-shot detection pipeline (more specific than the card)"}}
-- `Neus/GFPGANv1.4` — {"taskDrift":{"recorded":"image-to-image","upstream":"text-to-image","reading":"card tag is a poor fit for this restoration model; demo uses image-to-image"}}
-- `PaddlePaddle/UVDoc_onnx` — {"taskDrift":{"recorded":"image-to-image","upstream":"image-to-text","reading":"card tag is a poor fit for this unwarping model; demo uses image-to-image"}}
-- `Snowflake/snowflake-arctic-embed-m-v2.0` — {"taskDrift":{"recorded":"feature-extraction","upstream":"sentence-similarity","reading":"same behaviour — demo drives the TJS feature-extraction pipeline; the card advertises retrieval"}}
-- `Snowflake/snowflake-arctic-embed-s` — {"taskDrift":{"recorded":"feature-extraction","upstream":"sentence-similarity","reading":"same behaviour — demo drives the TJS feature-extraction pipeline; the card advertises retrieval"}}
-- `Xenova/all-mpnet-base-v2` — {"taskDrift":{"recorded":"sentence-similarity","upstream":"feature-extraction","reading":"same behaviour — TJS pipeline name vs card tag"}}
-- `Xenova/bge-reranker-base` — {"taskDrift":{"recorded":"text-classification","upstream":"text-ranking","reading":"reranker driven as a classification pipeline (TJS has no text-ranking task)"}}
-- `Xenova/bge-small-en-v1.5` — {"taskDrift":{"recorded":"sentence-similarity","upstream":"feature-extraction","reading":"same behaviour — TJS pipeline name vs card tag"}}
-- `Xenova/clap-htsat-unfused` — {"taskDrift":{"recorded":"zero-shot-audio-classification","upstream":"feature-extraction","reading":"demo runs the zero-shot audio pipeline over the encoder"}}
-- `Xenova/hubert-base-ls960` — {"taskDrift":{"recorded":"audio-feature-extraction","upstream":"feature-extraction","reading":"same behaviour — TJS audio task name vs card tag"}}
-- `Xenova/mobilebert-uncased-mnli` — {"taskDrift":{"recorded":"text-classification","upstream":"zero-shot-classification","reading":"NLI checkpoint driven as classification"}}
-- `Xenova/wavlm-base-plus` — {"taskDrift":{"recorded":"audio-feature-extraction","upstream":"feature-extraction","reading":"same behaviour — TJS audio task name vs card tag"}}
-- `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1` — {"taskDrift":{"recorded":"text-classification","upstream":"text-ranking","reading":"reranker driven as a classification pipeline (TJS has no text-ranking task)"}}
-- `cross-encoder/stsb-TinyBERT-L4` — {"taskDrift":{"recorded":"text-classification","upstream":"text-ranking","reading":"reranker driven as a classification pipeline (TJS has no text-ranking task)"}}
-- `google/embeddinggemma-300m` — {"taskDrift":{"recorded":"feature-extraction","upstream":"sentence-similarity","reading":"same behaviour — demo drives the TJS feature-extraction pipeline; the card advertises retrieval"}}
+- `google/embeddinggemma-300m` — {"gatedInformational":"gated=manual — cited only; weights arrive via a CDN build"}
 - `google/gemma-2-2b-it` — {"gatedInformational":"gated=manual — cited only; weights arrive via a CDN build"}
 - `google/gemma-3-1b-it` — {"gatedInformational":"gated=manual — cited only; weights arrive via a CDN build"}
-- `grazh/agentlans-flan-t5-small-simplifier-onnx-v2` — {"taskDrift":{"recorded":"text2text-generation","upstream":"text-generation","reading":"TJS seq2seq task vs card tag"}}
-- `jinaai/jina-clip-v2` — {"taskDrift":{"recorded":"zero-shot-image-classification","upstream":"feature-extraction","reading":"demo runs the zero-shot image pipeline over the encoder"}}
-- `jinaai/jina-reranker-v1-tiny-en` — {"taskDrift":{"recorded":"text-classification","upstream":"text-ranking","reading":"reranker driven as a classification pipeline (TJS has no text-ranking task)"}}
-- `jinaai/jina-reranker-v2-base-multilingual` — {"taskDrift":{"recorded":"text-classification","upstream":"text-ranking","reading":"reranker driven as a classification pipeline (TJS has no text-ranking task)"}}
 - `meta-llama/Llama-3.2-1B-Instruct` — {"gatedInformational":"gated=manual — cited only; weights arrive via a CDN build"}
 - `meta-llama/Llama-3.2-3B-Instruct` — {"gatedInformational":"gated=manual — cited only; weights arrive via a CDN build"}
-- `mixedbread-ai/mxbai-rerank-xsmall-v1` — {"taskDrift":{"recorded":"text-classification","upstream":"text-ranking","reading":"reranker driven as a classification pipeline (TJS has no text-ranking task)"}}
-- `naklitechie/mms-tts-as-ONNX` — {"taskDrift":{"recorded":"text-to-speech","upstream":"text-to-audio","reading":"same behaviour — TJS task name vs card tag"}}
-- `naklitechie/mms-tts-bn-ONNX` — {"taskDrift":{"recorded":"text-to-speech","upstream":"text-to-audio","reading":"same behaviour — TJS task name vs card tag"}}
-- `naklitechie/mms-tts-gu-ONNX` — {"taskDrift":{"recorded":"text-to-speech","upstream":"text-to-audio","reading":"same behaviour — TJS task name vs card tag"}}
-- `naklitechie/mms-tts-ml-ONNX` — {"taskDrift":{"recorded":"text-to-speech","upstream":"text-to-audio","reading":"same behaviour — TJS task name vs card tag"}}
-- `naklitechie/mms-tts-mr-ONNX` — {"taskDrift":{"recorded":"text-to-speech","upstream":"text-to-audio","reading":"same behaviour — TJS task name vs card tag"}}
-- `naklitechie/mms-tts-or-ONNX` — {"taskDrift":{"recorded":"text-to-speech","upstream":"text-to-audio","reading":"same behaviour — TJS task name vs card tag"}}
-- `naklitechie/mms-tts-pa-ONNX` — {"taskDrift":{"recorded":"text-to-speech","upstream":"text-to-audio","reading":"same behaviour — TJS task name vs card tag"}}
-- `naklitechie/mms-tts-ta-ONNX` — {"taskDrift":{"recorded":"text-to-speech","upstream":"text-to-audio","reading":"same behaviour — TJS task name vs card tag"}}
-- `naklitechie/mms-tts-te-ONNX` — {"taskDrift":{"recorded":"text-to-speech","upstream":"text-to-audio","reading":"same behaviour — TJS task name vs card tag"}}
-- `naklitechie/mms-tts-ur-ONNX` — {"taskDrift":{"recorded":"text-to-speech","upstream":"text-to-audio","reading":"same behaviour — TJS task name vs card tag"}}
-- `onnx-community/Phi-3.5-vision-instruct` — {"taskDrift":{"recorded":"image-text-to-text","upstream":"text-generation","reading":"card tag is a poor fit for this VLM; demo uses image-text-to-text"}}
-- `shibing624/macbert4csc-base-chinese` — {"taskDrift":{"recorded":"fill-mask","upstream":"text-generation","reading":"spell-correction checkpoint driven as fill-mask over masked spans"}}
 
 ## Catalogue dtype vs worker dtype (8)
 
