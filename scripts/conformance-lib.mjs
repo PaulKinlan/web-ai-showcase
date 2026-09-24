@@ -632,13 +632,39 @@ export const CONFORMANCE_MIGRATION_ACTIONS = ["remove", "weaken", "correct"];
 const MIGRATION_ACTIONS_NEEDING_EVIDENCE = new Set(["weaken", "correct"]);
 
 /**
- * Honoured migration for this assertion? Pure, so every branch is unit-tested.
+ * Which actions can excuse WHICH situation (web-ai-showcase-33c).
+ *
+ * The action has to match the facts, not just be a member of the vocabulary.
+ * Before this distinction existed, `remove` was honoured for a CHANGED assertion,
+ * so an author could weaken an assertion and label it a removal, with no evidence
+ * — the same laundering path 9tw closed for weaken/correct, still open via remove.
+ *
+ *   removed — the assertion is gone from the suite. `remove` is the precise word;
+ *             `weaken`/`correct` are accepted too, because deleting coverage or
+ *             deleting a wrong assertion are both describable that way.
+ *   changed — the assertion still exists with different text. Only the two actions
+ *             that REQUIRE evidence can excuse that, so a change can never be
+ *             waved through by an evidence-free `remove`.
  */
-export function migratedAssertion(migrations, suiteId, assertionId) {
+export const MIGRATION_ACTIONS_BY_KIND = {
+  removed: ["remove", "weaken", "correct"],
+  changed: ["weaken", "correct"],
+};
+
+/**
+ * Honoured migration for this assertion, for this KIND of situation? Pure, so
+ * every branch is unit-tested.
+ *
+ * `kind` has no default on purpose. A caller that forgets it matches nothing, so
+ * the gate reports an unexcused removal/change rather than silently honouring a
+ * record — the failure is loud and lands on the author, not on the audit trail.
+ */
+export function migratedAssertion(migrations, suiteId, assertionId, kind) {
   if (!Array.isArray(migrations)) return false;
+  const allowed = MIGRATION_ACTIONS_BY_KIND[kind];
+  if (!allowed) return false;
   return migrations.some((m) =>
-    m && m.suiteId === suiteId && m.assertionId === assertionId &&
-    CONFORMANCE_MIGRATION_ACTIONS.includes(m.action)
+    m && m.suiteId === suiteId && m.assertionId === assertionId && allowed.includes(m.action)
   );
 }
 

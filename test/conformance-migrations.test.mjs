@@ -13,6 +13,7 @@ import test from "node:test";
 import {
   CONFORMANCE_MIGRATION_ACTIONS,
   migratedAssertion,
+  MIGRATION_ACTIONS_BY_KIND,
   validateConformanceMigrations,
 } from "../scripts/conformance-lib.mjs";
 
@@ -34,23 +35,29 @@ test("vocabulary is exactly remove | weaken | correct", () => {
   assert.deepEqual(CONFORMANCE_MIGRATION_ACTIONS, ["remove", "weaken", "correct"]);
 });
 
-test("a 'correct' record is honoured (the case that could not be recorded before)", () => {
-  assert.equal(migratedAssertion([record()], "fixture-suite", "declares-quantisation"), true);
-  assert.equal(migratedAssertion([record()], "other-suite", "declares-quantisation"), false);
-  assert.equal(migratedAssertion([record()], "fixture-suite", "other-assertion"), false);
+test("a 'correct' record is honoured for a change (the case that could not be recorded before)", () => {
+  assert.equal(
+    migratedAssertion([record()], "fixture-suite", "declares-quantisation", "removed"),
+    true,
+  );
+  assert.equal(
+    migratedAssertion([record()], "other-suite", "declares-quantisation", "removed"),
+    false,
+  );
+  assert.equal(migratedAssertion([record()], "fixture-suite", "other-assertion", "removed"), false);
 });
 
 test("remove and weaken stay honoured; an unknown action is ignored", () => {
   for (const action of ["remove", "weaken", "correct"]) {
     assert.equal(
-      migratedAssertion([record({ action })], "fixture-suite", "declares-quantisation"),
+      migratedAssertion([record({ action })], "fixture-suite", "declares-quantisation", "removed"),
       true,
       `${action} must be honoured`,
     );
   }
   for (const action of ["fix", "identity-change", "weakened", "CORRECT", ""]) {
     assert.equal(
-      migratedAssertion([record({ action })], "fixture-suite", "declares-quantisation"),
+      migratedAssertion([record({ action })], "fixture-suite", "declares-quantisation", "removed"),
       false,
       `${JSON.stringify(action)} must NOT be honoured`,
     );
@@ -132,5 +139,57 @@ test("the committed conformance-migrations.json satisfies its own schema", () =>
   assert.ok(bengali, "expected the mms-tts-bengali declares-quantisation record");
   assert.equal(bengali.action, "correct");
   assert.ok(bengali.evidence.length > 20, "a correction must cite evidence");
-  assert.equal(migratedAssertion(data, bengali.suiteId, bengali.assertionId), true);
+  // The bengali assertion still EXISTS with different text, so its kind is "changed":
+  // a correction of an existing assertion is exactly what must never be excusable by
+  // an evidence-free "remove" (web-ai-showcase-33c).
+  assert.equal(migratedAssertion(data, bengali.suiteId, bengali.assertionId, "changed"), true);
+});
+
+// ---------------------------------------------------------------------------
+// web-ai-showcase-33c: the action must match the situation
+// ---------------------------------------------------------------------------
+
+test("a CHANGED assertion cannot be excused by an evidence-free 'remove'", () => {
+  // The hole: an author weakens an assertion and labels it a removal.
+  assert.equal(
+    migratedAssertion(
+      [record({ action: "remove", evidence: "" })],
+      "fixture-suite",
+      "declares-quantisation",
+      "changed",
+    ),
+    false,
+    "remove must not suppress a CHANGE",
+  );
+  // The two actions that require evidence still can, which is the point: a change
+  // has to be argued.
+  for (const action of ["weaken", "correct"]) {
+    assert.equal(
+      migratedAssertion([record({ action })], "fixture-suite", "declares-quantisation", "changed"),
+      true,
+      `${action} must still excuse a change`,
+    );
+  }
+});
+
+test("a REMOVED assertion is still excused by remove/weaken/correct", () => {
+  for (const action of ["remove", "weaken", "correct"]) {
+    assert.equal(
+      migratedAssertion([record({ action })], "fixture-suite", "declares-quantisation", "removed"),
+      true,
+      `${action} must excuse a removal`,
+    );
+  }
+  assert.deepEqual(MIGRATION_ACTIONS_BY_KIND.removed, ["remove", "weaken", "correct"]);
+  assert.deepEqual(MIGRATION_ACTIONS_BY_KIND.changed, ["weaken", "correct"]);
+});
+
+test("a missing kind matches nothing, so the failure is loud rather than silent", () => {
+  // Fail-closed: a future call site that forgets the kind gets an unexcused
+  // removal/change reported, not a record quietly honoured.
+  assert.equal(migratedAssertion([record()], "fixture-suite", "declares-quantisation"), false);
+  assert.equal(
+    migratedAssertion([record()], "fixture-suite", "declares-quantisation", "typo"),
+    false,
+  );
 });

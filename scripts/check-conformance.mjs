@@ -13,7 +13,10 @@
 //      removed) without a record in conformance-migrations.json — immutable means fix the demo,
 //      never weaken. The record's action must be one of remove|weaken|correct (see
 //      CONFORMANCE_MIGRATION_ACTIONS in conformance-lib.mjs): a factual correction of an assertion
-//      derived from wrong metadata is not a weakening and must not be mislabelled as one.
+//      derived from wrong metadata is not a weakening and must not be mislabelled as one. The
+//      action must also MATCH the situation (MIGRATION_ACTIONS_BY_KIND): `remove` excuses an
+//      assertion that is gone, and cannot excuse one that merely CHANGED — otherwise a weakening
+//      could be recorded as an evidence-free removal (web-ai-showcase-33c).
 //   5. a demo the action TOUCHED (its page HTML/JS changed vs origin/main) has a support class left
 //      "untested"/"broken" — a touched demo must be validated on both classes.
 //   6. any support class regressed non-monotonically: a class that was "ok" on origin/main is now
@@ -43,10 +46,10 @@ import { join } from "node:path";
 import {
   builtModels,
   computeSuiteHash,
-  CONFORMANCE_MIGRATION_ACTIONS,
   evaluateRecordedOutcome,
   loadCatalogue,
   migratedAssertion,
+  MIGRATION_ACTIONS_BY_KIND,
   normalizeAssertion,
   repoRoot,
   validateConformanceMigrations,
@@ -203,25 +206,27 @@ function main() {
       const bn = normalizeAssertion(ba);
       const cn = curById.get(ba.id);
       if (!cn) {
-        if (!migratedAssertion(migrations, suite.id, ba.id)) {
+        if (!migratedAssertion(migrations, suite.id, ba.id, "removed")) {
           failures.push(
             `WEAKENED (${slug}): assertion "${ba.id}" was REMOVED without a conformance-migrations.json record. ` +
               `Immutable — fix the demo, never delete the assertion. Record it with action ${
-                CONFORMANCE_MIGRATION_ACTIONS.join("|")
+                MIGRATION_ACTIONS_BY_KIND.removed.join("|")
               }.`,
           );
         }
         continue;
       }
       if (
-        JSON.stringify(bn) !== JSON.stringify(cn) && !migratedAssertion(migrations, suite.id, ba.id)
+        JSON.stringify(bn) !== JSON.stringify(cn) &&
+        !migratedAssertion(migrations, suite.id, ba.id, "changed")
       ) {
         failures.push(
           `WEAKENED (${slug}): assertion "${ba.id}" CHANGED vs origin/main without a migration record. ` +
             `Adding assertions is allowed; changing one needs a conformance-migrations.json record with ` +
             `action ${
-              CONFORMANCE_MIGRATION_ACTIONS.join("|")
-            } (use "correct" when the old assertion was factually wrong).`,
+              MIGRATION_ACTIONS_BY_KIND.changed.join("|")
+            } — evidence is required for both, and "remove" cannot excuse a change ` +
+            `(use "correct" when the old assertion was factually wrong).`,
         );
       }
     }
