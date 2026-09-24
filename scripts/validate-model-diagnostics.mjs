@@ -157,9 +157,16 @@ try {
   );
   await evaluate(cdp, sid, "window.__dispose.click('release from memory')");
   await wait(cdp, sid, "window.__dispose.state()==='released'", 5000);
+  // Measurement is manual-only (web-ai-showcase-cgr): the loader no longer samples on load or release,
+  // because the native API answers only after a GC pass (~19s idle, ~60s with a model resident, measured
+  // in Chrome 150 and Chromium 152), which no non-blocking phase budget can cover. The requirement this
+  // check exists for — a stalled memory request must never queue behind, or block, disposal — now holds
+  // by construction: the release path makes ZERO native calls and still completes. Asserting 0 rather
+  // than 1 keeps the check meaningful instead of vacuous; if sampling ever returns to this path, the
+  // count moves and this fails again.
   check(
     "fixture: disposal not queued behind stalled memory API",
-    await evaluate(cdp, sid, "window.__dispose.counters().disposeCalls===1 && nativeCalls===1"),
+    await evaluate(cdp, sid, "window.__dispose.counters().disposeCalls===1 && nativeCalls===0"),
   );
   await closePage(cdp, fixture.targetId);
 

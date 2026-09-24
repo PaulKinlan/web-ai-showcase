@@ -50,17 +50,24 @@ kept fresh by a Claude Code routine (`.claude/routine-prompt.md`).
 
 Both shared loaders expose memory snapshots using `measureUserAgentSpecificMemory()` when the host
 is cross-origin isolated and the browser supports it. The estimate covers the page and its dedicated
-workers, **not model-only RAM, GPU memory, process memory, or cached download size**. Lifecycle
-samples wait at most one second; manual samples wait up to 15 seconds. A slow browser measurement
-cannot block loading or release, and late results are discarded rather than mislabelled as an
-earlier phase. There is no JS-heap fallback masquerading as total model memory.
+workers, **not model-only RAM, GPU memory, process memory, or cached download size**. Measurement is
+**manual-only**: the visitor clicks Measure memory, which races a 90-second bound and keeps the result
+when it lands. There is no JS-heap fallback masquerading as total model memory.
+
+The reason sampling is not automatic: the browser answers this API only after a garbage-collection
+pass, measured at **~19 seconds with nothing loaded and ~60 seconds with a model resident**, in both
+Chrome 150 and Chromium 152 (see `web-ai-showcase-cgr`). No non-blocking page-phase budget can cover
+that, so an automatic before/after pair could only ever report "took too long". Explicit requests are
+different — the label is the visitor's, so a slow answer is still the answer. A stalled or slow
+request never blocks loading or release.
 
 `lib/model-run-status.mjs` displays elapsed time and average generated tokens/second (including
 prefill), updates at most four times per second, and announces the final rate accessibly. Call
 `token(count, ms)` with **generated token IDs**, not the number of decoded text callbacks. All four
-`llama2-c-stories` routes demonstrate this with Transformers.js's `token_callback_function` and an
-after-inference memory snapshot. Other families' token counters have not been audited by this
-change.
+`llama2-c-stories` routes demonstrate this with Transformers.js's `token_callback_function`; their
+`captureMemory("After inference")` calls are now inert (see above — measurement is manual), so they
+are scheduled for removal when those routes are next touched. Other families' token counters have not
+been audited by this change.
 
 ```bash
 deno task test:diagnostics                      # download-free browser fault/lifecycle checks
