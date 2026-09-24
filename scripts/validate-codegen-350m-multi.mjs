@@ -222,11 +222,49 @@ async function exercise(cdp, page, rung, viewport) {
   const hygiene = await evaluate(
     cdp,
     sid,
-    `({ overflow:document.documentElement.scrollWidth-window.innerWidth, named:[...document.querySelectorAll('button')].every((b)=>(b.textContent||b.getAttribute('aria-label')||'').trim()) })`,
+    `(() => {
+      // Astra's recipe (bead web-ai-showcase-vtk): a page can satisfy "scrollWidth - innerWidth" by
+      // simply WIDENING the viewport — which is how CodeGen Practical rendered into 404px while every
+      // gate stayed green. Assert the requested width FIRST, then the scroll delta, then that no
+      // control escapes the viewport or the content box of its enclosing panel. Never clip to pass:
+      // the fix constrains the control so native picker behaviour survives.
+      const requested = ${mobile ? MOBILE.width : DESKTOP.width};
+      const vw = window.innerWidth;
+      const panelContentRight = (el) => {
+        const panel = el.closest('.panel');
+        if (!panel || panel === el) return null;
+        const pr = panel.getBoundingClientRect();
+        const cs = getComputedStyle(panel);
+        return pr.right - parseFloat(cs.paddingRight || 0) - parseFloat(cs.borderRightWidth || 0);
+      };
+      const controls = [...document.querySelectorAll('button, input, select, textarea, label, output')]
+        .filter((el) => {
+          const r = el.getBoundingClientRect();
+          const cs = getComputedStyle(el);
+          return r.width > 0 && r.height > 0 && cs.display !== 'none' && cs.visibility !== 'hidden';
+        });
+      const escaping = [];
+      for (const el of controls) {
+        const r = el.getBoundingClientRect();
+        const pcr = panelContentRight(el);
+        const overViewport = +(r.right - vw).toFixed(2);
+        const overPanel = pcr === null ? null : +(r.right - pcr).toFixed(2);
+        if (overViewport > 1 || (overPanel !== null && overPanel > 1)) {
+          escaping.push({ tag: el.tagName.toLowerCase(), id: el.id || null, overViewport, overPanel });
+        }
+      }
+      return {
+        requested, innerWidth: vw, expanded: vw !== requested,
+        overflow: document.documentElement.scrollWidth - vw,
+        controlsChecked: controls.length, escaping,
+        named: [...document.querySelectorAll('button')].every((b) => (b.textContent || b.getAttribute('aria-label') || '').trim()),
+      };
+    })()`,
   );
   check(
     `${viewport} ${rung}: responsive controls`,
-    hygiene.overflow <= 1 && hygiene.named,
+    hygiene.innerWidth === hygiene.requested && !hygiene.expanded && hygiene.overflow <= 1 &&
+      hygiene.escaping.length === 0 && hygiene.named,
     JSON.stringify(hygiene),
   );
   check(
