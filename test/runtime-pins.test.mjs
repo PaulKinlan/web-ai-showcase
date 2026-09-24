@@ -23,10 +23,26 @@ test("runtime-pin-allowlist.json exists, parses, and has required structure", ()
   assert.ok(data.webLlm?.shared, "webLlm.shared must be defined");
   assert.ok(data.mediapipe?.shared, "mediapipe.shared must be defined");
 
+  for (const o of data.transformers.allowedLocalOverrides) {
+    assert.match(
+      o.version,
+      /^[0-9]+\.[0-9]+\.[0-9]+$/,
+      `override version ${o.version} must be semver`,
+    );
+    assert.ok(
+      Array.isArray(o.slugs) && o.slugs.length > 0,
+      "override entry needs non-empty slugs array",
+    );
+    assert.ok(String(o.reason).length > 10, "override entry needs a documented reason");
+    assert.ok(String(o.evidence).length > 5, "override entry needs documented evidence");
+    assert.match(o.reviewedOn, /^\d{4}-\d{2}-\d{2}$/, "reviewedOn must be YYYY-MM-DD");
+  }
+
   for (const v of data.onnxruntimeWeb.allowedVersions) {
     assert.match(v.version, /^[0-9]+\.[0-9]+\.[0-9]+$/, `version ${v.version} must be semver`);
     assert.ok(String(v.reason).length > 10, `entry ${v.version} needs a documented reason`);
     assert.ok(String(v.evidence).length > 5, `entry ${v.version} needs documented evidence`);
+    assert.match(v.reviewedOn, /^\d{4}-\d{2}-\d{2}$/, "reviewedOn must be YYYY-MM-DD");
   }
 });
 
@@ -114,5 +130,37 @@ test("MUTANT PROOF: checkRuntimePins catches unauthorized pin in search/", () =>
     );
   } finally {
     if (existsSync(p)) rmSync(p);
+  }
+});
+
+test("MUTANT PROOF: checkRuntimePins catches unauthorized route using allowed override", () => {
+  const p = join(ROOT, "models/depth-anything/worker.js");
+  const orig = readFileSync(p, "utf8");
+  writeFileSync(p, orig + "\n// mutant: @huggingface/transformers@4.2.0\n", "utf8");
+  try {
+    assert.throws(
+      () => execSync("node scripts/audit-model-currency.mjs --check", { cwd: ROOT, stdio: "pipe" }),
+      /Command failed/,
+      "expected --check to fail when unlisted route uses 4.2.0",
+    );
+  } finally {
+    writeFileSync(p, orig, "utf8");
+  }
+});
+
+test("MUTANT PROOF: checkRuntimePins catches allowlist entry missing reason", () => {
+  const p = join(ROOT, "scripts/runtime-pin-allowlist.json");
+  const orig = readFileSync(p, "utf8");
+  const data = JSON.parse(orig);
+  delete data.transformers.allowedLocalOverrides[0].reason;
+  writeFileSync(p, JSON.stringify(data, null, 2), "utf8");
+  try {
+    assert.throws(
+      () => execSync("node scripts/audit-model-currency.mjs --check", { cwd: ROOT, stdio: "pipe" }),
+      /Command failed/,
+      "expected --check to fail when allowlist entry is missing reason",
+    );
+  } finally {
+    writeFileSync(p, orig, "utf8");
   }
 });

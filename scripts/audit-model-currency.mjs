@@ -283,6 +283,49 @@ function checkRuntimePins() {
     return [`failed to parse scripts/runtime-pin-allowlist.json: ${e.message}`];
   }
 
+  // Structural validation: every entry must be self-justifying by construction
+  if (
+    !allowlist.transformers?.shared || !Array.isArray(allowlist.transformers?.allowedLocalOverrides)
+  ) {
+    return ["scripts/runtime-pin-allowlist.json: missing transformers configuration"];
+  }
+  for (const o of allowlist.transformers.allowedLocalOverrides) {
+    if (
+      !o.version || !Array.isArray(o.slugs) || o.slugs.length === 0 || !o.reason || !o.evidence ||
+      !o.reviewedOn
+    ) {
+      return [
+        `scripts/runtime-pin-allowlist.json: invalid transformers override entry for "${o.version}" (needs version, slugs array, reason, evidence, reviewedOn)`,
+      ];
+    }
+  }
+  if (
+    !Array.isArray(allowlist.onnxruntimeWeb?.allowedVersions) ||
+    allowlist.onnxruntimeWeb.allowedVersions.length === 0
+  ) {
+    return ["scripts/runtime-pin-allowlist.json: missing onnxruntimeWeb.allowedVersions array"];
+  }
+  for (const o of allowlist.onnxruntimeWeb.allowedVersions) {
+    if (!o.version || !o.reason || !o.evidence || !o.reviewedOn) {
+      return [
+        `scripts/runtime-pin-allowlist.json: invalid onnxruntimeWeb entry for "${o.version}" (needs version, reason, evidence, reviewedOn)`,
+      ];
+    }
+  }
+  if (!allowlist.webLlm?.shared || !allowlist.webLlm?.evidence || !allowlist.webLlm?.reviewedOn) {
+    return [
+      "scripts/runtime-pin-allowlist.json: missing webLlm configuration (needs shared, evidence, reviewedOn)",
+    ];
+  }
+  if (
+    !allowlist.mediapipe?.shared || !allowlist.mediapipe?.evidence ||
+    !allowlist.mediapipe?.reviewedOn
+  ) {
+    return [
+      "scripts/runtime-pin-allowlist.json: missing mediapipe configuration (needs shared, evidence, reviewedOn)",
+    ];
+  }
+
   const errors = [];
 
   // 1. Check onnxruntime-web versions
@@ -310,25 +353,43 @@ function checkRuntimePins() {
     errors.push(`failed to scan onnxruntime-web versions: ${e.message}`);
   }
 
-  // 2. Check @huggingface/transformers versions
-  const allowedTjsShared = allowlist.transformers?.shared;
-  const allowedTjsOverrides = new Set(
-    (allowlist.transformers?.allowedLocalOverrides || []).map((v) => v.version),
-  );
+  // 2. Check @huggingface/transformers versions with route-scoping
+  const allowedTjsShared = allowlist.transformers.shared;
+  const tjsOverrideMap = new Map();
+  for (const o of allowlist.transformers.allowedLocalOverrides) {
+    tjsOverrideMap.set(o.version, new Set(o.slugs));
+  }
+
   try {
     const raw = execSync(
-      `grep -rhoE '@huggingface/transformers@[0-9]+\\.[0-9]+\\.[0-9]+' ${PIN_SCAN_TARGETS} 2>/dev/null || true`,
+      `grep -rnE '@huggingface/transformers@[0-9]+\\.[0-9]+\\.[0-9]+' ${PIN_SCAN_TARGETS} 2>/dev/null || true`,
       { cwd: ROOT, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
     );
-    const foundTjs = new Set();
     for (const line of raw.split("\n")) {
-      const v = line.split("@").pop()?.trim();
-      if (v) foundTjs.add(v);
-    }
-    for (const v of foundTjs) {
-      if (v !== allowedTjsShared && !allowedTjsOverrides.has(v)) {
+      if (!line.trim()) continue;
+      const colonIdx = line.indexOf(":");
+      const file = colonIdx >= 0 ? line.slice(0, colonIdx) : line;
+      const match = line.match(/@huggingface\/transformers@([0-9.]+)/);
+      if (!match) continue;
+      const v = match[1];
+      if (v === allowedTjsShared) continue;
+
+      const allowedSlugs = tjsOverrideMap.get(v);
+      if (!allowedSlugs) {
         errors.push(
-          `unauthorized @huggingface/transformers version "${v}" — not in scripts/runtime-pin-allowlist.json`,
+          `unauthorized @huggingface/transformers version "${v}" in ${file} — not in scripts/runtime-pin-allowlist.json`,
+        );
+        continue;
+      }
+
+      // If version is an allowed override, assert that the file belongs to an authorized slug
+      const slugMatch = file.match(/^models\/([^/]+)\//);
+      const slug = slugMatch ? slugMatch[1] : null;
+      if (!slug || !allowedSlugs.has(slug)) {
+        errors.push(
+          `unauthorized @huggingface/transformers override "${v}" in ${file} — route "${
+            slug || file
+          }" is not authorized in scripts/runtime-pin-allowlist.json`,
         );
       }
     }
