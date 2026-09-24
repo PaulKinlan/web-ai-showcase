@@ -12,6 +12,8 @@ const MODEL_ID = "onnx-community/Florence-2-base-ft";
 let model = null;
 let processor = null;
 let mod = null;
+let activeDevice = "webgpu";
+let activeDtype = "fp16";
 
 function post(msg) {
   self.postMessage(msg);
@@ -34,17 +36,60 @@ async function ensureLoaded() {
   if (model) return;
   mod = await import(TRANSFORMERS_URL);
   const { Florence2ForConditionalGeneration, AutoProcessor } = mod;
-  console.log(`[florence worker] loading ${MODEL_ID} on webgpu (fp16)`);
-  processor = await AutoProcessor.from_pretrained(MODEL_ID, {
+  
+  processor = await AutoProcessor.from_pretrained("onnx-community/Florence-2-base-ft", {
     progress_callback: (p) => post({ type: "progress", p }),
   });
-  model = await Florence2ForConditionalGeneration.from_pretrained(MODEL_ID, {
-    dtype: "fp16",
-    device: "webgpu",
-    progress_callback: (p) => post({ type: "progress", p }),
-  });
-  console.log("[florence worker] ready on webgpu");
-  post({ type: "ready", device: "webgpu" });
+
+  const gpu = await probeGPU();
+  if (gpu.ok) {
+    // Attempt primary fp16 path on WebGPU
+    try {
+      console.log(`[florence worker] loading ${MODEL_ID} on webgpu (fp16)`);
+      model = await Florence2ForConditionalGeneration.from_pretrained("onnx-community/Florence-2-base-ft", {
+        dtype: "fp16",
+        device: "webgpu",
+        progress_callback: (p) => post({ type: "progress", p }),
+      });
+      activeDevice = "webgpu";
+      activeDtype = "fp16";
+    } catch (errFp16) {
+      console.warn(`[florence worker] webgpu fp16 failed (${errFp16?.message || errFp16}), falling back to webgpu q4`);
+      post({ type: "progress", p: { status: "initiate", file: "retrying on WebGPU (q4)…" } });
+      try {
+        model = await Florence2ForConditionalGeneration.from_pretrained("onnx-community/Florence-2-base-ft", {
+          dtype: "q4",
+          device: "webgpu",
+          progress_callback: (p) => post({ type: "progress", p }),
+        });
+        activeDevice = "webgpu";
+        activeDtype = "q4";
+      } catch (errQ4) {
+        console.warn(`[florence worker] webgpu q4 failed (${errQ4?.message || errQ4}), falling back to wasm q8`);
+        post({ type: "progress", p: { status: "initiate", file: "retrying on WASM (q8)…" } });
+        model = await Florence2ForConditionalGeneration.from_pretrained("onnx-community/Florence-2-base-ft", {
+          dtype: "q8",
+          device: "wasm",
+          progress_callback: (p) => post({ type: "progress", p }),
+        });
+        activeDevice = "wasm";
+        activeDtype = "q8";
+      }
+    }
+  } else {
+    // No GPU adapter — honest WASM q8 fallback
+    console.log(`[florence worker] no WebGPU adapter, loading ${MODEL_ID} on wasm (q8)`);
+    model = await Florence2ForConditionalGeneration.from_pretrained("onnx-community/Florence-2-base-ft", {
+      dtype: "q8",
+      device: "wasm",
+      progress_callback: (p) => post({ type: "progress", p }),
+    });
+    activeDevice = "wasm";
+    activeDtype = "q8";
+  }
+
+  console.log(`[florence worker] ready on ${activeDevice} (${activeDtype})`);
+  post({ type: "ready", device: activeDevice, dtype: activeDtype });
 }
 
 async function run(id, imageURL, task, text, maxTokens) {
@@ -81,6 +126,8 @@ async function run(id, imageURL, task, text, maxTokens) {
     parsed,
     imageSize: image.size, // [width, height]
     ms,
+    device: activeDevice,
+    dtype: activeDtype,
   });
 }
 
