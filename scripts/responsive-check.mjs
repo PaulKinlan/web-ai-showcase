@@ -54,27 +54,52 @@ async function checkClass(cdp, sessionId, vp, errors, netFailures) {
   const metrics = await evalValue(
     cdp,
     sessionId,
-    `(()=>{const de=document.documentElement;const overflow=de.scrollWidth-window.innerWidth;
-      const controls=[...document.querySelectorAll('button,a,input,select,textarea,[role=button],[tabindex]')];
-      let clipped=0, small=0;
-      for(const c of controls){const r=c.getBoundingClientRect();
-        if(r.width===0&&r.height===0)continue;
-        if(r.right>window.innerWidth+1||r.left<-1)clipped++;
-        if((r.width>0&&r.width<24)||(r.height>0&&r.height<24))small++;}
-      return {overflow, clipped, small, controls:controls.length};})()`,
+    `(()=>{
+      const de = document.documentElement;
+      const requested = ${vp.width};
+      const vw = window.innerWidth;
+      const expanded = vw !== requested;
+      const overflow = de.scrollWidth - vw;
+
+      const panelContentEdges = (el) => {
+        const panel = el.closest('.panel');
+        if (!panel || panel === el) return null;
+        const pr = panel.getBoundingClientRect();
+        const cs = getComputedStyle(panel);
+        return {
+          left: pr.left + parseFloat(cs.paddingLeft || 0) + parseFloat(cs.borderLeftWidth || 0),
+          right: pr.right - parseFloat(cs.paddingRight || 0) - parseFloat(cs.borderRightWidth || 0),
+        };
+      };
+
+      const controls = [...document.querySelectorAll('button,a,input,select,textarea,[role=button],[tabindex]')];
+      let clipped = 0, small = 0, panelEscapes = 0;
+      for (const c of controls) {
+        const r = c.getBoundingClientRect();
+        if (r.width === 0 && r.height === 0) continue;
+        if (r.right > vw + 1 || r.left < -1) clipped++;
+        const edges = panelContentEdges(c);
+        if (edges !== null && (r.right > edges.right + 1 || r.left < edges.left - 1)) panelEscapes++;
+        if ((r.width > 0 && r.width < 24) || (r.height > 0 && r.height < 24)) small++;
+      }
+      return { requested, innerWidth: vw, expanded, overflow, clipped, panelEscapes, small, controls: controls.length };
+    })()`,
   );
+  const viewportOk = !metrics?.expanded && metrics?.innerWidth === vp.width;
   const overflowOk = (metrics?.overflow ?? 0) <= 1;
-  const offscreenOk = (metrics?.clipped ?? 0) === 0;
+  const offscreenOk = (metrics?.clipped ?? 0) === 0 && (metrics?.panelEscapes ?? 0) === 0;
   const consoleOk = errors.length === 0;
   const networkOk = netFailures.length === 0;
   const notes = [];
+  if (!viewportOk) notes.push(`viewport widened to ${metrics?.innerWidth}px (requested ${vp.width}px)`);
   if (!overflowOk) notes.push(`horizontal overflow ${metrics.overflow}px`);
-  if (!offscreenOk) notes.push(`${metrics.clipped} control(s) clipped off-viewport`);
+  if ((metrics?.clipped ?? 0) > 0) notes.push(`${metrics.clipped} control(s) clipped off-viewport`);
+  if ((metrics?.panelEscapes ?? 0) > 0) notes.push(`${metrics.panelEscapes} control(s) escape enclosing panel`);
   if (!consoleOk) notes.push(`console: ${errors.slice(0, 2).join(" | ")}`);
   if (!networkOk) notes.push(`network fail: ${netFailures.slice(0, 2).join(" | ")}`);
   if (metrics?.small) notes.push(`${metrics.small} sub-24px target(s) — agent to verify tap size`);
   return {
-    pass: overflowOk && offscreenOk && consoleOk && networkOk,
+    pass: viewportOk && overflowOk && offscreenOk && consoleOk && networkOk,
     overflow: metrics?.overflow ?? null,
     clipped: metrics?.clipped ?? null,
     console: consoleOk,
