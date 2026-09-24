@@ -262,7 +262,12 @@ export async function launchChrome(options = {}) {
 
 // Open a fresh page/session; collect console errors + failed network requests during load; navigate;
 // settle. Returns { targetId, sessionId, errors, netFailures }.
-export async function openPage(cdp, url) {
+/**
+ * `blockUrls` are installed BEFORE navigation, so a structural sweep can stop
+ * model downloads from ever starting. Blocking after load is too late: the page
+ * has already fired its fetches.
+ */
+export async function openPage(cdp, url, { blockUrls } = {}) {
   const { targetId } = await cdp.send("Target.createTarget", { url: "about:blank" });
   const { sessionId } = await cdp.send("Target.attachToTarget", { targetId, flatten: true });
   const errors = [];
@@ -282,6 +287,9 @@ export async function openPage(cdp, url) {
   await cdp.send("Page.enable", {}, sessionId);
   await cdp.send("Runtime.enable", {}, sessionId);
   await cdp.send("Network.enable", {}, sessionId);
+  if (blockUrls?.length) {
+    await cdp.send("Network.setBlockedURLs", { urls: blockUrls }, sessionId);
+  }
   await cdp.send("Emulation.setDeviceMetricsOverride", DESKTOP, sessionId);
   const loaded = new Promise((resolve) => {
     cdp.on((msg) => {
