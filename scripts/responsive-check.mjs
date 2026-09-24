@@ -49,6 +49,16 @@ const NOW = process.env.CONFORMANCE_GENERATED_AT || val("--now", "2026-07-19T00:
 const outDir = join(repoRoot, "reports", "responsive");
 
 // Per-class programmatic checks. Returns { pass, overflow, offscreen, console, network, notes }.
+//
+// Two signals beyond the original scroll-delta:
+//  1. the requested viewport width must be honoured — a page that WIDENS the layout viewport reports
+//     documentElement.scrollWidth - window.innerWidth as 404 - 404 = 0, so the old check could not see
+//     it, and a control at right:402.97 was not "clipped" against a 404px innerWidth either;
+//  2. a control must stay inside its parent's content box (unless an ancestor is a horizontal scroll
+//     container, which is a legitimate way to present wide content). This one holds even where the
+//     viewport does NOT grow, so it does not depend on how the harness emulates the device.
+// Together these catch models/codegen-350m/practical/ pushing a 360px device to 404px
+// (web-ai-showcase-vtk) whichever way the failure presents.
 async function checkClass(cdp, sessionId, vp, errors, netFailures) {
   await setViewport(cdp, sessionId, vp);
   const metrics = await evalValue(
@@ -56,27 +66,63 @@ async function checkClass(cdp, sessionId, vp, errors, netFailures) {
     sessionId,
     `(()=>{const de=document.documentElement;const overflow=de.scrollWidth-window.innerWidth;
       const controls=[...document.querySelectorAll('button,a,input,select,textarea,[role=button],[tabindex]')];
-      let clipped=0, small=0;
+      let clipped=0, small=0; const escaping=[];
+      const inScroller=(el)=>{for(let a=el.parentElement;a&&a!==de;a=a.parentElement){
+        const ox=getComputedStyle(a).overflowX; if(ox==='auto'||ox==='scroll')return true;} return false;};
       for(const c of controls){const r=c.getBoundingClientRect();
         if(r.width===0&&r.height===0)continue;
         if(r.right>window.innerWidth+1||r.left<-1)clipped++;
-        if((r.width>0&&r.width<24)||(r.height>0&&r.height<24))small++;}
-      return {overflow, clipped, small, controls:controls.length};})()`,
+        if((r.width>0&&r.width<24)||(r.height>0&&r.height<24))small++;
+        /* A control must sit inside its ancestors' content boxes. The chain matters: the offending
+           element is usually an ancestor (a flex item that cannot shrink), not the control itself. */
+        if(inScroller(c))continue;
+        for(let el=c;el&&el!==de;el=el.parentElement){
+          const p=el.parentElement; if(!p||p===de)break;
+          const ecs=getComputedStyle(el);
+          if(ecs.position==='fixed')break;
+          const pcs=getComputedStyle(p),pr=p.getBoundingClientRect();
+          if(pr.width===0)continue;
+          const right=pr.right-parseFloat(pcs.paddingRight)-parseFloat(pcs.borderRightWidth);
+          const left=pr.left+parseFloat(pcs.paddingLeft)+parseFloat(pcs.borderLeftWidth);
+          const er=el.getBoundingClientRect();
+          if(er.right>right+1||er.left<left-1){
+            escaping.push((el.id?('#'+el.id):el.tagName.toLowerCase())+(el.className&&typeof el.className==='string'?('.'+el.className.trim().split(/\\s+/)[0]):'')+' right='+er.right.toFixed(1)+' > '+right.toFixed(1));
+            break;
+          }
+        }
+      }
+      return {overflow, clipped, small, controls:controls.length,
+        innerWidth:window.innerWidth, clientWidth:de.clientWidth, outerWidth:window.outerWidth,
+        escaping:escaping.slice(0,4).join(' | '), escapingCount:escaping.length};})()`,
   );
   const overflowOk = (metrics?.overflow ?? 0) <= 1;
   const offscreenOk = (metrics?.clipped ?? 0) === 0;
+  // A page must render at the width it was asked for. Growth means some element forced the layout
+  // viewport wider than the device — invisible mobile overflow.
+  const viewportOk = Math.abs((metrics?.innerWidth ?? 0) - vp.width) <= 1;
+  const containedOk = (metrics?.escapingCount ?? 0) === 0;
   const consoleOk = errors.length === 0;
   const networkOk = netFailures.length === 0;
   const notes = [];
+  if (!containedOk) {
+    notes.push(`${metrics.escapingCount} control(s) escape their container: ${metrics.escaping}`);
+  }
+  if (!viewportOk) {
+    notes.push(
+      `viewport expanded to ${metrics?.innerWidth}px (requested ${vp.width}px) — content is forcing the layout wider than the device`,
+    );
+  }
   if (!overflowOk) notes.push(`horizontal overflow ${metrics.overflow}px`);
   if (!offscreenOk) notes.push(`${metrics.clipped} control(s) clipped off-viewport`);
   if (!consoleOk) notes.push(`console: ${errors.slice(0, 2).join(" | ")}`);
   if (!networkOk) notes.push(`network fail: ${netFailures.slice(0, 2).join(" | ")}`);
   if (metrics?.small) notes.push(`${metrics.small} sub-24px target(s) — agent to verify tap size`);
   return {
-    pass: overflowOk && offscreenOk && consoleOk && networkOk,
+    pass: overflowOk && offscreenOk && viewportOk && containedOk && consoleOk && networkOk,
     overflow: metrics?.overflow ?? null,
     clipped: metrics?.clipped ?? null,
+    viewportExpanded: viewportOk ? false : metrics?.innerWidth ?? null,
+    escaping: metrics?.escapingCount ?? null,
     console: consoleOk,
     network: networkOk,
     notes,

@@ -91,7 +91,10 @@ textarea.prompt { min-block-size: 4.2rem; resize: vertical; font-family: var(--f
 .gen-out .new-span { color: var(--color); }
 .controls { display: flex; flex-wrap: wrap; gap: 1rem 1.4rem; align-items: center; margin: .6rem 0; }
 .controls label { display: flex; align-items: center; gap: .5rem; font-family: var(--font-mono);
-  font-size: .78rem; color: var(--muted); }
+  font-size: .78rem; color: var(--muted); min-inline-size: 0; }
+/* A native select sizes to its widest option; without these two it cannot shrink, so the flex
+   item around it outgrows the panel and widens the viewport on narrow screens. */
+.controls select { min-inline-size: 0; max-inline-size: 100%; }
 .controls output { color: var(--color); font-weight: 600; min-inline-size: 2.2rem; }
 .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 999px; overflow: hidden; }
 .seg button { border: none; border-radius: 0; background: var(--bg-raised); color: var(--color); padding: .3rem .8rem; font-size: .8rem; }
