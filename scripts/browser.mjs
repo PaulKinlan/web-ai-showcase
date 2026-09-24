@@ -149,7 +149,7 @@ async function stopProcessTree(proc) {
   });
 }
 
-async function spawnChromeOnce(userDataDir, resetProfile, extraArgs = []) {
+async function spawnChromeOnce(userDataDir, resetProfile, extraArgs = [], webgpu = false) {
   if (resetProfile) {
     try {
       rmSync(userDataDir, { recursive: true, force: true });
@@ -165,10 +165,14 @@ async function spawnChromeOnce(userDataDir, resetProfile, extraArgs = []) {
       } catch { /* ignore */ }
     }
   }
+  const wantWebGPU = webgpu || extraArgs.some((a) => typeof a === "string" && (a.includes("webgpu") || a.includes("vulkan")));
+  const gpuArgs = wantWebGPU
+    ? ["--enable-unsafe-webgpu", "--use-angle=vulkan", "--enable-features=Vulkan"]
+    : ["--disable-gpu"];
   const proc = spawn(findChrome(), [
     "--headless=new",
     "--no-sandbox",
-    "--disable-gpu",
+    ...gpuArgs,
     "--disable-dev-shm-usage",
     "--hide-scrollbars",
     "--remote-debugging-port=0",
@@ -180,7 +184,7 @@ async function spawnChromeOnce(userDataDir, resetProfile, extraArgs = []) {
     // validator exercises a real play button. Allow autoplay in the TEST browser only (shipped pages
     // still resume on genuine user clicks). Standard practice (Puppeteer/Playwright default).
     "--autoplay-policy=no-user-gesture-required",
-    ...extraArgs,
+    ...extraArgs.filter((a) => !gpuArgs.includes(a)),
     `--user-data-dir=${userDataDir}`,
     "about:blank",
   ], { detached: detachedProcessGroup, stdio: ["ignore", "ignore", "ignore"] });
@@ -211,12 +215,13 @@ export async function launchChrome(options = {}) {
   const userDataDir = options.userDataDir || join(repoRoot, ".conformance-chrome-profile");
   const resetProfile = options.resetProfile ?? true;
   const removeProfileOnKill = options.removeProfileOnKill ?? true;
+  const webgpu = options.webgpu ?? false;
   const extraArgs = options.extraArgs || [];
   // Chrome can intermittently fail to expose its endpoint under IO/memory pressure — retry the whole
   // spawn a few times before giving up so the harness is reliable in constrained sandboxes.
   let started = null;
   for (let attempt = 0; attempt < 4 && !started; attempt++) {
-    started = await spawnChromeOnce(userDataDir, resetProfile, extraArgs);
+    started = await spawnChromeOnce(userDataDir, resetProfile, extraArgs, webgpu);
     if (!started) await new Promise((r) => setTimeout(r, 500));
   }
   if (!started) throw new Error("Chrome did not expose a DevTools endpoint (after retries)");
