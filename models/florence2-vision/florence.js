@@ -50,6 +50,8 @@ export class FlorenceEngine {
         break;
       case "ready":
         this.ready = true;
+        this.device = msg.device;
+        this.dtype = msg.dtype;
         for (const w of this._loadWaiters) w.resolve(msg.device);
         this._loadWaiters = [];
         break;
