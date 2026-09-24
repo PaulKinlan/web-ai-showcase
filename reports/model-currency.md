@@ -1,19 +1,17 @@
 # Model + runtime currency audit
 
-Generated 2026-09-24T09:03:28.516Z by `scripts/audit-model-currency.mjs`.
+Generated 2026-09-24T15:25:41.211Z by `scripts/audit-model-currency.mjs`.
 
-- Built routes: **327** · scanned: **327** · unique HF repos health-checked: **346**
-  (324 cited · 286 weight-serving · 35 config/tokenizer-only)
+- Built routes: **327** · scanned: **327** · unique HF repos health-checked: **340**
+  (324 cited · 309 weight-serving · 35 config/tokenizer-only)
 - transformers.js shared pin: **3.7.5** · latest published: **4.3.0** (recent stable: 3.8.1, 4.0.0, 4.0.1, 4.1.0, 4.2.0, 4.3.0)
 - Local version overrides: `4.2.0` on 7 route(s)
-- Checkpoint/pin findings: **46**
+- Checkpoint/pin findings: **38**
 
 ## Findings by kind
 
 - taskDrift: 34
-- unauthorized: 7
 - gatedInformational: 4
-- noOnnx: 1
 
 ## Findings
 
@@ -40,13 +38,6 @@ Generated 2026-09-24T09:03:28.516Z by `scripts/audit-model-currency.mjs`.
 - `jinaai/jina-clip-v2` — {"taskDrift":{"recorded":"zero-shot-image-classification","upstream":"feature-extraction","reading":"demo runs the zero-shot image pipeline over the encoder"}}
 - `jinaai/jina-reranker-v1-tiny-en` — {"taskDrift":{"recorded":"text-classification","upstream":"text-ranking","reading":"reranker driven as a classification pipeline (TJS has no text-ranking task)"}}
 - `jinaai/jina-reranker-v2-base-multilingual` — {"taskDrift":{"recorded":"text-classification","upstream":"text-ranking","reading":"reranker driven as a classification pipeline (TJS has no text-ranking task)"}}
-- `mediapipe/face-detector` — {"unauthorized":"HTTP 401 — private or non-HF identifier"}
-- `mediapipe/face-landmarker` — {"unauthorized":"HTTP 401 — private or non-HF identifier"}
-- `mediapipe/gesture-recognizer` — {"unauthorized":"HTTP 401 — private or non-HF identifier"}
-- `mediapipe/hand-landmarker` — {"unauthorized":"HTTP 401 — private or non-HF identifier"}
-- `mediapipe/image-segmenter` — {"unauthorized":"HTTP 401 — private or non-HF identifier"}
-- `mediapipe/interactive-segmenter` — {"unauthorized":"HTTP 401 — private or non-HF identifier"}
-- `mediapipe/pose-landmarker` — {"unauthorized":"HTTP 401 — private or non-HF identifier"}
 - `meta-llama/Llama-3.2-1B-Instruct` — {"gatedInformational":"gated=manual — cited only; weights arrive via a CDN build"}
 - `meta-llama/Llama-3.2-3B-Instruct` — {"gatedInformational":"gated=manual — cited only; weights arrive via a CDN build"}
 - `mixedbread-ai/mxbai-rerank-xsmall-v1` — {"taskDrift":{"recorded":"text-classification","upstream":"text-ranking","reading":"reranker driven as a classification pipeline (TJS has no text-ranking task)"}}
@@ -62,31 +53,21 @@ Generated 2026-09-24T09:03:28.516Z by `scripts/audit-model-currency.mjs`.
 - `naklitechie/mms-tts-ur-ONNX` — {"taskDrift":{"recorded":"text-to-speech","upstream":"text-to-audio","reading":"same behaviour — TJS task name vs card tag"}}
 - `onnx-community/Phi-3.5-vision-instruct` — {"taskDrift":{"recorded":"image-text-to-text","upstream":"text-generation","reading":"card tag is a poor fit for this VLM; demo uses image-text-to-text"}}
 - `shibing624/macbert4csc-base-chinese` — {"taskDrift":{"recorded":"fill-mask","upstream":"text-generation","reading":"spell-correction checkpoint driven as fill-mask over masked spans"}}
-- `spotify/basic-pitch` — {"noOnnx":"no .onnx files in the repo"}
 
-## Catalogue dtype vs worker dtype (7)
+## Catalogue dtype vs worker dtype (8)
 
 - `gemma-3-270m`: catalogue `fp32`, worker `q4f16+fp32` — catalogue-names-one-of-several
+- `florence2-vision`: catalogue `fp16`, worker `fp16+q4+q8` — catalogue-names-one-of-several
+- `florence-2-large`: catalogue `fp16`, worker `fp16+q4+q8` — catalogue-names-one-of-several
 - `bart-zero-shot`: catalogue `q4f16`, worker `q4f16+q8` — catalogue-names-one-of-several
 - `fashion-clip`: catalogue `fp32`, worker `fp32+q8` — catalogue-names-one-of-several
 - `granite`: catalogue `q8`, worker `q4f16+q8` — catalogue-names-one-of-several
 - `falcon3`: catalogue `q8`, worker `q4f16+q8` — catalogue-names-one-of-several
 - `ernie-4-5-0-3b`: catalogue `q8`, worker `q4f16+q8` — catalogue-names-one-of-several
-- `mms-tts-bengali`: catalogue `q8`, worker `fp32` — mismatch
 
-## Catalogue accuracy — cited `hfId` vs requested weights (11)
+## Catalogue accuracy — cited `hfId` vs requested weights (0)
 
-- `mobilenetv3-small-100-lamb-in1k` (transformers.js): cites `timm/mobilenetv3_small_100.lamb_in1k`, requests `onnx-community/mobilenetv3_small_100.lamb_in1k` — same model — an ONNX/MLC build of the cited checkpoint
-- `stanford-deidentifier-base` (transformers.js): cites `StanfordAIMI/stanford-deidentifier-base`, requests `onnx-community/stanford-deidentifier-base-ONNX` — same model — an ONNX/MLC build of the cited checkpoint
-- `lfm2` (transformers.js): cites `LiquidAI/LFM2-350M`, requests `onnx-community/LFM2-350M-ONNX` — same model — an ONNX/MLC build of the cited checkpoint
-- `interactive-segmenter` (mediapipe): cites `mediapipe/interactive-segmenter`, requests `Xenova/mobilevit-small` — no name relation — verify the page's provenance claim
-- `manga-ocr` (raw-ort): cites `kha-white/manga-ocr-base`, requests `onnx-community/manga-ocr-base-ONNX` — same model — an ONNX/MLC build of the cited checkpoint
-- `mobilevit-small` (transformers.js): cites `apple/mobilevit-small`, requests `Xenova/mobilevit-small` — same model — an ONNX/MLC build of the cited checkpoint
-- `mobilenetv4-conv-small-e2400-r224-in1k` (transformers.js): cites `timm/mobilenetv4_conv_small.e2400_r224_in1k`, requests `onnx-community/mobilenetv4_conv_small.e2400_r224_in1k` — same model — an ONNX/MLC build of the cited checkpoint
-- `embeddinggemma` (transformers.js): cites `google/embeddinggemma-300m`, requests `onnx-community/embeddinggemma-300m-ONNX` — same model — an ONNX/MLC build of the cited checkpoint
-- `splade-sparse-retrieval` (raw-ort): cites `prithivida/Splade_PP_en_v1`, requests `devve1/Splade_PP_en_v2_onnx` — no name relation — verify the page's provenance claim
-- `speech-separation` (raw-ort): cites `JorisCos/ConvTasNet_Libri2Mix_sepclean_16k`, requests `welcomyou/convtasnet-libri2mix-16k-onnx` — no name relation — verify the page's provenance claim
-- `esm-protein` (unknown): cites `facebook/esm2_t6_8M_UR50D`, requests `Xenova/esm2_t6_8M_UR50D` — same model — an ONNX/MLC build of the cited checkpoint
+- every scanned route requests the repo it cites
 
 ## Routes (runtime · requested weights)
 
@@ -416,4 +397,4 @@ Generated 2026-09-24T09:03:28.516Z by `scripts/audit-model-currency.mjs`.
 - `mms-tts-portuguese` (transformers.js, q8): `Xenova/mms-tts-por`
 - `mms-tts-romanian` (transformers.js, q8): `Xenova/mms-tts-ron`
 - `codegen-350m-multi` (transformers.js, q8): `Xenova/codegen-350M-multi`
-- `mms-tts-bengali` (transformers.js, q8): `naklitechie/mms-tts-bn-ONNX`
+- `mms-tts-bengali` (transformers.js, fp32): `naklitechie/mms-tts-bn-ONNX`

@@ -357,14 +357,24 @@ for (const m of targets) {
   for (const id of sig.configIds) configIds.add(id);
   cited.add(m.hfId);
   if (sig.mlcIds.size) mlcRoutes.push({ slug: m.slug, mlcIds: [...sig.mlcIds] });
+  const loadedId = m.loadedId || (sig.weightIds.size > 0 ? [...sig.weightIds][0] : m.hfId);
+  const loadedVia = m.loadedVia ||
+    (sig.runtime !== "unknown" ? sig.runtime : (m.runtime || "transformers.js"));
+  if (loadedId && loadedVia !== "mediapipe" && loadedVia !== "mlc-cdn" && loadedVia !== "webllm") {
+    weightIds.add(loadedId);
+  }
   routeRecords[m.slug] = {
     hfId: m.hfId,
+    loadedId,
+    loadedVia,
     catalogueDtype: m.dtype ?? null,
     checkedAt: new Date().toISOString(),
   };
   perRoute.push({
     slug: m.slug,
     hfId: m.hfId,
+    loadedId,
+    loadedVia,
     task: m.task,
     catalogueDtype: m.dtype ?? null,
     runtime: sig.runtime,
@@ -377,7 +387,7 @@ for (const m of targets) {
   });
 }
 
-const looksLikeRepo = (id) => ID_SHAPE.test(id) && !NON_HF.test(id);
+const looksLikeRepo = (id) => ID_SHAPE.test(id) && !NON_HF.test(id) && !id.startsWith("mediapipe/");
 const sweep = [...new Set([...cited, ...weightIds, ...configIds])].filter(looksLikeRepo).sort();
 const snapshot = existsSync(SNAPSHOT)
   ? JSON.parse(await readFile(SNAPSHOT, "utf8"))
@@ -429,7 +439,19 @@ const api = new Map([
 const findings = [], records = {};
 for (const id of sweep) {
   const r = api.get(id) ?? {};
-  const asWeights = perRoute.filter((rt) => rt.weightIds.includes(id));
+  const asWeights = perRoute.filter((rt) => {
+    if (
+      rt.loadedVia === "mediapipe" ||
+      rt.loadedVia === "mlc-cdn" ||
+      rt.loadedVia === "webllm"
+    ) {
+      return false;
+    }
+    if (rt.loadedId && rt.loadedId !== rt.hfId) {
+      return rt.loadedId === id;
+    }
+    return rt.loadedId === id || rt.weightIds.includes(id);
+  });
   const asConfig = perRoute.filter((rt) => rt.configIds.includes(id));
   const f = {
     hfId: id,
@@ -439,7 +461,9 @@ for (const id of sweep) {
   };
   // Gating only blocks routes that fetch weights from the Hub. WebLLM routes take quantised MLC
   // builds from the MLC CDN and merely cite the upstream card.
-  const hubServed = asWeights.some((rt) => rt.runtime !== "webllm" && rt.runtime !== "mediapipe");
+  const hubServed = asWeights.some((rt) =>
+    rt.loadedVia !== "mlc-cdn" && rt.loadedVia !== "webllm" && rt.loadedVia !== "mediapipe"
+  );
 
   if (r.missing) f.dead = "checkpoint 404";
   if (r.unauthorized) f.unauthorized = "HTTP 401 — private or non-HF identifier";
@@ -568,11 +592,19 @@ const accuracy = [], dtypeAudit = [];
 const baseName = (s) =>
   s.split("/").pop().replace(/-ONNX$/i, "").replace(/-MLC$/, "").toLowerCase();
 for (const rt of perRoute) {
-  if (rt.weightIds.length && !rt.weightIds.includes(rt.hfId)) {
+  const targetId = rt.loadedId || rt.hfId;
+  const isMatch = rt.weightIds.length === 0 ||
+    rt.weightIds.includes(targetId) ||
+    (rt.loadedId && rt.weightIds.includes(rt.hfId)) ||
+    rt.loadedVia === "mediapipe" ||
+    rt.loadedVia === "mlc-cdn" ||
+    rt.loadedVia === "webllm";
+  if (!isMatch) {
     accuracy.push({
       slug: rt.slug,
       runtime: rt.runtime,
       cited: rt.hfId,
+      loadedId: rt.loadedId,
       requested: rt.weightIds,
       relation: rt.weightIds.some((id) =>
           baseName(id).startsWith(baseName(rt.hfId)) || baseName(rt.hfId).startsWith(baseName(id))
