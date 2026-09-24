@@ -91,7 +91,9 @@ textarea.prompt { min-block-size: 3.4rem; resize: vertical; }
 .gen-out .new-span { color: var(--color); }
 .controls { display: flex; flex-wrap: wrap; gap: 1rem 1.4rem; align-items: center; margin: .6rem 0; }
 .controls label { display: flex; align-items: center; gap: .5rem; font-family: var(--font-mono);
-  font-size: .78rem; color: var(--muted); }
+  font-size: .78rem; color: var(--muted); flex-wrap: wrap; min-inline-size: 0; max-inline-size: 100%; }
+.controls :is(input, select) { min-inline-size: 0; max-inline-size: 100%; font-size: 1rem; }
+.controls :is(button, input, select), .sample-row button { min-block-size: 44px; }
 .controls output { color: var(--color); font-weight: 600; min-inline-size: 2.2rem; }
 .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 999px; overflow: hidden; }
 .seg button { border: none; border-radius: 0; background: var(--bg-raised); color: var(--color); padding: .3rem .8rem; font-size: .8rem; }
