@@ -64,10 +64,8 @@ request never blocks loading or release.
 `lib/model-run-status.mjs` displays elapsed time and average generated tokens/second (including
 prefill), updates at most four times per second, and announces the final rate accessibly. Call
 `token(count, ms)` with **generated token IDs**, not the number of decoded text callbacks. All four
-`llama2-c-stories` routes demonstrate this with Transformers.js's `token_callback_function`; their
-`captureMemory("After inference")` calls are now inert (see above — measurement is manual), so they
-are scheduled for removal when those routes are next touched. Other families' token counters have not
-been audited by this change.
+`llama2-c-stories` routes demonstrate this with Transformers.js's `token_callback_function`. Other
+families' token counters have not been audited by this change.
 
 ```bash
 deno task test:diagnostics                      # download-free browser fault/lifecycle checks

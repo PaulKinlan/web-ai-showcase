@@ -32,10 +32,10 @@ async function ensureLoaded() {
   if (model) return;
   mod = await import(TRANSFORMERS_URL);
   const { AutoProcessor, AutoModelForVision2Seq } = mod;
-  processor = await AutoProcessor.from_pretrained(MODEL_ID, {
+  processor = await AutoProcessor.from_pretrained("HuggingFaceTB/SmolVLM-256M-Instruct", {
     progress_callback: (p) => post({ type: "progress", p }),
   });
-  model = await AutoModelForVision2Seq.from_pretrained(MODEL_ID, {
+  model = await AutoModelForVision2Seq.from_pretrained("HuggingFaceTB/SmolVLM-256M-Instruct", {
     dtype: "q4f16",
     device: "webgpu",
     progress_callback: (p) => post({ type: "progress", p }),
