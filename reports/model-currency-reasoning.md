@@ -175,8 +175,13 @@ zero and makes future currency audits meaningful.
 
 The demo is honest (page and code agree on fp32); the **catalogue metadata is wrong**, and the assertion was
 derived from that wrong metadata. Per the immutability rule the assertion may not simply be edited: the fix is
-`models.json` (+ `sizeMB`, which is unverified for an fp32 VITS graph — HF API rate-limited during this audit),
-and the derived assertion needs an entry in `conformance-migrations.json` (currently `[]`).
+`models.json`, and the derived assertion needs an entry in `conformance-migrations.json` (currently `[]`).
+
+> **Correction (2026-09-24).** This report originally called `sizeMB: 109` "the q8 figure" and suspect. **That
+> was wrong.** `webai-astra` measured the artifact and I corroborated it: `model.onnx` is 114,314,259 bytes =
+> **114.31 MB = 109.02 MiB**. `109` is an accurate *MiB* rendering of the real fp32 graph, mislabeled MB — not
+> evidence of a q8 artifact. The dtype was the only real defect here. The unit inconsistency turned out to be
+> systemic (below), and is filed separately as `web-ai-showcase-2x0`.
 
 I checked whether this is systemic: across all 327 built routes, **exactly one** has a `declares-quantisation`
 string absent from its own `index.html`. Comparing catalogue dtype against the dtype the *primary* surface
@@ -272,9 +277,66 @@ Stated explicitly so the next lane does not over-read it:
 
 - The probe used **one** model on **one** device class. It disproves a *universal* fp16-on-WASM block; it does
   not prove every fp16 export works. Per-model evidence still rules.
-- `sizeMB` accuracy was not verified anywhere (HF API rate-limited mid-audit). `mms-tts-bengali` is suspect;
-  others are unchecked.
+- `sizeMB` accuracy was not verified *at the time of writing* (HF API rate-limited mid-audit), and my guess
+  about `mms-tts-bengali` was **wrong** — see the correction in §4 and the follow-on in §8.
 - No route was driven in a browser for *behaviour* in this pass beyond the dtype probe and the
   `mms-tts-bengali` conformance run. The 139/142 parity backlog is untouched.
 - The 4.3.0 assessment is from release notes + registry metadata, not from running 4.3.0 against this
   catalogue. That is exactly what `fb9-h` is for.
+- **Nothing here audited demo *content* for correctness.** The currency audit checks runtimes, checkpoints and
+  metadata. It would not have caught the Tamil-clone residue or the missing rung in §8 — those surfaced only
+  because a second lane read the page while fixing something else.
+
+## 8. Found after publication (2026-09-24)
+
+Three further defects surfaced while `webai-astra` executed the `mms-tts-bengali` fix. None were visible to
+the currency audit, which is itself the lesson: metadata auditing does not read the page.
+
+**The `sizeMB` unit is undefined repo-wide, and the mms-tts family is split** (`web-ai-showcase-2x0`).
+Measured bytes settle it: `mms-tts-ta-ONNX` and `mms-tts-ur-ONNX` are **byte-identical** (114,301,971 B) yet
+the catalogue records 109 and 114 respectively. Six routes state a MiB figure labelled "MB". `sizeMB` has no
+documented unit in `AGENTS.md`, `CLAUDE.md`, or `schemas/` — that absence is the root cause, so renumbering
+without defining the unit will not hold. This is user-facing: `sizeMB` is what tells a visitor how much data
+lands on a metered device.
+
+**`mms-tts-bengali` advertises a `multi-model/` rung that does not exist** (`web-ai-showcase-b1s`) — a live
+404 from a published overview card, verified a singleton across all 327 built routes. Worse than the broken
+link: `_questions.json` records that page as validated evidence ("multi-model chains M2M100 (en→ta) + the
+TTS"), which cannot be true of a page that was never built, and names the wrong target language. The family
+was cloned from `mms-tts-tamil` without adapting the artifacts; residue survives in the shipped page as
+`Bengali (tam)` and "Bengali Nadu". **The demo itself is honest** — `lang="bn"`, 146 Bengali-script characters,
+zero Tamil-script, real Bengali checkpoint. The copy and the critique are what lie.
+
+**No gate checks that an advertised ladder link resolves** (`web-ai-showcase-500`). `check-portfolio-acceptance.mjs`
+validates one direction only — every *on-disk* rung must appear in `acceptance.json` — so a page can advertise
+a rung nobody built and every gate stays green. A sweep found 19 advertised-but-unenumerated rungs across 14
+slugs, though only the Bengali one is a genuine 404; the other 18 are record gaps whose directories exist and
+must **not** be mass-written into manifests without being run.
+
+That gate gap is the same shape as D2 and `web-ai-showcase-i0h`: **an artifact that looks like enforcement
+while the specific thing that broke is unenforced.** Three instances in one audit is a pattern worth naming —
+when adding a gate here, check which direction it actually validates.
+
+## 9. Bead mapping
+
+The `fb9-*` labels in §6 were provisional. Filed IDs (`bd list --label fb9` in the repo):
+
+| §6 | bead | P | note |
+|---|---|---|---|
+| `fb9-b` | `web-ai-showcase-wty` | P1 | implemented, `IN_REVIEW` |
+| `fb9-a` | `web-ai-showcase-anr` | P2 | |
+| `fb9-c` | `web-ai-showcase-qjp` | P2 | `webai-astra` |
+| `fb9-d` | `web-ai-showcase-cqd` | P2 | |
+| `fb9-e` | `web-ai-showcase-4hv` | P2 | |
+| `fb9-g` | `web-ai-showcase-4f8` | P2 | |
+| `fb9-h` | `web-ai-showcase-865` | P2 | |
+| `fb9-f` | `web-ai-showcase-bm6` | P2 | blocked on `cqd`+`4hv` |
+| `fb9-i` | `web-ai-showcase-62m` | P3 | blocked on `865` |
+| `fb9-j` | `web-ai-showcase-7rm` | P3 | |
+| `fb9-k` | `web-ai-showcase-9v4` | P3 | blocked on `865` |
+| `fb9-l` | `web-ai-showcase-w4n` | P3 | blocked on `9v4` |
+| — | `web-ai-showcase-i0h` | P2 | CI runs no node tests; 2 already red on main |
+| — | `web-ai-showcase-2x0` | P2 | `sizeMB` unit, §8 |
+| — | `web-ai-showcase-9tw` | P2 | migrations honour only `remove`/`weaken` |
+| — | `web-ai-showcase-b1s` | P2 | dead rung + clone residue, §8 |
+| — | `web-ai-showcase-500` | P2 | no ladder-link gate, §8 |
