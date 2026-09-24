@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   CDP,
+  chromeAvailable,
   closePage,
   evalValue,
   launchChrome,
@@ -10,6 +11,14 @@ import {
   setViewport,
   startServer,
 } from "../scripts/browser.mjs";
+
+// This file is BROWSER-DRIVEN. It lives outside test/ so the CI step that runs the bare node suite
+// stays browser-free and fast by construction (web-ai-showcase-cj5). When no browser is resolvable the
+// tests SKIP with a stated reason instead of failing five times on spawn ENOENT after a retry storm.
+const SKIP_NO_BROWSER =
+  "no Chrome/Chromium resolvable — this is a browser-driven test; install one or set CHROME_BIN, " +
+  "or run it via: deno task test:viewport";
+const browserSkip = chromeAvailable() ? false : SKIP_NO_BROWSER;
 
 const SUBCLASS_B_ROUTES = [
   "models/bge-sentence-similarity/",
@@ -85,7 +94,7 @@ const CHECK_EXPR = `(() => {
   };
 })()`;
 
-test("360px mobile viewport: all 14 sub-class B routes fit within viewport and panel content box", async (t) => {
+test("360px mobile viewport: all 14 sub-class B routes fit within viewport and panel content box", { skip: browserSkip }, async (t) => {
   const { server, port } = await startServer();
   const browser = await launchChrome();
   const cdp = new CDP(browser.ws);
@@ -115,7 +124,7 @@ test("360px mobile viewport: all 14 sub-class B routes fit within viewport and p
   }
 });
 
-test("360px mobile viewport: sub-class A sample routes fit within 360px viewport", async (t) => {
+test("360px mobile viewport: sub-class A sample routes fit within 360px viewport", { skip: browserSkip }, async (t) => {
   const { server, port } = await startServer();
   const browser = await launchChrome();
   const cdp = new CDP(browser.ws);
@@ -143,7 +152,7 @@ test("360px mobile viewport: sub-class A sample routes fit within 360px viewport
   }
 });
 
-test("MUTANT PROOF: guard detects viewport widening (innerWidth !== 360)", async () => {
+test("MUTANT PROOF: guard detects viewport widening (innerWidth !== 360)", { skip: browserSkip }, async () => {
   const { server, port } = await startServer();
   const browser = await launchChrome();
   const cdp = new CDP(browser.ws);
@@ -183,7 +192,7 @@ test("MUTANT PROOF: guard detects viewport widening (innerWidth !== 360)", async
   }
 });
 
-test("MUTANT PROOF: guard detects right-edge panel content box escape", async () => {
+test("MUTANT PROOF: guard detects right-edge panel content box escape", { skip: browserSkip }, async () => {
   const { server, port } = await startServer();
   const browser = await launchChrome();
   const cdp = new CDP(browser.ws);
@@ -216,7 +225,7 @@ test("MUTANT PROOF: guard detects right-edge panel content box escape", async ()
   }
 });
 
-test("MUTANT PROOF: guard detects left-edge panel content box escape", async () => {
+test("MUTANT PROOF: guard detects left-edge panel content box escape", { skip: browserSkip }, async () => {
   const { server, port } = await startServer();
   const browser = await launchChrome();
   const cdp = new CDP(browser.ws);

@@ -53,12 +53,22 @@ export function startServer() {
 }
 
 function findChrome() {
+  // An explicit CHROME_BIN wins, so a CI step can declare the dependency rather than hope.
+  if (process.env.CHROME_BIN) return process.env.CHROME_BIN;
   for (const b of ["google-chrome-stable", "google-chrome", "chromium", "chromium-browser"]) {
     try {
       return execFileSync("which", [b]).toString().trim();
     } catch { /* next */ }
   }
-  return "google-chrome-stable";
+  // Previously this returned the literal "google-chrome-stable", so a machine without Chrome produced
+  // spawn ENOENT inside a retry loop (4 attempts per call, 5 tests → a multi-minute red that reads like
+  // a test regression). Return null and let callers report a missing dependency.
+  return null;
+}
+
+/** Whether a Chrome/Chromium binary is resolvable — lets browser-driven tests skip honestly. */
+export function chromeAvailable() {
+  return findChrome() !== null;
 }
 
 export class CDP {
@@ -217,6 +227,14 @@ export async function launchChrome(options = {}) {
   const removeProfileOnKill = options.removeProfileOnKill ?? true;
   const webgpu = options.webgpu ?? false;
   const extraArgs = options.extraArgs || [];
+  // A missing browser is a dependency error, not a flake: say so immediately instead of retrying a
+  // spawn that cannot succeed (web-ai-showcase-cj5).
+  if (!findChrome()) {
+    throw new Error(
+      "No Chrome/Chromium found on PATH (set CHROME_BIN to point at one). Browser-driven tests and " +
+        "validators need a browser; this is a missing dependency, not a test regression.",
+    );
+  }
   // Chrome can intermittently fail to expose its endpoint under IO/memory pressure — retry the whole
   // spawn a few times before giving up so the harness is reliable in constrained sandboxes.
   let started = null;
