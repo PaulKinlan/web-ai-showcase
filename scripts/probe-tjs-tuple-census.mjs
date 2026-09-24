@@ -145,13 +145,15 @@ for (const row of probe.rows) {
     if (A && B && A.label === B.label && typeof A.score === "number" && typeof B.score === "number") {
       const d = Math.abs(A.score - B.score);
       detail = `same label \`${A.label}\`, score Δ ${d.toExponential(2)} (${JSON.stringify(A.score)} vs ${JSON.stringify(B.score)}) — float noise from the ORT bump, not a behaviour change`;
+    } else if (c.aText || c.bText) {
+      detail = `output text differs: ${JSON.stringify(c.aText)} vs ${JSON.stringify(c.bText)}`;
     } else {
-      detail = `text differs: ${JSON.stringify(c.aText)} vs ${JSON.stringify(c.bText)}`;
+      detail = "output shape differs without comparable text — see the raw JSON";
     }
   } else if (cmp.maxAbsDiff !== null && cmp.maxAbsDiff !== undefined) {
     detail = `dims equal, max|Δ| ${cmp.maxAbsDiff} — ${cmp.maxAbsDiff <= 1e-2 ? "float noise from the ORT bump, not a behaviour change" : "beyond float noise: read the outputs"}`;
   } else {
-    detail = "see the raw JSON for both outputs";
+    detail = "see the raw JSON for both outputs (the compared prefix was not text or a numeric sample)";
   }
   lines.push(`| \`${row.tuple}\` | ${c ? c.routeCount : "?"} | ${row.tokenizersSplitAffected ? "yes" : "no"} | ${cell("3.7.5")} | ${cell("4.3.0")} | **${row.comparison.verdict}** | ${String(detail).replace(/\|/g, "\\|").slice(0, 200)} |`);
 }

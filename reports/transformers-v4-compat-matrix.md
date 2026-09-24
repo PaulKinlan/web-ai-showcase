@@ -20,7 +20,7 @@ The shared pin in `lib/webai.js` is read by 315 of 327 built routes, so a bump i
 | `feature-extraction-q8-wasm` | 19 | yes | RUNS 4625ms load / 60ms infer | RUNS 1215ms load / 32ms infer | **same** | max\|Δ\| 1.862645149230957e-8 |
 | `text-classification-q8-wasm` | 1 | yes | RUNS 8725ms load / 96ms infer | RUNS 589ms load / 60ms infer | **same** | text identical |
 | `token-classification-q8-wasm` | 1 | yes | RUNS 12632ms load / 86ms infer | RUNS 694ms load / 73ms infer | **same** | text identical |
-| `fill-mask-q8-wasm` | 1 | yes | RUNS 14046ms load / 306ms infer | RUNS 2394ms load / 281ms infer | **differs** | text differs: undefined vs undefined |
+| `fill-mask-q8-wasm` | 1 | yes | RUNS 14046ms load / 306ms infer | RUNS 2394ms load / 281ms infer | **differs** | output shape differs without comparable text — see the raw JSON |
 | `text2text-generation-q8-wasm` | 9 | yes | RUNS 14870ms load / 99ms infer | RUNS 2304ms load / 99ms infer | **same** | text identical |
 | `zero-shot-classification-q8-wasm` | 3 | yes | RUNS 11936ms load / 37ms infer | RUNS 1553ms load / 57ms infer | **same** | text identical |
 | `image-classification-q8-wasm` | 1 | no | RUNS 13835ms load / 1904ms infer | RUNS 704ms load / 1553ms infer | **differs** | same label `sfw`, score Δ 4.57e-3 (0.8398016691207886 vs 0.8352280259132385) — float noise from the ORT bump, not a behaviour change |
