@@ -30,6 +30,7 @@ const SNAPSHOT = ROOT + "inventory/model-currency.json";
 const REPORT_JSON = ROOT + "reports/model-currency.json";
 const REPORT_MD = ROOT + "reports/model-currency.md";
 const ALLOWLIST_PATH = ROOT + "scripts/runtime-pin-allowlist.json";
+export const PIN_SCAN_TARGETS = "models/ lib/ public/ scripts/ search/ models.json sw.js";
 
 const args = process.argv.slice(2);
 const CHECK_ONLY = args.includes("--check");
@@ -219,7 +220,7 @@ const DTYPE_TOKENS = {
 async function transformerPins() {
   const references = {};
   const raw = execSync(
-    `grep -rhoE '@huggingface/transformers@[0-9]+\\.[0-9]+\\.[0-9]+' models/ lib/ public/ sw.js 2>/dev/null || true`,
+    `grep -rhoE '@huggingface/transformers@[0-9]+\\.[0-9]+\\.[0-9]+' ${PIN_SCAN_TARGETS} 2>/dev/null || true`,
     { cwd: ROOT, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
   );
   for (const line of raw.split("\n")) {
@@ -290,7 +291,7 @@ function checkRuntimePins() {
   );
   try {
     const raw = execSync(
-      `grep -rhoE 'onnxruntime-web@[0-9]+\\.[0-9]+\\.[0-9]+' models/ lib/ public/ sw.js 2>/dev/null || true`,
+      `grep -rhoE 'onnxruntime-web@[0-9]+\\.[0-9]+\\.[0-9]+' ${PIN_SCAN_TARGETS} 2>/dev/null || true`,
       { cwd: ROOT, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
     );
     const foundOrt = new Set();
@@ -316,7 +317,7 @@ function checkRuntimePins() {
   );
   try {
     const raw = execSync(
-      `grep -rhoE '@huggingface/transformers@[0-9]+\\.[0-9]+\\.[0-9]+' models/ lib/ public/ sw.js 2>/dev/null || true`,
+      `grep -rhoE '@huggingface/transformers@[0-9]+\\.[0-9]+\\.[0-9]+' ${PIN_SCAN_TARGETS} 2>/dev/null || true`,
       { cwd: ROOT, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
     );
     const foundTjs = new Set();
