@@ -71,6 +71,18 @@ scripts/
 .claude/routine-prompt.md   Source of truth for the freshness/build routine (see "The routine").
 ```
 
+### Catalogue field conventions (`models.json`)
+
+- `sizeMB` is **decimal megabytes (10^6 bytes)** — the bytes a first visit actually downloads: the
+  dtype-selected graph file(s), any external-data sibling (`onnx/model.onnx_data` — a repo can ship a
+  0.18 MiB `model.onnx` next to a 1086 MiB sidecar), and the config/tokenizer files. Round to at most
+  one decimal; a whole-number approximation is fine when it is within 1% of that figure.
+- **Never store a binary MiB (2^20) value in `sizeMB`** — MiB is ~4.9% larger than the decimal
+  figure, so the field silently overstates the download (a 114.31 MB artifact stored as `109`).
+  User-facing copy may state MiB *when it is labelled*: `~114 MB (109 MiB, fp32)`.
+- Verify from the Hub file listing (`/api/models/<id>?blobs=true`), never by copying a sibling
+  route's number — the mms-tts family carried 38 / 109 / 114 / 114.3 for three artifact classes.
+
 ## Critical invariants (each is here to keep quality high)
 
 ### 1. Every model page MUST actually run the model in-browser — never fake it
