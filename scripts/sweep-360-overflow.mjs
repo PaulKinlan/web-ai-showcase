@@ -24,7 +24,7 @@
 //   node scripts/sweep-360-overflow.mjs --report-only   # never exit 1 (advisory run)
 //
 // Exit 1 when any checked page expands the viewport or lets a control escape.
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
   BASE,
@@ -67,11 +67,29 @@ const slugs = val("--slugs", "")
 const limit = Number(val("--limit", "0")) || 0;
 const jsonPath = val("--json", "");
 const reportOnly = opt("--report-only");
+const overviewOnly = opt("--overview-only");
 
 const catalogue = loadCatalogue();
 const built = builtModels(catalogue).map((m) => m.slug).sort();
 const targets = slugs.length ? slugs.filter((s) => built.includes(s)) : built;
 const selected = limit ? targets.slice(0, limit) : targets;
+
+/** Every page a family publishes: the overview plus each ladder rung. */
+function familyPages(slug) {
+  const dir = join(repoRoot, "models", slug);
+  const pages = [];
+  const walk = (d) => {
+    for (const ent of readdirSync(d, { withFileTypes: true })) {
+      const full = join(d, ent.name);
+      if (ent.isDirectory()) walk(full);
+      else if (ent.name === "index.html") pages.push(full);
+    }
+  };
+  if (existsSync(dir)) walk(dir);
+  return pages
+    .map((f) => f.slice(join(repoRoot, "models", slug).length + 1).replace(/index\.html$/, ""))
+    .sort((a, b) => (a === "" ? -1 : b === "" ? 1 : a.localeCompare(b)));
+}
 const missing = slugs.filter((s) => !built.includes(s));
 if (missing.length) {
   console.error(`unknown built slug(s): ${missing.join(", ")}`);
@@ -140,7 +158,12 @@ const DIAGNOSE_JS = `(() => {
       const pr = parent.getBoundingClientRect();
       if (pr.width > 0 && r.right - pr.right > 1) outsideParent = true;
     }
-    if (r.width > vw || r.right - vw > 1 || outsideParent) {
+    // Content that overflows its own box also forces min-content width, and it is
+    // invisible to a bounds-only check (grapheme-to-phoneme expands to 398px with
+    // no element wider than the viewport).
+    const contentOverflow = el.scrollWidth - el.clientWidth;
+    const text = (el.childElementCount === 0 ? (el.textContent || "").trim() : "");
+    if (r.width > vw || r.right - vw > 1 || outsideParent || contentOverflow > 1) {
       offenders.push({
         tag: el.tagName.toLowerCase(), id: el.id || null,
         cls: typeof el.className === 'string' ? el.className.split(/\\s+/).slice(0, 3).join('.') : null,
@@ -148,6 +171,9 @@ const DIAGNOSE_JS = `(() => {
         minWidth: cs.minWidth, maxWidth: cs.maxWidth,
         display: cs.display, flex: cs.display.includes('flex') ? cs.flex : null,
         outsideParent, parentTag: parent ? parent.tagName.toLowerCase() : null,
+        contentOverflow: contentOverflow > 1 ? contentOverflow : null,
+        whiteSpace: contentOverflow > 1 ? cs.whiteSpace : null,
+        text: contentOverflow > 1 ? text.slice(0, 60) : null,
       });
     }
   }
@@ -161,23 +187,27 @@ const results = [];
 
 try {
   for (const slug of selected) {
-    const url = `http://127.0.0.1:${port}${BASE}models/${slug}/`;
+    const rungs = overviewOnly ? [""] : familyPages(slug);
+    for (const rung of rungs) {
+      const url = `http://127.0.0.1:${port}${BASE}models/${slug}/${rung}`;
     // Blocked before navigation, so no download starts at all.
     const ctx = await openPage(cdp, url, { blockUrls: MODEL_HOSTS });
+    const label = rung ? `${slug}/${rung.replace(/\/$/, "")}` : slug;
     try {
       await setViewport(cdp, ctx.sessionId, MOBILE);
       if (diagnose) {
         const d = await evalValue(cdp, ctx.sessionId, DIAGNOSE_JS);
-        console.log(`\n=== ${slug} (innerWidth ${d.vw}) — ${d.count} offending element(s) ===`);
+        console.log(`\n=== ${label} (innerWidth ${d.vw}) — ${d.count} offending element(s) ===`);
         for (const o of d.offenders) {
           console.log(
             `  ${o.tag}${o.id ? "#" + o.id : ""}${o.cls ? "." + o.cls : ""} ` +
               `w=${o.width} right=${o.right} minW=${o.minWidth} maxW=${o.maxWidth} ` +
               `display=${o.display}${o.flex ? ` flex=${o.flex}` : ""}` +
-              `${o.outsideParent ? ` ESCAPES ${o.parentTag}` : ""}`,
+              `${o.outsideParent ? ` ESCAPES ${o.parentTag}` : ""}` +
+              `${o.contentOverflow ? ` CONTENT+${o.contentOverflow} ws=${o.whiteSpace} "${o.text}"` : ""}`,
           );
         }
-        results.push({ slug, status: "diagnose", failures: [], metrics: d });
+        results.push({ slug, rung: rung || null, status: "diagnose", failures: [], metrics: d });
         continue;
       }
       const metrics = await evalValue(cdp, ctx.sessionId, assertionFor(MOBILE.width));
@@ -197,17 +227,19 @@ try {
 
       results.push({
         slug,
+        rung: rung || null,
         status: failures.length ? "fail" : "clean",
         failures,
         metrics,
       });
       const mark = failures.length ? "FAIL" : "clean";
-      console.log(`  ${mark.padEnd(5)} ${slug}${failures.length ? ` — ${failures.join("; ")}` : ""}`);
+      console.log(`  ${mark.padEnd(5)} ${label}${failures.length ? ` — ${failures.join("; ")}` : ""}`);
     } catch (error) {
-      results.push({ slug, status: "error", failures: [String(error)] });
-      console.log(`  ERROR ${slug} — ${String(error).slice(0, 140)}`);
+      results.push({ slug, rung: rung || null, status: "error", failures: [String(error)] });
+      console.log(`  ERROR ${label} — ${String(error).slice(0, 140)}`);
     } finally {
       await closePage(cdp, ctx.targetId).catch(() => {});
+    }
     }
   }
 } finally {
@@ -226,10 +258,10 @@ console.log(
 );
 if (failing.length) {
   console.log("\nSub-class A (viewport expands; the old scroll-delta assertion reads 0):");
-  for (const r of expanded) console.log(`  ${r.slug}: innerWidth ${r.metrics.innerWidth} (requested ${MOBILE.width})`);
+  for (const r of expanded) console.log(`  ${r.rung ? r.slug + "/" + r.rung.replace(/\/$/, "") : r.slug}: innerWidth ${r.metrics.innerWidth} (requested ${MOBILE.width})`);
   console.log("\nSub-class B (control escapes its panel content box):");
   for (const r of escaping) {
-    console.log(`  ${r.slug}: ${r.metrics.escapingCount} control(s) — ${JSON.stringify(r.metrics.escaping[0])}`);
+    console.log(`  ${r.rung ? r.slug + "/" + r.rung.replace(/\/$/, "") : r.slug}: ${r.metrics.escapingCount} control(s) — ${JSON.stringify(r.metrics.escaping[0])}`);
   }
 }
 
