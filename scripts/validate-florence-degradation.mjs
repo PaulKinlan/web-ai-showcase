@@ -196,7 +196,7 @@ async function testEnabledWebGPU(port) {
 
       // Click download button
       console.log("  Clicking Download model button…");
-      await safeEval(cdp, sessionId, `document.querySelector(".model-loader button")?.click()`, 60000);
+      await safeEval(cdp, sessionId, `setTimeout(() => document.querySelector(".model-loader button")?.click(), 0)`, 15000);
 
       // Poll until model reports ready
       let ready = false;
@@ -229,7 +229,7 @@ async function testEnabledWebGPU(port) {
 
       // Click run to execute inference
       console.log("  Triggering run button (<CAPTION>)…");
-      await safeEval(cdp, sessionId, `document.getElementById("run")?.click()`, 60000);
+      await safeEval(cdp, sessionId, `setTimeout(() => document.getElementById("run")?.click(), 0)`, 15000);
 
       // Wait for status ok
       let done = false;
