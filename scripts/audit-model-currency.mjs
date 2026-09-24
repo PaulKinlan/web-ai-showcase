@@ -21,7 +21,7 @@
 // completeness claim. Network-dependent; an offline run reports `error` rather than guessing.
 
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { classifyTaskPair } from "./model-task-vocabulary.mjs";
 
@@ -29,6 +29,7 @@ const ROOT = new URL("..", import.meta.url).pathname;
 const SNAPSHOT = ROOT + "inventory/model-currency.json";
 const REPORT_JSON = ROOT + "reports/model-currency.json";
 const REPORT_MD = ROOT + "reports/model-currency.md";
+const ALLOWLIST_PATH = ROOT + "scripts/runtime-pin-allowlist.json";
 
 const args = process.argv.slice(2);
 const CHECK_ONLY = args.includes("--check");
@@ -270,13 +271,119 @@ if (SLUG && selected.length === 0) {
 const targets = selected.slice(0, LIMIT === Infinity ? undefined : LIMIT);
 const routeRecords = {};
 
+function checkRuntimePins() {
+  if (!existsSync(ALLOWLIST_PATH)) {
+    return ["missing scripts/runtime-pin-allowlist.json — runtime pin allowlist required"];
+  }
+  let allowlist;
+  try {
+    allowlist = JSON.parse(readFileSync(ALLOWLIST_PATH, "utf8"));
+  } catch (e) {
+    return [`failed to parse scripts/runtime-pin-allowlist.json: ${e.message}`];
+  }
+
+  const errors = [];
+
+  // 1. Check onnxruntime-web versions
+  const allowedOrt = new Set(
+    (allowlist.onnxruntimeWeb?.allowedVersions || []).map((v) => v.version),
+  );
+  try {
+    const raw = execSync(
+      `grep -rhoE 'onnxruntime-web@[0-9]+\\.[0-9]+\\.[0-9]+' models/ lib/ public/ sw.js 2>/dev/null || true`,
+      { cwd: ROOT, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
+    );
+    const foundOrt = new Set();
+    for (const line of raw.split("\n")) {
+      const v = line.split("@").pop()?.trim();
+      if (v) foundOrt.add(v);
+    }
+    for (const v of foundOrt) {
+      if (!allowedOrt.has(v)) {
+        errors.push(
+          `unauthorized onnxruntime-web version "${v}" — not in scripts/runtime-pin-allowlist.json`,
+        );
+      }
+    }
+  } catch (e) {
+    errors.push(`failed to scan onnxruntime-web versions: ${e.message}`);
+  }
+
+  // 2. Check @huggingface/transformers versions
+  const allowedTjsShared = allowlist.transformers?.shared;
+  const allowedTjsOverrides = new Set(
+    (allowlist.transformers?.allowedLocalOverrides || []).map((v) => v.version),
+  );
+  try {
+    const raw = execSync(
+      `grep -rhoE '@huggingface/transformers@[0-9]+\\.[0-9]+\\.[0-9]+' models/ lib/ public/ sw.js 2>/dev/null || true`,
+      { cwd: ROOT, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
+    );
+    const foundTjs = new Set();
+    for (const line of raw.split("\n")) {
+      const v = line.split("@").pop()?.trim();
+      if (v) foundTjs.add(v);
+    }
+    for (const v of foundTjs) {
+      if (v !== allowedTjsShared && !allowedTjsOverrides.has(v)) {
+        errors.push(
+          `unauthorized @huggingface/transformers version "${v}" — not in scripts/runtime-pin-allowlist.json`,
+        );
+      }
+    }
+  } catch (e) {
+    errors.push(`failed to scan @huggingface/transformers versions: ${e.message}`);
+  }
+
+  // 3. Check @mlc-ai/web-llm in lib/webllm.js
+  if (existsSync(ROOT + "lib/webllm.js")) {
+    const text = readFileSync(ROOT + "lib/webllm.js", "utf8");
+    const m = text.match(/@mlc-ai\/web-llm@([0-9.]+)/);
+    const v = m ? m[1] : null;
+    if (v !== allowlist.webLlm?.shared) {
+      errors.push(
+        `lib/webllm.js pins web-llm version "${v}", expected "${allowlist.webLlm?.shared}" per scripts/runtime-pin-allowlist.json`,
+      );
+    }
+  }
+
+  // 4. Check @mediapipe/tasks-vision in lib/mediapipe.js
+  if (existsSync(ROOT + "lib/mediapipe.js")) {
+    const text = readFileSync(ROOT + "lib/mediapipe.js", "utf8");
+    const m = text.match(/TASKS_VISION_VERSION\s*=\s*["']([0-9.]+)["']/) ||
+      text.match(/tasks-vision@([0-9.]+)/);
+    const v = m ? m[1] : null;
+    if (v !== allowlist.mediapipe?.shared) {
+      errors.push(
+        `lib/mediapipe.js pins tasks-vision version "${v}", expected "${allowlist.mediapipe?.shared}" per scripts/runtime-pin-allowlist.json`,
+      );
+    }
+  }
+
+  return errors;
+}
+
 if (CHECK_ONLY) {
   // Offline gate: no network. Asserts only what committed evidence can support —
-  //   exit 1: the catalogue changed since a route was verified (needs a --refresh re-audit)
+  //   exit 1: the catalogue changed since a route was verified (needs a --refresh re-audit),
+  //           or an unauthorized runtime version was found.
   //   exit 2: a built route has never been verified (coverage gap)
-  //   exit 0: every built route is covered and its recorded evidence still matches the catalogue
-  // Recorded checkpoint defects live in reports/model-currency.json + beads, not in this gate.
-  const snap = existsSync(SNAPSHOT) ? JSON.parse(await readFile(SNAPSHOT, "utf8")) : { models: {} };
+  //   exit 0: every built route is covered, evidence matches catalogue, and runtime pins are authorized
+  if (!existsSync(SNAPSHOT)) {
+    console.error(
+      "currency check FAILED: inventory/model-currency.json missing — run `node scripts/audit-model-currency.mjs` to generate",
+    );
+    process.exit(1);
+  }
+  let snap;
+  try {
+    snap = JSON.parse(readFileSync(SNAPSHOT, "utf8"));
+  } catch (e) {
+    console.error(
+      `currency check FAILED: inventory/model-currency.json is corrupted: ${e.message}`,
+    );
+    process.exit(1);
+  }
   const rec = snap.routes || {};
   const drifted = [], uncovered = [];
   for (const m of built) {
@@ -287,6 +394,9 @@ if (CHECK_ONLY) {
     }
     const changes = [];
     if (r.hfId !== m.hfId) changes.push(`cited model ${r.hfId} → ${m.hfId}`);
+    if (r.loadedId && m.loadedId && r.loadedId !== m.loadedId) {
+      changes.push(`loaded model ${r.loadedId} → ${m.loadedId}`);
+    }
     if (r.catalogueDtype !== (m.dtype ?? null)) {
       changes.push(
         `dtype ${JSON.stringify(r.catalogueDtype)} → ${JSON.stringify(m.dtype ?? null)}`,
@@ -294,6 +404,9 @@ if (CHECK_ONLY) {
     }
     if (changes.length) drifted.push({ slug: m.slug, hfId: m.hfId, changes });
   }
+
+  const pinErrors = checkRuntimePins();
+
   const report = {
     generated: new Date().toISOString(),
     mode: "check (offline)",
@@ -301,22 +414,34 @@ if (CHECK_ONLY) {
     verifiedRoutes: built.length - uncovered.length,
     drifted,
     uncovered,
+    pinErrors,
   };
-  console.log(JSON.stringify(report, null, 2));
-  if (drifted.length) {
-    console.error(
-      `currency check FAILED: ${drifted.length} route(s) changed since verification — re-run with --refresh`,
-    );
+
+  if (drifted.length || uncovered.length || pinErrors.length) {
+    console.error("=== CURRENCY & RUNTIME PIN GATE ===");
+    if (pinErrors.length) {
+      console.error(`FAIL — ${pinErrors.length} unauthorized runtime pin(s):`);
+      for (const e of pinErrors) console.error(`  ✗ ${e}`);
+    }
+    if (drifted.length) {
+      console.error(
+        `FAIL — ${drifted.length} route(s) changed since verification — re-run with --refresh:`,
+      );
+      for (const d of drifted) console.error(`  ✗ ${d.slug}: ${d.changes.join(", ")}`);
+    }
+    if (uncovered.length) {
+      console.error(
+        `FAIL — ${uncovered.length}/${built.length} built route(s) never verified in inventory: ${
+          uncovered.slice(0, 5).join(", ")
+        }`,
+      );
+    }
     process.exit(1);
   }
-  if (uncovered.length) {
-    console.error(
-      `currency check INCOMPLETE: ${uncovered.length}/${built.length} built route(s) never verified — run --refresh`,
-    );
-    process.exit(2);
-  }
-  console.error(
-    `currency check OK: ${built.length} built routes covered, evidence matches the catalogue`,
+
+  console.log("=== CURRENCY & RUNTIME PIN GATE ===");
+  console.log(
+    `PASS — ${built.length} built routes covered; evidence matches catalogue; runtime pins authorized.`,
   );
   process.exit(0);
 }
@@ -696,12 +821,14 @@ const md = [
   ...(equivalences.length
     ? [
       ``,
-      `### Recorded vocabulary equivalences (${equivalences.reduce((n, [, e]) => n + e.count, 0)} routes)`,
+      `### Recorded vocabulary equivalences (${
+        equivalences.reduce((n, [, e]) => n + e.count, 0)
+      } routes)`,
       ``,
       "The transformers.js task a demo drives and the Hub `pipeline_tag` on the card are two" +
-        " vocabularies for the same work. These pairs are recorded in `scripts/model-task-vocabulary.mjs`" +
-        " as equivalent, with the reason, so they are reported as neither drift nor a defect — and an" +
-        " unrecorded mismatch is still reported:",
+      " vocabularies for the same work. These pairs are recorded in `scripts/model-task-vocabulary.mjs`" +
+      " as equivalent, with the reason, so they are reported as neither drift nor a defect — and an" +
+      " unrecorded mismatch is still reported:",
       ``,
       ...equivalences.map(([pair, e]) => `- \`${pair}\` × ${e.count} — ${e.rationale}`),
     ]
