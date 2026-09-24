@@ -1,18 +1,31 @@
 #!/usr/bin/env node
 // Automated verification of WebGPU acceleration and local browser inference across Web AI Showcase demos.
 //
-// 1. Probes Chrome headless with WebGPU flags enabled (--enable-unsafe-webgpu, --use-angle=vulkan, --enable-features=Vulkan).
-// 2. Drives the WebGPU matrix across all 42 built WebGPU models in models.json, asserting adapter availability
-//    and zero silent fallback / unsupported states.
-// 3. Executes live end-to-end inference benchmarks on WebGPU vs WASM, measuring timing and proving hardware acceleration.
-// 4. Writes complete execution evidence to reports/webgpu-verification.json.
+// Verification scope:
+// 1. Hardware & Runtime Probe:
+//    Launches headless Chrome with WebGPU flags enabled (--enable-unsafe-webgpu, --use-angle=vulkan, --enable-features=Vulkan).
+//    Asserts that the hardware adapter resolves (AMD RDNA-2 via Vulkan, shader-f16).
+// 2. Download Control & Capability Gate Matrix Scan (42 models):
+//    Drives all 42 built WebGPU routes, verifying that with WebGPU enabled:
+//    - adapterAvailable() passes.
+//    - The UI transitions past the blocked unsupported ("needs WebGPU") state.
+//    - The action download button/controls render cleanly with 0 console errors.
+//    NOTE: This scan verifies adapter gating and control rendering; it does not download or execute inference for all 42 models.
+// 3. Live End-to-End In-Browser Inference Benchmarks (WebGPU vs WASM):
+//    Runs real on-device inference off-main-thread with actual model downloads on measured workloads:
+//    - MODNet portrait matting (AutoModel + AutoProcessor, WebGPU fp32 vs WASM q8).
+//    - Depth Anything v2 small (pipeline depth-estimation, WebGPU fp16 vs WASM q8).
+//    Asserts that runtime executes on WEBGPU without falling back to WASM, measures latency (ms) and outputs,
+//    and proves hardware acceleration over the WASM fallback.
+// 4. Evidence Output:
+//    Writes structured verification and timing evidence to reports/webgpu-verification.json.
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   CDP,
   closePage,
-  DESKTOP,
   evalValue,
   launchChrome,
   openPage,
@@ -56,12 +69,12 @@ async function probeWebGPU(cdp, port) {
   return info;
 }
 
-async function verifyMatrix(cdp, port, models) {
+async function verifyMatrixControls(cdp, port, models) {
   const results = [];
   for (let i = 0; i < models.length; i++) {
     const m = models[i];
     const url = `http://127.0.0.1:${port}/web-ai-showcase/models/${m.slug}/`;
-    process.stderr.write(`[${i + 1}/${models.length}] Verifying ${m.slug} … `);
+    process.stderr.write(`[${i + 1}/${models.length}] Verifying loader gating for ${m.slug} … `);
     try {
       const { targetId, sessionId, errors } = await openPage(cdp, url);
       await new Promise((r) => setTimeout(r, 600));
@@ -76,10 +89,12 @@ async function verifyMatrix(cdp, port, models) {
           const state = el?.dataset?.state || mds?.dataset?.phase || "download-required";
           const text = (el?.innerText || "").replace(/\\s+/g, " ").trim();
           const hasBtn = !!el?.querySelector("button");
+          const btnText = el?.querySelector("button")?.innerText || "";
           const isUnsupported = /needs.*(gpu|webgpu)|unsupported|no gpu adapter/i.test(text);
           return {
             state,
             hasBtn,
+            btnText,
             isUnsupported,
             sampleText: text.slice(0, 100),
           };
@@ -100,6 +115,7 @@ async function verifyMatrix(cdp, port, models) {
         pass,
         loaderState: status?.state,
         hasButton: status?.hasBtn,
+        buttonText: status?.btnText,
         isUnsupported: status?.isUnsupported,
         errors: errors.length,
       });
@@ -118,7 +134,8 @@ async function verifyMatrix(cdp, port, models) {
 }
 
 async function runModnetBenchmark(serverPort, webgpu = true) {
-  const browser = await launchChrome({ webgpu });
+  const profileDir = mkdtempSync(join(tmpdir(), "webgpu-modnet-"));
+  const browser = await launchChrome({ webgpu, userDataDir: profileDir, removeProfileOnKill: true });
   const cdp = new CDP(browser.ws);
   const url = `http://127.0.0.1:${serverPort}/web-ai-showcase/models/modnet-portrait-matting/`;
   try {
@@ -177,7 +194,8 @@ async function runModnetBenchmark(serverPort, webgpu = true) {
 }
 
 async function runDepthAnythingBenchmark(serverPort, webgpu = true) {
-  const browser = await launchChrome({ webgpu });
+  const profileDir = mkdtempSync(join(tmpdir(), "webgpu-depth-"));
+  const browser = await launchChrome({ webgpu, userDataDir: profileDir, removeProfileOnKill: true });
   const cdp = new CDP(browser.ws);
   const url = `http://127.0.0.1:${serverPort}/web-ai-showcase/models/depth-anything/`;
   try {
@@ -245,7 +263,8 @@ async function main() {
   try {
     // 1. Hardware probe
     console.log("\n1. Probing headless Chrome with WebGPU flags...");
-    const gpuBrowser = await launchChrome({ webgpu: true });
+    const probeProfile = mkdtempSync(join(tmpdir(), "webgpu-probe-"));
+    const gpuBrowser = await launchChrome({ webgpu: true, userDataDir: probeProfile, removeProfileOnKill: true });
     const cdp = new CDP(gpuBrowser.ws);
     hardware = await probeWebGPU(cdp, port);
     console.log("Hardware adapter probe:", {
@@ -260,16 +279,17 @@ async function main() {
       throw new Error(`WebGPU not available in test browser: ${hardware.reason}`);
     }
 
-    // 2. Matrix verification
+    // 2. Download Control & Capability Gate Matrix Scan
     if (runMatrix) {
-      console.log("\n2. Scanning all built WebGPU demos across the showcase...");
+      console.log("\n2. Scanning WebGPU capability gating and download control rendering across 42 models...");
+      console.log("   (Verifies adapterAvailable() passes and controls render without falling back to 'needs-WebGPU')");
       const modelsData = JSON.parse(readFileSync(join(repoRoot, "models.json"), "utf8"));
       const webgpuModels = modelsData.models.filter(
         (m) => m.status === "built" && m.backend === "webgpu",
       );
-      matrixResults = await verifyMatrix(cdp, port, webgpuModels);
+      matrixResults = await verifyMatrixControls(cdp, port, webgpuModels);
       const passed = matrixResults.filter((r) => r.pass).length;
-      console.log(`\nMatrix Result: ${passed}/${matrixResults.length} WebGPU models passed.`);
+      console.log(`\nControl Rendering Scan: ${passed}/${matrixResults.length} WebGPU models passed gating & control rendering.`);
     }
 
     await gpuBrowser.kill();
@@ -277,6 +297,7 @@ async function main() {
     // 3. Live inference benchmarks: WebGPU vs WASM
     if (runBenchmarks) {
       console.log("\n3. Executing live end-to-end inference benchmarks (WebGPU vs WASM)...");
+      console.log("   (Real on-device forward passes, proving hardware WebGPU execution without WASM fallback)");
 
       console.log("  Running benchmark: modnet-portrait-matting (WebGPU)...");
       const modnetGpu = await runModnetBenchmark(port, true);
@@ -284,9 +305,12 @@ async function main() {
       const modnetWasm = await runModnetBenchmark(port, false);
       const modnetSpeedup = (modnetWasm.ms / modnetGpu.ms).toFixed(2);
       benchmarks["modnet-portrait-matting"] = {
+        task: "image-segmentation / alpha matting",
+        workload: "AutoModel + AutoProcessor on-device forward pass",
         webgpu: modnetGpu,
         wasm: modnetWasm,
         speedup: `${modnetSpeedup}x`,
+        hardwareAccelerated: modnetGpu.ms < modnetWasm.ms && modnetGpu.backend?.includes("WEBGPU"),
       };
       console.log(
         `  -> MODNet: WebGPU (${modnetGpu.backend}) = ${modnetGpu.ms}ms vs WASM (${modnetWasm.backend}) = ${modnetWasm.ms}ms [${modnetSpeedup}x faster]`,
@@ -298,9 +322,12 @@ async function main() {
       const depthWasm = await runDepthAnythingBenchmark(port, false);
       const depthSpeedup = (depthWasm.ms / depthGpu.ms).toFixed(2);
       benchmarks["depth-anything"] = {
+        task: "depth-estimation",
+        workload: "Transformers.js pipeline depth-estimation forward pass",
         webgpu: depthGpu,
         wasm: depthWasm,
         speedup: `${depthSpeedup}x`,
+        hardwareAccelerated: depthGpu.ms < depthWasm.ms && depthGpu.backend?.includes("WEBGPU"),
       };
       console.log(
         `  -> Depth Anything: WebGPU (${depthGpu.backend}) = ${depthGpu.ms}ms vs WASM (${depthWasm.backend}) = ${depthWasm.ms}ms [${depthSpeedup}x faster]`,
@@ -318,14 +345,20 @@ async function main() {
   const report = {
     timestamp: new Date().toISOString(),
     hardware,
-    matrix: {
+    capabilityGateAndControlRenderVerification: {
+      description: "Verification of WebGPU adapter availability and download control rendering across all 42 built WebGPU routes (asserts adapterAvailable() passes and pages do not display unsupported/needs-WebGPU errors)",
       total: matrixResults.length,
       passed: matrixResults.filter((r) => r.pass).length,
       failed: matrixResults.filter((r) => !r.pass).length,
       results: matrixResults,
     },
-    benchmarks,
-    verdict: matrixResults.every((r) => r.pass) ? "PASS" : "FAIL",
+    benchmarkedInferenceProof: {
+      description: "Real end-to-end on-device in-browser inference executed on WebGPU vs WASM, proving genuine GPU execution without fallback",
+      benchmarks,
+    },
+    verdict: matrixResults.every((r) => r.pass) && Object.values(benchmarks).every((b) => b.hardwareAccelerated)
+      ? "PASS"
+      : "FAIL",
   };
 
   writeFileSync(reportPath, JSON.stringify(report, null, 2), "utf8");
