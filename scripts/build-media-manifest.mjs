@@ -88,6 +88,27 @@ for (const s of shots) {
   });
 }
 
+// Hand-curated arrays this script cannot derive from media/assets/: `audioAssets` (rights-cleared
+// non-image samples that ship beside their demo, e.g. models/<slug>/sample.wav) and `skipped` (the
+// recorded license gaps). The manifest object is rebuilt from scratch on every run, so anything not
+// carried across here is DELETED — silently, because nothing downstream reads these two. Carry them
+// over from the committed manifest rather than dropping provenance for a shipped file.
+const prevPath = new URL("manifest.json", MEDIA);
+let prev = {};
+if (existsSync(prevPath)) {
+  try {
+    prev = JSON.parse(readFileSync(prevPath, "utf8"));
+  } catch (e) {
+    // Refuse to regenerate over an unreadable manifest: that is how a hand-curated record gets
+    // erased without anyone noticing (see bead web-ai-showcase-1d6 — unresolved conflict markers
+    // made this file unparseable and broke 12 galleries for weeks with zero console errors).
+    throw new Error(
+      `media/manifest.json exists but does not parse (${e.message}). Fix it before regenerating — ` +
+        `otherwise audioAssets/skipped would be silently dropped.`,
+    );
+  }
+}
+
 const manifest = {
   $schema: "./manifest.schema.json",
   name: "web-ai-showcase rights-safe media library",
@@ -104,6 +125,8 @@ const manifest = {
   generated: today,
   count: assets.length,
   assets,
+  ...(prev.audioAssets ? { audioAssets: prev.audioAssets } : {}),
+  ...(prev.skipped ? { skipped: prev.skipped } : {}),
 };
 
 writeFileSync(new URL("manifest.json", MEDIA), JSON.stringify(manifest, null, 2) + "\n");
