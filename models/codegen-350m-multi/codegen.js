@@ -90,8 +90,14 @@ textarea.prompt { min-block-size: 4.2rem; resize: vertical; font-family: var(--f
 .gen-out .prompt-span { color: var(--muted); }
 .gen-out .new-span { color: var(--color); }
 .controls { display: flex; flex-wrap: wrap; gap: 1rem 1.4rem; align-items: center; margin: .6rem 0; }
+/* A native <select> has an intrinsic min-content width, so without these constraints a long option
+   label widens the whole page: at a requested 360px viewport the practical pages rendered into 404px
+   and the control sat ~84px outside its panel (bead web-ai-showcase-vtk). Constrain rather than clip:
+   the picker keeps its native behaviour and the label wraps. */
 .controls label { display: flex; align-items: center; gap: .5rem; font-family: var(--font-mono);
-  font-size: .78rem; color: var(--muted); }
+  font-size: .78rem; color: var(--muted); flex-wrap: wrap; min-inline-size: 0; max-inline-size: 100%; }
+.controls :is(input, select) { min-inline-size: 0; max-inline-size: 100%; font-size: 1rem; }
+.controls :is(button, input, select) { min-block-size: 44px; }
 .controls output { color: var(--color); font-weight: 600; min-inline-size: 2.2rem; }
 .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 999px; overflow: hidden; }
 .seg button { border: none; border-radius: 0; background: var(--bg-raised); color: var(--color); padding: .3rem .8rem; font-size: .8rem; }
