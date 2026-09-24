@@ -8,7 +8,7 @@
 
 import { createServer } from "node:http";
 import { execFileSync, spawn } from "node:child_process";
-import { readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { accessSync, constants, existsSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -52,18 +52,55 @@ export function startServer() {
   });
 }
 
-function findChrome() {
-  // An explicit CHROME_BIN wins, so a CI step can declare the dependency rather than hope.
-  if (process.env.CHROME_BIN) return process.env.CHROME_BIN;
+let warnedAboutRejectedChromeBin = null;
+
+function isRunnableFile(path) {
+  try {
+    return existsSync(path) && statSync(path).isFile() && (accessSync(path, constants.X_OK), true);
+  } catch {
+    return false;
+  }
+}
+
+function findChromeOnPath() {
   for (const b of ["google-chrome-stable", "google-chrome", "chromium", "chromium-browser"]) {
     try {
       return execFileSync("which", [b]).toString().trim();
     } catch { /* next */ }
   }
+  return null;
+}
+
+/**
+ * Resolve a browser binary. Returns { binary, rejected }: `binary` is the path to use (null when there
+ * is none) and `rejected` names a CHROME_BIN that was ignored, so callers can say which value was bad.
+ *
+ * An explicit CHROME_BIN wins, so a CI step can declare the dependency rather than hope — but only when
+ * it points at a runnable file. Trusting it on non-emptiness alone (the cj5 shape) meant a stale value
+ * made chromeAvailable() report true, so the honest skip never fired and the suite died in the 240s
+ * spawn-ENOENT retry storm that cj5 removed (web-ai-showcase-fdy). A rejected value falls through to
+ * the PATH search rather than failing outright, so a machine that does have Chrome keeps working.
+ */
+export function resolveChromeBinary() {
+  const declared = (process.env.CHROME_BIN || "").trim();
+  if (declared) {
+    if (isRunnableFile(declared)) return { binary: declared, rejected: null };
+    if (warnedAboutRejectedChromeBin !== declared) {
+      warnedAboutRejectedChromeBin = declared;
+      console.warn(
+        `CHROME_BIN=${declared} is not an executable file; ignoring it and searching PATH.`,
+      );
+    }
+    return { binary: findChromeOnPath(), rejected: declared };
+  }
+  return { binary: findChromeOnPath(), rejected: null };
+}
+
+function findChrome() {
   // Previously this returned the literal "google-chrome-stable", so a machine without Chrome produced
   // spawn ENOENT inside a retry loop (4 attempts per call, 5 tests → a multi-minute red that reads like
   // a test regression). Return null and let callers report a missing dependency.
-  return null;
+  return resolveChromeBinary().binary;
 }
 
 /** Whether a Chrome/Chromium binary is resolvable — lets browser-driven tests skip honestly. */
@@ -229,10 +266,16 @@ export async function launchChrome(options = {}) {
   const extraArgs = options.extraArgs || [];
   // A missing browser is a dependency error, not a flake: say so immediately instead of retrying a
   // spawn that cannot succeed (web-ai-showcase-cj5).
-  if (!findChrome()) {
+  const resolution = resolveChromeBinary();
+  if (!resolution.binary) {
+    // Name a rejected CHROME_BIN: "your CHROME_BIN points at nothing" is a different fix from
+    // "install a browser", and the operator is the only one who can tell which they meant.
+    const rejected = resolution.rejected
+      ? ` CHROME_BIN=${resolution.rejected} was ignored because it is not an executable file.`
+      : "";
     throw new Error(
       "No Chrome/Chromium found on PATH (set CHROME_BIN to point at one). Browser-driven tests and " +
-        "validators need a browser; this is a missing dependency, not a test regression.",
+        `validators need a browser; this is a missing dependency, not a test regression.${rejected}`,
     );
   }
   // Chrome can intermittently fail to expose its endpoint under IO/memory pressure — retry the whole
