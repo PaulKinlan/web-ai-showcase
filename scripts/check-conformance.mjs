@@ -9,16 +9,31 @@
 //      share an id (duplicate).
 //   3. any artifact is malformed (schema/validateSuite/validateCritique), or a suiteHash doesn't match
 //      its assertions.
-//   4. a suite present on origin/main lost or WEAKENED an assertion (normalized text changed / removed)
-//      without a record in conformance-migrations.json — immutable means fix the demo, never weaken.
+//   4. a suite present on origin/main lost or CHANGED an assertion (normalized text changed /
+//      removed) without a record in conformance-migrations.json — immutable means fix the demo,
+//      never weaken. The record's action must be one of remove|weaken|correct (see
+//      CONFORMANCE_MIGRATION_ACTIONS in conformance-lib.mjs): a factual correction of an assertion
+//      derived from wrong metadata is not a weakening and must not be mislabelled as one.
 //   5. a demo the action TOUCHED (its page HTML/JS changed vs origin/main) has a support class left
 //      "untested"/"broken" — a touched demo must be validated on both classes.
 //   6. any support class regressed non-monotonically: a class that was "ok" on origin/main is now
 //      untested/needs-review/broken/removed without a migration record.
 //   7. any support class is explicitly "broken" (a recorded breakage that must be fixed, not shipped).
+//   8. reports/conformance/results.json RECORDS a failing assertion (state:"fail"). Rules 1-7 prove
+//      each suite is PRESENT and INTACT; they never proved the demo PASSES it. Until this rule
+//      existed the gate printed the `fail` count and exited 0 anyway, so a red assertion could —
+//      and did — land on main (mms-tts-bengali, bead web-ai-showcase-qjp).
+//   9. that evidence record is internally inconsistent: the stored `aggregate` disagrees with the
+//      per-run tallies, or a run's own counters disagree with its own results array. Rule 8 reads
+//      the assertion STATES and rule 9 reads the COUNTERS, so neither a stale summary nor a
+//      hand-edited tally can hide a failure from both. A missing or malformed results.json also
+//      fails — it is a tracked artifact, and its absence must never read as "nothing failed".
 //
 // PASSES: many demos still "untested"/"needs-review" (that is the backlog burn-down, not a failure);
-// additive new suites/assertions; honest new blocked/unsupported records.
+// additive new suites/assertions; honest new blocked/unsupported records; a suite with NO run record
+// (results.json is a merge-by-slug rollup, so a targeted `--slug` run legitimately leaves every
+// other suite's record untouched — partial coverage is the backlog, not a regression); assertions in
+// `manual` (needs an agent verdict) or `blocked` (honest device/feature-unavailable) state.
 //
 // Usage: node scripts/check-conformance.mjs   (belongs beside check-routes.mjs before every push + CI)
 
@@ -28,9 +43,13 @@ import { join } from "node:path";
 import {
   builtModels,
   computeSuiteHash,
+  CONFORMANCE_MIGRATION_ACTIONS,
+  evaluateRecordedOutcome,
   loadCatalogue,
+  migratedAssertion,
   normalizeAssertion,
   repoRoot,
+  validateConformanceMigrations,
   validateCritique,
   validateSuite,
 } from "./conformance-lib.mjs";
@@ -76,23 +95,56 @@ function touchedDemos() {
 
 function loadConfMigrations() {
   const p = join(repoRoot, "conformance-migrations.json");
-  if (!existsSync(p)) return [];
+  if (!existsSync(p)) return { migrations: [], errors: [] };
   const arr = JSON.parse(readFileSync(p, "utf8"));
-  if (!Array.isArray(arr)) throw new Error("conformance-migrations.json must be an array");
-  return arr;
+  // Structure is enforced here, not only documented in schemas/: an unargued or mislabelled record
+  // is the audit-trail hole the immutability rule exists to prevent (web-ai-showcase-9tw).
+  return { migrations: Array.isArray(arr) ? arr : [], errors: validateConformanceMigrations(arr) };
 }
-const migratedAssertion = (migs, suiteId, assertionId) =>
-  migs.some((m) =>
-    m.suiteId === suiteId && m.assertionId === assertionId &&
-    ["remove", "weaken"].includes(m.action)
-  );
+
+// ── Rules 8 + 9: the recorded OUTCOME is part of the gate ───────────────────────────────────────
+// Thin IO wrapper over evaluateRecordedOutcome() in conformance-lib.mjs. The decision logic is a
+// pure function there so every branch (failing assertion, desynced per-run counter, drifted
+// aggregate, partial rollup, stale record) is unit-tested in test/conformance-outcome.test.mjs
+// rather than only exercised by hand. Reading the file is the only thing that belongs here.
+function recordedOutcome(suiteAssertionCounts, builtCount) {
+  const p = join(repoRoot, "reports", "conformance", "results.json");
+
+  if (!existsSync(p)) {
+    return {
+      lines: [],
+      failures: [
+        "MISSING EVIDENCE: reports/conformance/results.json is absent, but it is a tracked " +
+        'artifact — a deleted outcome record must not read as "nothing failed". Regenerate it ' +
+        "with \`node scripts/conformance.mjs --all\`.",
+      ],
+    };
+  }
+
+  let doc;
+  try {
+    doc = JSON.parse(readFileSync(p, "utf8"));
+  } catch (e) {
+    return {
+      lines: [],
+      failures: [
+        `MALFORMED: reports/conformance/results.json is not valid JSON (${e.message})`,
+      ],
+    };
+  }
+
+  return evaluateRecordedOutcome(doc, { suiteAssertionCounts, builtCount });
+}
 
 function main() {
   const failures = [];
   const catalogue = loadCatalogue();
   const built = builtModels(catalogue);
   const builtSlugs = new Set(built.map((m) => m.slug));
-  const migrations = loadConfMigrations();
+  const { migrations, errors: migrationErrors } = loadConfMigrations();
+  // A malformed or under-argued migration record fails the gate outright: if the audit trail is
+  // broken, every "it's recorded" claim downstream is worthless.
+  for (const e of migrationErrors) failures.push(`migration record invalid — ${e}`);
 
   // Enumerate on-disk suites + critiques.
   const suiteFiles = [];
@@ -153,7 +205,10 @@ function main() {
       if (!cn) {
         if (!migratedAssertion(migrations, suite.id, ba.id)) {
           failures.push(
-            `WEAKENED (${slug}): assertion "${ba.id}" was REMOVED without a conformance-migrations.json record. Immutable — fix the demo, never delete the assertion.`,
+            `WEAKENED (${slug}): assertion "${ba.id}" was REMOVED without a conformance-migrations.json record. ` +
+              `Immutable — fix the demo, never delete the assertion. Record it with action ${
+                CONFORMANCE_MIGRATION_ACTIONS.join("|")
+              }.`,
           );
         }
         continue;
@@ -162,7 +217,11 @@ function main() {
         JSON.stringify(bn) !== JSON.stringify(cn) && !migratedAssertion(migrations, suite.id, ba.id)
       ) {
         failures.push(
-          `WEAKENED (${slug}): assertion "${ba.id}" CHANGED vs origin/main without a migration record. Adding assertions is allowed; changing/weakening one is not.`,
+          `WEAKENED (${slug}): assertion "${ba.id}" CHANGED vs origin/main without a migration record. ` +
+            `Adding assertions is allowed; changing one needs a conformance-migrations.json record with ` +
+            `action ${
+              CONFORMANCE_MIGRATION_ACTIONS.join("|")
+            } (use "correct" when the old assertion was factually wrong).`,
         );
       }
     }
@@ -247,16 +306,12 @@ function main() {
     `mobile+desktop parity: desktop ok ${dOk}/${built.length} (needs-review ${dReview}) · ` +
       `mobile ok ${mOk}/${built.length} (needs-review ${mReview})  [untested = backlog]`,
   );
-  const resultsPath = join(repoRoot, "reports", "conformance", "results.json");
-  if (existsSync(resultsPath)) {
-    try {
-      const a = JSON.parse(readFileSync(resultsPath, "utf8")).aggregate;
-      console.log(
-        `last run: ${a.tested}/${a.total} assertions tested — pass ${a.pass} · fail ${a.fail} · ` +
-          `blocked ${a.blocked} · manual-evidenced ${a.manual}`,
-      );
-    } catch { /* ignore */ }
-  }
+  const outcome = recordedOutcome(
+    new Map(suites.map(({ suite }) => [suite.id, (suite.assertions || []).length])),
+    built.length,
+  );
+  for (const line of outcome.lines) console.log(line);
+  for (const f of outcome.failures) failures.push(f);
 
   if (failures.length) {
     console.error(`\nFAIL — ${failures.length} conformance/parity violation(s):`);

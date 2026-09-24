@@ -47,9 +47,13 @@ async function generate(id, prompt, opts) {
   const streamer = new TextStreamer(generator.tokenizer, {
     skip_prompt: true,
     skip_special_tokens: true,
-    callback_function: (token) => {
-      count++;
-      post({ type: "token", id, piece: token, t: performance.now() - t0 });
+    // TextStreamer buffers decoded words, so a callback is not one token. Count the generated
+    // token IDs (prompt excluded) and attach the running count to each visible chunk.
+    token_callback_function: (ids) => {
+      count += ids.length;
+    },
+    callback_function: (piece) => {
+      post({ type: "token", id, piece, tokens: count, t: performance.now() - t0 });
     },
   });
   const out = await generator(prompt, {

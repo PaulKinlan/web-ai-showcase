@@ -513,4 +513,191 @@ export function validateCritique(c) {
   return errs;
 }
 
+// ── Recorded conformance OUTCOME (gate rules 8 + 9) ─────────────────────────
+// reports/conformance/results.json is the committed evidence record written by
+// scripts/conformance.mjs. The suite-INTEGRITY checks (present / schema-valid / hash-matching /
+// not weakened) prove a suite EXISTS and is INTACT — they never proved the demo PASSES it. So the
+// gate also reads the recorded outcome, on two independent paths, so that neither a stale summary
+// nor a hand-edited tally can hide a failure from both:
+//   8. any assertion recorded `state:"fail"` becomes a named, actionable gate failure.
+//   9. the counters must agree with each other — each run's `fail` against its own results array,
+//      and the stored `aggregate` against the sum of the runs.
+//
+// Partial coverage is explicitly NOT a failure: results.json is a merge-by-slug rollup, so a
+// targeted `--slug` run legitimately leaves every other suite's record untouched. A suite with no
+// run record is backlog. `manual` (needs an agent verdict) and `blocked` (honest device/feature
+// unavailability) are not failures either.
+//
+// Pure by design — file IO stays in the caller so every branch is unit-testable.
+// `suiteAssertionCounts` maps suite id -> current assertion count and only REPORTS staleness: an
+// additive assertion legitimately makes an older run record incomplete, which is a re-run prompt.
+export function evaluateRecordedOutcome(
+  doc,
+  { suiteAssertionCounts = new Map(), builtCount = 0 } = {},
+) {
+  const failures = [];
+  const lines = [];
+
+  if (!doc || typeof doc !== "object" || !Array.isArray(doc.runs)) {
+    failures.push(
+      "MALFORMED: reports/conformance/results.json has no `runs` array — cannot verify any " +
+        "recorded outcome.",
+    );
+    return { failures, lines };
+  }
+
+  const TALLY = ["total", "tested", "pass", "fail", "blocked", "manual"];
+  const recomputed = Object.fromEntries(TALLY.map((k) => [k, 0]));
+  let stale = 0;
+
+  for (const run of doc.runs) {
+    const results = Array.isArray(run.results) ? run.results : [];
+
+    // 8 — every recorded failure is surfaced by slug + assertion id.
+    for (const r of results) {
+      if (r.state !== "fail") continue;
+      failures.push(
+        `FAILING ASSERTION: "${run.slug}" · ${r.id} — ${r.evidence || "no evidence recorded"} ` +
+          `(immutable conformance: fix the DEMO, never weaken the assertion)`,
+      );
+    }
+
+    // 9a — a run's own counter must agree with its own results array.
+    const observed = results.filter((r) => r.state === "fail").length;
+    if (Number.isFinite(run.fail) && run.fail !== observed) {
+      failures.push(
+        `INCONSISTENT RECORD: "${run.slug}" reports fail=${run.fail} but its results array ` +
+          `contains ${observed} failing assertion(s) — re-run \`node scripts/conformance.mjs ` +
+          `--slug ${run.slug}\` rather than editing the record.`,
+      );
+    }
+
+    for (const k of TALLY) if (Number.isFinite(run[k])) recomputed[k] += run[k];
+    const current = suiteAssertionCounts.get(run.slug);
+    if (current !== undefined && Number.isFinite(run.total) && run.total !== current) stale++;
+  }
+
+  // 9b — the stored summary must agree with the per-run records it summarises.
+  const agg = doc.aggregate;
+  if (!agg || typeof agg !== "object") {
+    failures.push("MALFORMED: reports/conformance/results.json has no `aggregate` summary.");
+  } else {
+    const drift = TALLY.filter((k) => (agg[k] ?? 0) !== recomputed[k])
+      .map((k) => `${k} ${agg[k] ?? 0}!=${recomputed[k]}`);
+    if (drift.length) {
+      failures.push(
+        `INCONSISTENT RECORD: results.json aggregate disagrees with its own runs (${
+          drift.join(", ")
+        }) — regenerate with \`node scripts/conformance.mjs --all\`.`,
+      );
+    }
+  }
+
+  // ── Report (always emitted; partial coverage is the backlog, not a failure) ──
+  lines.push(
+    `recorded outcome: ${doc.runs.length}/${builtCount} suites have a run record — ` +
+      `assertions ${recomputed.total} · tested ${recomputed.tested} · pass ${recomputed.pass} · ` +
+      `fail ${recomputed.fail} · blocked ${recomputed.blocked} · ` +
+      `manual-evidenced ${recomputed.manual}  [no record = backlog]`,
+  );
+  if (doc.generatedAt) lines.push(`  last written: ${doc.generatedAt}`);
+  if (stale) {
+    lines.push(
+      `  stale: ${stale} run record(s) no longer match their suite's assertion count — re-run ` +
+        `those slugs to refresh the evidence`,
+    );
+  }
+  return { failures, lines };
+}
+
 export { isMediaPipe, repoRoot };
+
+// ── Conformance-migration vocabulary (the immutable-suite escape hatch) ──────────────────────────
+// An assertion that CHANGES or DISAPPEARS versus origin/main needs a record in
+// conformance-migrations.json. The label IS the audit trail, so the vocabulary has to distinguish
+// intent honestly:
+//   remove  — the assertion no longer applies (deletion)
+//   weaken  — genuine reduction in coverage
+//   correct — the assertion was DERIVED FROM WRONG METADATA and the demo was always honest
+//
+// Before `correct` existed, check-conformance.mjs honoured only remove|weaken, so a factual
+// correction had to be mislabelled "weaken" — the opposite of what happened, which pollutes the
+// very trail the immutability rule exists to protect (web-ai-showcase-9tw, the mms-tts-bengali
+// declares-quantisation case). This is the single source of truth for the vocabulary: the gate and
+// schemas/conformance-migration.schema.json both derive from it, so they cannot drift.
+export const CONFORMANCE_MIGRATION_ACTIONS = ["remove", "weaken", "correct"];
+
+// A deviation from immutability has to be argued, not asserted: every record carries a reason, and
+// the two actions that claim a change to assertion CONTENT must also cite evidence.
+const MIGRATION_ACTIONS_NEEDING_EVIDENCE = new Set(["weaken", "correct"]);
+
+/**
+ * Honoured migration for this assertion? Pure, so every branch is unit-tested.
+ */
+export function migratedAssertion(migrations, suiteId, assertionId) {
+  if (!Array.isArray(migrations)) return false;
+  return migrations.some((m) =>
+    m && m.suiteId === suiteId && m.assertionId === assertionId &&
+    CONFORMANCE_MIGRATION_ACTIONS.includes(m.action)
+  );
+}
+
+/**
+ * Structural validation for conformance-migrations.json (mirrors validateSuite / validateCritique):
+ * catches a malformed or under-argued record in the gate, while the JSON Schema under schemas/ stays
+ * the human-facing contract.
+ */
+export function validateConformanceMigrations(migrations) {
+  const errs = [];
+  if (!Array.isArray(migrations)) return ["conformance-migrations.json must be an array"];
+
+  const seen = new Set();
+  migrations.forEach((m, i) => {
+    const at = `conformance-migrations.json[${i}]`;
+    if (!m || typeof m !== "object") {
+      errs.push(`${at} must be an object`);
+      return;
+    }
+    const id = `${m.suiteId ?? "?"}/${m.assertionId ?? "?"}`;
+    if (typeof m.suiteId !== "string" || !m.suiteId) errs.push(`${at} (${id}): missing suiteId`);
+    if (typeof m.assertionId !== "string" || !m.assertionId) {
+      errs.push(`${at} (${id}): missing assertionId`);
+    }
+    if (!CONFORMANCE_MIGRATION_ACTIONS.includes(m.action)) {
+      errs.push(
+        `${at} (${id}): action "${m.action}" is not one of ${
+          CONFORMANCE_MIGRATION_ACTIONS.join("|")
+        }`,
+      );
+    }
+    // An unargued record is not a record: a bare action with no reason is exactly the audit-trail
+    // hole this file exists to prevent.
+    if (typeof m.reason !== "string" || m.reason.trim().length < 20) {
+      errs.push(`${at} (${id}): reason must be a substantive sentence (>= 20 characters)`);
+    }
+    if (
+      MIGRATION_ACTIONS_NEEDING_EVIDENCE.has(m.action) &&
+      (typeof m.evidence !== "string" || m.evidence.trim().length < 20)
+    ) {
+      errs.push(
+        `${at} (${id}): action "${m.action}" needs evidence (>= 20 characters) — a correction or ` +
+          "a weakening has to be demonstrated, not asserted",
+      );
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(m.date ?? ""))) {
+      errs.push(`${at} (${id}): date must be YYYY-MM-DD`);
+    }
+    for (const k of ["fromTest", "toTest"]) {
+      if (k in m && typeof m[k] !== "string") errs.push(`${at} (${id}): ${k} must be a string`);
+    }
+    for (const k of ["fromSuiteHash", "toSuiteHash"]) {
+      if (k in m && !/^sha256:[0-9a-f]{64}$/.test(String(m[k]))) {
+        errs.push(`${at} (${id}): ${k} must be sha256:<64 hex>`);
+      }
+    }
+    const key = `${m.suiteId}|${m.assertionId}|${m.action}`;
+    if (seen.has(key)) errs.push(`${at} (${id}): duplicate ${m.action} record`);
+    seen.add(key);
+  });
+  return errs;
+}

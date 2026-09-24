@@ -44,20 +44,59 @@ test("FAIL-CLOSED: every identifiable person is licensed, cleared, sourced, and 
   }
 });
 
-test("no procedural / qa-screenshot entry claims to depict an identifiable person", () => {
+// A PROCEDURAL image is first-party synthetic output — an illustration, a mock document, a
+// generated texture. There is no legitimate way for one to contain a real identifiable person, so
+// the rule stays absolute: any face here means something unverified was relabelled as synthetic,
+// which is exactly what the provenance policy forbids.
+test("no procedural entry claims to depict an identifiable person", () => {
   for (const e of ledger.entries) {
-    if (e.archetype === "procedural" || e.archetype === "qa-screenshot") {
+    if (e.archetype !== "procedural") continue;
+    assert.equal(
+      e.depictsIdentifiablePerson,
+      false,
+      `${e.paths[0]} is procedural but claims identifiable person`,
+    );
+    assert.equal(
+      e.provenance.kind,
+      "first-party",
+      `${e.paths[0]} is procedural but not first-party`,
+    );
+  }
+});
+
+// A QA-SCREENSHOT is different in kind: it photographs a demo that is itself operating on a
+// bundled media/manifest.json asset. When that asset is a licensed portrait — the interactive
+// segmenter runs on media/assets/portrait-person.jpg, a Public-Domain Wikimedia Commons studio
+// portrait — the screenshot genuinely contains an identifiable person, and recording
+// `depictsIdentifiablePerson: true` with `kind: "licensed"` is the HONEST entry. Demanding
+// `false`/`first-party` here would require the ledger to lie about a real person, so this asserts
+// the same fail-closed bar the gate enforces instead: a face may appear only when it is fully
+// rights-cleared and traceable. An unverified face in a screenshot still fails.
+test("a qa-screenshot face is rights-cleared, or there is no face and it is first-party", () => {
+  for (const e of ledger.entries) {
+    if (e.archetype !== "qa-screenshot") continue;
+    const p = e.provenance;
+    if (!e.depictsIdentifiablePerson) {
       assert.equal(
-        e.depictsIdentifiablePerson,
-        false,
-        `${e.paths[0]} is ${e.archetype} but claims identifiable person`,
-      );
-      assert.equal(
-        e.provenance.kind,
+        p.kind,
         "first-party",
-        `${e.paths[0]} is ${e.archetype} but not first-party`,
+        `${e.paths[0]} is a qa-screenshot with no identifiable person but is not first-party`,
       );
+      continue;
     }
+    assert.equal(e.rightsCleared, true, `${e.paths[0]} shows a person but is not rightsCleared`);
+    assert.equal(
+      p.kind,
+      "licensed",
+      `${e.paths[0]} shows a person but provenance.kind='${p.kind}' (must be 'licensed')`,
+    );
+    assert.ok(p.license && p.license.length, `${e.paths[0]} shows a person but has no license`);
+    assert.ok(
+      p.attribution && p.attribution.length,
+      `${e.paths[0]} shows a person but has no attribution`,
+    );
+    const traceable = (p.sourceUrl && p.sourceUrl.length > 0) || !!p.sourceAsset;
+    assert.ok(traceable, `${e.paths[0]} shows a person but is not traceable to a source`);
   }
 });
 

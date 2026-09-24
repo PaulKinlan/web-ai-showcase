@@ -2,7 +2,7 @@
 // and the waveform canvas. All inference runs in worker.js, off the main thread.
 //
 // Model: naklitechie/mms-tts-bn-ONNX — a faithful ONNX export of the canonical Meta MMS BENGALI VITS
-// checkpoint (its vocab.json is byte-identical to facebook/mms-tts-ben). ~109 MB fp32, 16 kHz mono
+// checkpoint (its vocab.json is byte-identical to facebook/mms-tts-ben). ~114 MB (109 MiB) fp32, 16 kHz mono
 // output. This is a DISTINCT model from the built English/German/Spanish/French/Arabic/Vietnamese/Hindi
 // MMS-TTS demos: its own native Bengali-script char vocab (58 symbols, is_uroman:false — a different script
 // from Hindi's Devanagari) + Bengali-trained VITS weights. The worker reproduces the VitsTokenizer exactly
