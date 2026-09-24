@@ -20,7 +20,7 @@
 // Scope: a refining lower bound over the catalogued built routes at this scan depth — never a
 // completeness claim. Network-dependent; an offline run reports `error` rather than guessing.
 
-import { readFile, writeFile, mkdir, readdir } from "node:fs/promises";
+import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { execSync } from "node:child_process";
 
@@ -69,7 +69,8 @@ const PAIR_PATTERNS = [
   /(?:from_pretrained\(|modelId\s*:|\bmodel\s*:)\s*["'`]([A-Za-z0-9][\w.-]{0,79}\/[A-Za-z0-9][\w.-]{0,79})["'`][^)]{0,400}?\bdtype:\s*["'`]([a-zA-Z0-9_]+)["'`]/gs,
   /\bdtype:\s*["'`]([a-zA-Z0-9_]+)["'`][^}]{0,400}?\b(?:model|modelId)\s*:\s*["'`]([A-Za-z0-9][\w.-]{0,79}\/[A-Za-z0-9][\w.-]{0,79})["'`]/gs,
 ];
-const CONFIG_ONLY = /\b(?:AutoConfig|AutoTokenizer|AutoProcessor)\.from_pretrained\(\s*["'`]([^"'`]+)["'`]/g;
+const CONFIG_ONLY =
+  /\b(?:AutoConfig|AutoTokenizer|AutoProcessor)\.from_pretrained\(\s*["'`]([^"'`]+)["'`]/g;
 
 async function signalsFor(slug) {
   const dir = ROOT + `models/${slug}/`;
@@ -87,7 +88,9 @@ async function signalsFor(slug) {
   let files = [];
   try {
     files = (await readdir(dir)).filter((f) => /\.(js|mjs|html)$/.test(f));
-  } catch { return out; }
+  } catch {
+    return out;
+  }
 
   const workerPath = dir + "worker.js";
   for (const f of files) {
@@ -120,7 +123,9 @@ async function signalsFor(slug) {
     if (isWorker) {
       for (const m of t.matchAll(PAIR_PATTERNS[0])) out.callSitePairs[m[1]] = m[2];
       for (const m of t.matchAll(PAIR_PATTERNS[1])) out.callSitePairs[m[2]] = m[1];
-      out.workerDtypes = [...new Set([...t.matchAll(/\bdtype:\s*["'`]([a-zA-Z0-9_]+)["'`]/g)].map((m) => m[1]))];
+      out.workerDtypes = [
+        ...new Set([...t.matchAll(/\bdtype:\s*["'`]([a-zA-Z0-9_]+)["'`]/g)].map((m) => m[1])),
+      ];
       out.declaredModelFile = t.match(/model_file_name:\s*["'`]([^"'`]+)["'`]/)?.[1] ?? null;
     }
   }
@@ -130,20 +135,30 @@ async function signalsFor(slug) {
 // Review aid, not a verdict: mismatches between the transformers.js pipeline a demo drives and
 // the upstream card's own tag. Only listed pairs are pre-cleared as vocabulary differences.
 const VOCABULARY_PAIRS = {
-  "feature-extraction -> sentence-similarity": "same behaviour — demo drives the TJS feature-extraction pipeline; the card advertises retrieval",
+  "feature-extraction -> sentence-similarity":
+    "same behaviour — demo drives the TJS feature-extraction pipeline; the card advertises retrieval",
   "sentence-similarity -> feature-extraction": "same behaviour — TJS pipeline name vs card tag",
-  "text-classification -> text-ranking": "reranker driven as a classification pipeline (TJS has no text-ranking task)",
+  "text-classification -> text-ranking":
+    "reranker driven as a classification pipeline (TJS has no text-ranking task)",
   "text-classification -> zero-shot-classification": "NLI checkpoint driven as classification",
   "text-to-speech -> text-to-audio": "same behaviour — TJS task name vs card tag",
-  "audio-feature-extraction -> feature-extraction": "same behaviour — TJS audio task name vs card tag",
-  "zero-shot-audio-classification -> feature-extraction": "demo runs the zero-shot audio pipeline over the encoder",
-  "zero-shot-image-classification -> feature-extraction": "demo runs the zero-shot image pipeline over the encoder",
-  "zero-shot-object-detection -> object-detection": "demo runs the zero-shot detection pipeline (more specific than the card)",
+  "audio-feature-extraction -> feature-extraction":
+    "same behaviour — TJS audio task name vs card tag",
+  "zero-shot-audio-classification -> feature-extraction":
+    "demo runs the zero-shot audio pipeline over the encoder",
+  "zero-shot-image-classification -> feature-extraction":
+    "demo runs the zero-shot image pipeline over the encoder",
+  "zero-shot-object-detection -> object-detection":
+    "demo runs the zero-shot detection pipeline (more specific than the card)",
   "text2text-generation -> text-generation": "TJS seq2seq task vs card tag",
-  "image-to-image -> text-to-image": "card tag is a poor fit for this restoration model; demo uses image-to-image",
-  "image-to-image -> image-to-text": "card tag is a poor fit for this unwarping model; demo uses image-to-image",
-  "image-text-to-text -> text-generation": "card tag is a poor fit for this VLM; demo uses image-text-to-text",
-  "fill-mask -> text-generation": "spell-correction checkpoint driven as fill-mask over masked spans",
+  "image-to-image -> text-to-image":
+    "card tag is a poor fit for this restoration model; demo uses image-to-image",
+  "image-to-image -> image-to-text":
+    "card tag is a poor fit for this unwarping model; demo uses image-to-image",
+  "image-text-to-text -> text-generation":
+    "card tag is a poor fit for this VLM; demo uses image-text-to-text",
+  "fill-mask -> text-generation":
+    "spell-correction checkpoint driven as fill-mask over masked spans",
 };
 
 // --- HF API ----------------------------------------------------------------------------
@@ -255,7 +270,8 @@ async function transformerPins() {
     recentStable = Object.keys(j.versions || {}).filter((v) => !v.includes("-")).slice(-6);
   } catch { /* offline: report null, never guess */ }
   const shared =
-    (await readFile(ROOT + "lib/webai.js", "utf8")).match(/@huggingface\/transformers@([0-9.]+)/)?.[1] ?? null;
+    (await readFile(ROOT + "lib/webai.js", "utf8")).match(/@huggingface\/transformers@([0-9.]+)/)
+      ?.[1] ?? null;
   return {
     shared,
     latest,
@@ -296,7 +312,9 @@ if (CHECK_ONLY) {
     const changes = [];
     if (r.hfId !== m.hfId) changes.push(`cited model ${r.hfId} → ${m.hfId}`);
     if (r.catalogueDtype !== (m.dtype ?? null)) {
-      changes.push(`dtype ${JSON.stringify(r.catalogueDtype)} → ${JSON.stringify(m.dtype ?? null)}`);
+      changes.push(
+        `dtype ${JSON.stringify(r.catalogueDtype)} → ${JSON.stringify(m.dtype ?? null)}`,
+      );
     }
     if (changes.length) drifted.push({ slug: m.slug, hfId: m.hfId, changes });
   }
@@ -310,26 +328,40 @@ if (CHECK_ONLY) {
   };
   console.log(JSON.stringify(report, null, 2));
   if (drifted.length) {
-    console.error(`currency check FAILED: ${drifted.length} route(s) changed since verification — re-run with --refresh`);
+    console.error(
+      `currency check FAILED: ${drifted.length} route(s) changed since verification — re-run with --refresh`,
+    );
     process.exit(1);
   }
   if (uncovered.length) {
-    console.error(`currency check INCOMPLETE: ${uncovered.length}/${built.length} built route(s) never verified — run --refresh`);
+    console.error(
+      `currency check INCOMPLETE: ${uncovered.length}/${built.length} built route(s) never verified — run --refresh`,
+    );
     process.exit(2);
   }
-  console.error(`currency check OK: ${built.length} built routes covered, evidence matches the catalogue`);
+  console.error(
+    `currency check OK: ${built.length} built routes covered, evidence matches the catalogue`,
+  );
   process.exit(0);
 }
 
 console.error(`Scanning ${targets.length} built route(s) for runtime + requested model ids…`);
-const cited = new Set(), weightIds = new Set(), configIds = new Set(), perRoute = [], mlcRoutes = [];
+const cited = new Set(),
+  weightIds = new Set(),
+  configIds = new Set(),
+  perRoute = [],
+  mlcRoutes = [];
 for (const m of targets) {
   const sig = await signalsFor(m.slug);
   for (const id of sig.weightIds) weightIds.add(id);
   for (const id of sig.configIds) configIds.add(id);
   cited.add(m.hfId);
   if (sig.mlcIds.size) mlcRoutes.push({ slug: m.slug, mlcIds: [...sig.mlcIds] });
-  routeRecords[m.slug] = { hfId: m.hfId, catalogueDtype: m.dtype ?? null, checkedAt: new Date().toISOString() };
+  routeRecords[m.slug] = {
+    hfId: m.hfId,
+    catalogueDtype: m.dtype ?? null,
+    checkedAt: new Date().toISOString(),
+  };
   perRoute.push({
     slug: m.slug,
     hfId: m.hfId,
@@ -347,10 +379,13 @@ for (const m of targets) {
 
 const looksLikeRepo = (id) => ID_SHAPE.test(id) && !NON_HF.test(id);
 const sweep = [...new Set([...cited, ...weightIds, ...configIds])].filter(looksLikeRepo).sort();
-const snapshot = existsSync(SNAPSHOT) ? JSON.parse(await readFile(SNAPSHOT, "utf8")) : { models: {} };
+const snapshot = existsSync(SNAPSHOT)
+  ? JSON.parse(await readFile(SNAPSHOT, "utf8"))
+  : { models: {} };
 const prev = snapshot.models || {};
 // Only a successful verification satisfies the cache; failures and throttles are retried next run.
-const fresh = (id) => !REFRESH && prev[id]?.outcome === "verified" && prev[id]?.verifiedAt &&
+const fresh = (id) =>
+  !REFRESH && prev[id]?.outcome === "verified" && prev[id]?.verifiedAt &&
   Date.now() - Date.parse(prev[id].verifiedAt) < CACHE_TTL_MS;
 const cachedCount = sweep.filter(fresh).length;
 
@@ -366,8 +401,6 @@ console.error(
   `Health-checking ${sweep.length} unique HF repos (${cited.size} cited · ${weightIds.size} weights · ${configIds.size} config-only)…`,
 );
 
-
-
 let liveFetches = 0;
 const deferred = new Set();
 const fetched = await mapLimit(queue, CONCURRENCY, async (id) => {
@@ -380,13 +413,14 @@ const fetched = await mapLimit(queue, CONCURRENCY, async (id) => {
 });
 // Cached evidence is replayed into the same flag fields a live fetch would set, so a 401 or a
 // 404 established on an earlier run keeps being reported instead of quietly disappearing.
-const replay = (rec) => !rec ? {} : {
-  ...rec,
-  ...(rec.outcome === "missing" ? { missing: true } : {}),
-  ...(rec.outcome === "unauthorized" ? { unauthorized: true } : {}),
-  ...(rec.outcome === "rate-limited" ? { rateLimited: true } : {}),
-  ...(rec.outcome === "error" ? { error: rec.errorMessage || "recorded error" } : {}),
-};
+const replay = (rec) =>
+  !rec ? {} : {
+    ...rec,
+    ...(rec.outcome === "missing" ? { missing: true } : {}),
+    ...(rec.outcome === "unauthorized" ? { unauthorized: true } : {}),
+    ...(rec.outcome === "rate-limited" ? { rateLimited: true } : {}),
+    ...(rec.outcome === "error" ? { error: rec.errorMessage || "recorded error" } : {}),
+  };
 const api = new Map([
   ...sweep.map((id) => [id, replay(prev[id])]),
   ...fetched.map((r) => [r.id, r]),
@@ -414,7 +448,9 @@ for (const id of sweep) {
   if (r.private) f.private = "repo now private";
   if (r.gated && r.gated !== false) {
     f[hubServed ? "gated" : "gatedInformational"] = hubServed
-      ? `gated=${r.gated} — weights are fetched from the Hub by ${asWeights.map((x) => x.slug).join(", ")}`
+      ? `gated=${r.gated} — weights are fetched from the Hub by ${
+        asWeights.map((x) => x.slug).join(", ")
+      }`
       : `gated=${r.gated} — cited only; weights arrive via a CDN build`;
   }
 
@@ -424,7 +460,9 @@ for (const id of sweep) {
     } else {
       for (const rt of asWeights) {
         const paired = rt.callSitePairs?.[id];
-        const dtypes = paired ? [paired] : (rt.workerDtypes.length ? rt.workerDtypes : [rt.catalogueDtype]);
+        const dtypes = paired
+          ? [paired]
+          : (rt.workerDtypes.length ? rt.workerDtypes : [rt.catalogueDtype]);
         for (const d of dtypes) {
           const pats = DTYPE_TOKENS[d];
           if (!pats) continue;
@@ -452,7 +490,8 @@ for (const id of sweep) {
       f.taskDrift = {
         recorded: rt.task,
         upstream: r.task,
-        reading: VOCABULARY_PAIRS[key] ?? "review — confirm the page's claim matches how it is used",
+        reading: VOCABULARY_PAIRS[key] ??
+          "review — confirm the page's claim matches how it is used",
       };
     }
   }
@@ -468,31 +507,56 @@ for (const id of sweep) {
 
   const attempted = !r.deferred;
   const ok = attempted && !r.missing && !r.unauthorized && !r.rateLimited && !r.error;
-  const verdict = ok ? "verified"
-    : r.deferred ? null
-    : r.missing ? "missing"
-    : r.unauthorized ? "unauthorized"
-    : r.rateLimited ? "rate-limited"
+  const verdict = ok
+    ? "verified"
+    : r.deferred
+    ? null
+    : r.missing
+    ? "missing"
+    : r.unauthorized
+    ? "unauthorized"
+    : r.rateLimited
+    ? "rate-limited"
     : "error";
   // Only an attempt is evidence. A deferred repo keeps whatever was known before.
-  if (verdict && (ok || !prev[id]?.verifiedAt)) records[id] = {
-    outcome: verdict,
-    errorMessage: ok ? null : (r.error ?? null),
-    sha: r.sha ?? null,
-    lastModified: r.lastModified ?? null,
-    task: r.task ?? null,
-    library: r.library ?? null,
-    gated: r.gated ?? null,
-    onnxCount: Array.isArray(r.onnxFiles) ? r.onnxFiles.length : null,
-    onnxFiles: Array.isArray(r.onnxFiles) ? r.onnxFiles.slice(0, 30) : null,
-    checked: new Date().toISOString().slice(0, 10),
-    verifiedAt: ok ? new Date().toISOString() : (prev[id]?.verifiedAt ?? null),
-    checkedAt: new Date().toISOString(),
-  };
+  if (verdict && (ok || !prev[id]?.verifiedAt)) {
+    records[id] = {
+      outcome: verdict,
+      errorMessage: ok ? null : (r.error ?? null),
+      sha: r.sha ?? null,
+      lastModified: r.lastModified ?? null,
+      task: r.task ?? null,
+      library: r.library ?? null,
+      gated: r.gated ?? null,
+      onnxCount: Array.isArray(r.onnxFiles) ? r.onnxFiles.length : null,
+      onnxFiles: Array.isArray(r.onnxFiles) ? r.onnxFiles.slice(0, 30) : null,
+      checked: new Date().toISOString().slice(0, 10),
+      verifiedAt: ok ? new Date().toISOString() : (prev[id]?.verifiedAt ?? null),
+      checkedAt: new Date().toISOString(),
+    };
+  }
 
-  if (r.rateLimited) f.rateLimited = "could not verify this run — HuggingFace rate limit (HTTP 429) after retries";
-  if (r.deferred) f.deferred = `not re-checked this run (request budget ${MAX_LIVE}) — cached evidence ${prev[id]?.checkedAt ?? "absent"}`;
-  const kinds = ["dead", "unauthorized", "error", "disabled", "private", "gated", "noOnnx", "dtypeFileAbsent", "taskDrift", "rateLimited", "deferred"]
+  if (r.rateLimited) {
+    f.rateLimited = "could not verify this run — HuggingFace rate limit (HTTP 429) after retries";
+  }
+  if (r.deferred) {
+    f.deferred = `not re-checked this run (request budget ${MAX_LIVE}) — cached evidence ${
+      prev[id]?.checkedAt ?? "absent"
+    }`;
+  }
+  const kinds = [
+    "dead",
+    "unauthorized",
+    "error",
+    "disabled",
+    "private",
+    "gated",
+    "noOnnx",
+    "dtypeFileAbsent",
+    "taskDrift",
+    "rateLimited",
+    "deferred",
+  ]
     .filter((k) => f[k] !== undefined);
   if (drift) kinds.push("upstreamMoved");
   if (kinds.length === 0 && f.gatedInformational) kinds.push("gatedInformational");
@@ -501,7 +565,8 @@ for (const id of sweep) {
 
 // catalogue accuracy — cited id vs requested weights, and declared dtype vs loaded dtype
 const accuracy = [], dtypeAudit = [];
-const baseName = (s) => s.split("/").pop().replace(/-ONNX$/i, "").replace(/-MLC$/, "").toLowerCase();
+const baseName = (s) =>
+  s.split("/").pop().replace(/-ONNX$/i, "").replace(/-MLC$/, "").toLowerCase();
 for (const rt of perRoute) {
   if (rt.weightIds.length && !rt.weightIds.includes(rt.hfId)) {
     accuracy.push({
@@ -510,7 +575,8 @@ for (const rt of perRoute) {
       cited: rt.hfId,
       requested: rt.weightIds,
       relation: rt.weightIds.some((id) =>
-          baseName(id).startsWith(baseName(rt.hfId)) || baseName(rt.hfId).startsWith(baseName(id)))
+          baseName(id).startsWith(baseName(rt.hfId)) || baseName(rt.hfId).startsWith(baseName(id))
+        )
         ? "same model — an ONNX/MLC build of the cited checkpoint"
         : "no name relation — verify the page's provenance claim",
     });
@@ -523,7 +589,9 @@ for (const rt of perRoute) {
       catalogue: rt.catalogueDtype,
       worker: code.join("+"),
       catalogueCoversWorker: false,
-      kind: catTokens.length === 1 && code.length === 1 ? "mismatch" : "catalogue-names-one-of-several",
+      kind: catTokens.length === 1 && code.length === 1
+        ? "mismatch"
+        : "catalogue-names-one-of-several",
     });
   }
 }
@@ -536,7 +604,8 @@ for (const f of findings) for (const k of f.kinds) tally[k] = (tally[k] || 0) + 
 const report = {
   generated: new Date().toISOString(),
   scope: {
-    cataloguedNonPending: cat.models.length - cat.models.filter((m) => m.status === "pending").length,
+    cataloguedNonPending: cat.models.length -
+      cat.models.filter((m) => m.status === "pending").length,
     builtRoutes: built.length,
     scannedRoutes: targets.length,
     uniqueReposSwept: sweep.length,
@@ -548,7 +617,8 @@ const report = {
     recheckedThisRun: liveFetches,
     reusedFromCache: cachedCount,
     verified: sweep.length - rateLimited - deferredCount,
-    note: "Refining lower bound over the currently catalogued built routes — not a completeness claim.",
+    note:
+      "Refining lower bound over the currently catalogued built routes — not a completeness claim.",
   },
   transformers: tjs,
   tally,
@@ -563,7 +633,11 @@ await writeFile(REPORT_JSON, JSON.stringify(report, null, 2) + "\n");
 await writeFile(
   SNAPSHOT,
   JSON.stringify(
-    { generated: report.generated, routes: { ...(snapshot.routes || {}), ...routeRecords }, models: { ...prev, ...records } },
+    {
+      generated: report.generated,
+      routes: { ...(snapshot.routes || {}), ...routeRecords },
+      models: { ...prev, ...records },
+    },
     null,
     2,
   ) + "\n",
@@ -576,8 +650,14 @@ const md = [
   ``,
   `- Built routes: **${built.length}** · scanned: **${targets.length}** · unique HF repos health-checked: **${sweep.length}**`,
   `  (${cited.size} cited · ${weightIds.size} weight-serving · ${configIds.size} config/tokenizer-only)`,
-  `- transformers.js shared pin: **${tjs.shared}** · latest published: **${tjs.latest}**${tjs.recentStable.length ? ` (recent stable: ${tjs.recentStable.join(", ")})` : ""}`,
-  `- Local version overrides: ${Object.entries(tjs.localOverrides).filter(([v]) => v !== tjs.shared).map(([v, s]) => `\`${v}\` on ${s.length} route(s)`).join(", ") || "none"}`,
+  `- transformers.js shared pin: **${tjs.shared}** · latest published: **${tjs.latest}**${
+    tjs.recentStable.length ? ` (recent stable: ${tjs.recentStable.join(", ")})` : ""
+  }`,
+  `- Local version overrides: ${
+    Object.entries(tjs.localOverrides).filter(([v]) => v !== tjs.shared).map(([v, s]) =>
+      `\`${v}\` on ${s.length} route(s)`
+    ).join(", ") || "none"
+  }`,
   `- Checkpoint/pin findings: **${findings.length}**`,
   ``,
   `## Findings by kind`,
@@ -589,36 +669,54 @@ const md = [
   `## Findings`,
   ``,
   ...(findings.length
-    ? findings.map((f) => `- \`${f.hfId}\` — ${JSON.stringify(Object.fromEntries(f.kinds.map((k) => [k, f[k]])))}`)
+    ? findings.map((f) =>
+      `- \`${f.hfId}\` — ${JSON.stringify(Object.fromEntries(f.kinds.map((k) => [k, f[k]])))}`
+    )
     : ["- none"]),
   ``,
   `## Catalogue dtype vs worker dtype (${dtypeAudit.length})`,
   ``,
   ...(dtypeAudit.length
-    ? dtypeAudit.map((d) => `- \`${d.slug}\`: catalogue \`${d.catalogue}\`, worker \`${d.worker}\` — ${d.kind}`)
+    ? dtypeAudit.map((d) =>
+      `- \`${d.slug}\`: catalogue \`${d.catalogue}\`, worker \`${d.worker}\` — ${d.kind}`
+    )
     : ["- none"]),
   ``,
   `## Catalogue accuracy — cited \`hfId\` vs requested weights (${accuracy.length})`,
   ``,
   ...(accuracy.length
-    ? accuracy.map((a) => `- \`${a.slug}\` (${a.runtime}): cites \`${a.cited}\`, requests ${a.requested.map((x) => `\`${x}\``).join(", ")} — ${a.relation}`)
+    ? accuracy.map((a) =>
+      `- \`${a.slug}\` (${a.runtime}): cites \`${a.cited}\`, requests ${
+        a.requested.map((x) => `\`${x}\``).join(", ")
+      } — ${a.relation}`
+    )
     : ["- every scanned route requests the repo it cites"]),
   ``,
   `## Routes (runtime · requested weights)`,
   ``,
   ...perRoute.map((rt) =>
     `- \`${rt.slug}\` (${rt.runtime}, ${rt.catalogueDtype ?? "no dtype"}): ` +
-    (rt.weightIds.length ? rt.weightIds.map((x) => `\`${x}\``).join(", ") : "no explicit model id in source") +
+    (rt.weightIds.length
+      ? rt.weightIds.map((x) => `\`${x}\``).join(", ")
+      : "no explicit model id in source") +
     (rt.configIds.length ? ` · config-only: ${rt.configIds.map((x) => `\`${x}\``).join(", ")}` : "")
   ),
   ``,
 ].join("\n");
 await writeFile(REPORT_MD, md);
 console.error(`Wrote ${REPORT_JSON}, ${REPORT_MD}, refreshed ${SNAPSHOT}`);
-console.log(JSON.stringify({
-  scope: report.scope,
-  tally,
-  dtypeAudit: dtypeAudit.length,
-  catalogueAccuracy: accuracy.length,
-  transformers: { shared: tjs.shared, latest: tjs.latest, overrides: Object.keys(tjs.localOverrides) },
-}, null, 2));
+console.log(JSON.stringify(
+  {
+    scope: report.scope,
+    tally,
+    dtypeAudit: dtypeAudit.length,
+    catalogueAccuracy: accuracy.length,
+    transformers: {
+      shared: tjs.shared,
+      latest: tjs.latest,
+      overrides: Object.keys(tjs.localOverrides),
+    },
+  },
+  null,
+  2,
+));
