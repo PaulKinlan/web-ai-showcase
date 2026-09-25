@@ -266,3 +266,25 @@ test("MUTANT PROOF: checkRuntimePins catches nonexistent model directory in over
   }
 });
 
+test("operator manuals (AGENTS.md, CLAUDE.md, SKILL.md) reference transformers-version-policy and avoid absolute freeze phrasing", () => {
+  const files = [
+    join(ROOT, "AGENTS.md"),
+    join(ROOT, "CLAUDE.md"),
+    join(ROOT, ".agents/skills/web-ai-showcase/SKILL.md"),
+  ];
+  for (const f of files) {
+    assert.ok(existsSync(f), `missing documentation file: ${f}`);
+    const text = readFileSync(f, "utf8");
+    assert.ok(
+      text.includes("reports/transformers-version-policy.md"),
+      `${f} must reference reports/transformers-version-policy.md`,
+    );
+    assert.doesNotMatch(
+      text,
+      /never bump shared (`lib\/webai\.js`|lib\/webai\.js)(?!\s+without\s+full\s+staging)/,
+      `${f} must not contain absolute freeze phrasing without "without full staging"`,
+    );
+  }
+});
+
+

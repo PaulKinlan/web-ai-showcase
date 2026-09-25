@@ -319,8 +319,8 @@ The shared pin in `lib/webai.js` is 3.7.5. Per the policy decision in
 
 **Version-pin escape hatch (isolated).** A model whose class requires a transformers.js version
 different than the shared pin (e.g. SAM2 — `Sam2Model` lands in 4.2.0, absent from 3.7.5) may pin the
-newer version LOCALLY in that one model's `worker.js` import — never bump shared `lib/webai.js` or
-other pages without full staging. `lib/model-cache.js` is version-agnostic (scans Cache Storage by modelId), so
+newer version LOCALLY in that one model's `worker.js` import — never bump shared `lib/webai.js` without
+full staging. `lib/model-cache.js` is version-agnostic (scans Cache Storage by modelId), so
 `createModelLoader` auto-init still works. Precedent: `models/sam2-segmentation/worker.js` pins
 `@huggingface/transformers@4.2.0`. All local overrides must be justified and recorded in
 `scripts/runtime-pin-allowlist.json`. Verify the pin stays scoped to that worker.

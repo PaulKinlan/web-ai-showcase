@@ -147,10 +147,20 @@ of every model you can genuinely run in a browser — not a token set. Read `CLA
   (no browser-runnable ONNX — ShadowFormer/SpA-Former/DC-ShadowNet etc. are PyTorch-only; don't relabel a
   generic brighten/low-light model). Never mislabel
   a substitute as the blocked family.
-- **Version-pin escape hatch:** a model needing a transformers.js class newer than the shared 3.7.5
-  (e.g. SAM2 needs 4.2.0) may pin the newer version LOCALLY in its own `worker.js` only — never bump
-  shared `lib/webai.js`. model-cache is version-agnostic so auto-init still works. Precedent:
-  `models/sam2-segmentation/worker.js`.
+- **Transformers.js version policy & staged rollout (web-ai-showcase-djr / web-ai-showcase-9v4).**
+  The shared pin in `lib/webai.js` is 3.7.5. Per the policy decision in
+  `reports/transformers-version-policy.md`, the upgrade to 4.3.0 is executed as a staged rollout:
+  1. High-signal and newer-architecture routes test 4.3.0 LOCALLY in worker.js first via
+     `allowedLocalOverrides` in `scripts/runtime-pin-allowlist.json`.
+  2. The shared pin moves only after structural differences (fill-mask) and heavy generation
+     probes are verified in headless browser acceptance runs.
+  3. Any route unable to move is retained at 3.7.5 via the local escape hatch with documented reasons.
+  4. Never bump shared transformers.js and raw-ORT pins in the same change.
+- **Version-pin escape hatch (isolated).** If a model requires a transformers.js version different
+  from the shared pin, pin the version LOCALLY in that model's `worker.js` only — never bump shared
+  `lib/webai.js` without full staging. All local overrides must be justified and recorded in
+  `scripts/runtime-pin-allowlist.json`. `lib/model-cache.js` is version-agnostic so auto-init still works.
+  Precedent: `models/sam2-segmentation/worker.js`.
 - Only load weights from the canonical HF repo (or MLC/MediaPipe official). No arbitrary remote
   code.
 - Note device/browser requirements (WebGPU-only, RAM, secure context) in the page's at-a-glance.
