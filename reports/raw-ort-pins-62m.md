@@ -23,6 +23,11 @@ node scripts/raw-ort-inventory.mjs            # prints the current table + summa
   moved from the 1.22.0 `ort.webgpu` bundle to the 1.21.0 `ort.wasm` bundle (the session requests
   `executionProviders:["wasm"]`); the family's acceptance run was re-run in a real browser and its
   record refreshed. The 1.22.0 allowlist entry was removed once no pin used it.
+- **web-ai-showcase-62m.4 (model2vec-static-embeddings)** — `models/model2vec-static-embeddings/worker.js`
+  moved from the 1.20.1 `ort.webgpu` bundle to the 1.21.0 `ort.wasm` bundle (wasm-only session; the
+  measurement in reports/dual-runtime-62m3.md showed the WebGPU bundle pulls the ~9 MB jsep WASM for
+  nothing). The family gained `acceptance.json` + `scripts/validate-model2vec-static-embeddings.mjs`
+  (all 5 rungs at desktop + mobile, both advertised stages driven) and a real-inference run record.
 
 ## Corrected premises (the bead text is partly stale)
 

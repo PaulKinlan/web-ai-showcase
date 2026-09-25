@@ -20,8 +20,13 @@
 const MODEL_ID = "minishlab/potion-base-8M";
 const ONNX_URL = `https://huggingface.co/${MODEL_ID}/resolve/main/onnx/model.onnx`;
 const MODEL_CACHE = "web-ai-showcase-model2vec";
-const ORT_VER = "1.20.1";
-const ORT_URL = `https://cdn.jsdelivr.net/npm/onnxruntime-web@${ORT_VER}/dist/ort.webgpu.min.mjs`;
+// Runtime: onnxruntime-web pinned LOCALLY to this worker. web-ai-showcase-62m.4 moved it from the
+// 1.20.1 ort.webgpu bundle to the 1.21.0 ort.wasm bundle: the session requests
+// executionProviders:["wasm"], so the WebGPU bundle only added the ~9 MB jsep WASM to the payload
+// (measurement: reports/dual-runtime-62m3.md). Do not bump without a real-inference run of
+// scripts/validate-model2vec-static-embeddings.mjs --write-run.
+const ORT_VER = "1.21.0";
+const ORT_URL = `https://cdn.jsdelivr.net/npm/onnxruntime-web@${ORT_VER}/dist/ort.wasm.min.mjs`;
 const TRANSFORMERS_URL = "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.5";
 
 let ort = null;
@@ -75,7 +80,10 @@ async function ensureLoaded(onProgress) {
   ort.env.wasm.numThreads = 1;
   const { AutoTokenizer, env } = await import(TRANSFORMERS_URL);
   env.allowLocalModels = false;
-  tokenizer = await AutoTokenizer.from_pretrained(MODEL_ID);
+  // Keep the id literal at the call site: check-portfolio-acceptance extracts advertised stages
+  // statically from loader call sites and fails closed on a non-literal argument (MODEL_ID is still
+  // used for the resolve URL above).
+  tokenizer = await AutoTokenizer.from_pretrained("minishlab/potion-base-8M");
   const bytes = await fetchOnnx(onProgress);
   session = await ort.InferenceSession.create(bytes, { executionProviders: ["wasm"] });
   post({ type: "ready", device });
