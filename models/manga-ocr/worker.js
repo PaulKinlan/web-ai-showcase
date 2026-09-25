@@ -24,8 +24,13 @@
 
 import { TRANSFORMERS_URL } from "/web-ai-showcase/lib/webai.js";
 
-const ORT_URL = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.23.0/dist/ort.all.min.mjs";
-const ORT_WASM_BASE = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.23.0/dist/";
+// Runtime: onnxruntime-web is pinned LOCALLY to this worker (version-pin escape hatch). The 62m.1
+// consolidation moved it from the 1.23.0 ort.all bundle to the 1.21.0 wasm bundle — every session
+// here requests executionProviders:["wasm"], so the all-bundle only added weight (see
+// reports/raw-ort-pins-62m.md). 1.21.0 is the raw-ORT bulk version; do not bump this pin without a
+// real-inference acceptance run (scripts/validate-manga-ocr.mjs --write-run).
+const ORT_URL = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.21.0/dist/ort.wasm.min.mjs";
+const ORT_WASM_BASE = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.21.0/dist/";
 const REPO = "onnx-community/manga-ocr-base-ONNX";
 const ENCODER_URL = `https://huggingface.co/${REPO}/resolve/main/onnx/encoder_model_uint8.onnx`; // 87.0 MB
 const DECODER_URL = `https://huggingface.co/${REPO}/resolve/main/onnx/decoder_model_quantized.onnx`; // 29.6 MB
@@ -161,7 +166,10 @@ async function ensureLoaded() {
   const vocabRes = await cache.match(VOCAB_URL).then((h) => h ?? fetch(VOCAB_URL));
   if (vocabRes.ok) await cache.put(VOCAB_URL, vocabRes.clone());
   vocab = (await vocabRes.text()).split("\n");
-  processor = await tjs.AutoImageProcessor.from_pretrained(REPO, {
+  // Keep the id literal at the call site: check-portfolio-acceptance extracts advertised stages
+  // statically from loader call sites and fails closed on a non-literal argument (REPO is only used
+  // for the resolve URLs above).
+  processor = await tjs.AutoImageProcessor.from_pretrained("onnx-community/manga-ocr-base-ONNX", {
     progress_callback: (p) => post({ type: "progress", p }),
   });
   const [encBytes, decBytes] = [
