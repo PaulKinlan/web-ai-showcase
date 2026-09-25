@@ -3,7 +3,9 @@
 // test/suite-stays-browser-free.test.mjs).
 import test from "node:test";
 import assert from "node:assert/strict";
-import { tmpdir } from "node:os";
+import { existsSync, readFileSync, rmSync } from "node:fs";
+import { constants as osConstants, tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   activeChromeInstances,
   assertHeadUnchanged,
@@ -13,6 +15,7 @@ import {
   formatAcceptanceSummary,
   getRunLogPath,
   printAcceptanceSummary,
+  writeAcceptanceRunRecord,
 } from "../scripts/browser.mjs";
 
 test("formatAcceptanceSummary: complete passing run returns ok: true with full denominator", () => {
@@ -173,3 +176,53 @@ test("cleanupAllChromeInstances manages active set cleanly", () => {
   assert.equal(killed, true);
   assert.equal(activeChromeInstances.size, 0);
 });
+
+test("writeAcceptanceRunRecord writes JSON when HEAD matches and returns true", () => {
+  const commit = captureHeadCommit();
+  const tmpFile = join(tmpdir(), `test-run-record-${Date.now()}-${process.pid}.json`);
+  try {
+    const results = [{ route: "models/test/", viewport: "desktop", pass: true }];
+    const ok = writeAcceptanceRunRecord({
+      runRecordPath: tmpFile,
+      startCommit: commit,
+      results,
+    });
+    assert.equal(ok, true);
+    assert.ok(existsSync(tmpFile));
+    const data = JSON.parse(readFileSync(tmpFile, "utf8"));
+    assert.equal(data.commit, commit);
+    assert.equal(data.exitCode, 0);
+    assert.deepEqual(data.results, results);
+  } finally {
+    if (existsSync(tmpFile)) rmSync(tmpFile);
+  }
+});
+
+test("writeAcceptanceRunRecord refuses cleanly without throwing when HEAD moved", () => {
+  const fakeCommit = "0123456789abcdef0123456789abcdef01234567";
+  const tmpFile = join(tmpdir(), `test-run-record-${Date.now()}-${process.pid}.json`);
+  const errors = [];
+  const origError = console.error;
+  console.error = (msg) => errors.push(msg);
+  try {
+    const ok = writeAcceptanceRunRecord({
+      runRecordPath: tmpFile,
+      startCommit: fakeCommit,
+      results: [],
+    });
+    assert.equal(ok, false);
+    assert.equal(existsSync(tmpFile), false, "must not create run record when refused");
+    assert.ok(errors.length > 0);
+    assert.match(errors[0], /REFUSAL: HEAD moved during acceptance run/);
+  } finally {
+    console.error = origError;
+    if (existsSync(tmpFile)) rmSync(tmpFile);
+  }
+});
+
+test("signal exit codes follow 128 + signal convention", () => {
+  assert.equal(128 + osConstants.signals["SIGINT"], 130);
+  assert.equal(128 + osConstants.signals["SIGTERM"], 143);
+  assert.equal(128 + osConstants.signals["SIGHUP"], 129);
+});
+

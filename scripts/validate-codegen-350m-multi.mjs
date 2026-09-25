@@ -22,6 +22,7 @@ import {
   repoRoot,
   setViewport,
   startServer,
+  writeAcceptanceRunRecord,
 } from "./browser.mjs";
 
 const WRITE_RUN = process.argv.includes("--write-run");
@@ -339,12 +340,11 @@ const succeeded = printAcceptanceSummary({
 console.log(`ROUTE-RESULTS-JSON: ${JSON.stringify(results)}`);
 
 if (WRITE_RUN && succeeded) {
-  assertHeadUnchanged(startCommit, repoRoot);
-  writeFileSync(
-    RUN_RECORD,
-    JSON.stringify({ commit: startCommit, ranAt: new Date().toISOString(), exitCode: 0, results }, null, 2) +
-      "\n",
-  );
-  console.log(`WROTE ${RUN_RECORD} for ${startCommit}`);
+  const written = writeAcceptanceRunRecord({
+    runRecordPath: RUN_RECORD,
+    startCommit,
+    results,
+  });
+  if (!written) process.exit(1);
 }
 process.exit(succeeded ? 0 : 1);

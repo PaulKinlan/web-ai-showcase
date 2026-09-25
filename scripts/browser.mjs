@@ -11,7 +11,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { accessSync, constants, existsSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { tmpdir } from "node:os";
+import { constants as osConstants, tmpdir } from "node:os";
 
 export const repoRoot = fileURLToPath(new URL("..", import.meta.url));
 export const BASE = "/web-ai-showcase/";
@@ -280,7 +280,8 @@ function registerGlobalExitHooks() {
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
     process.once(signal, () => {
       cleanupAllChromeInstances();
-      process.exit(130);
+      const code = 128 + (osConstants.signals[signal] ?? 0);
+      process.exit(code);
     });
   }
 }
@@ -518,5 +519,34 @@ export function assertHeadUnchanged(startCommit, cwd = repoRoot) {
       `HEAD moved during acceptance run: started at ${startCommit.slice(0, 7)}, ended at ${endCommit.slice(0, 7)} — refusing to write stale run record`,
     );
   }
+  return true;
+}
+
+/**
+ * Safely write an acceptance run record to disk, verifying git HEAD has not moved.
+ * Catches HEAD-moved errors and prints a clean explanatory refusal without a raw Node stack trace (web-ai-showcase-4l8).
+ * Returns true if written, false if refused.
+ */
+export function writeAcceptanceRunRecord({
+  runRecordPath,
+  startCommit,
+  results,
+  exitCode = 0,
+  cwd = repoRoot,
+}) {
+  try {
+    assertHeadUnchanged(startCommit, cwd);
+  } catch (err) {
+    console.error(`\nREFUSAL: ${err.message}`);
+    return false;
+  }
+  const runRecord = {
+    commit: startCommit,
+    ranAt: new Date().toISOString(),
+    exitCode,
+    results,
+  };
+  writeFileSync(runRecordPath, JSON.stringify(runRecord, null, 2) + "\n", "utf8");
+  console.log(`WROTE ${runRecordPath} for commit ${startCommit}`);
   return true;
 }
