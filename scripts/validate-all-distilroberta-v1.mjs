@@ -2,6 +2,9 @@
 // Drives every overview/Basics/Practical/Wild/Multi-model route at desktop + mobile.
 // Every advertised stage runs for real: sentence-transformers/all-distilroberta-v1 and
 // Xenova/ms-marco-MiniLM-L-6-v2.
+import { execFileSync } from "node:child_process";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   CDP,
   closePage,
@@ -9,10 +12,13 @@ import {
   launchChrome,
   MOBILE,
   openPage,
+  repoRoot,
   setViewport,
   startServer,
 } from "./browser.mjs";
 
+const WRITE_RUN = process.argv.includes("--write-run");
+const RUN_RECORD = join(repoRoot, "models/all-distilroberta-v1/acceptance-run.json");
 const MODEL_ID = "sentence-transformers/all-distilroberta-v1";
 const ROUTES = {
   overview: "models/all-distilroberta-v1/",
@@ -248,4 +254,15 @@ try {
 console.log(`\n${passed}/${total} checks passed`);
 console.log(`ACCEPTANCE_RESULTS=${JSON.stringify(results)}`);
 const allRoutesPassed = results.length === 10 && results.every((result) => result.pass);
+if (WRITE_RUN && passed === total && allRoutesPassed) {
+  const commit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repoRoot, encoding: "utf8" }).trim();
+  const runRecord = {
+    commit,
+    ranAt: new Date().toISOString(),
+    exitCode: 0,
+    results,
+  };
+  writeFileSync(RUN_RECORD, JSON.stringify(runRecord, null, 2) + "\n", "utf8");
+  console.log(`WROTE ${RUN_RECORD} for commit ${commit}`);
+}
 process.exit(passed === total && allRoutesPassed ? 0 : 1);
