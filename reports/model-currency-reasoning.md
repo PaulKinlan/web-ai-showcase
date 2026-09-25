@@ -317,6 +317,15 @@ That gate gap is the same shape as D2 and `web-ai-showcase-i0h`: **an artifact t
 while the specific thing that broke is unenforced.** Three instances in one audit is a pattern worth naming —
 when adding a gate here, check which direction it actually validates.
 
+**MediaPipe 1.0.x re-probe findings (`web-ai-showcase-7rm` / `fb9-j`).**
+`scripts/probe-mpver.mjs` was re-run across candidate versions `0.10.18`, `0.10.20`, `0.10.21`, `0.10.22`, `0.10.32`, `0.10.35`, `1.0.0`, and `1.0.1`.
+Findings:
+1. Standard module-worker init fails on both 1.0.0 and 1.0.1: `FilesetResolver.forVisionTasks(wasmPath)` fetches `vision_wasm_internal.js`, which wraps its factory in `var ModuleFactory` (module-scoped) without setting `globalThis.ModuleFactory`, causing MediaPipe to throw `Error: ModuleFactory not set.`.
+2. MediaPipe 1.0.x has an undocumented second parameter: `FilesetResolver.forVisionTasks(wasmPath, useModule = false)`. Calling with `useModule = true` loads `vision_wasm_module_internal.js` (which sets `globalThis.ModuleFactory` and exports it), allowing module workers to pass.
+3. However, `useModule = true` is strictly incompatible with classic workers: `importScripts(".../vision_wasm_module_internal.js")` throws a syntax error on `export default`.
+4. All 7 built vision routes (`gesture-recognizer`, `hand-landmarker`, `pose-landmarker`, `face-detector`, `face-landmarker`, `image-segmenter`, `interactive-segmenter`) run in classic workers where `0.10.18` is completely stable. Upgrading classic workers to 1.0.1 provides zero module-worker alignment benefit while incurring major-version risk across 7 routes and 35+ ladder pages.
+5. Per acceptance criterion 2, the pin stays at `TASKS_VISION_VERSION = "0.10.18"` in `lib/mediapipe.js`. Evidence artifact: `reports/mediapipe-tasks-vision-probe.json` and `reports/mediapipe-tasks-vision-probe.md`.
+
 ## 9. Bead mapping
 
 The `fb9-*` labels in §6 were provisional. Filed IDs (`bd list --label fb9` in the repo):
