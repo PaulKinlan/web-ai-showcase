@@ -63,8 +63,8 @@ The rollout proceeds through five bounded phases:
 [Phase 5: Blocked-family list audit against 4.3.0 capabilities]
 ```
 
-### Phase 1: Promote Existing Local 4.2.0 Overrides to 4.3.0
-The 7 routes that already use the documented escape hatch for 4.2.0 (`apertus-1-5b`, `ernie-4-5-0-3b`, `gemma-3-270m`, `lfm2`, `qwen2.5-vl`, `sam2-segmentation`, `smoldocling-document`) test newer model architectures. They are promoted to 4.3.0 locally in their workers, verified, and recorded in `scripts/runtime-pin-allowlist.json`.
+### Phase 1: Local Staging of 4.3.0 on Verified Acceptance Routes
+Phase 1 stages 4.3.0 locally in `worker.js` via `allowedLocalOverrides` on representative high-signal routes that have full browser acceptance suites (`all-distilroberta-v1`), gathering real in-browser inference evidence across all ladder rungs and viewports before wider rollout. The 7 existing 4.2.0 local-override routes (`apertus-1-5b`, `ernie-4-5-0-3b`, `gemma-3-270m`, `lfm2`, `qwen2.5-vl`, `sam2-segmentation`, `smoldocling-document`) follow as their respective acceptance matrices are staged.
 
 ### Phase 2: Local Staging of High-Signal Proven Routes
 High-signal routes from green matrix groups (feature extraction, text classification, CTC speech recognition) are staged on 4.3.0 locally with passing browser acceptance evidence before touching `lib/webai.js`.

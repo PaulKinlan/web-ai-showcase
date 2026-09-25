@@ -7,7 +7,9 @@
 // “See inside” can report the real pre-normalization magnitude, then L2-normalize in this worker so cosine
 // similarity becomes a plain dot product.
 
-import { loadPipeline } from "/web-ai-showcase/lib/webai.js";
+// Staged pin (web-ai-showcase-9v4 / reports/transformers-version-policy.md):
+// @huggingface/transformers@4.3.0 pinned locally for Phase 1 verification.
+const TRANSFORMERS_URL = "https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.0";
 
 let pipe = null;
 let device = "wasm";
@@ -18,15 +20,14 @@ function post(msg) {
 
 async function ensureLoaded() {
   if (pipe) return;
-  const loaded = await loadPipeline({
-    task: "feature-extraction",
-    model: "sentence-transformers/all-distilroberta-v1",
-    backend: "wasm",
+  const { pipeline, env } = await import(TRANSFORMERS_URL);
+  env.allowLocalModels = false;
+  device = "wasm";
+  pipe = await pipeline("feature-extraction", "sentence-transformers/all-distilroberta-v1", {
+    device,
     dtype: "fp32",
-    onProgress: (p) => post({ type: "progress", p }),
+    progress_callback: (p) => post({ type: "progress", p }),
   });
-  pipe = loaded.pipe;
-  device = loaded.device;
   post({ type: "ready", device });
 }
 
