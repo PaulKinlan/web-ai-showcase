@@ -1,0 +1,111 @@
+# Raw-ORT runtime-pin inventory and consolidation plan (web-ai-showcase-62m)
+
+Evidence snapshot for bead `web-ai-showcase-62m` (raw-ORT `onnxruntime-web` pin consolidation).
+Measured on `origin/main` @ `6557537` with `node scripts/raw-ort-inventory.mjs` — read-only, no
+network, no model downloads. Regenerate this file with:
+
+```bash
+node scripts/raw-ort-inventory.mjs --md > reports/raw-ort-pins-62m.md
+node scripts/raw-ort-inventory.mjs --json > reports/raw-ort-pins-62m.json
+```
+
+## Corrected premises (the bead text is partly stale)
+
+1. **Route count is 46, not 43.** Three routes pin through an `ORT_VER` / `ORT_VERSION` constant
+   (`model2vec-static-embeddings` 1.20.1, `pitch-detection` 1.20.1, `silero-vad` 1.20.1) and were
+   invisible to the literal-URL grep the bead was written from.
+2. **No raw-ORT route requests WebGPU execution.** Every one of the 46 pin files requests
+   `executionProviders: ["wasm"]`. The bead's "3 WebGPU raw-ORT routes" (music-source-separation,
+   pitch-detection, silero-vad) is stale: those workers are wasm-only, and their committed
+   conformance suites explicitly assert the no-WebGPU fallback
+   (`models/<slug>/conformance.json`, check `runs-without-webgpu-fallback`).
+3. **The real WebGPU exposure is bundle choice, not execution.** Four routes ship a larger bundle
+   to run a WASM session anyway (see "Bundle bloat" below). That is wasted bytes on constrained
+   devices, not GPU risk.
+4. `bert-base-turkish-cased-ner` @ 1.22.0 imports `ort.webgpu.min.mjs` but asks for the wasm EP;
+   `manga-ocr` @ 1.23.0 imports `ort.all.min.mjs` and asks for the wasm EP. Neither uses
+   `onnxruntime-web/webgpu`.
+5. The allowlist's 1.23.0 reason previously said "Model2Vec static embeddings" — wrong:
+   Model2Vec is pinned at **1.20.1**. 1.23.0 is `manga-ocr` only. Fixed in
+   `scripts/runtime-pin-allowlist.json` with this report.
+
+## Consolidation decision
+
+* **Target: 1.21.0** — 33 of 46 routes already pin it literally, all wasm-only. It is the only
+  candidate that does not require touching the bulk.
+* **1.20.1 is a deliberate hold for 11 routes** (8 VoxPopuli ASR + pitch-detection + silero-vad +
+  model2vec-static-embeddings) and stays: the VoxPopuli worker headers record real headless-Chrome
+  verification on ORT Web 1.20.1 / WASM EP (real log-probs, coherent transcripts), and upstream ORT
+  [#23183](https://github.com/microsoft/onnxruntime/issues/23183) documents 1.21.x breaking
+  Segment-Anything-class models on WebGPU. A future sweep must not "fix" these without re-measuring.
+* **Migration is tracked in child beads of `web-ai-showcase-62m`** (manga-ocr, bert, dual-runtime
+  double-WASM check). Every migration touches `models/<slug>/**`, which makes the family *touched*
+  for `check-portfolio-acceptance` and requires a manifest + validator + a current real-inference
+  run record at desktop and mobile.
+
+# Raw-ORT runtime-pin inventory (web-ai-showcase-62m)
+
+Routes with a self-managed onnxruntime-web pin: **46**. Versions: 1.21.0×33, 1.22.0×1, 1.20.1×11, 1.23.0×1. Bundles: ort.wasm.min.mjs×42, ort.webgpu.min.mjs×2, ort.all.min.mjs×1, ort.min.mjs×1.
+
+| slug | version | pinned via | bundle | execution providers | dual-runtime |
+| --- | --- | --- | --- | --- | --- |
+| aliked-lightglue-matching | 1.21.0 | literal | ort.wasm.min.mjs | wasm | no |
+| animegan-cartoonization | 1.21.0 | literal | ort.wasm.min.mjs | wasm | no |
+| basic-pitch-transcription | 1.21.0 | literal | ort.wasm.min.mjs | wasm | no |
+| bert-base-turkish-cased-ner | 1.22.0 | literal | ort.webgpu.min.mjs | wasm | transformers.js 3.7.5 |
+| colbert-late-interaction | 1.21.0 | literal | ort.wasm.min.mjs | wasm | no |
+| craft-text-detection | 1.21.0 | literal | ort.wasm.min.mjs | wasm | no |
+| croatian-voxpopuli-asr | 1.20.1 | literal | ort.wasm.min.mjs | wasm | no |
+| czech-voxpopuli-asr | 1.20.1 | literal | ort.wasm.min.mjs | wasm | no |
+| ddcolor-image-colorization | 1.21.0 | literal | ort.wasm.min.mjs | wasm | no |
+| dutch-voxpopuli-asr | 1.20.1 | literal | ort.wasm.min.mjs | wasm | no |
+| dwpose-wholebody | 1.21.0 | literal | ort.wasm.min.mjs | wasm | no |
+| face-embedding | 1.21.0 | literal | ort.wasm.min.mjs | wasm | no |
+| face-image-quality | 1.21.0 | literal | ort.wasm.min.mjs | wasm | no |
+| fast-neural-style-transfer | 1.21.0 | literal | ort.wasm.min.mjs | wasm | no |
+| german-voxpopuli-asr | 1.20.1 | literal | ort.wasm.min.mjs | wasm | no |
+| gfpgan-face-restoration | 1.21.0 | literal | ort.wasm.min.mjs | wasm | no |
+| gliner-zero-shot-ner | 1.21.0 | literal | ort.wasm.min.mjs | wasm | no |
+| gtcrn-speech-enhancement | 1.21.0 | literal | ort.wasm.min.mjs | wasm | no |
+| hungarian-voxpopuli-asr | 1.20.1 | literal | ort.wasm.min.mjs | wasm | no |
+| iat-low-light-enhancement | 1.21.0 | literal | ort.wasm.min.mjs | wasm | no |
+| informative-drawings-lineart | 1.21.0 | literal | ort.wasm.min.mjs | wasm | no |
+| lama-image-inpainting | 1.21.0 | literal | ort.wasm.min.mjs | wasm | no |
+| manga-ocr | 1.23.0 | literal | ort.all.min.mjs | wasm | no |
+| microdehaze-image-dehazing | 1.21.0 | literal | ort.wasm.min.mjs | wasm | no |
+| model2vec-static-embeddings | 1.20.1 | constant | ort.webgpu.min.mjs | wasm | transformers.js 3.7.5 |
+| music-source-separation | 1.21.0 | literal | ort.min.mjs | wasm | no |
+| nafnet-image-deblurring | 1.21.0 | literal | ort.wasm.min.mjs | wasm | no |
+| person-reid | 1.21.0 | literal | ort.wasm.min.mjs | wasm | no |
+| pitch-detection | 1.20.1 | constant | ort.wasm.min.mjs | wasm | no |
+| quickdraw-sketch-recognition | 1.21.0 | literal | ort.wasm.min.mjs | wasm | no |
+| raft-optical-flow | 1.21.0 | literal | ort.wasm.min.mjs | wasm | no |
+| real-esrgan-super-resolution | 1.21.0 | literal | ort.wasm.min.mjs | wasm | no |
+| romanian-voxpopuli-asr | 1.20.1 | literal | ort.wasm.min.mjs | wasm | no |
+| scene-text-detection | 1.21.0 | literal | ort.wasm.min.mjs | wasm | no |
+| scunet-image-denoising | 1.21.0 | literal | ort.wasm.min.mjs | wasm | no |
+| silero-vad | 1.20.1 | constant | ort.wasm.min.mjs | wasm | no |
+| slovak-voxpopuli-asr | 1.20.1 | literal | ort.wasm.min.mjs | wasm | no |
+| slovenian-voxpopuli-asr | 1.20.1 | literal | ort.wasm.min.mjs | wasm | no |
+| speech-separation | 1.21.0 | literal | ort.wasm.min.mjs | wasm | no |
+| splade-sparse-retrieval | 1.21.0 | literal | ort.wasm.min.mjs | wasm | no |
+| surface-normals | 1.21.0 | literal | ort.wasm.min.mjs | wasm | no |
+| uvdoc-document-dewarping | 1.21.0 | literal | ort.wasm.min.mjs | wasm | no |
+| yolo-world | 1.21.0 | literal | ort.wasm.min.mjs | wasm | transformers.js 3.7.5 |
+| yolo11-detection | 1.21.0 | literal | ort.wasm.min.mjs | wasm | no |
+| yolov10-detection | 1.21.0 | literal | ort.wasm.min.mjs | wasm | no |
+| yolov8-pose | 1.21.0 | literal | ort.wasm.min.mjs | wasm | no |
+
+## Bundle bloat — non-wasm bundle, wasm-only EP (4)
+
+- **bert-base-turkish-cased-ner** ships `ort.webgpu.min.mjs` but requests `wasm` only (1.22.0)
+- **manga-ocr** ships `ort.all.min.mjs` but requests `wasm` only (1.23.0)
+- **model2vec-static-embeddings** ships `ort.webgpu.min.mjs` but requests `wasm` only (1.20.1)
+- **music-source-separation** ships `ort.min.mjs` but requests `wasm` only (1.21.0)
+
+## Dual-runtime routes — transformers.js + raw ORT in one page (3)
+
+- **bert-base-turkish-cased-ner** — raw ORT 1.22.0 + transformers.js 3.7.5
+- **model2vec-static-embeddings** — raw ORT 1.20.1 + transformers.js 3.7.5
+- **yolo-world** — raw ORT 1.21.0 + transformers.js 3.7.5
+
