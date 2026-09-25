@@ -63,11 +63,11 @@ The rollout proceeds through five bounded phases:
 [Phase 5: Blocked-family list audit against 4.3.0 capabilities]
 ```
 
-### Phase 1: Local Staging of 4.3.0 on Verified Acceptance Routes
-Phase 1 stages 4.3.0 locally in `worker.js` via `allowedLocalOverrides` on representative high-signal routes that have full browser acceptance suites (`all-distilroberta-v1`), gathering real in-browser inference evidence across all ladder rungs and viewports before wider rollout. The 7 existing 4.2.0 local-override routes (`apertus-1-5b`, `ernie-4-5-0-3b`, `gemma-3-270m`, `lfm2`, `qwen2.5-vl`, `sam2-segmentation`, `smoldocling-document`) follow as their respective acceptance matrices are staged.
+### Phase 1: Initial Local Staging of 4.3.0 on Representative Acceptance Route
+Phase 1 stages 4.3.0 locally via `allowedLocalOverrides` on an initial representative route with full browser acceptance coverage: `all-distilroberta-v1` (feature extraction). Rather than forking the shared loader, `loadPipeline` in `lib/webai.js` accepts `transformersUrl`, ensuring device selection (`pickDevice`) and environment configuration remain centralized while testing the 4.3.0 runtime in a real browser across all ladder rungs and viewports.
 
-### Phase 2: Local Staging of High-Signal Proven Routes
-High-signal routes from green matrix groups (feature extraction, text classification, CTC speech recognition) are staged on 4.3.0 locally with passing browser acceptance evidence before touching `lib/webai.js`.
+### Phase 2: Expanding Local Staging Across Matrix Groups & 4.2.0 Routes
+Phase 2 broadens local 4.3.0 adoption across the remaining green matrix groups (text classification, CTC speech recognition) and promotes the 7 existing 4.2.0 local-override routes (`apertus-1-5b`, `ernie-4-5-0-3b`, `gemma-3-270m`, `lfm2`, `qwen2.5-vl`, `sam2-segmentation`, `smoldocling-document`) with their respective acceptance suites before moving the shared pin.
 
 ### Phase 3: Structural Discrepancy Resolution & Heavy Probes
 1. Resolve the `fill-mask` output difference so masked LM routes handle 4.3.0 structures cleanly.
