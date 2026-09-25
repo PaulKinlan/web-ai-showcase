@@ -361,19 +361,33 @@ export async function launchChrome(options = {}) {
 }
 
 // Open a fresh page/session; collect console errors + failed network requests during load; navigate;
-// settle. Returns { targetId, sessionId, errors, netFailures }.
+// settle. Returns { targetId, sessionId, errors, rawErrors, classifiedErrors, netFailures }.
 export async function openPage(cdp, url) {
   const { targetId } = await cdp.send("Target.createTarget", { url: "about:blank" });
   const { sessionId } = await cdp.send("Target.attachToTarget", { targetId, flatten: true });
   const errors = [];
+  const rawErrors = [];
+  const classifiedErrors = [];
   const netFailures = [];
+
+  const recordError = (desc) => {
+    rawErrors.push(desc);
+    if (isTransitionSkipAbortError(desc)) {
+      classifiedErrors.push({ type: "transition-skip", error: desc });
+    } else {
+      errors.push(desc);
+    }
+  };
+
   cdp.on((msg) => {
     if (msg.sessionId !== sessionId) return;
     if (msg.method === "Runtime.consoleAPICalled" && msg.params.type === "error") {
-      errors.push(msg.params.args.map((a) => a.value ?? a.description ?? "").join(" "));
+      const desc = msg.params.args.map((a) => a.value ?? a.description ?? "").join(" ");
+      recordError(desc);
     }
     if (msg.method === "Runtime.exceptionThrown") {
-      errors.push(msg.params.exceptionDetails?.exception?.description || "exception");
+      const desc = msg.params.exceptionDetails?.exception?.description || "exception";
+      recordError(desc);
     }
     if (msg.method === "Network.loadingFailed" && !msg.params.canceled) {
       netFailures.push(msg.params.errorText + " " + (msg.params.type || ""));
@@ -391,7 +405,7 @@ export async function openPage(cdp, url) {
   await cdp.send("Page.navigate", { url }, sessionId);
   await Promise.race([loaded, new Promise((r) => setTimeout(r, 8000))]);
   await new Promise((r) => setTimeout(r, 1500)); // settle: loader auto-init resolves to absent state
-  return { targetId, sessionId, errors, netFailures };
+  return { targetId, sessionId, errors, rawErrors, classifiedErrors, netFailures };
 }
 
 export async function closePage(cdp, targetId) {
@@ -436,6 +450,33 @@ export function escapeHtml(s) {
     /[&<>"]/g,
     (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]),
   );
+}
+
+/**
+ * Classify Chrome's uncatchable cross-document view-transition deadline skip (web-ai-showcase-67b, web-ai-showcase-43l).
+ *
+ * Matches ONLY the exact AbortError / Transition was skipped error produced by Chrome's C++ navigation engine
+ * when an incoming document misses its deadline during cross-document navigation.
+ * Never matches arbitrary AbortErrors (e.g. fetch abort, user abort) or general page exceptions.
+ */
+export function isTransitionSkipAbortError(err) {
+  if (err == null) return false;
+  const name = typeof err === "object" ? String(err.name ?? "") : "";
+  const message = typeof err === "object" ? String(err.message ?? "") : "";
+  const desc = typeof err === "object" ? String(err.description ?? "") : "";
+  const fullText = typeof err === "string" ? err : `${name} ${message} ${desc}`;
+  const hasAbortType = /\b(AbortError|DOMException)\b/.test(fullText);
+  const hasSkipMessage = /\bTransition was skipped\b/.test(fullText);
+  return hasAbortType && hasSkipMessage;
+}
+
+/**
+ * Filter a list of console errors or exceptions, classifying known uncatchable browser-engine events
+ * while preserving all real page/runtime errors (web-ai-showcase-43l).
+ */
+export function filterConsoleErrors(errors) {
+  if (!Array.isArray(errors)) return [];
+  return errors.filter((e) => !isTransitionSkipAbortError(e));
 }
 
 /**
