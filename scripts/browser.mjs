@@ -11,6 +11,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { accessSync, constants, existsSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { tmpdir } from "node:os";
 
 export const repoRoot = fileURLToPath(new URL("..", import.meta.url));
 export const BASE = "/web-ai-showcase/";
@@ -258,8 +259,50 @@ async function spawnChromeOnce(userDataDir, resetProfile, extraArgs = [], webgpu
   }
 }
 
+export const activeChromeInstances = new Set();
+
+export function cleanupAllChromeInstances() {
+  for (const instance of activeChromeInstances) {
+    try {
+      instance.kill({ removeProfile: true });
+    } catch { /* ignore */ }
+  }
+  activeChromeInstances.clear();
+}
+
+let globalExitHooksRegistered = false;
+function registerGlobalExitHooks() {
+  if (globalExitHooksRegistered) return;
+  globalExitHooksRegistered = true;
+  process.on("exit", () => {
+    cleanupAllChromeInstances();
+  });
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+    process.once(signal, () => {
+      cleanupAllChromeInstances();
+      process.exit(130);
+    });
+  }
+}
+
+export function createIsolatedProfileDir(prefix = "conformance") {
+  return join(
+    tmpdir(),
+    `webai-chrome-profile-${prefix}-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+  );
+}
+
+let runLogSeq = 0;
+export function getRunLogPath(slug) {
+  return join(
+    tmpdir(),
+    `acceptance-${slug}-${Date.now()}-${process.pid}-${++runLogSeq}.log`,
+  );
+}
+
 export async function launchChrome(options = {}) {
-  const userDataDir = options.userDataDir || join(repoRoot, ".conformance-chrome-profile");
+  registerGlobalExitHooks();
+  const userDataDir = options.userDataDir || createIsolatedProfileDir(options.profilePrefix || "conformance");
   const resetProfile = options.resetProfile ?? true;
   const removeProfileOnKill = options.removeProfileOnKill ?? true;
   const webgpu = options.webgpu ?? false;
@@ -287,7 +330,9 @@ export async function launchChrome(options = {}) {
   }
   if (!started) throw new Error("Chrome did not expose a DevTools endpoint (after retries)");
   let killPromise = null;
+  let instance = null;
   const killStarted = ({ removeProfile = removeProfileOnKill } = {}) => {
+    if (instance) activeChromeInstances.delete(instance);
     if (!killPromise) {
       try {
         started.ws.close();
@@ -304,21 +349,14 @@ export async function launchChrome(options = {}) {
     }
     return killPromise;
   };
-  // CDP lifecycle: always disconnect + kill the browser, even if the caller is
-  // terminated by SIGINT/SIGTERM/SIGHUP before its own finally runs (the
-  // 2026-08-05 OOM incident leaked headless chromes exactly this way).
-  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
-    process.once(signal, () => {
-      killStarted();
-      process.exit(130);
-    });
-  }
-  return {
+  instance = {
     proc: started.proc,
     ws: started.ws,
     userDataDir,
     kill: killStarted,
   };
+  activeChromeInstances.add(instance);
+  return instance;
 }
 
 // Open a fresh page/session; collect console errors + failed network requests during load; navigate;
@@ -397,4 +435,88 @@ export function escapeHtml(s) {
     /[&<>"]/g,
     (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]),
   );
+}
+
+/**
+ * Format a truthful acceptance summary string.
+ *
+ * Never prints "N/N checks passed" unless total === expectedChecks and results match expectedCells.
+ * If checks or cells are incomplete or truncated, prints "REACHED N of EXPECTED M checks — INCOMPLETE"
+ * so a partial or stalled run cannot masquerade as complete (web-ai-showcase-5m1).
+ */
+export function formatAcceptanceSummary({
+  passed,
+  total,
+  expectedChecks,
+  results = [],
+  expectedCells,
+}) {
+  const checksPassed = passed === total;
+  const checksComplete = expectedChecks == null || total === expectedChecks;
+  const cellsComplete = expectedCells == null || (results && results.length === expectedCells);
+  const allCellsPassed = !results || results.every((r) => r.pass);
+
+  const isComplete = checksPassed && checksComplete && cellsComplete && allCellsPassed;
+
+  if (isComplete) {
+    const checksPart = `${passed}/${expectedChecks ?? total} checks passed`;
+    const cellsPart = results && expectedCells != null
+      ? ` across ${results.length}/${expectedCells} route cells`
+      : "";
+    return {
+      ok: true,
+      message: `${checksPart}${cellsPart}`,
+    };
+  }
+
+  let message;
+  if (expectedChecks != null && total !== expectedChecks) {
+    const cellsMsg = expectedCells != null && results && results.length !== expectedCells
+      ? ` across ${results.length} of EXPECTED ${expectedCells} route cells`
+      : "";
+    message = `REACHED ${passed} of EXPECTED ${expectedChecks} checks (${total} attempted)${cellsMsg} — INCOMPLETE`;
+  } else if (!checksPassed) {
+    message = `${passed}/${total} checks passed (${total - passed} failed) — FAILED`;
+  } else if (expectedCells != null && results && results.length !== expectedCells) {
+    message = `${passed}/${total} checks passed across only ${results.length} of EXPECTED ${expectedCells} route cells — INCOMPLETE`;
+  } else {
+    message = `${passed}/${total} checks passed (${results.filter((r) => !r.pass).length} route cells failed) — FAILED`;
+  }
+
+  return {
+    ok: false,
+    message,
+  };
+}
+
+export function printAcceptanceSummary(opts) {
+  const summary = formatAcceptanceSummary(opts);
+  console.log(`\n${summary.message}`);
+  return summary.ok;
+}
+
+/**
+ * Capture current git HEAD commit hash.
+ */
+export function captureHeadCommit(cwd = repoRoot) {
+  try {
+    return execFileSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8" }).trim();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Verify that git HEAD has not moved during an acceptance run.
+ * Prevents writing an acceptance-run record that cites a commit whose tree was never tested (web-ai-showcase-5m1).
+ */
+export function assertHeadUnchanged(startCommit, cwd = repoRoot) {
+  const endCommit = captureHeadCommit(cwd);
+  if (!startCommit || !endCommit) return true;
+  if (startCommit !== endCommit) {
+    throw new Error(
+      `HEAD moved during acceptance run: started at ${startCommit.slice(0, 7)}, ended at ${endCommit.slice(0, 7)} — refusing to write stale run record`,
+    );
+  }
+  return true;
 }

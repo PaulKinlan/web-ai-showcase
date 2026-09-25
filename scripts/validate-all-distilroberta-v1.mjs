@@ -6,12 +6,15 @@ import { execFileSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+  assertHeadUnchanged,
+  captureHeadCommit,
   CDP,
   closePage,
   DESKTOP,
   launchChrome,
   MOBILE,
   openPage,
+  printAcceptanceSummary,
   repoRoot,
   setViewport,
   startServer,
@@ -19,6 +22,9 @@ import {
 
 const WRITE_RUN = process.argv.includes("--write-run");
 const RUN_RECORD = join(repoRoot, "models/all-distilroberta-v1/acceptance-run.json");
+const EXPECTED_CHECKS = 45;
+const EXPECTED_CELLS = 10;
+const startCommit = captureHeadCommit(repoRoot);
 const MODEL_ID = "sentence-transformers/all-distilroberta-v1";
 const ROUTES = {
   overview: "models/all-distilroberta-v1/",
@@ -251,18 +257,23 @@ try {
   server.close();
   chrome.kill();
 }
-console.log(`\n${passed}/${total} checks passed`);
 console.log(`ACCEPTANCE_RESULTS=${JSON.stringify(results)}`);
-const allRoutesPassed = results.length === 10 && results.every((result) => result.pass);
-if (WRITE_RUN && passed === total && allRoutesPassed) {
-  const commit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repoRoot, encoding: "utf8" }).trim();
+const succeeded = printAcceptanceSummary({
+  passed,
+  total,
+  expectedChecks: EXPECTED_CHECKS,
+  results,
+  expectedCells: EXPECTED_CELLS,
+});
+if (WRITE_RUN && succeeded) {
+  assertHeadUnchanged(startCommit, repoRoot);
   const runRecord = {
-    commit,
+    commit: startCommit,
     ranAt: new Date().toISOString(),
     exitCode: 0,
     results,
   };
   writeFileSync(RUN_RECORD, JSON.stringify(runRecord, null, 2) + "\n", "utf8");
-  console.log(`WROTE ${RUN_RECORD} for commit ${commit}`);
+  console.log(`WROTE ${RUN_RECORD} for commit ${startCommit}`);
 }
-process.exit(passed === total && allRoutesPassed ? 0 : 1);
+process.exit(succeeded ? 0 : 1);

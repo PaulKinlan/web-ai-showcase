@@ -10,12 +10,15 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  assertHeadUnchanged,
+  captureHeadCommit,
   CDP,
   closePage,
   DESKTOP,
   launchChrome,
   MOBILE,
   openPage,
+  printAcceptanceSummary,
   repoRoot,
   setViewport,
   startServer,
@@ -23,8 +26,10 @@ import {
 
 const WRITE_RUN = process.argv.includes("--write-run");
 const RUN_RECORD = join(repoRoot, "models/codegen-350m-multi/acceptance-run.json");
+const EXPECTED_CHECKS = 32;
+const EXPECTED_CELLS = 8;
+const startCommit = captureHeadCommit(repoRoot);
 const PROFILE_DIR = mkdtempSync(join(tmpdir(), "codegen-350m-acceptance-"));
-if (WRITE_RUN) rmSync(RUN_RECORD, { force: true });
 
 const STAGE = "Xenova/codegen-350M-multi"; // the one advertised model stage
 const ROUTES = {
@@ -317,25 +322,29 @@ try {
     }
   }
 } finally {
-  console.log(`\n${passed}/${checks} checks passed`);
-  console.log(`ROUTE-RESULTS-JSON: ${JSON.stringify(results)}`);
   if (chrome) await chrome.kill({ removeProfile: false });
   if (server) await new Promise((resolve) => server.close(resolve));
-
+  try {
+    rmSync(PROFILE_DIR, { recursive: true, force: true });
+  } catch { /* ignore */ }
 }
 
-const succeeded = checks === 32 && passed === checks && results.length === 8 &&
-  results.every((item) => item.pass);
+const succeeded = printAcceptanceSummary({
+  passed,
+  total: checks,
+  expectedChecks: EXPECTED_CHECKS,
+  results,
+  expectedCells: EXPECTED_CELLS,
+});
+console.log(`ROUTE-RESULTS-JSON: ${JSON.stringify(results)}`);
+
 if (WRITE_RUN && succeeded) {
-  const commit = execFileSync("git", ["rev-parse", "HEAD"], {
-    cwd: repoRoot,
-    encoding: "utf8",
-  }).trim();
+  assertHeadUnchanged(startCommit, repoRoot);
   writeFileSync(
     RUN_RECORD,
-    JSON.stringify({ commit, ranAt: new Date().toISOString(), exitCode: 0, results }, null, 2) +
+    JSON.stringify({ commit: startCommit, ranAt: new Date().toISOString(), exitCode: 0, results }, null, 2) +
       "\n",
   );
-  console.log(`WROTE ${RUN_RECORD} for ${commit}`);
+  console.log(`WROTE ${RUN_RECORD} for ${startCommit}`);
 }
 process.exit(succeeded ? 0 : 1);
