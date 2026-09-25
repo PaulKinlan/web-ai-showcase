@@ -362,6 +362,8 @@ export async function launchChrome(options = {}) {
 
 // Open a fresh page/session; collect console errors + failed network requests during load; navigate;
 // settle. Returns { targetId, sessionId, errors, rawErrors, classifiedErrors, netFailures }.
+// Transition skips masked by the classifier are self-reported on stderr (classifiedConsoleNotice)
+// so a page can never read as console-clean merely because errors were classified away (2zh).
 export async function openPage(cdp, url) {
   const { targetId } = await cdp.send("Target.createTarget", { url: "about:blank" });
   const { sessionId } = await cdp.send("Target.attachToTarget", { targetId, flatten: true });
@@ -405,6 +407,8 @@ export async function openPage(cdp, url) {
   await cdp.send("Page.navigate", { url }, sessionId);
   await Promise.race([loaded, new Promise((r) => setTimeout(r, 8000))]);
   await new Promise((r) => setTimeout(r, 1500)); // settle: loader auto-init resolves to absent state
+  const notice = classifiedConsoleNotice({ errors, classifiedErrors, netFailures });
+  if (notice) console.warn(notice); // masked skips are never silent (web-ai-showcase-2zh)
   return { targetId, sessionId, errors, rawErrors, classifiedErrors, netFailures };
 }
 
@@ -477,6 +481,49 @@ export function isTransitionSkipAbortError(err) {
 export function filterConsoleErrors(errors) {
   if (!Array.isArray(errors)) return [];
   return errors.filter((e) => !isTransitionSkipAbortError(e));
+}
+
+/**
+ * Masked console errors must never be silent (web-ai-showcase-2zh).
+ *
+ * The classifier above intentionally drops a real Chrome error shape. A run that reports only
+ * {errors, network} cannot distinguish "console was clean" from "console was clean because N errors
+ * were classified away", and a storm looks identical to a clean run. Every page therefore
+ * self-reports its masked count, and more than this many masked errors on one page load escalates
+ * from an informational line to an explicit WARNING. Ten sits comfortably above the one or two
+ * skips a normal cross-document navigation produces, and well below a real storm's dozens.
+ */
+export const CLASSIFIED_WARN_THRESHOLD = 10;
+
+/**
+ * Runtime-neutral console/network snapshot for PASS lines: a validator can print this shape
+ * verbatim (`JSON.stringify(consoleSummary(page))`) so `classified` is visible next to
+ * `errors`/`network` instead of being dropped.
+ */
+export function consoleSummary(page) {
+  return {
+    errors: page?.errors ?? [],
+    classified: page?.classifiedErrors?.length ?? 0,
+    network: page?.netFailures ?? [],
+  };
+}
+
+/**
+ * One stderr line for a page whose console was only clean because errors were masked, or null when
+ * nothing was masked. Below the threshold it is an informational summary; above it, a WARNING that
+ * names the first masked error so a storm is actionable (web-ai-showcase-2zh).
+ */
+export function classifiedConsoleNotice(page) {
+  const summary = consoleSummary(page);
+  if (summary.classified === 0) return null;
+  const detail = JSON.stringify(summary);
+  if (summary.classified > CLASSIFIED_WARN_THRESHOLD) {
+    const first = String(page?.classifiedErrors?.[0]?.error ?? "").slice(0, 160);
+    return `WARNING: ${detail} — ${summary.classified} console errors were masked as ` +
+      `cross-document transition skips (threshold ${CLASSIFIED_WARN_THRESHOLD}); ` +
+      `first masked: ${first}`;
+  }
+  return `[console] ${detail}`;
 }
 
 /**
