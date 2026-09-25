@@ -6,6 +6,7 @@ import { execSync } from "node:child_process";
 import {
   ALLOWLIST_PATH,
   checkRuntimePins,
+  findPinsInBinaryFiles,
   MIN_EVIDENCE_LENGTH,
   MIN_REASON_LENGTH,
   PIN_SCAN_TARGETS,
@@ -126,6 +127,50 @@ test("all @huggingface/transformers versions in the repository are in the allowl
   }
 });
 
+// --- binary-classified files (bead web-ai-showcase-5s4) ---------------------------------
+// `grep -I` skips a file the moment it contains a NUL byte, so a pin written into an ordinary
+// .js file with one stray control byte would never reach the version/route scans.
+function writeBinaryProbe(relPath, text) {
+  writeFileSync(
+    join(ROOT, relPath),
+    Buffer.concat([Buffer.from(text, "utf8"), Buffer.from([0x00]), Buffer.from("\n")]),
+  );
+  return join(ROOT, relPath);
+}
+
+test("unit: findPinsInBinaryFiles finds a pin grep -I would skip (NUL byte)", () => {
+  const p = writeBinaryProbe("scripts/__binary_pin_probe.mjs", "// probe: onnxruntime-web@1.99.0");
+  try {
+    const hit = findPinsInBinaryFiles().find((h) => h.file === "scripts/__binary_pin_probe.mjs");
+    assert.ok(hit, "NUL-byte probe must be reported by the binary pass");
+    assert.deepEqual(
+      hit.hits,
+      [{ label: "onnxruntime-web", versions: ["1.99.0"] }],
+      "the error must name the pattern and the version found",
+    );
+  } finally {
+    rmSync(p, { force: true });
+  }
+});
+
+test("unit: findPinsInBinaryFiles is empty on the clean tree", () => {
+  assert.deepEqual(findPinsInBinaryFiles(), []);
+});
+
+test("unit: findPinsInBinaryFiles does not report text files (no false positives)", () => {
+  const p = join(ROOT, "scripts/__text_pin_probe.mjs");
+  writeFileSync(p, "// probe: onnxruntime-web@1.99.0\n", "utf8");
+  try {
+    assert.equal(
+      findPinsInBinaryFiles().some((h) => h.file === "scripts/__text_pin_probe.mjs"),
+      false,
+      "text-file pins belong to the version/route scans, not the binary pass",
+    );
+  } finally {
+    rmSync(p, { force: true });
+  }
+});
+
 test("scripts/audit-model-currency.mjs --check succeeds on the clean tree", () => {
   const out = execSync("node scripts/audit-model-currency.mjs --check", {
     cwd: ROOT,
@@ -162,6 +207,53 @@ test("MUTANT PROOF: checkRuntimePins catches unauthorized pin in search/", () =>
     );
   } finally {
     if (existsSync(p)) rmSync(p);
+  }
+});
+
+test("MUTANT PROOF: checkRuntimePins catches unauthorized pin in a binary-classified file under an authorized slug", () => {
+  // Exact repro from bead web-ai-showcase-5s4: a NUL-byte .js file under an AUTHORIZED slug
+  // (gemma-3-270m, allowlisted for transformers 4.2.0) carrying an unauthorized ort version.
+  // Measured pre-fix: the version/route scans skipped it and --check exited 0.
+  const p = writeBinaryProbe(
+    "models/gemma-3-270m/__review_binary_probe.js",
+    "// mutant pin: onnxruntime-web@1.99.0",
+  );
+  try {
+    let err = null;
+    try {
+      execSync("node scripts/audit-model-currency.mjs --check", { cwd: ROOT, stdio: "pipe" });
+    } catch (e) {
+      err = e;
+    }
+    assert.ok(err, "expected --check to fail when a pin hides in a binary-classified file");
+    const out = String(err.stderr ?? "");
+    assert.match(out, /binary-classified file/);
+    assert.match(out, /1\.99\.0/);
+  } finally {
+    rmSync(p, { force: true });
+  }
+});
+
+test("MUTANT PROOF: an allowlisted version inside a binary-classified file still fails (never a skip)", () => {
+  // 4.3.0 is allowlisted for all-distilroberta-v1 and 3.7.5 is shared, but a version string
+  // inside opaque bytes carries no reviewable context, so the fail-closed pass refuses it.
+  const p = writeBinaryProbe(
+    "scripts/__binary_pin_probe.mjs",
+    "// mutant: @huggingface/transformers@4.3.0",
+  );
+  try {
+    let err = null;
+    try {
+      execSync("node scripts/audit-model-currency.mjs --check", { cwd: ROOT, stdio: "pipe" });
+    } catch (e) {
+      err = e;
+    }
+    assert.ok(err, "expected --check to fail on a pin in a binary-classified file");
+    const out = String(err.stderr ?? "");
+    assert.match(out, /binary-classified file/);
+    assert.match(out, /4\.3\.0/);
+  } finally {
+    rmSync(p, { force: true });
   }
 });
 

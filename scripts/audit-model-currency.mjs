@@ -33,6 +33,14 @@ const REPORT_JSON = ROOT + "reports/model-currency.json";
 const REPORT_MD = ROOT + "reports/model-currency.md";
 export const ALLOWLIST_PATH = ROOT + "scripts/runtime-pin-allowlist.json";
 export const PIN_SCAN_TARGETS = "models/ lib/ public/ scripts/ search/ models.json sw.js";
+// Single-sourced pin patterns: the text scans and the fail-closed binary pass both use them, so
+// detection cannot drift between the passes.
+export const ORT_PIN_PATTERN = "onnxruntime-web@[0-9]+\\.[0-9]+\\.[0-9]+";
+export const TJS_PIN_PATTERN = "@huggingface/transformers@[0-9]+\\.[0-9]+\\.[0-9]+";
+export const PIN_PATTERNS = [
+  { label: "onnxruntime-web", grep: ORT_PIN_PATTERN },
+  { label: "@huggingface/transformers", grep: TJS_PIN_PATTERN },
+];
 export const MIN_REASON_LENGTH = 10;
 export const MIN_EVIDENCE_LENGTH = 5;
 export const REVIEWED_ON_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -226,7 +234,7 @@ const DTYPE_TOKENS = {
 async function transformerPins() {
   const references = {};
   const raw = execSync(
-    `grep -I -rhoE '@huggingface/transformers@[0-9]+\\.[0-9]+\\.[0-9]+' ${PIN_SCAN_TARGETS} 2>/dev/null || true`,
+    `grep -I -rhoE '${TJS_PIN_PATTERN}' ${PIN_SCAN_TARGETS} 2>/dev/null || true`,
     { cwd: ROOT, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
   );
   for (const line of raw.split("\n")) {
@@ -265,6 +273,45 @@ async function transformerPins() {
       Object.entries(localOverrides).map(([v, s]) => [v, [...s].sort()]),
     ),
   };
+}
+
+// Fail-closed binary pass (bead web-ai-showcase-5s4). The `grep -I` text scans below skip every
+// file grep classifies as binary — one NUL byte in a .js file is enough. A stray or vendored pin
+// inside such a file would load that exact runtime while the gate PASSed, because the match never
+// reached the version/route logic. This pass mirrors the same patterns with `grep -a` and reports
+// EVERY pin found in a binary-classified file as an error, including an otherwise allowlisted
+// version: the allowlist is a review trail (reason/evidence/reviewedOn) and a raw version string
+// inside opaque bytes carries no reviewable context, so the gate must not authorize it silently.
+// Returns [{ file, hits: [{ label, versions }] }], sorted by file; empty on a clean tree.
+export function findPinsInBinaryFiles() {
+  const found = new Map();
+  for (const { label, grep } of PIN_PATTERNS) {
+    const filesMatching = (flag) => {
+      const raw = execSync(
+        `grep -rl${flag}E '${grep}' ${PIN_SCAN_TARGETS} 2>/dev/null || true`,
+        { cwd: ROOT, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
+      );
+      return new Set(raw.split("\n").filter(Boolean));
+    };
+    const textFiles = filesMatching("I"); // exactly what the text scans can attribute
+    for (const file of filesMatching("")) {
+      if (textFiles.has(file)) continue;
+      const quoted = `'${file.replaceAll("'", "'\\''")}'`;
+      const raw = execSync(
+        `grep -aoE '${grep}' -- ${quoted} 2>/dev/null || true`,
+        { cwd: ROOT, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
+      );
+      const versions = new Set();
+      for (const line of raw.split("\n")) {
+        const v = line.split("@").pop()?.trim();
+        if (v) versions.add(v);
+      }
+      const entry = found.get(file) ?? { file, hits: [] };
+      entry.hits.push({ label, versions: [...versions].sort() });
+      found.set(file, entry);
+    }
+  }
+  return [...found.values()].sort((a, b) => a.file.localeCompare(b.file));
 }
 
 export function checkRuntimePins() {
@@ -394,7 +441,7 @@ export function checkRuntimePins() {
   );
   try {
     const raw = execSync(
-      `grep -I -rhoE 'onnxruntime-web@[0-9]+\\.[0-9]+\\.[0-9]+' ${PIN_SCAN_TARGETS} 2>/dev/null || true`,
+      `grep -I -rhoE '${ORT_PIN_PATTERN}' ${PIN_SCAN_TARGETS} 2>/dev/null || true`,
       { cwd: ROOT, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
     );
     const foundOrt = new Set();
@@ -422,7 +469,7 @@ export function checkRuntimePins() {
 
   try {
     const raw = execSync(
-      `grep -I -rnE '@huggingface/transformers@[0-9]+\\.[0-9]+\\.[0-9]+' ${PIN_SCAN_TARGETS} 2>/dev/null || true`,
+      `grep -I -rnE '${TJS_PIN_PATTERN}' ${PIN_SCAN_TARGETS} 2>/dev/null || true`,
       { cwd: ROOT, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
     );
     for (const line of raw.split("\n")) {
@@ -480,6 +527,19 @@ export function checkRuntimePins() {
         `lib/mediapipe.js pins tasks-vision version "${v}", expected "${allowlist.mediapipe?.shared}" per scripts/runtime-pin-allowlist.json`,
       );
     }
+  }
+
+  // 3. Fail-closed binary pass: anything the `grep -I` scans above could not see (bead
+  //    web-ai-showcase-5s4). A match in a binary-classified file is an error, never a skip.
+  try {
+    for (const { file, hits } of findPinsInBinaryFiles()) {
+      const detail = hits.map((h) => `${h.label}: ${h.versions.join(", ")}`).join("; ");
+      errors.push(
+        `runtime pin in binary-classified file ${file} (${detail}) — grep -I skips these, so the version/route scans above never saw it; fail-closed per web-ai-showcase-5s4`,
+      );
+    }
+  } catch (e) {
+    errors.push(`failed to scan binary-classified files for runtime pins: ${e.message}`);
   }
 
   return errors;
