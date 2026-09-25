@@ -19,6 +19,10 @@ node scripts/raw-ort-inventory.mjs            # prints the current table + summa
   `scripts/validate-manga-ocr.mjs` made route-complete (all 5 rungs at desktop + mobile, both
   advertised stages driven) so the family is in the acceptance portfolio. The 1.23.0 allowlist
   entry was removed once no pin used it.
+- **web-ai-showcase-62m.2 (bert-base-turkish-cased-ner)** — `models/bert-base-turkish-cased-ner/worker.js`
+  moved from the 1.22.0 `ort.webgpu` bundle to the 1.21.0 `ort.wasm` bundle (the session requests
+  `executionProviders:["wasm"]`); the family's acceptance run was re-run in a real browser and its
+  record refreshed. The 1.22.0 allowlist entry was removed once no pin used it.
 
 ## Corrected premises (the bead text is partly stale)
 

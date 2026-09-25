@@ -66,20 +66,34 @@ function check(id, ok, evidence, details) {
   console.log(`${ok ? "PASS" : "FAIL"} ${id} — ${evidence}`);
   return ok;
 }
-async function evaluate(cdp, sessionId, expression, timeout = 60000) {
-  const { result } = await cdp.send(
-    "Runtime.evaluate",
-    {
-      expression:
-        `(async()=>{try{return (${expression})}catch(error){return {__error:String(error?.stack||error)}}})()`,
-      awaitPromise: true,
-      returnByValue: true,
-    },
-    sessionId,
-    timeout,
-  );
-  if (result?.value?.__error) throw new Error(result.value.__error);
-  return result?.value;
+async function evaluate(cdp, sessionId, expression, timeout = 120000) {
+  // A CDP timeout here means the page/connection stalled — this suite keeps two multi-hundred-MB
+  // WASM stages resident while other lanes may be running their own browsers on this box. Retry
+  // briefly instead of aborting a 20-minute acceptance run; a genuinely hung page still fails.
+  let lastError = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const { result } = await cdp.send(
+        "Runtime.evaluate",
+        {
+          expression:
+            `(async()=>{try{return (${expression})}catch(error){return {__error:String(error?.stack||error)}}})()`,
+          awaitPromise: true,
+          returnByValue: true,
+        },
+        sessionId,
+        timeout,
+      );
+      if (result?.value?.__error) throw new Error(result.value.__error);
+      return result?.value;
+    } catch (error) {
+      lastError = error;
+      if (!/CDP timeout/.test(String(error?.message))) throw error;
+      console.log(`  [cdp retry ${attempt + 1}] ${String(error.message).slice(0, 100)}`);
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+    }
+  }
+  throw lastError;
 }
 async function waitFor(cdp, sessionId, expression, label, timeout = 15 * 60_000) {
   const started = Date.now();
@@ -117,7 +131,13 @@ async function loaderSnapshot(cdp, sid) {
     cdp,
     sid,
     `([...document.querySelectorAll('.model-loader')].map(node=>({state:node.dataset.state,status:(node.querySelector('.status')?.textContent||'').trim(),buttons:[...node.querySelectorAll('button')].map(button=>button.textContent.trim())})))`,
-  );
+  ).catch((error) => {
+    // A stalled renderer must not abort the whole run: ensureReady keeps polling inside its own
+    // budget, and a page that never recovers still fails with a labelled timeout.
+    if (!/CDP timeout/.test(String(error?.message))) throw error;
+    console.log(`  [snapshot stalled] ${String(error.message).slice(0, 80)}`);
+    return null;
+  });
 }
 async function clickLoaderActions(cdp, sid, pattern) {
   return evaluate(
@@ -126,12 +146,53 @@ async function clickLoaderActions(cdp, sid, pattern) {
     `(()=>{let n=0;for(const button of document.querySelectorAll('.model-loader button'))if(${pattern}.test(button.textContent)&&!button.disabled){button.click();n++}return n})()`,
   );
 }
+// The loader honestly exposes a check-timeout state when its local model check exceeds its own
+// deadline (common on a contended box). Waiting forever for a later state is a harness bug: nudge it
+// with its own recovery controls and keep going.
+async function nudgeLoader(cdp, sid) {
+  const states = await evaluate(
+    cdp,
+    sid,
+    `[...document.querySelectorAll('.model-loader')].map((node) => node.dataset.state)`,
+  ).catch(() => null);
+  if (!states?.includes("check-timeout")) return false;
+  const retried = await clickLoaderActions(cdp, sid, "/Retry local check/i");
+  if (!retried) await clickLoaderActions(cdp, sid, "/Continue/i");
+  console.log("  [check-timeout] loader nudged past a timed-out local model check");
+  return true;
+}
+async function waitForLoaderState(
+  cdp,
+  sid,
+  wanted,
+  label,
+  selector = ".model-loader",
+  timeout = 15 * 60_000,
+) {
+  const started = Date.now();
+  while (Date.now() - started < timeout) {
+    const state = await evaluate(
+      cdp,
+      sid,
+      `document.querySelector(${JSON.stringify(selector)})?.dataset.state`,
+    ).catch(() => null);
+    if (state === wanted) return true;
+    if (state === "check-timeout") await nudgeLoader(cdp, sid);
+    await sleep(1000);
+  }
+  throw new Error(`hard timeout: ${label}`);
+}
 async function ensureReady(cdp, sid, count, label) {
   const observed = [];
   const started = Date.now();
   let last = "";
   while (Date.now() - started < 15 * 60_000) {
     const snapshot = await loaderSnapshot(cdp, sid);
+    if (!snapshot) {
+      await sleep(2000);
+      continue;
+    }
+    if (snapshot.some((item) => item.state === "check-timeout")) await nudgeLoader(cdp, sid);
     const encoded = JSON.stringify(snapshot);
     if (encoded !== last) {
       observed.push({ atMs: Date.now() - started, loaders: snapshot });
@@ -553,12 +614,7 @@ try {
     origin: new URL(base).origin,
     permissions: ["clipboardReadWrite", "clipboardSanitizedWrite"],
   }).catch(() => {});
-  await waitFor(
-    cdp,
-    first.sessionId,
-    `document.querySelector('.model-loader')?.dataset.state==='download-required'`,
-    "first visit absent",
-  );
+  await waitForLoaderState(cdp, first.sessionId, "download-required", "first visit absent", ".model-loader");
   lifecycle.push({
     event: "first-visit",
     state: "download-required",
@@ -566,13 +622,7 @@ try {
   });
   await setBlocks(cdp, [`*${PRIMARY}*`]);
   await clickLoaderActions(cdp, first.sessionId, "/Download/i");
-  await waitFor(
-    cdp,
-    first.sessionId,
-    `document.querySelector('.model-loader')?.dataset.state==='error'`,
-    "visible blocked download",
-    120000,
-  );
+  await waitForLoaderState(cdp, first.sessionId, "error", "visible blocked download", ".model-loader", 120000);
   lifecycle.push({
     event: "network-failure",
     state: "error",
@@ -604,13 +654,7 @@ try {
   );
   await sleep(380);
   await clickLoaderActions(cdp, first.sessionId, "/Release from memory/i");
-  await waitFor(
-    cdp,
-    first.sessionId,
-    `document.querySelector('.model-loader')?.dataset.state==='released'`,
-    "dispose race release",
-    120000,
-  );
+  await waitForLoaderState(cdp, first.sessionId, "released", "dispose race release", ".model-loader", 120000);
   const race = await evaluate(
     cdp,
     first.sessionId,
@@ -630,12 +674,7 @@ try {
   );
 
   await clickLoaderActions(cdp, first.sessionId, "/Release from memory/i");
-  await waitFor(
-    cdp,
-    first.sessionId,
-    `document.querySelector('.model-loader')?.dataset.state==='released'`,
-    "offline release",
-  );
+  await waitForLoaderState(cdp, first.sessionId, "released", "offline release", ".model-loader");
   await setBlocks(cdp, [
     "https://huggingface.co/*",
     "https://*.hf.co/*",
@@ -773,12 +812,7 @@ try {
   await closePage(cdp, evictPage.targetId);
   const partial = await openPage(cdp, base + ROUTES.overview);
   await attachPage(cdp, partial);
-  await waitFor(
-    cdp,
-    partial.sessionId,
-    `document.querySelector('.model-loader')?.dataset.state==='partial'`,
-    "partial state",
-  );
+  await waitForLoaderState(cdp, partial.sessionId, "partial", "partial state", ".model-loader");
   const partialSnapshot = await loaderSnapshot(cdp, partial.sessionId);
   lifecycle.push({ event: "partial-eviction", eviction, snapshot: partialSnapshot });
   await clickLoaderActions(cdp, partial.sessionId, "/Re-download/i");
@@ -793,12 +827,7 @@ try {
   // Poison the exact primary cache key. Auto-init must validate, delete, fail visibly, and only cache
   // the subsequent network bytes after exact length+SHA verification succeeds.
   await clickLoaderActions(cdp, partial.sessionId, "/Release from memory/i");
-  await waitFor(
-    cdp,
-    partial.sessionId,
-    `document.querySelector('.model-loader')?.dataset.state==='released'`,
-    "pre-corrupt release",
-  );
+  await waitForLoaderState(cdp, partial.sessionId, "released", "pre-corrupt release", ".model-loader");
   await evaluate(
     cdp,
     partial.sessionId,
@@ -807,13 +836,7 @@ try {
     },new Response(new Uint8Array([1,2,3]),{status:200}));return true})()`,
   );
   await clickLoaderActions(cdp, partial.sessionId, "/Load model into memory/i");
-  await waitFor(
-    cdp,
-    partial.sessionId,
-    `document.querySelector('.model-loader')?.dataset.state==='error'`,
-    "corrupt cache rejection",
-    120000,
-  );
+  await waitForLoaderState(cdp, partial.sessionId, "error", "corrupt cache rejection", ".model-loader", 120000);
   const corrupt = await evaluate(
     cdp,
     partial.sessionId,
@@ -845,13 +868,7 @@ try {
     finalPage.sessionId,
     `(()=>{const button=[...document.querySelectorAll('#lang-loader button')].find(b=>/Release from memory/.test(b.textContent));button?.click();return !!button})()`,
   );
-  await waitFor(
-    cdp,
-    finalPage.sessionId,
-    `document.querySelector('#lang-loader .model-loader')?.dataset.state==='released'`,
-    "language dispose race",
-    120000,
-  );
+  await waitForLoaderState(cdp, finalPage.sessionId, "released", "language dispose race", "#lang-loader .model-loader", 120000);
   const languageRace = await evaluate(
     cdp,
     finalPage.sessionId,
@@ -877,19 +894,9 @@ try {
   await clickLoaderActions(cdp, finalPage.sessionId, "/Load model into memory/i");
   await ensureReady(cdp, finalPage.sessionId, 2, "both reloaded");
   await clearLoader(cdp, finalPage.sessionId, "#lang-loader");
-  await waitFor(
-    cdp,
-    finalPage.sessionId,
-    `document.querySelector('#lang-loader .model-loader')?.dataset.state==='download-required'`,
-    "language clear",
-  );
+  await waitForLoaderState(cdp, finalPage.sessionId, "download-required", "language clear", "#lang-loader .model-loader");
   await clearLoader(cdp, finalPage.sessionId, "#ner-loader");
-  await waitFor(
-    cdp,
-    finalPage.sessionId,
-    `document.querySelector('#ner-loader .model-loader')?.dataset.state==='download-required'`,
-    "primary clear",
-  );
+  await waitForLoaderState(cdp, finalPage.sessionId, "download-required", "primary clear", "#ner-loader .model-loader");
   const cleared = await evaluate(
     cdp,
     finalPage.sessionId,

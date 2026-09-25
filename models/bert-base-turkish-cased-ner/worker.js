@@ -3,6 +3,11 @@
 // Exact lineage: akdeniz27/bert-base-turkish-cased-ner @
 // 99995f7d2be4b3a28c74f0d36ee97f8c04ee0571, fp32 model.onnx (440,394,743 bytes),
 // SHA-256 a8f8a685d1a3dbf4a22a0c3ec9810f12a7035062fd61d79cadb759c24ace4482, MIT.
+// Runtime: onnxruntime-web pinned LOCALLY to this worker. web-ai-showcase-62m.2 consolidated it
+// from the 1.22.0 ort.webgpu bundle to the 1.21.0 ort.wasm bundle — this session requests
+// executionProviders:["wasm"], so the WebGPU bundle was weight, not acceleration (see
+// reports/raw-ort-pins-62m.md). Do not bump without a real-inference run of
+// scripts/validate-bert-base-turkish-cased-ner.mjs --write-run.
 // Tokenisation, ONNX inference, WordPiece reconstruction and BIO span aggregation all stay here,
 // off the main thread. The visitor's text never leaves the browser.
 
@@ -100,7 +105,7 @@ async function ensureLoaded() {
   if (session && tokenizer) return;
   const [{ AutoTokenizer }, ortModule] = await Promise.all([
     import("https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.5"),
-    import("https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/ort.webgpu.min.mjs"),
+    import("https://cdn.jsdelivr.net/npm/onnxruntime-web@1.21.0/dist/ort.wasm.min.mjs"),
   ]);
   ort = ortModule;
   ort.env.wasm.numThreads = 1;
