@@ -279,6 +279,11 @@ test("operator manuals (AGENTS.md, CLAUDE.md, SKILL.md) reference transformers-v
       text.includes("reports/transformers-version-policy.md"),
       `${f} must reference reports/transformers-version-policy.md`,
     );
+    assert.match(
+      text,
+      /(without\s+full\s+staging|staged\s+rollout)/i,
+      `${f} must contain qualifier phrase ("without full staging" or "staged rollout")`,
+    );
     assert.doesNotMatch(
       text,
       /never bump shared (`lib\/webai\.js`|lib\/webai\.js)(?!\s+without\s+full\s+staging)/,
