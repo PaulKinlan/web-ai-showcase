@@ -307,13 +307,23 @@ is ~800MB + license-unclear + intrinsic-decomposition, not honest cast-shadow re
 generic brighten/low-light model as shadow removal — the built low-light/dehaze/denoise/dewarp demos cover
 adjacent restoration honestly). Never mislabel a substitute as the blocked family.
 
-**Version-pin escape hatch (isolated).** A model whose class exists only in a transformers.js newer
-than the shared 3.7.5 pin (e.g. SAM2 — `Sam2Model` lands in 4.2.0, absent from 3.7.5) may pin the
+**Transformers.js version policy & staged rollout (web-ai-showcase-djr / web-ai-showcase-9v4).**
+The shared pin in `lib/webai.js` is 3.7.5. Per the policy decision in
+`reports/transformers-version-policy.md`, the upgrade to 4.3.0 is executed as a staged rollout:
+1. High-signal and newer-architecture routes test 4.3.0 LOCALLY in worker.js first via
+   `allowedLocalOverrides` in `scripts/runtime-pin-allowlist.json`.
+2. The shared pin moves only after structural differences (fill-mask) and heavy generation
+   probes are verified in headless browser acceptance runs.
+3. Any route unable to move is retained at 3.7.5 via the local escape hatch with documented reasons.
+4. Never bump shared transformers.js and raw-ORT pins in the same change.
+
+**Version-pin escape hatch (isolated).** A model whose class requires a transformers.js version
+different than the shared pin (e.g. SAM2 — `Sam2Model` lands in 4.2.0, absent from 3.7.5) may pin the
 newer version LOCALLY in that one model's `worker.js` import — never bump shared `lib/webai.js` or
-other pages. `lib/model-cache.js` is version-agnostic (scans Cache Storage by modelId), so
+other pages without full staging. `lib/model-cache.js` is version-agnostic (scans Cache Storage by modelId), so
 `createModelLoader` auto-init still works. Precedent: `models/sam2-segmentation/worker.js` pins
-`@huggingface/transformers@4.2.0`; everything else stays 3.7.5. Verify the pin stays scoped to that
-worker.
+`@huggingface/transformers@4.2.0`. All local overrides must be justified and recorded in
+`scripts/runtime-pin-allowlist.json`. Verify the pin stays scoped to that worker.
 
 **transformers.js option naming — `top_k` not `topk`.** The text-classification pipeline in 3.7.5
 reads its top-k option as **`top_k`** (snake_case); `topk` is silently ignored and the pipeline

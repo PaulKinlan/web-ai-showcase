@@ -76,6 +76,7 @@ High-signal routes from green matrix groups (feature extraction, text classifica
 ### Phase 4: Shared Pin Promotion with Reverse Escape Hatch
 Once Phases 1-3 pass all acceptance criteria:
 1. Any route with unresolvable regressions under 4.3.0 is pinned locally to `3.7.5` via `allowedLocalOverrides`.
+   *(Note for Phase 4 execution: `checkRuntimePins()` enforces the full structural block — `version`, `slugs`, `reason` > 10 chars, `evidence` > 5 chars, `reviewedOn` YYYY-MM-DD date — on every `allowedLocalOverrides` entry, including any reverse pin holding stragglers at 3.7.5).*
 2. `lib/webai.js` `TRANSFORMERS_URL` is promoted from `3.7.5` to `4.3.0`.
 3. `scripts/runtime-pin-allowlist.json` updates `transformers.shared` to `"4.3.0"`.
 
