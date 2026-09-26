@@ -309,6 +309,17 @@ short version for tools that look for `AGENTS.md`.
   license/retrieval-date/local-path/dims; optimize; no hotlinking; skip unclear licensing. See
   `/architecture/` and CLAUDE invariant 15.
 - Verify with headless Chrome + `Read` the screenshot (no chrome-devtools-mcp in the routine).
+- **Run deep acceptances through `scripts/acceptance-run.mjs` (web-ai-showcase-50s).** Validators
+  drive multi-hundred-MB stages for 15-30 minutes; on a shared box a single stalled
+  `Runtime.evaluate` used to abort a run that had already collected all its route checks and leave
+  NO record (and half-rewritten screenshots). The runner prints the box load, warns above
+  `--load-warn` (default 30), refuses to start above `--max-load` (opt-in), runs the validator with
+  `CDP_EVALUATE_RETRIES` (default 3 — the shared CDP client retries a timed-out evaluate instead of
+  killing the run; `scripts/browser.mjs`), and on a non-zero exit writes a diagnostic record
+  (`exitCode: 1`, `aborted: true`, every check that did pass) to the family's run-record path so
+  `check-portfolio-acceptance` still fails while the evidence and failure point survive. The
+  validator still owns its passing record. Example:
+  `node scripts/acceptance-run.mjs scripts/validate-<slug>.mjs --write-run --max-load 40`.
 - **Critique → immutable conformance → goal lifecycle.** Every built demo has a versioned critique
   (`models/<slug>/_questions.json`) and an IMMUTABLE conformance suite
   (`models/<slug>/conformance.json`, sha256 `suiteHash`). Assertions are DERIVED from real

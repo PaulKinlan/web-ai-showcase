@@ -11,7 +11,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { accessSync, constants, existsSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { constants as osConstants, tmpdir } from "node:os";
+import { constants as osConstants, loadavg, tmpdir } from "node:os";
 
 export const repoRoot = fileURLToPath(new URL("..", import.meta.url));
 export const BASE = "/web-ai-showcase/";
@@ -109,6 +109,44 @@ export function chromeAvailable() {
   return findChrome() !== null;
 }
 
+export const EVALUATE_RETRY_ENV = "CDP_EVALUATE_RETRIES";
+
+/**
+ * How many times a timed-out `Runtime.evaluate` is retried (web-ai-showcase-50s).
+ *
+ * Deep acceptance suites drive multi-hundred-MB WASM stages while other lanes run their own browsers;
+ * under that shared-box load the renderer can stop answering for minutes and one `CDP timeout` used to
+ * abort a 20-minute run that had already collected all its route evidence. The retry is opt-in through
+ * the environment so nothing changes for callers that do not ask for it, and it is bounded so a
+ * genuinely hung page still fails.
+ */
+export function evaluateRetryCount(env = process.env) {
+  const raw = env?.[EVALUATE_RETRY_ENV];
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.min(Math.floor(n), 10);
+}
+
+/** True only for the shape a loaded box produces: an evaluate that outlived its timeout. */
+export function isTransientEvaluateTimeout(method, error) {
+  return method === "Runtime.evaluate" && /CDP timeout/.test(String(error?.message ?? ""));
+}
+
+/**
+ * Current box load. A deep suite's heavy re-download/reload steps are the observed stall points, so
+ * callers can warn (or refuse) before burning an hour on a doomed run (web-ai-showcase-50s).
+ */
+export function loadAverage() {
+  const [one, five, fifteen] = loadavg();
+  return { one, five, fifteen };
+}
+
+/** A one-line warning when the box is too busy, or null when it is quiet enough. */
+export function loadWarning(threshold = 30, load = loadAverage()) {
+  if (!(load.one > threshold)) return null;
+  return `box load average is ${load.one.toFixed(1)} (threshold ${threshold}) — deep acceptance suites stall under shared-box load; prefer a quieter window or expect retries`;
+}
+
 export class CDP {
   constructor(ws) {
     this.ws = ws;
@@ -127,6 +165,18 @@ export class CDP {
     });
   }
   send(method, params = {}, sessionId, timeoutMs = 15000) {
+    const attempts = evaluateRetryCount() + 1;
+    const attempt = (n) =>
+      this.#sendOnce(method, params, sessionId, timeoutMs).catch((error) => {
+        if (n + 1 >= attempts || !isTransientEvaluateTimeout(method, error)) throw error;
+        console.log(
+          `  [cdp evaluate retry ${n + 1}/${attempts - 1}] ${String(error.message).slice(0, 90)}`,
+        );
+        return attempt(n + 1);
+      });
+    return attempt(0);
+  }
+  #sendOnce(method, params = {}, sessionId, timeoutMs = 15000) {
     const id = ++this.id;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -636,5 +686,64 @@ export function writeAcceptanceRunRecord({
   };
   writeFileSync(runRecordPath, JSON.stringify(runRecord, null, 2) + "\n", "utf8");
   console.log(`WROTE ${runRecordPath} for commit ${startCommit}`);
+  return true;
+}
+
+/**
+ * Write a FAILING diagnostic run record when a suite aborts before writing its own (web-ai-showcase-50s).
+ *
+ * A 20-minute run that collected every route check and then hit a renderer stall used to leave NO
+ * artifact and dirty tracked screenshots. This keeps the failure point and the checks that did pass:
+ * the record carries `exitCode: 1` and `aborted: true`, so check-portfolio-acceptance still fails on
+ * the family until a clean run writes its own record — the evidence simply survives.
+ *
+ * Refuses (returns false) when HEAD moved during the run, exactly like writeAcceptanceRunRecord.
+ */
+export function writeAbortedAcceptanceRun({
+  runRecordPath,
+  startCommit,
+  reason,
+  assertions = [],
+  results = [],
+  stages = null,
+  matrix = null,
+  notes = [],
+  cwd = repoRoot,
+}) {
+  try {
+    assertHeadUnchanged(startCommit, cwd);
+  } catch (err) {
+    console.error(`\nREFUSAL: ${err.message}`);
+    return false;
+  }
+  const failed = assertions.filter((a) => a.state !== "pass").length;
+  const record = {
+    schemaVersion: 1,
+    aborted: true,
+    commit: startCommit,
+    ranAt: new Date().toISOString(),
+    exitCode: 1,
+    abortReason: String(reason ?? "run aborted").slice(0, 1000),
+    summary: {
+      checks: assertions.length,
+      passed: assertions.length - failed,
+      failed,
+      cells: results.length,
+      cellsPassed: results.filter((r) => r.pass === true).length,
+      aborted: true,
+    },
+    assertions,
+    results,
+    ...(stages ? { stages } : {}),
+    ...(matrix ? { matrix } : {}),
+    notes: [
+      "DIAGNOSTIC RECORD: the acceptance run aborted before it could write its own record. It exists so",
+      "the failure point and the checks that did pass survive (web-ai-showcase-50s). The gate fails on",
+      "exitCode 1; re-run the validator for a clean record.",
+      ...notes,
+    ],
+  };
+  writeFileSync(runRecordPath, JSON.stringify(record, null, 2) + "\n", "utf8");
+  console.log(`WROTE aborted diagnostic record ${runRecordPath} for commit ${startCommit}`);
   return true;
 }
