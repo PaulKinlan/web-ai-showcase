@@ -325,6 +325,7 @@ async function exercise(cdp, rung, viewportName, viewport, attempt = 1) {
     );
     const chunks = proof.chunks;
     const realIds = (proof.tokenIds ?? []).reduce((a, b) => a + Number(b || 0), 0);
+    const streaming = proof.streaming === true;
     const tok = Number(proof.tok);
     ok = check(
       `${label}: page counted decoded chunks through the engine wrap`,
@@ -343,7 +344,19 @@ async function exercise(cdp, rung, viewportName, viewport, attempt = 1) {
         { readout: proof.tok, resolved: realIds },
       ) && ok;
     }
-    divergence.push({ label, viewport: viewportName, chunks, tokens: realIds });
+    // PER-CELL 0ly PROOF (web-ai-showcase-4sz): EVERY cell must prove the displayed count is not
+    // the decoded-chunk count. A cell whose page received decoded chunks must show MORE generated IDs
+    // than chunks; a cell that received none must still resolve real IDs. The route check below
+    // demands this of every cell, so a worker reverted to chunk counting cannot pass on one honest cell.
+    const streamedChunks = Number.isInteger(chunks) && chunks > 0;
+    ok = check(
+      streamedChunks
+        ? `${label}: generated IDs outnumber decoded chunks (per-cell divergence)`
+        : `${label}: non-streaming cell received no chunks and resolved real IDs`,
+      streamedChunks ? realIds !== chunks : realIds >= 1,
+      { chunks, realIds, streaming },
+    ) && ok;
+    divergence.push({ label, viewport: viewportName, chunks, tokens: realIds, streaming });
 
     const hygiene = await evalJSON(
       cdp,
@@ -391,14 +404,18 @@ const cdp = new CDP(chrome.ws);
 try {
   for (const [name] of Object.entries(ROUTES)) await exercise(cdp, name, "desktop", DESKTOP);
   check(
-    `desktop: at least one cell proves the readout is NOT the decoded-chunk count (0ly proof)`,
-    divergence.some((d) => d.viewport === "desktop" && Number.isInteger(d.chunks) && d.chunks !== d.tokens),
+    `desktop: EVERY cell proves the readout is not the decoded-chunk count (per-cell 0ly proof)`,
+    divergence.filter((d) => d.viewport === "desktop").length === Object.keys(ROUTES).length &&
+    divergence.filter((d) => d.viewport === "desktop").every((d) =>
+      d.chunks > 0 ? d.tokens !== d.chunks : d.tokens >= 1),
     divergence.filter((d) => d.viewport === "desktop"),
   );
   for (const [name] of Object.entries(ROUTES)) await exercise(cdp, name, "mobile", MOBILE);
   check(
-    `mobile: at least one cell proves the readout is NOT the decoded-chunk count (0ly proof)`,
-    divergence.some((d) => d.viewport === "mobile" && Number.isInteger(d.chunks) && d.chunks !== d.tokens),
+    `mobile: EVERY cell proves the readout is not the decoded-chunk count (per-cell 0ly proof)`,
+    divergence.filter((d) => d.viewport === "mobile").length === Object.keys(ROUTES).length &&
+    divergence.filter((d) => d.viewport === "mobile").every((d) =>
+      d.chunks > 0 ? d.tokens !== d.chunks : d.tokens >= 1),
     divergence.filter((d) => d.viewport === "mobile"),
   );
   console.log(`CHUNK-VS-ID: ${JSON.stringify(divergence)}`);
