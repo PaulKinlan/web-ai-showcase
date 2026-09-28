@@ -58,7 +58,7 @@ export class SmolDoclingEngine {
         }
         break;
       case "token":
-        if (this._active && this._active.id === msg.id) this._active.onToken?.(msg.token, msg.t);
+        if (this._active && this._active.id === msg.id) this._active.onToken?.(msg.token, msg.t, msg.tokens);
         break;
       case "done":
         if (this._active && this._active.id === msg.id) {
