@@ -31,10 +31,10 @@ async function ensureLoaded() {
   const { AutoTokenizer, AutoModelForCausalLM, Tensor: T, env } = await import(TRANSFORMERS_URL);
   Tensor = T;
   env.allowLocalModels = false; // let the library own its Cache Storage; don't fight the service worker.
-  tokenizer = await AutoTokenizer.from_pretrained(MODEL_ID, {
+  tokenizer = await AutoTokenizer.from_pretrained("Xenova/gpt2", {
     progress_callback: (p) => post({ type: "progress", p }),
   });
-  model = await AutoModelForCausalLM.from_pretrained(MODEL_ID, {
+  model = await AutoModelForCausalLM.from_pretrained("Xenova/gpt2", {
     dtype: "int8",
     device: "wasm",
     progress_callback: (p) => post({ type: "progress", p }),
