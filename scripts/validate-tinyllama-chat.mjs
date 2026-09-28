@@ -330,6 +330,7 @@ async function exercise(browser, rung, viewportName, viewport, attempt = 1) {
     );
     const chunks = proof.chunks;
     const realIds = (proof.tokenIds ?? []).reduce((a, b) => a + Number(b || 0), 0);
+    const streaming = proof.streaming === true;
     const tok = Number(proof.tok);
     ok = check(
       `${label}: page counted decoded chunks through the engine wrap`,
@@ -376,7 +377,30 @@ async function exercise(browser, rung, viewportName, viewport, attempt = 1) {
         { backend: proof.backend },
       ) && ok;
     }
-    divergence.push({ label, viewport: viewportName, chunks, tokens: realIds });
+    // PER-CELL 0ly PROOF (web-ai-showcase-4sz): EVERY cell must prove the displayed count is
+    // not the decoded-chunk count. A streaming cell must show MORE generated IDs than the decoded
+    // chunks it was handed; a cell whose page never asked for streaming must show zero chunks with
+    // real IDs resolved. The route-level check below demands this of every cell, so a worker
+    // reverted to chunk counting cannot pass by having one honest cell.
+    // Per cell: the readout must be a real resolved count (the comparison against the readout itself
+    // is the check above). Where the generation is long enough that one decoded chunk per token is
+    // implausible in this family's streamer, the chunk count must ALSO differ from the ID count — that
+    // is the mutant signature (a worker reverted to chunk counting makes the two identical). A short
+    // generation can legitimately be 1:1, so the inequality is only required past a token threshold,
+    // and the route-level check below insists on at least one such cell per viewport.
+    const DIVERGENCE_MIN_TOKENS = 10;
+    const streamedChunks = Number.isInteger(chunks) && chunks > 0;
+    const needsDivergence = streamedChunks && realIds >= DIVERGENCE_MIN_TOKENS;
+    ok = check(
+      streamedChunks
+        ? `${label}: resolved ID count differs from the decoded-chunk count${
+          needsDivergence ? "" : " (short generation, equality allowed)"
+        }`
+        : `${label}: non-streaming cell received no chunks and resolved real IDs`,
+      streamedChunks ? realIds >= 1 && (!needsDivergence || realIds !== chunks) : realIds >= 1,
+      { chunks, realIds, streaming, needsDivergence },
+    ) && ok;
+    divergence.push({ label, viewport: viewportName, chunks, tokens: realIds, streaming, diverged: needsDivergence });
 
     const hygiene = await evalJSON(
       cdp,
@@ -490,19 +514,25 @@ try {
   if (!ONLY_VIEWPORT || ONLY_VIEWPORT === "desktop") {
     for (const [name] of cells) await runCell(name, "desktop", DESKTOP);
   }
-  if (!ONLY_VIEWPORT || ONLY_VIEWPORT === "desktop") check(
-    `desktop: at least one cell proves the readout is NOT the decoded-chunk count (0ly proof)`,
-    divergence.some((d) => d.viewport === "desktop" && Number.isInteger(d.chunks) && d.chunks !== d.tokens),
-    divergence.filter((d) => d.viewport === "desktop"),
-  );
+    if (!ONLY_VIEWPORT || ONLY_VIEWPORT === "desktop") check(
+      `desktop: EVERY cell proves the readout is not the decoded-chunk count (per-cell 0ly proof)`,
+      divergence.filter((d) => d.viewport === "desktop").length === Object.keys(ROUTES).length &&
+        divergence.filter((d) => d.viewport === "desktop").every((d) =>
+          d.tokens >= 1 && (!d.diverged || d.tokens !== d.chunks)) &&
+        divergence.some((d) => d.viewport === "desktop" && d.diverged),
+      divergence.filter((d) => d.viewport === "desktop"),
+    );
   if (!ONLY_VIEWPORT || ONLY_VIEWPORT === "mobile") {
     for (const [name] of cells) await runCell(name, "mobile", MOBILE);
   }
-  if (!ONLY_VIEWPORT || ONLY_VIEWPORT === "mobile") check(
-    `mobile: at least one cell proves the readout is NOT the decoded-chunk count (0ly proof)`,
-    divergence.some((d) => d.viewport === "mobile" && Number.isInteger(d.chunks) && d.chunks !== d.tokens),
-    divergence.filter((d) => d.viewport === "mobile"),
-  );
+    if (!ONLY_VIEWPORT || ONLY_VIEWPORT === "mobile") check(
+      `mobile: EVERY cell proves the readout is not the decoded-chunk count (per-cell 0ly proof)`,
+      divergence.filter((d) => d.viewport === "mobile").length === Object.keys(ROUTES).length &&
+        divergence.filter((d) => d.viewport === "mobile").every((d) =>
+          d.tokens >= 1 && (!d.diverged || d.tokens !== d.chunks)) &&
+        divergence.some((d) => d.viewport === "mobile" && d.diverged),
+      divergence.filter((d) => d.viewport === "mobile"),
+    );
   console.log(`CHUNK-VS-ID: ${JSON.stringify(divergence)}`);
 } finally {
   // no single browser to kill: withBrowser owns each one (the shared profile dir is removed below)
