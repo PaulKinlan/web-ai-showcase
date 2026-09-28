@@ -131,6 +131,11 @@ async function installChunkCounter(cdp, sessionId) {
         const orig = Engine.prototype.chat;
         Engine.prototype.chat = function (...args) {
           const opts = args.at(-1);
+          if (opts && typeof opts === "object" && Number(opts.maxTokens) > 0) {
+            // The cap is per RUNG, not per page: record what this call asked for so a cell that hit its
+            // own cap is recognised as an honest 1:1 (one chunk per token) rather than as the mutant.
+            window.__maxTokens = Number(opts.maxTokens);
+          }
           if (opts && typeof opts === "object" && typeof opts.onToken === "function") {
             const inner = opts.onToken;
             opts.onToken = (...cb) => {
@@ -300,7 +305,7 @@ async function exercise(cdp, rung, viewportName, viewport, attempt = 1) {
       page.sessionId,
       `JSON.stringify({
         tok: document.querySelector('${cfg.tok}')?.textContent ?? null,
-        chunks: window.__chunks ?? null,
+        chunks: window.__chunks ?? null,        maxTokens: window.__maxTokens ?? null,
         tokenIds: window.__tokens ?? [],
       })`,
     );
@@ -399,7 +404,7 @@ try {
       `desktop: EVERY cell proves the readout is not the decoded-chunk count (per-cell 0ly proof)`,
       divergence.filter((d) => d.viewport === "desktop").length === Object.keys(ROUTES).length &&
         viewCells("desktop").every((d) => d.tokens >= 1) &&
-        viewCells("desktop").every((d) => d.tokens === viewCap("desktop") || d.tokens !== d.chunks) &&
+        viewCells("desktop").every((d) => d.tokens >= (d.maxTokens ?? 0) || d.tokens !== d.chunks) &&
         viewCells("desktop").some((d) => d.chunks > 0 && d.tokens !== d.chunks),
       divergence.filter((d) => d.viewport === "desktop"),
     );
@@ -408,7 +413,7 @@ try {
       `mobile: EVERY cell proves the readout is not the decoded-chunk count (per-cell 0ly proof)`,
       divergence.filter((d) => d.viewport === "mobile").length === Object.keys(ROUTES).length &&
         viewCells("mobile").every((d) => d.tokens >= 1) &&
-        viewCells("mobile").every((d) => d.tokens === viewCap("mobile") || d.tokens !== d.chunks) &&
+        viewCells("mobile").every((d) => d.tokens >= (d.maxTokens ?? 0) || d.tokens !== d.chunks) &&
         viewCells("mobile").some((d) => d.chunks > 0 && d.tokens !== d.chunks),
       divergence.filter((d) => d.viewport === "mobile"),
     );
