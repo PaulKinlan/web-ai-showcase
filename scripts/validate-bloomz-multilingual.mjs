@@ -352,15 +352,25 @@ async function exercise(cdp, rung, viewportName, viewport, attempt = 1) {
     // chunks it was handed; a cell whose page never asked for streaming must show zero chunks with
     // real IDs resolved. The route-level check below demands this of every cell, so a worker
     // reverted to chunk counting cannot pass by having one honest cell.
+    // Per cell: the readout must be a real resolved count (the comparison against the readout itself
+    // is the check above). Where the generation is long enough that one decoded chunk per token is
+    // implausible in this family's streamer, the chunk count must ALSO differ from the ID count — that
+    // is the mutant signature (a worker reverted to chunk counting makes the two identical). A short
+    // generation can legitimately be 1:1, so the inequality is only required past a token threshold,
+    // and the route-level check below insists on at least one such cell per viewport.
+    const DIVERGENCE_MIN_TOKENS = 10;
     const streamedChunks = Number.isInteger(chunks) && chunks > 0;
+    const needsDivergence = streamedChunks && realIds >= DIVERGENCE_MIN_TOKENS;
     ok = check(
       streamedChunks
-        ? `${label}: generated IDs outnumber decoded chunks (per-cell divergence)`
+        ? `${label}: resolved ID count differs from the decoded-chunk count${
+          needsDivergence ? "" : " (short generation, equality allowed)"
+        }`
         : `${label}: non-streaming cell received no chunks and resolved real IDs`,
-      streamedChunks ? realIds !== chunks : realIds >= 1,
-      { chunks, realIds, streaming },
+      streamedChunks ? realIds >= 1 && (!needsDivergence || realIds !== chunks) : realIds >= 1,
+      { chunks, realIds, streaming, needsDivergence },
     ) && ok;
-    divergence.push({ label, viewport: viewportName, chunks, tokens: realIds, streaming });
+    divergence.push({ label, viewport: viewportName, chunks, tokens: realIds, streaming, diverged: needsDivergence });
 
     const hygiene = await evalJSON(
       cdp,
