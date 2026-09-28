@@ -38,7 +38,7 @@ async function ensureLoaded() {
   mod = await import(TRANSFORMERS_URL);
   const { pipeline } = mod;
   console.log(`[nuextract worker] loading ${MODEL_ID} on ${DEVICE} (${DTYPE})`);
-  generator = await pipeline("text-generation", MODEL_ID, {
+  generator = await pipeline("text-generation", "onnx-community/NuExtract-1.5-tiny-ONNX", {
     device: DEVICE,
     dtype: DTYPE,
     progress_callback: (p) => post({ type: "progress", p }),
@@ -72,10 +72,15 @@ async function extract(id, templateStr, text, maxTokens) {
   const streamer = new TextStreamer(generator.tokenizer, {
     skip_prompt: true,
     skip_special_tokens: true,
+    // TextStreamer buffers decoded words. Count the generated IDs instead (prompt excluded,
+    // special generated IDs included), then attach that count to each visible text chunk
+    // (web-ai-showcase-0ly, route 11/40; db2 pattern).
+    token_callback_function: (ids) => {
+      count += ids.length;
+    },
     callback_function: (token) => {
-      count++;
       acc += token;
-      post({ type: "token", id, token });
+      post({ type: "token", id, token, tokens: count });
     },
   });
 

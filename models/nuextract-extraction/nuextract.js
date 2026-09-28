@@ -39,7 +39,7 @@ export class NuExtractEngine {
         if (this._active && this._active.id === msg.id) this._active.onPrompt?.(msg.prompt);
         break;
       case "token":
-        if (this._active && this._active.id === msg.id) this._active.onToken?.(msg.token);
+        if (this._active && this._active.id === msg.id) this._active.onToken?.(msg.token, msg.tokens);
         break;
       case "result":
         if (this._active && this._active.id === msg.id) {
