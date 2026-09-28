@@ -1,15 +1,14 @@
 #!/usr/bin/env node
 // Route-complete smoldocling-document acceptance: real browser inference on every published route at
-// desktop and mobile. Advertised stage driven for real:
-//   onnx-community/SmolDocling-256M-preview   (every rung — the plain rungs stream it from worker.js through
-//   SmolDoclingEngine.convert; the multi-model rung runs it in mm-worker.js through RagEngine.run)
-//   docling-project/SmolDocling-256M-preview          (the multi-model rung's retrieval embedder, loaded in that same
-//   RAG worker — the portfolio gate requires every advertised stage to be named in this file)
+// desktop and mobile. Advertised stages driven for real:
+//   docling-project/SmolDocling-256M-preview  (every rung: the vision-to-DocTags converter streams from
+//   worker.js through SmolDoclingEngine.convert)
+//   onnx-community/Qwen2.5-0.5B-Instruct     (the multi-model rung's second stage: it reads the DocTags
+//   and writes a plain-language brief)
 //
-// web-ai-showcase-0ly acceptance: the readout counts generated token IDs, NOT decoded text
-// chunks. The validator attaches to the family worker's CDP target, counts the worker's decoded
-// "token" posts (chunks) and its "done" post (real IDs), and asserts the displayed count equals
-// the done payload AND differs from the chunk count — that difference is the proof.
+// web-ai-showcase-0ly acceptance: the readout counts generated token IDs, not decoded text chunks. That
+// matters more here than anywhere: this rung DROPS the decoded chunks that render no visible text, so a
+// decoded-callback count was not even a chunk count.
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -29,15 +28,16 @@ import {
 const WRITE_RUN = process.argv.includes("--write-run");
 // This family publishes a real see-inside panel: #topkBtn runs one forward pass and #topk shows the
 // next-token distribution.
-const HAS_INSIDE = false; // this family publishes no see-inside panel
+const HAS_INSIDE = true;
 const INSIDE = {
-  click: "#topkBtn",
+  // "See inside — the raw DocTags stream": the untouched model output, streaming live while the page
+  // parses structure out of it. No button to click — it fills during conversion.
   ready:
-    `(() => { const t = document.querySelector('#topk'); return !!t && ` +
-    `(t.innerText || '').length > 25 && !/Computing/.test(t.innerText); })()`,
-  text: `(document.querySelector('#topk')?.innerText || '').slice(0, 160)`,
-  label: "see-inside top-k distribution renders",
-  minLength: 25,
+    `(() => { const r = document.querySelector('#raw'); return !!r && ` +
+    `(r.innerText || '').length > 40 && /<\w+[^>]*>|doctag/i.test(r.innerText || ''); })()`,
+  text: `(document.querySelector('#raw')?.innerText || '').slice(0, 160)`,
+  label: "see-inside raw DocTags stream renders",
+  minLength: 40,
 };
 // Debug aid: ONLY_RUNG / ONLY_VIEWPORT narrow a run to a single cell (useful when one heavy cell
 // needs isolating); unset, the validator runs every rung at both viewports as acceptance requires.
@@ -327,7 +327,11 @@ async function exercise(browser, rung, viewportName, viewport, attempt = 1) {
     );
 
     if (rung === "overview" && HAS_INSIDE) {
-      await evaluate(cdp, page.sessionId, `document.querySelector('${INSIDE.click}').click()`);
+      // Not every family has a see-inside BUTTON (this one's raw DocTags stream fills as it converts),
+      // so only click when the config names a control, and never crash on a missing one.
+      if (INSIDE.click) {
+        await evaluate(cdp, page.sessionId, `document.querySelector('${INSIDE.click}')?.click()`);
+      }
       await waitFor(cdp, page.sessionId, INSIDE.ready, 600_000, `${label} see-inside`, 5_000);
       const insideText = await evaluate(cdp, page.sessionId, INSIDE.text);
       ok = check(
