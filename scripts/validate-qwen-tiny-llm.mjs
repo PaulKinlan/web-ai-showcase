@@ -353,7 +353,7 @@ async function exercise(cdp, rung, viewportName, viewport, attempt = 1) {
       realIds >= 1,
       { chunks, realIds, streaming, needsDivergence },
     ) && ok;
-    divergence.push({ label, viewport: viewportName, chunks, tokens: realIds, streaming, diverged: needsDivergence });
+    divergence.push({ label, viewport: viewportName, chunks, tokens: realIds, streaming, diverged: needsDivergence, maxTokens: Number.isFinite(Number(proof.maxTokens)) ? Number(proof.maxTokens) : null });
 
     const hygiene = await evalJSON(
       cdp,
