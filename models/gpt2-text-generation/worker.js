@@ -117,6 +117,11 @@ async function generate(id, prompt, opts) {
   const topK = Math.min(50, Math.max(1, opts.topK ?? 40));
   const enc = await tokenizer(prompt);
   let ids = Array.from(enc.input_ids.data, Number);
+  // The model input keeps growing with every generated step, so ids.length is prompt+generated. The
+  // route's readout is "new tokens", so count the generated ones separately (web-ai-showcase-0ly,
+  // route 13/40) and report the prompt length alongside it rather than conflating the two.
+  const promptTokens = ids.length;
+  let generatedCount = 0;
   const eos = model.config?.eos_token_id ?? 50256;
   const t0 = performance.now();
   let generated = "";
@@ -145,6 +150,7 @@ async function generate(id, prompt, opts) {
     const showIdx = kIdx.slice(0, 8);
     const showProbs = showIdx.map((i) => probOf(row, vocab, i));
     ids.push(chosen);
+    generatedCount++;
     const piece = decode(chosen);
     generated += piece;
     post({
@@ -153,6 +159,7 @@ async function generate(id, prompt, opts) {
       step,
       piece,
       generated,
+      tokens: generatedCount,
       chosen: { token: piece, prob: chosenProb },
       topk: showIdx.map((i, n) => ({ token: decode(i), prob: showProbs[n], chosen: i === chosen })),
     });
@@ -164,7 +171,8 @@ async function generate(id, prompt, opts) {
     text: prompt + generated,
     generated,
     ms: Math.round(performance.now() - t0),
-    tokens: ids.length,
+    tokens: generatedCount,
+    promptTokens,
     device,
   });
 }
