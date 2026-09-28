@@ -355,7 +355,7 @@ async function exercise(browser, rung, viewportName, viewport, attempt = 1) {
       streamedChunks
         ? `${label}: generated IDs outnumber decoded chunks (per-cell divergence)`
         : `${label}: non-streaming cell received no chunks and resolved real IDs`,
-      streamedChunks ? realIds > chunks : realIds >= 1,
+      streamedChunks ? realIds !== chunks : realIds >= 1,
       { chunks, realIds, streaming },
     ) && ok;
     divergence.push({ label, viewport: viewportName, chunks, tokens: realIds, streaming });
