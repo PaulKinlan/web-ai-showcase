@@ -63,9 +63,14 @@ async function run(id, imageURL, prompt, maxTokens) {
   const streamer = new TextStreamer(processor.tokenizer, {
     skip_prompt: true,
     skip_special_tokens: true,
+    // TextStreamer buffers decoded words, so callback_function fires per VISIBLE CHUNK, not per
+    // generated token. Count the generated IDs instead (prompt excluded, special generated IDs
+    // included), then attach that count to each visible text chunk (web-ai-showcase-0ly; db2).
+    token_callback_function: (ids) => {
+      count += ids.length;
+    },
     callback_function: (tok) => {
-      count++;
-      post({ type: "token", id, token: tok, t: performance.now() - t0 });
+      post({ type: "token", id, token: tok, tokens: count, t: performance.now() - t0 });
     },
   });
 
