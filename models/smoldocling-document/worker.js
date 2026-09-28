@@ -52,10 +52,10 @@ async function ensureLoaded() {
   if (model) return;
   mod = await import(TRANSFORMERS_URL);
   const { AutoProcessor, AutoModelForVision2Seq } = mod;
-  processor = await AutoProcessor.from_pretrained(MODEL_ID, {
+  processor = await AutoProcessor.from_pretrained("docling-project/SmolDocling-256M-preview", {
     progress_callback: (p) => post({ type: "progress", p }),
   });
-  model = await AutoModelForVision2Seq.from_pretrained(MODEL_ID, {
+  model = await AutoModelForVision2Seq.from_pretrained("docling-project/SmolDocling-256M-preview", {
     dtype: "q4", // q4 is the honest runnable export; q4f16/fp16/int8 are degenerate for this model
     device: "webgpu",
     progress_callback: (p) => post({ type: "progress", p }),
@@ -93,10 +93,16 @@ async function run(id, imageURL, promptText, maxTokens) {
   const streamer = new TextStreamer(processor.tokenizer, {
     skip_prompt: true,
     skip_special_tokens: false, // keep the DocTags (<text>, <loc_>, <otsl>, <formula>, …)
+    // TextStreamer buffers decoded words, and this rung drops the chunks that render no visible text,
+    // so the decoded callback is not a token count. Count the generated IDs instead (prompt excluded,
+    // special generated IDs included) and attach that count to every visible chunk
+    // (web-ai-showcase-0ly, route 14/40; db2 pattern).
+    token_callback_function: (ids) => {
+      count += ids.length;
+    },
     callback_function: (tok) => {
       const clean = cleanTag(tok);
-      count++;
-      if (clean) post({ type: "token", id, token: clean, t: performance.now() - t0 });
+      if (clean) post({ type: "token", id, token: clean, tokens: count, t: performance.now() - t0 });
     },
   });
 
