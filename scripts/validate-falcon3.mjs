@@ -2,6 +2,8 @@
 // Route-complete falcon3 acceptance: real browser inference on every published route at desktop and
 // mobile. Advertised stage driven for real:
 //   onnx-community/Falcon3-1B-Instruct  (one Falcon3Engine.chat drives every rung)
+//   Xenova/all-MiniLM-L6-v2              (the multi-model rung's retrieval embedder, loaded
+//   through the shared lib — which is why grepping only the family's own files misses it)
 //
 // web-ai-showcase-0ly acceptance: the readout counts generated token IDs, not decoded text chunks.
 // Layered per-cell proof: every cell resolved >= 1, readout === resolved count, every non-cap cell
