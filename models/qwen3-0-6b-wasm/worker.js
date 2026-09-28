@@ -39,7 +39,7 @@ async function hasWebGPU() {
 
 async function makePipeline(device) {
   const { pipeline } = mod;
-  return pipeline("text-generation", MODEL_ID, {
+  return pipeline("text-generation", "onnx-community/Qwen3-0.6B-ONNX", {
     device,
     dtype: DTYPE,
     progress_callback: (p) => post({ type: "progress", p }),
@@ -91,10 +91,15 @@ async function chat(id, messages, opts) {
   const streamer = new TextStreamer(generator.tokenizer, {
     skip_prompt: true,
     skip_special_tokens: true,
+    // TextStreamer buffers decoded words. Count the generated IDs instead (prompt excluded,
+    // special generated IDs included), then attach that count to each visible text chunk
+    // (web-ai-showcase-0ly, route 12/40; db2 pattern).
+    token_callback_function: (ids) => {
+      count += ids.length;
+    },
     callback_function: (token) => {
-      count++;
       if (firstTokenMs === null) firstTokenMs = performance.now() - t0;
-      post({ type: "token", id, token, t: performance.now() - t0 });
+      post({ type: "token", id, token, tokens: count, t: performance.now() - t0 });
     },
   });
   stopper = mod.InterruptableStoppingCriteria ? new mod.InterruptableStoppingCriteria() : null;

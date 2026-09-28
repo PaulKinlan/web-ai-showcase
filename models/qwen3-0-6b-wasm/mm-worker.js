@@ -19,12 +19,12 @@ async function ensureLoaded() {
   if (embedder && generator) return;
   mod = await import(TRANSFORMERS_URL);
   mod.env.allowLocalModels = false;
-  embedder = await mod.pipeline("feature-extraction", EMB_ID, {
+  embedder = await mod.pipeline("feature-extraction", "Xenova/all-MiniLM-L6-v2", {
     dtype: "q8",
     device: "wasm",
     progress_callback: (p) => post({ type: "progress", p }),
   });
-  generator = await mod.pipeline("text-generation", LLM_ID, {
+  generator = await mod.pipeline("text-generation", "onnx-community/Qwen3-0.6B-ONNX", {
     dtype: "q8",
     device: "wasm",
     progress_callback: (p) => post({ type: "progress", p }),
@@ -72,9 +72,13 @@ async function run(id, query, notes) {
   const streamer = new TextStreamer(generator.tokenizer, {
     skip_prompt: true,
     skip_special_tokens: true,
+    // Same db2 pattern as the plain worker: the decoded callback ships text, the ID callback counts
+    // tokens (web-ai-showcase-0ly, route 12/40 — the RAG rung has its own worker).
+    token_callback_function: (ids) => {
+      count += ids.length;
+    },
     callback_function: (token) => {
-      count++;
-      post({ type: "token", id, token });
+      post({ type: "token", id, token, tokens: count });
     },
   });
   const out = await generator(messages, {
