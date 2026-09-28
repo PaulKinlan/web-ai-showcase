@@ -392,16 +392,18 @@ try {
   check(
       `desktop: EVERY cell proves the readout is not the decoded-chunk count (per-cell 0ly proof)`,
       divergence.filter((d) => d.viewport === "desktop").length === Object.keys(ROUTES).length &&
-        divergence.filter((d) => d.viewport === "desktop").every((d) => d.tokens >= 1) &&
-        divergence.some((d) => d.viewport === "desktop" && d.diverged && d.tokens !== d.chunks),
+        divergence.filter((d) => d.viewport === "desktop").every((d) =>
+          d.tokens >= 1 && (!d.diverged || d.tokens !== d.chunks)) &&
+        divergence.some((d) => d.viewport === "desktop" && d.diverged),
       divergence.filter((d) => d.viewport === "desktop"),
     );
   for (const [name] of Object.entries(ROUTES)) await exercise(cdp, name, "mobile", MOBILE);
   check(
       `mobile: EVERY cell proves the readout is not the decoded-chunk count (per-cell 0ly proof)`,
       divergence.filter((d) => d.viewport === "mobile").length === Object.keys(ROUTES).length &&
-        divergence.filter((d) => d.viewport === "mobile").every((d) => d.tokens >= 1) &&
-        divergence.some((d) => d.viewport === "mobile" && d.diverged && d.tokens !== d.chunks),
+        divergence.filter((d) => d.viewport === "mobile").every((d) =>
+          d.tokens >= 1 && (!d.diverged || d.tokens !== d.chunks)) &&
+        divergence.some((d) => d.viewport === "mobile" && d.diverged),
       divergence.filter((d) => d.viewport === "mobile"),
     );
   console.log(`CHUNK-VS-ID: ${JSON.stringify(divergence)}`);
