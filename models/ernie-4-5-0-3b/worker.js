@@ -48,7 +48,9 @@ async function ensureLoaded() {
   console.log(
     `[ernie worker] loading ${MODEL_ID} on ${DEVICE} (${DTYPE}) via transformers.js 4.2.0`,
   );
-  generator = await pipeline("text-generation", MODEL_ID, {
+  // String literal at the call site (portfolio gate): the model id must be statically extractable;
+  // MODEL_ID stays for the honest logging above.
+  generator = await pipeline("text-generation", "onnx-community/ERNIE-4.5-0.3B-ONNX", {
     device: DEVICE,
     dtype: DTYPE,
     progress_callback: (p) => post({ type: "progress", p }),
@@ -74,10 +76,15 @@ async function chat(id, messages, opts) {
   const streamer = new TextStreamer(generator.tokenizer, {
     skip_prompt: true,
     skip_special_tokens: true,
+    // TextStreamer buffers decoded words. Count the generated IDs instead (prompt excluded,
+    // special generated IDs included), then attach that count to each visible text chunk
+    // (web-ai-showcase-0ly; db2 pattern).
+    token_callback_function: (ids) => {
+      count += ids.length;
+    },
     callback_function: (token) => {
-      count++;
       if (firstTokenMs === null) firstTokenMs = performance.now() - t0;
-      post({ type: "token", id, token, t: performance.now() - t0 });
+      post({ type: "token", id, token, tokens: count, t: performance.now() - t0 });
     },
   });
 
