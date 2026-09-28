@@ -148,6 +148,10 @@ async function installChunkCounter(cdp, sessionId) {
           const orig = Klass.prototype[t.method];
           Klass.prototype[t.method] = function (...args) {
             const opts = args.at(-1);
+            if (opts && typeof opts === "object" && Number(opts.maxTokens) > 0) {
+              // Per-RUNG cap: a cell that reached its own cap can be an honest 1:1.
+              window.__maxTokens = Number(opts.maxTokens);
+            }
             if (opts && typeof opts === "object" && typeof opts.onToken === "function") {
               const inner = opts.onToken;
               opts.onToken = (...cb) => {
@@ -322,7 +326,7 @@ async function exercise(cdp, rung, viewportName, viewport, attempt = 1) {
       page.sessionId,
       `JSON.stringify({
         tok: document.querySelector('${cfg.tok}')?.textContent ?? null,
-        chunks: window.__chunks ?? null,
+        chunks: window.__chunks ?? null,        maxTokens: window.__maxTokens ?? null,
         tokenIds: window.__tokens ?? [],
       })`,
     );
@@ -370,7 +374,7 @@ async function exercise(cdp, rung, viewportName, viewport, attempt = 1) {
       streamedChunks ? realIds >= 1 && (!needsDivergence || realIds !== chunks) : realIds >= 1,
       { chunks, realIds, streaming, needsDivergence },
     ) && ok;
-    divergence.push({ label, viewport: viewportName, chunks, tokens: realIds, streaming, diverged: needsDivergence });
+    divergence.push({ label, viewport: viewportName, chunks, tokens: realIds, streaming, diverged: needsDivergence, maxTokens: Number.isFinite(Number(proof.maxTokens)) ? Number(proof.maxTokens) : null });
 
     const hygiene = await evalJSON(
       cdp,
