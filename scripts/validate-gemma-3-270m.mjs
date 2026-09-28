@@ -2,6 +2,7 @@
 // Route-complete gemma-3-270m acceptance: real browser inference on every published route at desktop
 // and mobile. Advertised stage driven for real:
 //   onnx-community/gemma-3-270m-it-ONNX  (one GemmaEngine.chat drives every rung)
+//   Xenova/gte-small                     (the multi-model rung's retrieval embedder, page-side)
 //
 // web-ai-showcase-0ly acceptance: the readout counts generated token IDs, not decoded text chunks.
 // Layered per-cell proof: every cell resolved >= 1, readout === resolved count, every non-cap cell
