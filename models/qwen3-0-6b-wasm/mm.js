@@ -39,7 +39,7 @@ export class RagEngine {
         if (this._active && this._active.id === msg.id) this._active.onRetrieved?.(msg);
         break;
       case "token":
-        if (this._active && this._active.id === msg.id) this._active.onToken?.(msg.token);
+        if (this._active && this._active.id === msg.id) this._active.onToken?.(msg.token, msg.tokens);
         break;
       case "done":
         if (this._active && this._active.id === msg.id) {
