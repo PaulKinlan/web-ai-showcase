@@ -29,7 +29,7 @@ async function ensureLoaded() {
   if (generator) return;
   mod = await import(TRANSFORMERS_URL);
   const { pipeline } = mod;
-  generator = await pipeline("text-generation", MODEL_ID, {
+  generator = await pipeline("text-generation", "onnx-community/Qwen2.5-0.5B-Instruct", {
     device: "webgpu",
     dtype: "q4", // q4 (not q4f16): the fp16-compute q4f16 export degenerates on some WebGPU backends
     progress_callback: (p) => post({ type: "progress", p }),
@@ -54,8 +54,12 @@ async function summarize(id, docMarkdown, maxTokens) {
   const streamer = new TextStreamer(generator.tokenizer, {
     skip_prompt: true,
     skip_special_tokens: true,
+    // Same db2 pattern as the converter's worker: the decoded callback ships text (it fires per decoded
+    // chunk, not per token), the ID callback counts generated tokens (web-ai-showcase-0ly, route 14/40).
+    token_callback_function: (ids) => {
+      count += ids.length;
+    },
     callback_function: (tok) => {
-      count++;
       post({ type: "token", id, token: tok });
     },
   });
