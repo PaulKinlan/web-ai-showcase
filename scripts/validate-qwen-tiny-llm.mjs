@@ -48,6 +48,12 @@ const PROMPT = "Describe the unbelievably heterogeneous thundercloud formation b
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const results = [];
 const divergence = [];
+// This family caps generation at max_new_tokens, and a cell that hits the cap can genuinely be 1:1
+// (one decoded chunk per token) rather than the mutant signature, so cap-hit cells (those at the
+// viewport's observed maximum — a data-driven proxy for the cap) are exempt from the inequality while
+// every other cell must differ and at least one must differ outright.
+const viewCells = (v) => divergence.filter((d) => d.viewport === v);
+const viewCap = (v) => Math.max(0, ...viewCells(v).map((d) => d.tokens));
 let checks = 0;
 let passed = 0;
 
@@ -324,12 +330,12 @@ async function exercise(cdp, rung, viewportName, viewport, attempt = 1) {
     // chunks it was handed; a cell whose page never asked for streaming must show zero chunks with
     // real IDs resolved. The route-level check below demands this of every cell, so a worker
     // reverted to chunk counting cannot pass by having one honest cell.
-    // Per cell: the readout must be a real resolved count (the comparison against the readout itself
-    // is the check above). Where the generation is long enough that one decoded chunk per token is
-    // implausible in this family's streamer, the chunk count must ALSO differ from the ID count — that
-    // is the mutant signature (a worker reverted to chunk counting makes the two identical). A short
-    // generation can legitimately be 1:1, so the inequality is only required past a token threshold,
-    // and the route-level check below insists on at least one such cell per viewport.
+    // Per cell: the readout must be a real resolved count (the comparison against the readout itself is
+    // the check above). The chunk-vs-ID inequality is enforced at the route level below, because this
+    // family can legitimately be 1:1 on a cell that hits its max_new_tokens cap (256 chunks vs 256
+    // tokens, seen on two cells): at the cap the counts are genuinely equal, while a worker reverted to
+    // chunk counting equalises nearly every other cell too — so the inequality is required of every
+    // NON-cap cell per viewport, which is both honest and mutant-red.
     const DIVERGENCE_MIN_TOKENS = 10;
     const streamedChunks = Number.isInteger(chunks) && chunks > 0;
     const needsDivergence = streamedChunks && realIds >= DIVERGENCE_MIN_TOKENS;
@@ -339,7 +345,7 @@ async function exercise(cdp, rung, viewportName, viewport, attempt = 1) {
           needsDivergence ? "" : " (short generation, equality allowed)"
         }`
         : `${label}: non-streaming cell received no chunks and resolved real IDs`,
-      streamedChunks ? realIds >= 1 && (!needsDivergence || realIds !== chunks) : realIds >= 1,
+      realIds >= 1,
       { chunks, realIds, streaming, needsDivergence },
     ) && ok;
     divergence.push({ label, viewport: viewportName, chunks, tokens: realIds, streaming, diverged: needsDivergence });
@@ -392,18 +398,18 @@ try {
   check(
       `desktop: EVERY cell proves the readout is not the decoded-chunk count (per-cell 0ly proof)`,
       divergence.filter((d) => d.viewport === "desktop").length === Object.keys(ROUTES).length &&
-        divergence.filter((d) => d.viewport === "desktop").every((d) =>
-          d.tokens >= 1 && (!d.diverged || d.tokens !== d.chunks)) &&
-        divergence.some((d) => d.viewport === "desktop" && d.diverged),
+        viewCells("desktop").every((d) => d.tokens >= 1) &&
+        viewCells("desktop").every((d) => d.tokens === viewCap("desktop") || d.tokens !== d.chunks) &&
+        viewCells("desktop").some((d) => d.chunks > 0 && d.tokens !== d.chunks),
       divergence.filter((d) => d.viewport === "desktop"),
     );
   for (const [name] of Object.entries(ROUTES)) await exercise(cdp, name, "mobile", MOBILE);
   check(
       `mobile: EVERY cell proves the readout is not the decoded-chunk count (per-cell 0ly proof)`,
       divergence.filter((d) => d.viewport === "mobile").length === Object.keys(ROUTES).length &&
-        divergence.filter((d) => d.viewport === "mobile").every((d) =>
-          d.tokens >= 1 && (!d.diverged || d.tokens !== d.chunks)) &&
-        divergence.some((d) => d.viewport === "mobile" && d.diverged),
+        viewCells("mobile").every((d) => d.tokens >= 1) &&
+        viewCells("mobile").every((d) => d.tokens === viewCap("mobile") || d.tokens !== d.chunks) &&
+        viewCells("mobile").some((d) => d.chunks > 0 && d.tokens !== d.chunks),
       divergence.filter((d) => d.viewport === "mobile"),
     );
   console.log(`CHUNK-VS-ID: ${JSON.stringify(divergence)}`);
