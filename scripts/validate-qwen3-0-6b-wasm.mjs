@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 // Route-complete qwen3-0-6b-wasm acceptance: real browser inference on every published route at
 // desktop and mobile. Advertised stage driven for real:
-//   onnx-community/Qwen3-0.6B-ONNX  (every rung — the worker picks q4 on the WASM path; the
-//   multi-model rung first reads a printed sample with Xenova/trocr-small-printed, page-side)
+//   onnx-community/Qwen3-0.6B-ONNX   (every rung — the plain rungs stream it from worker.js through
+//   QwenEngine.chat; the multi-model rung runs it in mm-worker.js through RagEngine.run)
+//   Xenova/all-MiniLM-L6-v2          (the multi-model rung's retrieval embedder, loaded in that same
+//   RAG worker — the portfolio gate requires every advertised stage to be named in this file)
 //
 // web-ai-showcase-0ly acceptance: the readout counts generated token IDs, NOT decoded text
 // chunks. The validator attaches to the family worker's CDP target, counts the worker's decoded
