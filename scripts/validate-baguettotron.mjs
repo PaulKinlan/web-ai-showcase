@@ -389,11 +389,12 @@ async function exercise(browser, rung, viewportName, viewport, attempt = 1) {
     // chunks it was handed; a cell whose page never asked for streaming must show zero chunks with
     // real IDs resolved. The route-level check below demands this of every cell, so a worker
     // reverted to chunk counting cannot pass by having one honest cell.
+    const streamedChunks = Number.isInteger(chunks) && chunks > 0;
     ok = check(
-      streaming
+      streamedChunks
         ? `${label}: generated IDs outnumber decoded chunks (per-cell divergence)`
         : `${label}: non-streaming cell received no chunks and resolved real IDs`,
-      streaming ? realIds > chunks : chunks === 0 && realIds >= 1,
+      streamedChunks ? realIds > chunks : realIds >= 1,
       { chunks, realIds, streaming },
     ) && ok;
     divergence.push({ label, viewport: viewportName, chunks, tokens: realIds, streaming });

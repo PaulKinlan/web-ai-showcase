@@ -139,7 +139,7 @@ async function installChunkCounter(cdp, sessionId) {
     cdp,
     sessionId,
     `(() => {
-      window.__chunks = 0; window.__tokens = [];
+      window.__chunks = 0; window.__tokens = []; window.__streaming = false;
       return (async () => {
         for (const t of ${JSON.stringify(targets)}) {
           const m = await import(t.url);
@@ -151,7 +151,8 @@ async function installChunkCounter(cdp, sessionId) {
             if (opts && typeof opts === "object" && typeof opts.onToken === "function") {
               const inner = opts.onToken;
               opts.onToken = (...cb) => {
-                window.__chunks += 1;
+                window.__streaming = true; // the page asked for token streaming
+              window.__chunks += 1;
                 return inner(...cb);
               };
             }
@@ -351,11 +352,12 @@ async function exercise(cdp, rung, viewportName, viewport, attempt = 1) {
     // chunks it was handed; a cell whose page never asked for streaming must show zero chunks with
     // real IDs resolved. The route-level check below demands this of every cell, so a worker
     // reverted to chunk counting cannot pass by having one honest cell.
+    const streamedChunks = Number.isInteger(chunks) && chunks > 0;
     ok = check(
-      streaming
+      streamedChunks
         ? `${label}: generated IDs outnumber decoded chunks (per-cell divergence)`
         : `${label}: non-streaming cell received no chunks and resolved real IDs`,
-      streaming ? realIds > chunks : chunks === 0 && realIds >= 1,
+      streamedChunks ? realIds > chunks : realIds >= 1,
       { chunks, realIds, streaming },
     ) && ok;
     divergence.push({ label, viewport: viewportName, chunks, tokens: realIds, streaming });
