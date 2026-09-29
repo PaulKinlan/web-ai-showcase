@@ -3,10 +3,10 @@
 // (createEngine / streamChat) so every WebLLM page shares one verified code path. WebLLM is
 // WebGPU-ONLY — the page gates on webGPUAdapterAvailable() before it ever asks us to load.
 
-import { createEngine, streamChat } from "/web-ai-showcase/lib/webllm.js";
+import { createEngine, retryPlan, streamChat } from "/web-ai-showcase/lib/webllm.js";
 
-const MODEL_ID = "Llama-3.2-1B-Instruct-q4f16_1-MLC";
 let engine = null;
+let loadRaceRetries = 0;
 
 function post(msg) {
   self.postMessage(msg);
@@ -14,10 +14,24 @@ function post(msg) {
 
 async function ensureLoaded() {
   if (engine) return;
-  engine = await createEngine({
-    model: MODEL_ID,
-    onProgress: (p) => post({ type: "progress", p }),
-  });
+  // The MLC weight-load path can lose the WebGPU buffer-mapping race (web-ai-showcase-w03); retry it
+  // through the narrow, tested policy and make the attempt count visible.
+  const ATTEMPTS = 3;
+  for (let attempt = 1; attempt <= ATTEMPTS; attempt++) {
+    try {
+      engine = await createEngine({
+        model: "Llama-3.2-1B-Instruct-q4f16_1-MLC",
+        onProgress: (p) => post({ type: "progress", p }),
+      });
+      break;
+    } catch (err) {
+      const plan = retryPlan(err, attempt, { attempts: ATTEMPTS });
+      if (!plan.retry) throw err;
+      loadRaceRetries += 1;
+      post({ type: "progress", p: { text: `engine load lost a GPU race — retry ${loadRaceRetries} of ${ATTEMPTS - 1}` } });
+      await new Promise((resolve) => setTimeout(resolve, 500 * attempt));
+    }
+  }
   post({ type: "ready" });
 }
 
@@ -26,6 +40,10 @@ async function run(id, req) {
   const t0 = performance.now();
   let ttft = null;
   let chunks = 0;
+  // The completion's OWN token count (web-ai-showcase-0ly): deltas are visible chunks, so the
+  // readouts use this while `chunks` stays for the live rate.
+  let tokens = null;
+  let generationRaceRetries = 0;
 
   const text = await streamChat(engine, req, (delta) => {
     if (ttft === null) {
@@ -34,6 +52,11 @@ async function run(id, req) {
     }
     chunks++;
     post({ type: "token", id, delta });
+  }, (usage) => {
+    if (typeof usage?.completion_tokens === "number") tokens = usage.completion_tokens;
+  }, (retries) => {
+    generationRaceRetries = retries;
+    post({ type: "progress", p: { text: `generation lost a GPU race — retry ${retries} (the failed attempt streamed nothing)` } });
   });
 
   const ms = Math.round(performance.now() - t0);
@@ -53,7 +76,10 @@ async function run(id, req) {
     ms,
     ttft: ttft === null ? ms : Math.round(ttft),
     chunks,
+    tokens,
     stats,
+    loadRaceRetries,
+    generationRaceRetries,
   });
 }
 
