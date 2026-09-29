@@ -39,10 +39,7 @@ const startCommit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repoRoot, 
 if (WRITE_RUN) rmSync(RUN_RECORD, { force: true });
 
 const ROUTES = {
-  overview: "models/olmo-2-webllm/",
-  basics: "models/olmo-2-webllm/basics/",
   practical: "models/olmo-2-webllm/practical/",
-  wild: "models/olmo-2-webllm/wild/",
   multimodel: "models/olmo-2-webllm/multi-model/",
 };
 // Per rung: which control starts a generation, which text input (if any) carries the prompt, which
