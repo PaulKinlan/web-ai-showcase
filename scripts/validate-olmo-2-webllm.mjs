@@ -58,8 +58,11 @@ const RUNGS = {
     tok: ["#sGen"],
     prompt: "Explain what a large language model is in two sentences. End with one emoji.",
     busy: "document.querySelector('#send')?.disabled === true",
+    // Every rung of this family signals completion through #status ("Done." / a failed line); the
+    // overview, practical and multi-model pages have no #readout element, so a readout-based wait
+    // never resolves and the cell burns its whole deadline after the answer has arrived.
     done:
-      "document.querySelector('#readout')?.hidden === false || /failed/i.test(document.querySelector('#status')?.textContent || '')",
+      "/^(Done|Failed|Generation failed)/.test(document.querySelector('#status')?.textContent || '')",
   },
   basics: {
     trigger: "#send",
@@ -67,8 +70,11 @@ const RUNGS = {
     tok: ["#rTok"],
     prompt: "What is a token, in one sentence? Add one emoji at the end.",
     busy: "document.querySelector('#send')?.disabled === true",
+    // Every rung of this family signals completion through #status ("Done." / a failed line); the
+    // overview, practical and multi-model pages have no #readout element, so a readout-based wait
+    // never resolves and the cell burns its whole deadline after the answer has arrived.
     done:
-      "document.querySelector('#readout')?.hidden === false || /failed/i.test(document.querySelector('#status')?.textContent || '')",
+      "/^(Done|Failed|Generation failed)/.test(document.querySelector('#status')?.textContent || '')",
   },
   // The practical rung extracts JSON from its own preloaded sample and shows rates only.
   practical: {
@@ -77,8 +83,11 @@ const RUNGS = {
     tok: null,
     prompt: null,
     busy: "document.querySelector('#run')?.disabled === true",
+    // Every rung of this family signals completion through #status ("Done." / a failed line); the
+    // overview, practical and multi-model pages have no #readout element, so a readout-based wait
+    // never resolves and the cell burns its whole deadline after the answer has arrived.
     done:
-      "document.querySelector('#readout')?.hidden === false || /failed/i.test(document.querySelector('#status')?.textContent || '')",
+      "/^(Done|Failed|Generation failed)/.test(document.querySelector('#status')?.textContent || '')",
   },
   // The wild rung runs a cold and a hot pass and labels each column "N tok · X tok/s", so BOTH tags
   // are count readouts and their sum must equal the two generations' resolved usage.
@@ -88,7 +97,8 @@ const RUNGS = {
     tok: ["#tagCold", "#tagHot"],
     prompt: null,
     busy: "document.querySelector('#run')?.disabled === true",
-    done: "/^Done/.test(document.querySelector('#status')?.textContent || '')",
+    done:
+      "/^(Done|Failed|Generation failed)/.test(document.querySelector('#status')?.textContent || '')",
   },
   // Two advertised stages: an embedder retrieves, then the wrapped WebLLM chat answers from the
   // passages. The cell proves both stages ran AND the chat stage's chunk-vs-usage divergence.
@@ -100,8 +110,11 @@ const RUNGS = {
     multimodel: true,
     deadlineMs: 1_800_000,
     busy: "document.querySelector('#ask')?.disabled === true",
+    // Every rung of this family signals completion through #status ("Done." / a failed line); the
+    // overview, practical and multi-model pages have no #readout element, so a readout-based wait
+    // never resolves and the cell burns its whole deadline after the answer has arrived.
     done:
-      "document.querySelector('#readout')?.hidden === false || /failed/i.test(document.querySelector('#status')?.textContent || '')",
+      "/^(Done|Failed|Generation failed)/.test(document.querySelector('#status')?.textContent || '')",
   },
 };
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
