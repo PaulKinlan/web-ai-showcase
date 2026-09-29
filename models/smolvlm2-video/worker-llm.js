@@ -5,7 +5,6 @@
 
 import { TRANSFORMERS_URL } from "/web-ai-showcase/lib/webai.js";
 
-const MODEL_ID = "onnx-community/Qwen2.5-0.5B-Instruct";
 let generator = null;
 let mod = null;
 
@@ -28,7 +27,7 @@ async function ensureLoaded() {
   if (generator) return;
   mod = await import(TRANSFORMERS_URL);
   const { pipeline } = mod;
-  generator = await pipeline("text-generation", MODEL_ID, {
+  generator = await pipeline("text-generation", "onnx-community/Qwen2.5-0.5B-Instruct", {
     device: "webgpu",
     dtype: "q4f16",
     progress_callback: (p) => post({ type: "progress", p }),
@@ -61,9 +60,12 @@ async function narrate(id, captions, style, maxTokens) {
   const streamer = new TextStreamer(generator.tokenizer, {
     skip_prompt: true,
     skip_special_tokens: true,
+    // Count the generated IDs, not the decoded chunks (web-ai-showcase-0ly; db2).
+    token_callback_function: (ids) => {
+      count += ids.length;
+    },
     callback_function: (tok) => {
-      count++;
-      post({ type: "token", id, token: tok });
+      post({ type: "token", id, token: tok, tokens: count });
     },
   });
   await generator(messages, { max_new_tokens: maxTokens ?? 200, do_sample: false, streamer });

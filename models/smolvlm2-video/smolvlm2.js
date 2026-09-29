@@ -54,7 +54,11 @@ export class SmolVLM2Engine {
         }
         break;
       case "token":
-        if (this._active && this._active.id === msg.id) this._active.onToken?.(msg.token, msg.t);
+        if (this._active && this._active.id === msg.id) {
+          // The 3rd arg is the RUNNING GENERATED-ID count (web-ai-showcase-0ly); the token text is
+          // a decoded chunk, and the two numbers differ by construction.
+          this._active.onToken?.(msg.token, msg.t, msg.tokens);
+        }
         break;
       case "done":
         if (this._active && this._active.id === msg.id) {
