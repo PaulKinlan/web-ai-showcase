@@ -105,13 +105,22 @@ async function run(id, req) {
         return;
       }
       generationRaceRetries += 1;
+      // A wedged engine does not heal by re-calling it: the race leaves its buffers unusable, so the
+      // retry gets a REBUILT engine (fresh MLC instance, fresh GPU buffers) rather than the same one.
+      try {
+        await engine?.unload?.();
+      } catch {
+        // unloading is best-effort; a failed unload must not block the rebuild
+      }
+      engine = null;
       post({
         type: "progress",
         p: {
           text:
-            `generation lost a GPU race — retry ${generationRaceRetries} of ${GENERATION_ATTEMPTS - 1} (the failed attempt streamed nothing)`,
+            `generation lost a GPU race — rebuilding the engine and retrying (${generationRaceRetries} of ${GENERATION_ATTEMPTS - 1})`,
         },
       });
+      await ensureLoaded();
       await new Promise((resolve) => setTimeout(resolve, 500 * generationRaceRetries));
     }
   }
