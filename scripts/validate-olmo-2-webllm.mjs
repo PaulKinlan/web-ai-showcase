@@ -616,7 +616,26 @@ async function exercise(cdp, rung, viewportName, viewport, attempt = 1) {
       );
     } else {
       ok = false;
-      check(`${label}: route completed`, false, error.stack || error.message);
+      // The retry evidence must survive a FAILED cell too: the worker's race retries are visible in
+      // the page loader's progress text and in #status, and a failed cell is exactly when a reader
+      // needs to know whether the fix tried. Capture both before reporting the failure.
+      const retryTrace = await evalJSON(
+        cdp,
+        page.sessionId,
+        `JSON.stringify({
+          status: (document.querySelector('#status')?.textContent ?? '').trim().slice(0, 200),
+          loaders: [...document.querySelectorAll('#model-loader, #minilm-loader, #olmo-loader')]
+            .map((el) => (el.textContent ?? '').trim().replace(/\s+/g, ' ').slice(0, 160))
+            .filter(Boolean),
+        })`,
+      ).catch(() => null);
+      check(
+        `${label}: route completed`,
+        false,
+        `${error.stack || error.message}${
+          retryTrace ? ` | page: ${JSON.stringify(retryTrace)}` : ""
+        }`,
+      );
     }
   } finally {
     if (!retry) results.push({ route, viewport: viewportName, pass: ok });
