@@ -14,7 +14,6 @@
 
 import { TRANSFORMERS_URL } from "/web-ai-showcase/lib/webai.js";
 
-const MODEL_ID = "onnx-community/glm-edge-1.5b-chat-ONNX";
 let generator = null;
 let mod = null;
 let loadedDevice = null;
@@ -44,8 +43,8 @@ async function ensureLoaded(device, dtype) {
   const { pipeline } = mod;
   const dev = device === "wasm" ? "wasm" : "webgpu";
   const dt = dtype ?? (dev === "wasm" ? "q4" : "q4f16");
-  console.log(`[glm worker] loading ${MODEL_ID} on ${dev} (${dt})`);
-  generator = await pipeline("text-generation", MODEL_ID, {
+  console.log(`[glm worker] loading onnx-community/glm-edge-1.5b-chat-ONNX on ${dev} (${dt})`);
+  generator = await pipeline("text-generation", "onnx-community/glm-edge-1.5b-chat-ONNX", {
     device: dev,
     dtype: dt,
     progress_callback: (p) => post({ type: "progress", p }),
@@ -72,13 +71,18 @@ async function chat(id, messages, opts) {
   const streamer = new TextStreamer(generator.tokenizer, {
     skip_prompt: true,
     skip_special_tokens: true,
+    // TextStreamer buffers decoded words, so callback_function fires per VISIBLE CHUNK, not per
+    // generated token. Count the generated IDs instead (prompt excluded, special generated IDs
+    // included), then attach that count to each visible text chunk (web-ai-showcase-0ly; db2).
+    token_callback_function: (ids) => {
+      count += ids.length;
+    },
     callback_function: (token) => {
       if (ttft === null) {
         ttft = performance.now() - t0;
         post({ type: "first", id, t: ttft });
       }
-      count++;
-      post({ type: "token", id, token, t: performance.now() - t0 });
+      post({ type: "token", id, token, tokens: count, t: performance.now() - t0 });
     },
   });
 
