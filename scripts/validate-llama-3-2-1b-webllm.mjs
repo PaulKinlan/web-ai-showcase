@@ -72,7 +72,13 @@ const RUNGS = {
   },
   practical: {
     trigger: "#run",
-    input: "#src",
+    // Multi-input rung: the page extracts the declared fields from the source text, and refuses
+    // without both.
+    inputs: {
+      "#src":
+        "The harbour was quiet at dawn. A small blue boat bobbed beside the pier, its paint faded but bright against the grey water.",
+      "#schema": "colour\nobject",
+    },
     tok: null,
     prompt: null,
     busy: "document.querySelector('#run')?.disabled === true",
@@ -359,6 +365,18 @@ async function drive(cdp, sid, label, cfg) {
       cdp,
       sid,
       `(() => {
+        const declared = ${JSON.stringify(cfg.inputs ?? null)};
+        if (declared) {
+          let filled = 0;
+          for (const [sel, value] of Object.entries(declared)) {
+            const box = document.querySelector(sel);
+            if (!box) continue;
+            box.value = value;
+            box.dispatchEvent(new Event('input', { bubbles: true }));
+            filled++;
+          }
+          if (filled === 0) return "no-input";
+        }
         const el = ${cfg.input ? `document.querySelector('${cfg.input}')` : "null"};
         if (${cfg.input ? "true" : "false"} && !el) return "no-input";
         if (el && ${JSON.stringify(prompt)} !== null) {
