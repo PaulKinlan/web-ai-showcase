@@ -8,9 +8,6 @@
 
 import { loadPipeline, TRANSFORMERS_URL } from "/web-ai-showcase/lib/webai.js";
 
-const EMBED_ID = "Xenova/multilingual-e5-small";
-const GEN_ID = "onnx-community/glm-edge-1.5b-chat-ONNX";
-
 let embedPipe = null;
 let generator = null;
 let mod = null;
@@ -26,7 +23,9 @@ async function ensureLoaded() {
     post({ type: "stage", stage: "Loading multilingual E5 retriever…" });
     const e = await loadPipeline({
       task: "feature-extraction",
-      model: EMBED_ID,
+      // The stage is named as a STRING LITERAL at its loader call site (portfolio convention:
+      // stages stay statically extractable) rather than through a constant (web-ai-showcase-0ly).
+      model: "Xenova/multilingual-e5-small",
       backend: "wasm",
       dtype: "q8",
       onProgress: (p) => post({ type: "progress", p }),
@@ -36,7 +35,7 @@ async function ensureLoaded() {
   if (!generator) {
     post({ type: "stage", stage: "Loading GLM-Edge generator (WebGPU)…" });
     mod = await import(TRANSFORMERS_URL);
-    generator = await mod.pipeline("text-generation", GEN_ID, {
+    generator = await mod.pipeline("text-generation", "onnx-community/glm-edge-1.5b-chat-ONNX", {
       device: "webgpu",
       dtype: "q4f16",
       progress_callback: (p) => post({ type: "progress", p }),
@@ -92,10 +91,15 @@ async function run(id, query, passages, topK) {
   const user = `Context:\n${context}\n\nQuestion: ${query}`;
   const messages = [{ role: "system", content: sys }, { role: "user", content: user }];
 
+  let genCount = 0;
   const streamer = new mod.TextStreamer(generator.tokenizer, {
     skip_prompt: true,
     skip_special_tokens: true,
-    callback_function: (token) => post({ type: "token", id, token }),
+    // Count generated IDs, not decoded chunks (web-ai-showcase-0ly; db2).
+    token_callback_function: (ids) => {
+      genCount += ids.length;
+    },
+    callback_function: (token) => post({ type: "token", id, token, tokens: genCount }),
   });
   const out = await generator(messages, {
     max_new_tokens: 320,
