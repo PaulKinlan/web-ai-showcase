@@ -39,7 +39,10 @@ const startCommit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repoRoot, 
 if (WRITE_RUN) rmSync(RUN_RECORD, { force: true });
 
 const ROUTES = {
+  overview: "models/olmo-2-webllm/",
+  basics: "models/olmo-2-webllm/basics/",
   practical: "models/olmo-2-webllm/practical/",
+  wild: "models/olmo-2-webllm/wild/",
   multimodel: "models/olmo-2-webllm/multi-model/",
 };
 // Per rung: which control starts a generation, which text input (if any) carries the prompt, which
@@ -103,7 +106,9 @@ const RUNGS = {
     trigger: "#ask",
     input: "#q",
     tok: null,
-    prompt: "Which passage answers the question?",
+    prompt: "What colour is the boat?",
+    corpus:
+      "The harbour was quiet at dawn. A small blue boat bobbed beside the pier, its paint faded but bright against the grey water. The ferry would leave at noon. Sailors checked the ropes and talked about the wind. By evening the harbour was empty again.",
     multimodel: true,
     deadlineMs: 1_800_000,
     stallBudgetMs: 600_000,
@@ -374,6 +379,11 @@ async function drive(cdp, sid, label, cfg) {
           el.value = ${JSON.stringify(prompt)};
           el.dispatchEvent(new Event('input', { bubbles: true }));
         }
+        const corpusEl = ${cfg.corpus ? "document.querySelector('#corpus')" : "null"};
+        if (corpusEl) {
+          corpusEl.value = ${JSON.stringify(cfg.corpus ?? "")};
+          corpusEl.dispatchEvent(new Event("input", { bubbles: true }));
+        }
         const btn = document.querySelector('${cfg.trigger}');
         if (!btn || btn.disabled) return "no-trigger";
         btn.click();
@@ -453,7 +463,7 @@ async function exercise(cdp, rung, viewportName, viewport, attempt = 1) {
         ok;
       ok = check(
         `${label}: stage 2 (OLMo via WebLLM) answered from them`,
-        stages.answer.length > 3,
+        stages.answer.length > 3 && !/^\s*Failed/i.test(stages.answer),
         stages,
       ) && ok;
     }
