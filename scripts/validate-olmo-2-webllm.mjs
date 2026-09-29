@@ -39,10 +39,6 @@ const startCommit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repoRoot, 
 if (WRITE_RUN) rmSync(RUN_RECORD, { force: true });
 
 const ROUTES = {
-  overview: "models/olmo-2-webllm/",
-  basics: "models/olmo-2-webllm/basics/",
-  practical: "models/olmo-2-webllm/practical/",
-  wild: "models/olmo-2-webllm/wild/",
   multimodel: "models/olmo-2-webllm/multi-model/",
 };
 // Per rung: which control starts a generation, which text input (if any) carries the prompt, which
@@ -257,7 +253,8 @@ async function installChunkCounter(cdp, sessionId) {
             // its own cap is recognised as an honest 1:1 rather than as the mutant.
             window.__maxTokens = Number(opts.maxTokens);
           }
-          if (opts && typeof opts === "object" && typeof opts.onToken === "function") {
+          window.__raceRetries = 0;
+        if (opts && typeof opts === "object" && typeof opts.onToken === "function") {
             const inner = opts.onToken;
             opts.onToken = (...cb) => {
               window.__streaming = true; // the page asked for token streaming
@@ -270,6 +267,8 @@ async function installChunkCounter(cdp, sessionId) {
             result.then((res) => {
               window.__tokens = window.__tokens ?? [];
               window.__tokens.push(Number(res?.tokens ?? 0));
+              window.__raceRetries = (window.__raceRetries ?? 0) +
+                Number(res?.loadRaceRetries ?? 0) + Number(res?.generationRaceRetries ?? 0);
             });
           }
           return result;
@@ -457,6 +456,7 @@ async function exercise(cdp, rung, viewportName, viewport, attempt = 1) {
         `JSON.stringify({
           retrieved: [...document.querySelectorAll('#retrieved > div, #retrieved li, #retrieved .chunk')].filter((el) => el.textContent.trim().length > 0).length,
           answer: (document.querySelector('#answer')?.textContent ?? '').trim(),
+          status: (document.querySelector('#status')?.textContent ?? '').trim().slice(0, 200),
         })`,
       );
       ok = check(`${label}: stage 1 (MiniLM) retrieved passages`, stages.retrieved >= 1, stages) &&
@@ -485,6 +485,7 @@ async function exercise(cdp, rung, viewportName, viewport, attempt = 1) {
         streaming: window.__streaming === true,
         maxTokens: window.__maxTokens ?? null,
         tokenIds: window.__tokens ?? [],
+        raceRetries: window.__raceRetries ?? 0,
       })`,
     );
     const chunks = proof.chunks;
@@ -546,6 +547,12 @@ async function exercise(cdp, rung, viewportName, viewport, attempt = 1) {
       divergenceProved && realIds >= 1,
       { chunks, realIds, streaming, needsDivergence },
     ) && ok;
+    if (Number(proof.raceRetries ?? 0) > 0) {
+      // Legible, not hidden: a cell that only produced its numbers after losing GPU races says so.
+      console.log(
+        `  [${label}] this cell needed ${proof.raceRetries} GPU-race retry(ies) before it streamed`,
+      );
+    }
     divergence.push({
       label,
       viewport: viewportName,
@@ -553,6 +560,7 @@ async function exercise(cdp, rung, viewportName, viewport, attempt = 1) {
       tokens: realIds,
       streaming,
       diverged: needsDivergence,
+      raceRetries: Number(proof.raceRetries ?? 0),
       maxTokens: Number.isFinite(Number(proof.maxTokens)) ? Number(proof.maxTokens) : null,
     });
     const hygiene = await evalJSON(

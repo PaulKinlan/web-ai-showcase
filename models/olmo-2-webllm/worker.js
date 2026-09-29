@@ -13,8 +13,10 @@
 // without a WebGPU adapter the page's gate stops us before load, and no token is synthesised.
 
 import { createEngine } from "/web-ai-showcase/lib/webllm.js";
+import { retryPlan } from "/web-ai-showcase/lib/webllm-race-policy.mjs";
 
 let engine = null;
+let loadRaceRetries = 0;
 
 function post(msg) {
   self.postMessage(msg);
@@ -23,10 +25,30 @@ function post(msg) {
 async function ensureLoaded() {
   if (engine) return;
   console.log(`[olmo-2 worker] creating MLC engine for OLMo-2-0425-1B-Instruct-q4f16_1-MLC`);
-  engine = await createEngine({
-    model: "OLMo-2-0425-1B-Instruct-q4f16_1-MLC",
-    onProgress: (p) => post({ type: "progress", p }),
-  });
+  // The MLC weight-load path can lose a WebGPU buffer-mapping race
+  // ('mapAsync … Buffer was unmapped before mapping was resolved') and that REJECTS the whole engine
+  // load, leaving the page at "Failed." — a browser-level race above this page (web-ai-showcase-w03,
+  // ~50% of loads for the RAG rung, seen across families). Retry the creation a bounded number of
+  // times; every other error propagates unchanged, so a real load failure is still a load failure.
+  const ATTEMPTS = 3;
+  for (let attempt = 1; attempt <= ATTEMPTS; attempt++) {
+    try {
+      engine = await createEngine({
+        model: "OLMo-2-0425-1B-Instruct-q4f16_1-MLC",
+        onProgress: (p) => post({ type: "progress", p }),
+      });
+      break;
+    } catch (err) {
+      const plan = retryPlan(err, attempt, { attempts: ATTEMPTS });
+      if (!plan.retry) throw err;
+      loadRaceRetries += 1;
+      post({
+        type: "progress",
+        p: { text: `engine load lost a GPU race — retry ${loadRaceRetries} of ${ATTEMPTS - 1}` },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 500 * attempt));
+    }
+  }
   console.log(`[olmo-2 worker] engine ready`);
   post({ type: "ready" });
 }
@@ -34,35 +56,64 @@ async function ensureLoaded() {
 async function run(id, req) {
   await ensureLoaded();
   const { messages, temperature, top_p, max_tokens } = req;
-  const t0 = performance.now();
+  const GENERATION_ATTEMPTS = 3;
+  let generationRaceRetries = 0;
   let ttft = null;
   let chunks = 0;
   // The completion's OWN token count (web-ai-showcase-0ly): deltas are visible chunks, so the
   // readouts use this while `chunks` stays for the live rate. WebLLM is OpenAI-compatible and emits
   // a final chunk carrying `usage` when stream_options.include_usage is requested.
   let tokens = null;
+  let t0 = performance.now();
 
-  const stream = await engine.chat.completions.create({
-    messages,
-    temperature,
-    top_p,
-    max_tokens,
-    stream: true,
-    stream_options: { include_usage: true },
-  });
+  for (let attempt = 1;; attempt++) {
+    ttft = null;
+    chunks = 0;
+    tokens = null;
+    t0 = performance.now();
+    try {
+      const stream = await engine.chat.completions.create({
+        messages,
+        temperature,
+        top_p,
+        max_tokens,
+        stream: true,
+        stream_options: { include_usage: true },
+      });
 
-  for await (const chunk of stream) {
-    const delta = chunk.choices?.[0]?.delta?.content ?? "";
-    if (chunk.usage && typeof chunk.usage.completion_tokens === "number") {
-      tokens = chunk.usage.completion_tokens;
+      for await (const chunk of stream) {
+        const delta = chunk.choices?.[0]?.delta?.content ?? "";
+        if (chunk.usage && typeof chunk.usage.completion_tokens === "number") {
+          tokens = chunk.usage.completion_tokens;
+        }
+        if (!delta) continue;
+        if (ttft === null) {
+          ttft = performance.now() - t0;
+          post({ type: "first", id, t: Math.round(ttft) });
+        }
+        chunks++;
+        post({ type: "token", id, delta });
+      }
+      break;
+    } catch (err) {
+      // Only the known GPU race, only when this attempt streamed NOTHING (the policy enforces both):
+      // a retry after partial output would duplicate text the reader has already seen, and any other
+      // error must fail on the first attempt rather than being swallowed.
+      const plan = retryPlan(err, attempt, { attempts: GENERATION_ATTEMPTS, emitted: chunks > 0 });
+      if (!plan.retry) {
+        post({ type: "error", id, message: String(err?.message ?? err) });
+        return;
+      }
+      generationRaceRetries += 1;
+      post({
+        type: "progress",
+        p: {
+          text:
+            `generation lost a GPU race — retry ${generationRaceRetries} of ${GENERATION_ATTEMPTS - 1} (the failed attempt streamed nothing)`,
+        },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 500 * generationRaceRetries));
     }
-    if (!delta) continue;
-    if (ttft === null) {
-      ttft = performance.now() - t0;
-      post({ type: "first", id, t: Math.round(ttft) });
-    }
-    chunks++;
-    post({ type: "token", id, delta });
   }
 
   const ms = Math.round(performance.now() - t0);
@@ -80,6 +131,10 @@ async function run(id, req) {
     chunks,
     tokens,
     stats,
+    // VISIBLE retries: a cell that only passed after losing races must be legible as such in the run
+    // evidence (coord, w03), never indistinguishable from a clean first-try pass.
+    loadRaceRetries,
+    generationRaceRetries,
   });
 }
 
