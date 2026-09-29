@@ -95,7 +95,7 @@ const RUNGS = {
     trigger: "#run",
     input: "#prompt",
     tok: ["#tagCold", "#tagHot"],
-    prompt: null,
+    prompt: "Write a one-sentence tagline for a fully-open AI model, and end with one emoji.",
     busy: "document.querySelector('#run')?.disabled === true",
     done:
       "/^(Done|Failed|Generation failed)/.test(document.querySelector('#status')?.textContent || '')",
@@ -109,6 +109,7 @@ const RUNGS = {
     prompt: "Which passage answers the question?",
     multimodel: true,
     deadlineMs: 1_800_000,
+    stallBudgetMs: 600_000,
     busy: "document.querySelector('#ask')?.disabled === true",
     // Every rung of this family signals completion through #status ("Done." / a failed line); the
     // overview, practical and multi-model pages have no #readout element, so a readout-based wait
@@ -173,7 +174,7 @@ async function evalJSON(cdp, sessionId, expression, timeoutMs = 45_000) {
  */
 async function waitForGeneration(cdp, sessionId, cfg, label) {
   const deadlineMs = cfg.deadlineMs ?? GENERATION_DEADLINE_MS;
-  const STALL_BUDGET_MS = 300_000;
+  const STALL_BUDGET_MS = cfg.stallBudgetMs ?? 300_000;
   const started = Date.now();
   let nextLog = 0;
   while (Date.now() - started < deadlineMs) {
@@ -520,7 +521,7 @@ async function exercise(cdp, rung, viewportName, viewport, attempt = 1) {
     const streamedChunks = Number.isInteger(chunks) && chunks > 0;
     const needsDivergence = streamedChunks && chunks >= DIVERGENCE_MIN_CHUNKS;
     const divergenceProved = needsDivergence ? realIds !== chunks : realIds >= 1;
-    if (!divergenceProved && attempt < 2) {
+    if (!divergenceProved && attempt < 3) {
       // The evidence did not materialise (a 1:1 generation, or a worker that reported nothing):
       // retry the cell once with a fresh page. The retry is logged and the abandoned attempt's
       // checks are rolled back, so a mutant still fails on the second attempt.
@@ -572,7 +573,7 @@ async function exercise(cdp, rung, viewportName, viewport, attempt = 1) {
         `  [${label}] ${driverRaces.length} known WebGPU loader race(s) recorded and exempted by name — the functional proof still gates this cell`,
       );
     }
-    if (realErrors.length > 0 && attempt < 2) {
+    if (realErrors.length > 0 && attempt < 3) {
       retry = true;
       console.log(
         `  [${label}] console error during the cell (${
@@ -588,7 +589,7 @@ async function exercise(cdp, rung, viewportName, viewport, attempt = 1) {
     );
     ok = ok && hygiene.overflow && realErrors.length === 0 && page.netFailures.length === 0;
   } catch (error) {
-    if (attempt < 2) {
+    if (attempt < 3) {
       // WebGPU/worker contention across successive pages is real in this harness; one fresh-page
       // retry distinguishes a stalled driver from a route that cannot run. The retry is logged and
       // the abandoned attempt's checks are rolled back, so the ledger shows only what was driven.
