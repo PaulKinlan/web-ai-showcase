@@ -20,7 +20,6 @@
 
 import { TRANSFORMERS_URL } from "/web-ai-showcase/lib/webai.js";
 
-const MODEL_ID = "onnx-community/Phi-3.5-vision-instruct";
 const MAX_SIDE = 1344; // bound vision tokens/memory for a single image (4 × 336 crop base)
 const MULTI_SIDE = 756; // common square for multi-image turns so per-image token counts match
 let processor = null;
@@ -49,11 +48,13 @@ async function ensureLoaded() {
   if (model) return;
   mod = await import(TRANSFORMERS_URL);
   const { AutoProcessor, Phi3VForCausalLM } = mod;
-  console.log(`[phi-3.5-vision worker] loading ${MODEL_ID} on webgpu (all sessions q4f16)`);
-  processor = await AutoProcessor.from_pretrained(MODEL_ID, {
+  console.log(
+    `[phi-3.5-vision worker] loading onnx-community/Phi-3.5-vision-instruct on webgpu (all sessions q4f16)`,
+  );
+  processor = await AutoProcessor.from_pretrained("onnx-community/Phi-3.5-vision-instruct", {
     progress_callback: (p) => post({ type: "progress", p }),
   });
-  model = await Phi3VForCausalLM.from_pretrained(MODEL_ID, {
+  model = await Phi3VForCausalLM.from_pretrained("onnx-community/Phi-3.5-vision-instruct", {
     dtype: {
       vision_encoder: "q4f16",
       prepare_inputs_embeds: "q4f16",
@@ -119,9 +120,14 @@ async function run(id, imageURLs, prompt, maxTokens) {
   const streamer = new TextStreamer(processor.tokenizer, {
     skip_prompt: true,
     skip_special_tokens: true,
+    // TextStreamer buffers decoded words, so callback_function fires per VISIBLE CHUNK, not per
+    // generated token. Count the generated IDs instead (prompt excluded, special generated IDs
+    // included), then attach that count to each visible text chunk (web-ai-showcase-0ly; db2).
+    token_callback_function: (ids) => {
+      count += ids.length;
+    },
     callback_function: (tok) => {
-      count++;
-      post({ type: "token", id, token: tok, t: performance.now() - t0 });
+      post({ type: "token", id, token: tok, tokens: count, t: performance.now() - t0 });
     },
   });
 
