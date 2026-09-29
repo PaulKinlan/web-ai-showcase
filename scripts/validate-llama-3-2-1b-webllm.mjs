@@ -496,6 +496,13 @@ async function exercise(cdp, rung, viewportName, viewport, attempt = 1) {
         maxTokens: window.__maxTokens ?? null,
         tokenIds: window.__tokens ?? [],
         raceRetries: window.__raceRetries ?? 0,
+        pageTrace: {
+          status: (document.querySelector('#status')?.textContent ?? '').trim().slice(0, 200),
+          out: (document.querySelector('#out')?.textContent ?? '').trim().slice(0, 200),
+          bubble: [...document.querySelectorAll('.msg.assistant .bubble, .bubble')].map((el) => (el.textContent ?? '').trim()).filter(Boolean).slice(-1)[0]?.slice(0, 200) ?? '',
+          runDisabled: document.querySelector('#run')?.disabled ?? null,
+          runExists: !!document.querySelector('#run'),
+        },
       })`,
     );
     const chunks = proof.chunks;
@@ -505,7 +512,9 @@ async function exercise(cdp, rung, viewportName, viewport, attempt = 1) {
     ok = check(
       `${label}: page counted decoded chunks through the engine wrap`,
       Number.isInteger(chunks) && chunks >= 1,
-      { chunks },
+      Number.isInteger(chunks) && chunks >= 1
+        ? { chunks }
+        : { chunks, silentNoOp: proof.pageTrace },
     ) && ok;
     ok = check(
       `${label}: generation resolved real generated token-ID counts`,
