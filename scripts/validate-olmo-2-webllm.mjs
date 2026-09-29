@@ -149,6 +149,50 @@ async function evalJSON(cdp, sessionId, expression, timeoutMs = 45_000) {
   return typeof value === "string" ? JSON.parse(value) : value;
 }
 
+/**
+ * Wait for a cell's generation to finish, and FAIL FAST when it never starts streaming.
+ *
+ * A cold WebLLM engine sometimes accepts the request and then delivers nothing at all: no deltas, no
+ * console error, no page status — the GPU sits idle while the per-cell deadline burns. That is a
+ * driver/engine stall, not a slow generation, so an attempt with no delta inside STALL_BUDGET_MS is
+ * thrown as a stall and the caller's logged fresh-page retry handles it. A generation that HAS started
+ * streaming keeps the rung's full budget.
+ */
+async function waitForGeneration(cdp, sessionId, cfg, label) {
+  const deadlineMs = cfg.deadlineMs ?? GENERATION_DEADLINE_MS;
+  const STALL_BUDGET_MS = 120_000;
+  const started = Date.now();
+  let nextLog = 0;
+  while (Date.now() - started < deadlineMs) {
+    const state = await evalJSON(
+      cdp,
+      sessionId,
+      `JSON.stringify({ done: (${cfg.done}), chunks: window.__chunks ?? 0 })`,
+    ).catch(() => null);
+    if (state?.done) return;
+    const elapsed = Date.now() - started;
+    if (!state || state.chunks === 0) {
+      if (elapsed > STALL_BUDGET_MS) {
+        throw new Error(
+          `${label}: the engine delivered no deltas within ${
+            STALL_BUDGET_MS / 1000
+          }s — a stalled generation, not a slow one`,
+        );
+      }
+    }
+    if (elapsed >= nextLog) {
+      console.log(
+        `  [${label} generation] waiting ${Math.round(elapsed / 1000)}s (chunks=${
+          state?.chunks ?? "?"
+        })`,
+      );
+      nextLog = elapsed + 30_000;
+    }
+    await sleep(5_000);
+  }
+  throw new Error(`hard timeout after ${deadlineMs}ms: ${label} generation`);
+}
+
 async function waitFor(cdp, sessionId, expression, deadlineMs, label, intervalMs = 4_000) {
   const started = Date.now();
   let nextLog = 0;
@@ -363,16 +407,7 @@ async function exercise(cdp, rung, viewportName, viewport, attempt = 1) {
     // handled inside drive(), which re-does the act whenever the trigger is disabled — a
     // first-visit service-worker reload can wipe the sampled state between attempts.
     await drive(cdp, page.sessionId, label, cfg);
-    await waitFor(
-      cdp,
-      page.sessionId,
-      `(() => (${cfg.done}))()`,
-      // CPU-WASM pipelines are slow: a rung may declare its own budget (the multi-model rung
-      // embeds passages and then generates from them on CPU).
-      cfg.deadlineMs ?? GENERATION_DEADLINE_MS,
-      `${label} generation`,
-      5_000,
-    );
+    await waitForGeneration(cdp, page.sessionId, cfg, label);
 
     if (rung === "overview") {
       // See-inside surface: WebLLM's own runtime stats line (prefill/decode rates), rendered from
