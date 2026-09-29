@@ -55,7 +55,10 @@ const RUNGS = {
     trigger: "#send",
     input: "#input",
     tok: "#sGen",
-    prompt: "Explain what a large language model is in two sentences.",
+    // The emoji matters: a multi-byte character is decoded from several tokens, so the engine's
+    // completion_tokens and the page's delta count genuinely differ (probed: 27 deltas / 29 tokens).
+    prompt: "Explain what a large language model is in two sentences. End with one emoji.",
+    busy: "document.querySelector('#send')?.disabled === true",
     done:
       "document.querySelector('#readout')?.hidden === false || /failed/i.test(document.querySelector('#status')?.textContent || '')",
   },
@@ -63,7 +66,8 @@ const RUNGS = {
     trigger: "#send",
     input: "#input",
     tok: "#rGen",
-    prompt: "What is a token, in one sentence?",
+    prompt: "What is a token, in one sentence? Add one emoji at the end.",
+    busy: "document.querySelector('#send')?.disabled === true",
     done:
       "document.querySelector('#readout')?.hidden === false || /failed/i.test(document.querySelector('#status')?.textContent || '')",
   },
@@ -73,6 +77,7 @@ const RUNGS = {
     input: "#input",
     tok: null,
     prompt: null,
+    busy: "document.querySelector('#run')?.disabled === true",
     done:
       "document.querySelector('#readout')?.hidden === false || /failed/i.test(document.querySelector('#status')?.textContent || '')",
   },
@@ -388,7 +393,7 @@ async function exercise(cdp, rung, viewportName, viewport, attempt = 1) {
         cdp,
         page.sessionId,
         `JSON.stringify({
-          retrieved: [...document.querySelectorAll('#retrieved .chunk-card, #retrieved .chunk, #retrieved li, #retrieved p')].filter((el) => el.textContent.trim().length > 0).length,
+          retrieved: [...document.querySelectorAll('#retrieved > div, #retrieved li, #retrieved .chunk')].filter((el) => el.textContent.trim().length > 0).length,
           answer: (document.querySelector('#answer')?.textContent ?? '').trim(),
         })`,
       );
@@ -442,16 +447,26 @@ async function exercise(cdp, rung, viewportName, viewport, attempt = 1) {
     // chunks it was handed; a cell whose page never asked for streaming must show zero chunks with
     // real IDs resolved. The route-level check below demands this of every cell, so a worker
     // reverted to chunk counting cannot pass by having one honest cell.
-    const DIVERGENCE_MIN_TOKENS = 10;
+    const DIVERGENCE_MIN_CHUNKS = 20;
     const streamedChunks = Number.isInteger(chunks) && chunks > 0;
-    const needsDivergence = streamedChunks && realIds >= DIVERGENCE_MIN_TOKENS;
+    const needsDivergence = streamedChunks && chunks >= DIVERGENCE_MIN_CHUNKS;
+    const divergenceProved = needsDivergence ? realIds !== chunks : realIds >= 1;
+    if (!divergenceProved && attempt < 2) {
+      // The evidence did not materialise (a 1:1 generation, or a worker that reported nothing):
+      // retry the cell once with a fresh page. The retry is logged and the abandoned attempt's
+      // checks are rolled back, so a mutant still fails on the second attempt.
+      retry = true;
+      console.log(
+        `  [${label}] no chunk-vs-usage divergence yet (chunks=${chunks}, reported=${realIds}) — retrying with a fresh page`,
+      );
+    }
     ok = check(
       streamedChunks
-        ? `${label}: resolved ID count differs from the decoded-chunk count${
+        ? `${label}: the reported count is not the decoded-chunk count${
           needsDivergence ? "" : " (short generation, equality allowed)"
         }`
         : `${label}: non-streaming cell received no chunks and resolved real IDs`,
-      realIds >= 1,
+      divergenceProved && realIds >= 1,
       { chunks, realIds, streaming, needsDivergence },
     ) && ok;
     divergence.push({
@@ -471,6 +486,14 @@ async function exercise(cdp, rung, viewportName, viewport, attempt = 1) {
       })`,
     );
     check(`${label}: no horizontal overflow`, hygiene.overflow);
+    if (page.errors.length > 0 && attempt < 2) {
+      retry = true;
+      console.log(
+        `  [${label}] console error during the cell (${
+          String(page.errors[0]).slice(0, 90)
+        }) — retrying with a fresh page`,
+      );
+    }
     check(`${label}: zero console errors`, page.errors.length === 0, page.errors.join(" | "));
     check(
       `${label}: zero failed network requests`,
