@@ -8,7 +8,6 @@
 
 import { TRANSFORMERS_URL } from "/web-ai-showcase/lib/webai.js";
 
-const MODEL_ID = "onnx-community/Qwen2-VL-2B-Instruct";
 const MAX_SIDE = 448; // keep the vision-token budget (and memory) in check
 let processor = null;
 let model = null;
@@ -36,19 +35,24 @@ async function ensureLoaded() {
   if (model) return;
   mod = await import(TRANSFORMERS_URL);
   const { AutoProcessor, Qwen2VLForConditionalGeneration } = mod;
-  console.log(`[qwen2-vl worker] loading ${MODEL_ID} on webgpu (decoder q4f16)`);
-  processor = await AutoProcessor.from_pretrained(MODEL_ID, {
+  console.log(
+    `[qwen2-vl worker] loading onnx-community/Qwen2-VL-2B-Instruct on webgpu (decoder q4f16)`,
+  );
+  processor = await AutoProcessor.from_pretrained("onnx-community/Qwen2-VL-2B-Instruct", {
     progress_callback: (p) => post({ type: "progress", p }),
   });
-  model = await Qwen2VLForConditionalGeneration.from_pretrained(MODEL_ID, {
-    dtype: {
-      embed_tokens: "fp16",
-      vision_encoder: "fp16",
-      decoder_model_merged: "q4f16",
+  model = await Qwen2VLForConditionalGeneration.from_pretrained(
+    "onnx-community/Qwen2-VL-2B-Instruct",
+    {
+      dtype: {
+        embed_tokens: "fp16",
+        vision_encoder: "fp16",
+        decoder_model_merged: "q4f16",
+      },
+      device: "webgpu",
+      progress_callback: (p) => post({ type: "progress", p }),
     },
-    device: "webgpu",
-    progress_callback: (p) => post({ type: "progress", p }),
-  });
+  );
   console.log("[qwen2-vl worker] ready on webgpu");
   post({ type: "ready", device: "webgpu" });
 }
@@ -93,9 +97,14 @@ async function run(id, imageURL, prompt, maxTokens, history) {
   const streamer = new TextStreamer(processor.tokenizer, {
     skip_prompt: true,
     skip_special_tokens: true,
+    // TextStreamer buffers decoded words, so callback_function fires per VISIBLE CHUNK, not per
+    // generated token. Count the generated IDs instead (prompt excluded, special generated IDs
+    // included), then attach that count to each visible text chunk (web-ai-showcase-0ly; db2).
+    token_callback_function: (ids) => {
+      count += ids.length;
+    },
     callback_function: (tok) => {
-      count++;
-      post({ type: "token", id, token: tok, t: performance.now() - t0 });
+      post({ type: "token", id, token: tok, tokens: count, t: performance.now() - t0 });
     },
   });
 
