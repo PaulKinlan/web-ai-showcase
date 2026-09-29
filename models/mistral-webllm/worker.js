@@ -7,7 +7,6 @@
 
 import { createEngine, streamChat } from "/web-ai-showcase/lib/webllm.js";
 
-const MODEL_ID = "Mistral-7B-Instruct-v0.3-q4f16_1-MLC";
 let engine = null;
 
 function post(msg) {
@@ -17,7 +16,7 @@ function post(msg) {
 async function ensureLoaded() {
   if (engine) return;
   engine = await createEngine({
-    model: MODEL_ID,
+    model: "Mistral-7B-Instruct-v0.3-q4f16_1-MLC",
     onProgress: (p) => post({ type: "progress", p }),
   });
   post({ type: "ready" });
@@ -28,6 +27,9 @@ async function run(id, req) {
   const t0 = performance.now();
   let ttft = null;
   let chunks = 0;
+  // The completion's OWN token count (web-ai-showcase-0ly): deltas are visible chunks, so the
+  // readout uses this, while `chunks` stays for the live rate.
+  let tokens = null;
 
   const text = await streamChat(engine, req, (delta) => {
     if (ttft === null) {
@@ -36,6 +38,8 @@ async function run(id, req) {
     }
     chunks++;
     post({ type: "token", id, delta });
+  }, (usage) => {
+    if (typeof usage?.completion_tokens === "number") tokens = usage.completion_tokens;
   });
 
   const ms = Math.round(performance.now() - t0);
@@ -55,6 +59,7 @@ async function run(id, req) {
     ms,
     ttft: ttft === null ? ms : Math.round(ttft),
     chunks,
+    tokens,
     stats,
   });
 }
