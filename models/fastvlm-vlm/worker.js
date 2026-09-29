@@ -18,7 +18,6 @@
 
 import { TRANSFORMERS_URL } from "/web-ai-showcase/lib/webai.js";
 
-const MODEL_ID = "onnx-community/FastVLM-0.5B-ONNX";
 let model = null;
 let processor = null;
 let mod = null;
@@ -59,11 +58,11 @@ async function ensureLoaded() {
     vision_encoder: "q4",
     decoder_model_merged: "q4",
   };
-  console.log(`[fastvlm worker] loading ${MODEL_ID} on ${device}`);
-  processor = await AutoProcessor.from_pretrained(MODEL_ID, {
+  console.log(`[fastvlm worker] loading onnx-community/FastVLM-0.5B-ONNX on ${device}`);
+  processor = await AutoProcessor.from_pretrained("onnx-community/FastVLM-0.5B-ONNX", {
     progress_callback: (p) => post({ type: "progress", p }),
   });
-  model = await AutoModelForImageTextToText.from_pretrained(MODEL_ID, {
+  model = await AutoModelForImageTextToText.from_pretrained("onnx-community/FastVLM-0.5B-ONNX", {
     dtype,
     device,
     progress_callback: (p) => post({ type: "progress", p }),
@@ -89,9 +88,14 @@ async function run(id, imageURL, prompt, maxTokens) {
   const streamer = new TextStreamer(processor.tokenizer, {
     skip_prompt: true,
     skip_special_tokens: true,
+    // TextStreamer buffers decoded words, so callback_function fires per VISIBLE CHUNK, not per
+    // generated token. Count the generated IDs instead (prompt excluded, special generated IDs
+    // included), then attach that count to each visible text chunk (web-ai-showcase-0ly; db2).
+    token_callback_function: (ids) => {
+      count += ids.length;
+    },
     callback_function: (tok) => {
-      count++;
-      post({ type: "token", id, token: tok, t: performance.now() - t0 });
+      post({ type: "token", id, token: tok, tokens: count, t: performance.now() - t0 });
     },
   });
 
