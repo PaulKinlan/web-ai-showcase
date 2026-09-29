@@ -72,12 +72,12 @@ const RUNGS = {
   },
   practical: {
     trigger: "#run",
-    // Multi-input rung: the page extracts the declared fields from the source text, and refuses
-    // without both.
+    // The page ships sample chips that fill its fields box in the format it parses; clicking one is the
+    // page's own way in, and the drive then overwrites the source text.
+    prepare: "#samples > *:first-child",
     inputs: {
       "#src":
         "The harbour was quiet at dawn. A small blue boat bobbed beside the pier, its paint faded but bright against the grey water.",
-      "#schema": "colour\nobject",
     },
     tok: null,
     prompt: null,
@@ -364,7 +364,12 @@ async function drive(cdp, sid, label, cfg) {
     const phase = await evaluate(
       cdp,
       sid,
-      `(() => {
+      `(async () => {
+        const prep = ${cfg.prepare ? `document.querySelector('${cfg.prepare}')` : "null"};
+        if (prep) {
+          prep.click();
+          await new Promise((r) => setTimeout(r, 150));
+        }
         const declared = ${JSON.stringify(cfg.inputs ?? null)};
         if (declared) {
           let filled = 0;
