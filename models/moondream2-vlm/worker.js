@@ -8,7 +8,6 @@
 
 import { TRANSFORMERS_URL } from "/web-ai-showcase/lib/webai.js";
 
-const MODEL_ID = "Xenova/moondream2";
 let model = null;
 let processor = null;
 let tokenizer = null;
@@ -36,14 +35,14 @@ async function ensureLoaded() {
   if (model) return;
   mod = await import(TRANSFORMERS_URL);
   const { AutoProcessor, AutoTokenizer, Moondream1ForConditionalGeneration } = mod;
-  console.log(`[moondream worker] loading ${MODEL_ID} on webgpu (decoder q4f16)`);
-  tokenizer = await AutoTokenizer.from_pretrained(MODEL_ID, {
+  console.log(`[moondream worker] loading Xenova/moondream2 on webgpu (decoder q4f16)`);
+  tokenizer = await AutoTokenizer.from_pretrained("Xenova/moondream2", {
     progress_callback: (p) => post({ type: "progress", p }),
   });
-  processor = await AutoProcessor.from_pretrained(MODEL_ID, {
+  processor = await AutoProcessor.from_pretrained("Xenova/moondream2", {
     progress_callback: (p) => post({ type: "progress", p }),
   });
-  model = await Moondream1ForConditionalGeneration.from_pretrained(MODEL_ID, {
+  model = await Moondream1ForConditionalGeneration.from_pretrained("Xenova/moondream2", {
     dtype: {
       embed_tokens: "fp16",
       vision_encoder: "fp16",
@@ -58,7 +57,7 @@ async function ensureLoaded() {
 
 async function run(id, imageURL, prompt, maxTokens) {
   await ensureLoaded();
-  const { RawImage, TextStreamer } = mod;
+  const { RawImage, Tensor, TextStreamer } = mod;
 
   // Moondream's prompt format — image placeholder, then a Q/A frame.
   const text = `<image>\n\nQuestion: ${prompt}\n\nAnswer:`;
@@ -68,27 +67,68 @@ async function run(id, imageURL, prompt, maxTokens) {
   const image = await RawImage.fromURL(imageURL);
   const vision_inputs = await processor(image);
 
+  // The model's merge step requires the placeholder count to EQUAL the vision tower's feature
+  // count; tokenizing text and image separately leaves ONE `<image>` token against 729 features
+  // ("Number of tokens and features do not match"), found by driving this route (web-ai-showcase-xlt,
+  // the class nanollava-vlm was fixed for). Expand the placeholder HERE to the patch grid,
+  // floor(image_size / patch_size)^2, exactly as default_merge_input_ids_with_features expects.
+  // `tolist()` yields BigInts for int64 tensors, so the comparison is numeric.
+  const vision = model.config.vision_config ?? {};
+  const imageTokenCount = Math.floor((vision.image_size ?? 378) / (vision.patch_size ?? 14)) ** 2;
+  const encodedImage = Array.from(tokenizer.encode("<image>"));
+  const imageTokenId = Number(model.config.image_token_index ?? encodedImage[0] ?? -1);
+  const ids = text_inputs.input_ids.tolist()[0];
+  const mask = text_inputs.attention_mask.tolist()[0];
+  const expandedIds = [];
+  const expandedMask = [];
+  for (let i = 0; i < ids.length; i++) {
+    if (Number(ids[i]) === imageTokenId) {
+      for (let k = 0; k < imageTokenCount; k++) {
+        expandedIds.push(imageTokenId);
+        expandedMask.push(1);
+      }
+    } else {
+      expandedIds.push(Number(ids[i]));
+      expandedMask.push(Number(mask[i]));
+    }
+  }
+  const inputs = {
+    input_ids: new Tensor("int64", BigInt64Array.from(expandedIds.map(BigInt)), [
+      1,
+      expandedIds.length,
+    ]),
+    attention_mask: new Tensor("int64", BigInt64Array.from(expandedMask.map(BigInt)), [
+      1,
+      expandedMask.length,
+    ]),
+    pixel_values: vision_inputs.pixel_values,
+  };
+
   const t0 = performance.now();
   let count = 0;
   const streamer = new TextStreamer(tokenizer, {
     skip_prompt: true,
     skip_special_tokens: true,
+    // TextStreamer buffers decoded words, so callback_function fires per VISIBLE CHUNK, not per
+    // generated token. Count the generated IDs instead (prompt excluded, special generated IDs
+    // included), then attach that count to each visible text chunk (web-ai-showcase-0ly; db2).
+    token_callback_function: (ids) => {
+      count += ids.length;
+    },
     callback_function: (tok) => {
-      count++;
-      post({ type: "token", id, token: tok, t: performance.now() - t0 });
+      post({ type: "token", id, token: tok, tokens: count, t: performance.now() - t0 });
     },
   });
 
   await model.generate({
-    ...text_inputs,
-    ...vision_inputs,
+    ...inputs,
     do_sample: false,
     max_new_tokens: maxTokens ?? 200,
     streamer,
   });
 
   const ms = Math.round(performance.now() - t0);
-  const promptLen = text_inputs.input_ids?.dims?.at(-1) ?? null;
+  const promptLen = inputs.input_ids.dims?.at(-1) ?? null;
   post({ type: "done", id, ms, tokens: count, promptLen });
 }
 
