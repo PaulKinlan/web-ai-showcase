@@ -14,7 +14,6 @@
 
 import { createEngine } from "/web-ai-showcase/lib/webllm.js";
 
-const MODEL_ID = "OLMo-2-0425-1B-Instruct-q4f16_1-MLC";
 let engine = null;
 
 function post(msg) {
@@ -23,9 +22,9 @@ function post(msg) {
 
 async function ensureLoaded() {
   if (engine) return;
-  console.log(`[olmo-2 worker] creating MLC engine for ${MODEL_ID}`);
+  console.log(`[olmo-2 worker] creating MLC engine for OLMo-2-0425-1B-Instruct-q4f16_1-MLC`);
   engine = await createEngine({
-    model: MODEL_ID,
+    model: "OLMo-2-0425-1B-Instruct-q4f16_1-MLC",
     onProgress: (p) => post({ type: "progress", p }),
   });
   console.log(`[olmo-2 worker] engine ready`);
@@ -38,6 +37,10 @@ async function run(id, req) {
   const t0 = performance.now();
   let ttft = null;
   let chunks = 0;
+  // The completion's OWN token count (web-ai-showcase-0ly): deltas are visible chunks, so the
+  // readouts use this while `chunks` stays for the live rate. WebLLM is OpenAI-compatible and emits
+  // a final chunk carrying `usage` when stream_options.include_usage is requested.
+  let tokens = null;
 
   const stream = await engine.chat.completions.create({
     messages,
@@ -45,10 +48,14 @@ async function run(id, req) {
     top_p,
     max_tokens,
     stream: true,
+    stream_options: { include_usage: true },
   });
 
   for await (const chunk of stream) {
     const delta = chunk.choices?.[0]?.delta?.content ?? "";
+    if (chunk.usage && typeof chunk.usage.completion_tokens === "number") {
+      tokens = chunk.usage.completion_tokens;
+    }
     if (!delta) continue;
     if (ttft === null) {
       ttft = performance.now() - t0;
@@ -71,6 +78,7 @@ async function run(id, req) {
     ms,
     ttft: ttft === null ? ms : Math.round(ttft),
     chunks,
+    tokens,
     stats,
   });
 }

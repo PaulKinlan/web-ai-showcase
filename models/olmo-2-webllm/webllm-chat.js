@@ -58,6 +58,7 @@ export class OlmoChatEngine {
             ms: msg.ms,
             ttft: msg.ttft,
             chunks: msg.chunks,
+            tokens: msg.tokens,
             stats: msg.stats,
           });
           this._active = null;
