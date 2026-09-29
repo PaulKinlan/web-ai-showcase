@@ -12,7 +12,6 @@
 // shared lib/webai.js stays 3.7.5, and lib/model-cache.js is version-agnostic so auto-init still works.
 const TRANSFORMERS_URL = "https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.2.0";
 
-const MODEL_ID = "onnx-community/Apertus-v1.1-1.5B-Instruct-QAD-INT4-ONNX";
 const DEVICE = "wasm";
 const DTYPE = "q4"; // the QAD INT4 web build (onnx/model_q4.onnx). No q8 export exists in this repo.
 let generator = null;
@@ -27,8 +26,8 @@ async function ensureLoaded() {
   if (generator) return;
   mod = await import(TRANSFORMERS_URL);
   const { pipeline } = mod;
-  console.log(`[apertus worker] loading ${MODEL_ID} on ${DEVICE} (${DTYPE})`);
-  generator = await pipeline("text-generation", MODEL_ID, {
+  console.log(`[apertus worker] loading onnx-community/Apertus-v1.1-1.5B-Instruct-QAD-INT4-ONNX on ${DEVICE} (${DTYPE})`);
+  generator = await pipeline("text-generation", "onnx-community/Apertus-v1.1-1.5B-Instruct-QAD-INT4-ONNX", {
     device: DEVICE,
     dtype: DTYPE,
     progress_callback: (p) => post({ type: "progress", p }),
@@ -54,10 +53,15 @@ async function chat(id, messages, opts) {
   const streamer = new TextStreamer(generator.tokenizer, {
     skip_prompt: true,
     skip_special_tokens: true,
+    // TextStreamer buffers decoded words, so callback_function fires per VISIBLE CHUNK, not per
+    // generated token. Count the generated IDs instead (prompt excluded, special generated IDs
+    // included), then attach that count to each visible text chunk (web-ai-showcase-0ly; db2).
+    token_callback_function: (ids) => {
+      count += ids.length;
+    },
     callback_function: (token) => {
-      count++;
       if (firstTokenMs === null) firstTokenMs = performance.now() - t0;
-      post({ type: "token", id, token, t: performance.now() - t0 });
+      post({ type: "token", id, token, tokens: count, t: performance.now() - t0 });
     },
   });
 
