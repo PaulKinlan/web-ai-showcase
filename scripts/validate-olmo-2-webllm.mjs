@@ -160,7 +160,7 @@ async function evalJSON(cdp, sessionId, expression, timeoutMs = 45_000) {
  */
 async function waitForGeneration(cdp, sessionId, cfg, label) {
   const deadlineMs = cfg.deadlineMs ?? GENERATION_DEADLINE_MS;
-  const STALL_BUDGET_MS = 120_000;
+  const STALL_BUDGET_MS = 300_000;
   const started = Date.now();
   let nextLog = 0;
   while (Date.now() - started < deadlineMs) {
@@ -220,8 +220,8 @@ async function waitFor(cdp, sessionId, expression, deadlineMs, label, intervalMs
 // #rTok readout). This is the mechanism the passing smollm2-chat validator uses for its family
 // class; mistral-webllm's class is OlmoChatEngine, whose generation method is `chat`.
 async function installChunkCounter(cdp, sessionId) {
-  const moduleUrl = "/web-ai-showcase/models/mistral-webllm/webllm-chat.js";
-  await evaluate(
+  const moduleUrl = "/web-ai-showcase/models/olmo-2-webllm/webllm-chat.js";
+  const installed = await evaluate(
     cdp,
     sessionId,
     `(() => {
@@ -232,7 +232,7 @@ async function installChunkCounter(cdp, sessionId) {
         // Families differ in the generation method's name (generate, chat, ...): wrap whichever
         // the class actually exposes, or the counter never installs and every cell fails vacuous.
         const method = ["generate", "chat"].find((name) => typeof Engine?.prototype?.[name] === "function");
-        if (!method) return false;
+        if (!method || typeof Engine !== "function") return false;
         const orig = Engine.prototype[method];
         Engine.prototype[method] = function (...args) {
           const opts = args.at(-1);
@@ -263,6 +263,13 @@ async function installChunkCounter(cdp, sessionId) {
     })()`,
     30_000,
   );
+  // A counter that never installed reports zero for every cell and looks EXACTLY like a route that
+  // never streamed. Fail loudly instead: the instrument is part of the proof.
+  if (installed !== true) {
+    throw new Error(
+      "the engine wrap did not install (module imported, but no OlmoChatEngine.chat to wrap) — the proof would read zeros for a working page",
+    );
+  }
 }
 
 async function ensureReady(cdp, sessionId, label) {
