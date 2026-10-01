@@ -58,6 +58,9 @@ export class GemmaChatEngine {
             ms: msg.ms,
             ttft: msg.ttft,
             chunks: msg.chunks,
+            tokens: msg.tokens,
+            loadRaceRetries: msg.loadRaceRetries ?? 0,
+            generationRaceRetries: msg.generationRaceRetries ?? 0,
             stats: msg.stats,
           });
           this._active = null;
