@@ -28,6 +28,14 @@ function post(msg) {
 // Workers expose navigator.gpu; probe for a REAL adapter (existence alone is not enough — headless
 // returns null). We use q8 on both paths; WebGPU is an optional accelerator with an honest fallback to
 // the verified WASM q8 path.
+export function resolveTargetDevice(options = {}, hasGpu = false) {
+  const req = options?.device;
+  if (req === "webgpu") return hasGpu ? "webgpu" : "wasm";
+  if (req === "wasm") return "wasm";
+  if (options?.requiresWebGPU === true) return hasGpu ? "webgpu" : "wasm";
+  return "wasm";
+}
+
 async function hasWebGPU() {
   if (typeof navigator !== "undefined" && "gpu" in navigator) {
     try {
@@ -46,12 +54,13 @@ async function makePipeline(device, dtype) {
   });
 }
 
-async function ensureLoaded() {
+async function ensureLoaded(options = {}) {
   if (generator) return;
   mod = await import(TRANSFORMERS_URL);
-  const wantGPU = await hasWebGPU();
+  const gpuAvailable = await hasWebGPU();
+  const targetDevice = resolveTargetDevice(options, gpuAvailable);
   DTYPE = "q8";
-  if (wantGPU) {
+  if (targetDevice === "webgpu") {
     try {
       DEVICE = "webgpu";
       console.log(`[smollm2-135m worker] trying ${MODEL_ID} on webgpu (q8)`);
@@ -173,7 +182,7 @@ self.addEventListener("message", async (e) => {
   const { type } = e.data;
   try {
     if (type === "load") {
-      await ensureLoaded();
+      await ensureLoaded(e.data?.options || e.data);
     } else if (type === "chat") {
       await chat(e.data.id, e.data.messages, e.data.opts);
     } else if (type === "topk") {

@@ -74,12 +74,12 @@ export class GraniteEngine {
         break;
     }
   }
-  load(onProgress) {
+  load(onProgress, options = {}) {
     if (onProgress) this.onProgress = onProgress;
     if (this.ready) return Promise.resolve(this.device);
     return new Promise((resolve, reject) => {
       this._loadWaiters.push({ resolve, reject });
-      this.worker.postMessage({ type: "load" });
+      this.worker.postMessage({ type: "load", options });
     });
   }
   chat(messages, { onToken, onPrompt, ...opts } = {}) {

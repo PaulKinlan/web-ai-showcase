@@ -26,6 +26,14 @@ function post(msg) {
   self.postMessage(msg);
 }
 
+export function resolveTargetDevice(options = {}, hasGpu = false) {
+  const req = options?.device;
+  if (req === "webgpu") return hasGpu ? "webgpu" : "wasm";
+  if (req === "wasm") return "wasm";
+  if (options?.requiresWebGPU === true) return hasGpu ? "webgpu" : "wasm";
+  return "wasm";
+}
+
 async function hasWebGPU() {
   if (typeof navigator !== "undefined" && "gpu" in navigator) {
     try {
@@ -45,10 +53,12 @@ async function makePipeline(device) {
   });
 }
 
-async function ensureLoaded() {
+async function ensureLoaded(options = {}) {
   if (generator) return;
   mod = await import(TRANSFORMERS_URL);
-  if (await hasWebGPU()) {
+  const gpuAvailable = await hasWebGPU();
+  const targetDevice = resolveTargetDevice(options, gpuAvailable);
+  if (targetDevice === "webgpu") {
     try {
       DEVICE = "webgpu";
       console.log(`[granite-4 worker] trying ${MODEL_ID} on webgpu (q4)`);
@@ -162,7 +172,7 @@ async function topk(id, messages, k) {
 self.addEventListener("message", async (e) => {
   const { type } = e.data;
   try {
-    if (type === "load") await ensureLoaded();
+    if (type === "load") await ensureLoaded(e.data?.options || e.data);
     else if (type === "chat") await chat(e.data.id, e.data.messages, e.data.opts);
     else if (type === "topk") await topk(e.data.id, e.data.messages, e.data.k ?? 12);
     else if (type === "stop") stopper?.interrupt?.();
