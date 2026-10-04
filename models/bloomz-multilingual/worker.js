@@ -32,6 +32,14 @@ function post(msg) {
 
 // Workers expose navigator.gpu; probe for a REAL adapter (existence alone is not enough — headless
 // returns null). We use q8 on both paths; WebGPU is optional with an honest fallback to WASM q8.
+export function resolveTargetDevice(options = {}, hasGpu = false) {
+  const req = options?.device;
+  if (req === "webgpu") return hasGpu ? "webgpu" : "wasm";
+  if (req === "wasm") return "wasm";
+  if (options?.requiresWebGPU === true) return hasGpu ? "webgpu" : "wasm";
+  return "wasm";
+}
+
 async function hasWebGPU() {
   if (typeof navigator !== "undefined" && "gpu" in navigator) {
     try {
@@ -52,10 +60,12 @@ async function makePipeline(device) {
   });
 }
 
-async function ensureLoaded() {
+async function ensureLoaded(options = {}) {
   if (generator) return;
   mod = await import(TRANSFORMERS_URL);
-  if (await hasWebGPU()) {
+  const gpuAvailable = await hasWebGPU();
+  const targetDevice = resolveTargetDevice(options, gpuAvailable);
+  if (targetDevice === "webgpu") {
     try {
       DEVICE = "webgpu";
       console.log(`[bloomz worker] trying ${MODEL_ID} on webgpu (q8)`);
@@ -168,7 +178,7 @@ async function topk(id, prompt, k) {
 self.addEventListener("message", async (e) => {
   const { type } = e.data;
   try {
-    if (type === "load") await ensureLoaded();
+    if (type === "load") await ensureLoaded(e.data?.options || e.data);
     else if (type === "complete") await complete(e.data.id, e.data.prompt, e.data.opts);
     else if (type === "topk") await topk(e.data.id, e.data.prompt, e.data.k ?? 12);
     else if (type === "stop") stopper?.interrupt?.();
