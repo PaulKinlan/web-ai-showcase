@@ -8,8 +8,8 @@
 
 import { createServer } from "node:http";
 import { execFileSync, spawn } from "node:child_process";
-import { accessSync, constants, existsSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { extname, join } from "node:path";
+import { accessSync, constants, existsSync, readdirSync, readFileSync, rmSync, statfsSync, statSync, writeFileSync } from "node:fs";
+import { extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { constants as osConstants, loadavg, tmpdir } from "node:os";
 
@@ -746,4 +746,241 @@ export function writeAbortedAcceptanceRun({
   writeFileSync(runRecordPath, JSON.stringify(record, null, 2) + "\n", "utf8");
   console.log(`WROTE aborted diagnostic record ${runRecordPath} for commit ${startCommit}`);
   return true;
+}
+
+/** Format byte count into human-readable representation. */
+export function formatBytes(bytes) {
+  if (!Number.isFinite(bytes) || bytes < 0) return "0 B";
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let val = bytes / 1024;
+  let unitIndex = 0;
+  while (val >= 1024 && unitIndex < units.length - 1) {
+    val /= 1024;
+    unitIndex++;
+  }
+  return `${val.toFixed(1)} ${units[unitIndex]}`;
+}
+
+/** Check if a process ID is currently alive. */
+export function isPidAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return e.code === "EPERM";
+  }
+}
+
+/**
+ * Identify whether a directory name matches the pattern of a temporary acceptance
+ * browser profile directory.
+ */
+export function isStaleProfileDirName(name) {
+  if (typeof name !== "string") return false;
+  if (name.endsWith(".lock") || name.endsWith(".log") || name.endsWith(".json")) return false;
+  return name.includes("-acceptance-") || name.startsWith("webai-chrome-profile-");
+}
+
+/**
+ * Recursively compute total directory size in bytes.
+ */
+export function getDirectorySize(dirPath) {
+  let total = 0;
+  try {
+    const entries = readdirSync(dirPath, { withFileTypes: true });
+    for (const entry of entries) {
+      const full = join(dirPath, entry.name);
+      try {
+        if (entry.isDirectory()) {
+          total += getDirectorySize(full);
+        } else if (entry.isFile()) {
+          total += statSync(full).size;
+        }
+      } catch { /* unreadable or unlinked */ }
+    }
+  } catch { /* directory unreadable */ }
+  return total;
+}
+
+/**
+ * Discover user-data-dir paths currently held by active Chrome processes.
+ * Inspects /proc on Linux, falling back to ps or pgrep cross-platform.
+ */
+export function getActiveChromeUserDataDirs({
+  procDir = "/proc",
+  exec = execFileSync,
+  currentPid = process.pid,
+} = {}) {
+  const dirs = new Set();
+  if (process.platform === "linux" && existsSync(procDir)) {
+    try {
+      const entries = readdirSync(procDir);
+      for (const entry of entries) {
+        if (!/^\d+$/.test(entry) || Number(entry) === currentPid) continue;
+        try {
+          const cmdline = readFileSync(join(procDir, entry, "cmdline"), "utf8");
+          for (const arg of cmdline.split("\0")) {
+            if (arg.startsWith("--user-data-dir=")) {
+              const val = arg.slice("--user-data-dir=".length).trim();
+              if (val) dirs.add(resolve(val));
+            }
+          }
+        } catch { /* process exited */ }
+      }
+      if (dirs.size > 0) return dirs;
+    } catch { /* fall back to ps */ }
+  }
+
+  // Cross-platform fallback via ps
+  try {
+    const output = exec("ps", ["-eo", "args"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    for (const line of output.split("\n")) {
+      const match = line.match(/--user-data-dir=([^\s]+)/);
+      if (match) {
+        const val = match[1].trim();
+        if (val) dirs.add(resolve(val));
+      }
+    }
+  } catch { /* ps not available */ }
+
+  if (dirs.size === 0) {
+    try {
+      const output = exec("pgrep", ["-a", "chrome"], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      });
+      for (const line of output.split("\n")) {
+        const match = line.match(/--user-data-dir=([^\s]+)/);
+        if (match) {
+          const val = match[1].trim();
+          if (val) dirs.add(resolve(val));
+        }
+      }
+    } catch { /* pgrep not available */ }
+  }
+
+  return dirs;
+}
+
+/**
+ * Query filesystem capacity for a directory (defaults to tmpdir()).
+ */
+export function getTmpfsCapacity(targetDir = tmpdir()) {
+  try {
+    const stats = statfsSync(targetDir);
+    const bsize = stats.bsize || 4096;
+    const totalBytes = Number(BigInt(bsize) * BigInt(stats.blocks));
+    const freeBytes = Number(BigInt(bsize) * BigInt(stats.bavail));
+    const usedBytes = totalBytes - freeBytes;
+    const percentUsed = totalBytes > 0 ? (usedBytes / totalBytes) * 100 : 0;
+    return { totalBytes, freeBytes, usedBytes, percentUsed };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Prune stale acceptance profile directories in tmpdir (web-ai-showcase-msz).
+ *
+ * Scans for directories matching `-acceptance-` or `webai-chrome-profile-`,
+ * verifies they are not held by any live Chrome process (via activeDirs),
+ * verifies any encoded PID is not running, and only removes if mtime > 15 minutes old.
+ */
+export function pruneStaleAcceptanceProfiles({
+  dir = tmpdir(),
+  maxAgeMs = 15 * 60 * 1000,
+  activeDirs = null,
+  now = Date.now(),
+  unlink = rmSync,
+  dryRun = false,
+  log = console.log,
+  warn = console.warn,
+} = {}) {
+  const active = activeDirs ?? getActiveChromeUserDataDirs();
+  const activeNormalized = new Set([...active].map((d) => resolve(d)));
+
+  const candidates = [];
+  try {
+    const entries = readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const name = entry.name;
+      if (!isStaleProfileDirName(name)) continue;
+
+      const fullPath = join(dir, name);
+      const normalizedPath = resolve(fullPath);
+
+      if (activeNormalized.has(normalizedPath)) continue;
+      let inUse = false;
+      for (const act of activeNormalized) {
+        if (act === normalizedPath || act.startsWith(normalizedPath + "/")) {
+          inUse = true;
+          break;
+        }
+      }
+      if (inUse) continue;
+
+      const pidMatch = name.match(/webai-chrome-profile-[^-]+-(\d+)-/);
+      if (pidMatch) {
+        const pid = Number(pidMatch[1]);
+        if (isPidAlive(pid)) continue;
+      }
+
+      try {
+        const st = statSync(fullPath);
+        const ageMs = now - st.mtimeMs;
+        if (ageMs <= maxAgeMs) continue;
+
+        const sizeBytes = getDirectorySize(fullPath);
+        candidates.push({ path: fullPath, sizeBytes });
+      } catch { /* unlinked or unreadable */ }
+    }
+  } catch (err) {
+    if (typeof warn === "function") {
+      warn(`[acceptance-run] failed to scan ${dir} for stale profiles: ${err.message}`);
+    }
+  }
+
+  let freedBytes = 0;
+  let prunedCount = 0;
+  for (const { path, sizeBytes } of candidates) {
+    try {
+      if (!dryRun) {
+        unlink(path, { recursive: true, force: true });
+      }
+      freedBytes += sizeBytes;
+      prunedCount++;
+    } catch (err) {
+      if (typeof warn === "function") {
+        warn(`[acceptance-run] failed to remove stale profile ${path}: ${err.message}`);
+      }
+    }
+  }
+
+  const capacity = getTmpfsCapacity(dir);
+  const warnedHighUsage = capacity !== null && capacity.percentUsed > 80;
+
+  if (typeof log === "function") {
+    const capInfo = capacity
+      ? ` · ${dir} ${formatBytes(capacity.freeBytes)} free of ${formatBytes(capacity.totalBytes)} (${capacity.percentUsed.toFixed(1)}% used)`
+      : "";
+    if (prunedCount > 0) {
+      log(`[acceptance-run] pruned ${prunedCount} stale profile(s) freeing ${formatBytes(freedBytes)}${capInfo}`);
+    } else {
+      log(`[acceptance-run] no stale profile directories to prune${capInfo}`);
+    }
+  }
+
+  if (warnedHighUsage && typeof warn === "function") {
+    warn(
+      `[acceptance-run] WARNING: ${dir} is ${capacity.percentUsed.toFixed(1)}% full (>80%). Running low on tmpfs space may cause Chrome/WASM to crash silently.`,
+    );
+  }
+
+  return { prunedCount, freedBytes, capacity, warnedHighUsage };
 }

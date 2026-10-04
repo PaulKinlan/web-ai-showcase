@@ -32,6 +32,7 @@ import {
   captureHeadCommit,
   loadAverage,
   loadWarning,
+  pruneStaleAcceptanceProfiles,
   repoRoot,
   writeAbortedAcceptanceRun,
 } from "./browser.mjs";
@@ -106,7 +107,10 @@ export function parseRunnerArgs(argv) {
   return out;
 }
 
-export function runAcceptanceRunner(argv, { env = process.env, spawn = spawnSync } = {}) {
+export function runAcceptanceRunner(
+  argv,
+  { env = process.env, spawn = spawnSync, prune = pruneStaleAcceptanceProfiles } = {},
+) {
   let args;
   try {
     args = parseRunnerArgs(argv);
@@ -137,6 +141,14 @@ export function runAcceptanceRunner(argv, { env = process.env, spawn = spawnSync
   }
   const warning = loadWarning(Number.isFinite(args.loadWarn) ? args.loadWarn : 30, load);
   if (warning) console.warn(`[acceptance-run] WARNING: ${warning}`);
+
+  if (typeof prune === "function") {
+    try {
+      prune();
+    } catch (err) {
+      console.warn(`[acceptance-run] WARNING: profile pruning failed: ${err.message}`);
+    }
+  }
 
   const startCommit = captureHeadCommit();
   const retries = Number.isFinite(args.retries) && args.retries > 0 ? Math.floor(args.retries) : 0;
