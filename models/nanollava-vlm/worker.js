@@ -82,7 +82,8 @@ async function run(id, imageURL, prompt, system, maxTokens) {
   // expects. `tolist()` yields BigInts for int64 tensors, so the id comparison is numeric.
   const vision = model.config.vision_config ?? {};
   const imageTokenCount = Math.floor((vision.image_size ?? 384) / (vision.patch_size ?? 14)) ** 2;
-  const imageTokenId = Number(model.config.image_token_index);
+  const encodedImage = Array.from(tokenizer.encode("<image>"));
+  const imageTokenId = Number(model.config.image_token_index ?? encodedImage[0] ?? -1);
   const ids = text_inputs.input_ids.tolist()[0];
   const mask = text_inputs.attention_mask.tolist()[0];
   const expandedIds = [];
