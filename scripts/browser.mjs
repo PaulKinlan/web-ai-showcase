@@ -747,3 +747,41 @@ export function writeAbortedAcceptanceRun({
   console.log(`WROTE aborted diagnostic record ${runRecordPath} for commit ${startCommit}`);
   return true;
 }
+
+/**
+ * Evaluate pairwise divergence for validator generation calls (web-ai-showcase-6b5).
+ * On multi-generation rungs (e.g. wild with multiple temperatures/samples), ensures
+ * EACH generation independently proves divergence between resolved IDs and decoded chunks,
+ * preventing cross-call aggregate cancellation.
+ *
+ * @param {Array<{ chunks: number, tokens: number }>} calls
+ * @param {{ minTokens?: number }} [options]
+ * @returns {{ pass: boolean, anyStreamed: boolean, needsDivergence: boolean, details: Array<any> }}
+ */
+export function checkPairwiseDivergence(calls = [], { minTokens = 10 } = {}) {
+  const normCalls = Array.isArray(calls) && calls.length > 0 ? calls : [];
+  if (normCalls.length === 0) {
+    return { pass: true, anyStreamed: false, needsDivergence: false, details: [] };
+  }
+  let anyStreamed = false;
+  let needsDivergence = false;
+  const details = [];
+
+  for (const c of normCalls) {
+    const chunks = Number(c?.chunks ?? 0);
+    const tokens = Number(c?.tokens ?? 0);
+    const streamed = Number.isInteger(chunks) && chunks > 0;
+    const reqDiv = streamed && tokens >= minTokens;
+    if (streamed) anyStreamed = true;
+    if (reqDiv) needsDivergence = true;
+
+    const pass = streamed
+      ? tokens >= 1 && (!reqDiv || tokens !== chunks)
+      : tokens >= 1;
+
+    details.push({ chunks, tokens, streamed, reqDiv, pass });
+  }
+
+  const pass = details.every((d) => d.pass);
+  return { pass, anyStreamed, needsDivergence, details };
+}

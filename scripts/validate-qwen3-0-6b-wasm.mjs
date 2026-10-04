@@ -16,6 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   CDP,
+  checkPairwiseDivergence,
   closePage,
   DESKTOP,
   launchChrome,
@@ -161,7 +162,7 @@ async function installChunkCounter(cdp, sessionId) {
     cdp,
     sessionId,
     `(() => {
-      window.__chunks = 0; window.__tokens = []; window.__streaming = false;
+      window.__chunks = 0; window.__tokens = []; window.__calls = []; window.__streaming = false;
       return (async () => {
         for (const t of ${JSON.stringify(targets)}) {
           const m = await import(t.url);
@@ -169,12 +170,14 @@ async function installChunkCounter(cdp, sessionId) {
           if (!Klass?.prototype?.[t.method]) continue;
           const orig = Klass.prototype[t.method];
           Klass.prototype[t.method] = function (...args) {
+            let callChunks = 0;
             const opts = args.at(-1);
             if (opts && typeof opts === "object" && typeof opts.onToken === "function") {
               const inner = opts.onToken;
               window.__streaming = true; // this page asked for token streaming; a page that does not
               //                          never receives decoded chunks, so chunks stays 0 honestly.
               opts.onToken = (...cb) => {
+                callChunks += 1;
                 window.__chunks += 1;
                 return inner(...cb);
               };
@@ -182,8 +185,11 @@ async function installChunkCounter(cdp, sessionId) {
             const result = orig.apply(this, args);
             if (result && typeof result.then === "function") {
               result.then((res) => {
+                const count = Number(res?.tokens ?? 0);
                 window.__tokens = window.__tokens ?? [];
-                window.__tokens.push(Number(res?.tokens ?? 0));
+                window.__tokens.push(count);
+                window.__calls = window.__calls ?? [];
+                window.__calls.push({ chunks: callChunks, tokens: count });
               });
             }
             return result;
@@ -355,6 +361,7 @@ async function exercise(browser, rung, viewportName, viewport, attempt = 1) {
         tok: ${cfg.tok ? `document.querySelector('${cfg.tok}')?.textContent ?? null` : "null"},
         metas: ${cfg.metas ? `[${cfg.metas.map((sel) => `document.querySelector('${sel}')?.textContent ?? null`).join(", ")}]` : "null"},
         chunks: window.__chunks ?? null,
+        calls: window.__calls ?? [],
         streaming: window.__streaming === true,
         tokenEls: ${cfg.tokenEls ? `[${cfg.tokenEls.map((sel) => `document.querySelector('${sel}')?.textContent ?? null`).join(", ")}]` : "null"},
         tokenIds: window.__tokens ?? [],
@@ -443,16 +450,20 @@ async function exercise(browser, rung, viewportName, viewport, attempt = 1) {
     // generation can legitimately be 1:1, so the inequality is only required past a token threshold,
     // and the route-level check below insists on at least one such cell per viewport.
     const DIVERGENCE_MIN_TOKENS = 10;
-    const streamedChunks = Number.isInteger(chunks) && chunks > 0;
-    const needsDivergence = streamedChunks && realIds >= DIVERGENCE_MIN_TOKENS;
+    const calls = Array.isArray(proof.calls) && proof.calls.length > 0
+      ? proof.calls
+      : [{ chunks, tokens: realIds }];
+    const divResult = checkPairwiseDivergence(calls, { minTokens: DIVERGENCE_MIN_TOKENS });
+    const streamedChunks = divResult.anyStreamed;
+    const needsDivergence = divResult.needsDivergence;
     ok = check(
       streamedChunks
         ? `${label}: resolved ID count differs from the decoded-chunk count${
           needsDivergence ? "" : " (short generation, equality allowed)"
         }`
         : `${label}: non-streaming cell received no chunks and resolved real IDs`,
-      streamedChunks ? realIds >= 1 && (!needsDivergence || realIds !== chunks) : realIds >= 1,
-      { chunks, realIds, streaming, needsDivergence },
+      streamedChunks ? divResult.pass : realIds >= 1,
+      { chunks, realIds, calls, streaming, needsDivergence },
     ) && ok;
     divergence.push({ label, viewport: viewportName, chunks, tokens: realIds, streaming, diverged: needsDivergence });
 
