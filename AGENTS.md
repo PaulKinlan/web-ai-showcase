@@ -243,6 +243,47 @@ short version for tools that look for `AGENTS.md`.
   to pull license-verified originals), then regenerate the ledger and run the gate. CC-BY/CC-BY-SA images
   shown on a page get a visible credit via the shared annotator `public/image-credit.js` (include it once
   per page); the full record renders at `/image-credits/`. Strip EXIF on bundled images.
+- **Every bundled audio file needs a recorded provenance entry — fail-closed.** `node scripts/check-audio-provenance.mjs`
+  (in `deno task gate` + CI) re-hashes every in-scope tracked file and requires each to map, BY CONTENT HASH,
+  to an entry in `audio-provenance/ledger.json` (`audio-provenance/ledger.schema.json` is documentation only;
+  the gate's in-code checks are the contract). **Scope is INVERTED and fails closed:** every git-tracked file
+  is in scope unless it is on the explicit "cannot contain audio" allowlist in
+  `scripts/audio-provenance-lib.mjs` (code, markup, styles, text, config, still images, fonts, data/model
+  blobs, archives, certificates; extension-less files and opaque `.bin` blobs are listed by EXACT PATH). An
+  unknown, new, or extension-less file, and every known media container (`.webm/.mp4/.m4v/.mkv/.mov/.ogv/
+  .3gp/.mka/.caf/.w64/…` — the gate does not decode containers, so they are DECLARED in full, e.g.
+  `lib/__capture-selftest__/sample-clip.webm` carries Opus audio), FAILS the gate until a human adds either a
+  ledger entry or a justified allowlist entry — the allowlist is a code change, not a silent default. (Cost,
+  stated honestly: a new legitimate non-audio file type fails until the allowlist is extended; loud and
+  reviewable beats silent.)
+  A reconciled entry needs `provenance.kind` + license + a traceable source + attribution, and `rightsCleared`
+  must be the literal JSON boolean true (the string `"false"` is truthy and is rejected). Anything bundled
+  before the gate is declared, hash by hash, as `legacy-unreconciled` against `legacyBaseline`
+  (`check-portfolio-acceptance.mjs`'s legacy-baseline precedent — those files were never retroactively passed,
+  and the TED clip's rights decision stays with the owner in bead z79). The baseline is DERIVED at gate time
+  from the anchored commit (`git ls-tree` + `git cat-file --batch`, hashing exactly as the working tree is hashed),
+  and `legacyBaseline.hashes` is only a cross-check that must match — appending a hash and bumping the counts
+  FAILS with `BASELINE MISMATCH`. The ANCHOR itself (`legacyBaseline.sha`) is pinned in CODE as `BASELINE_SHA`
+  in `scripts/audio-provenance-lib.mjs`: a ledger-only flip to another commit (or to `HEAD`) FAILS with
+  `BASELINE ANCHOR MOVED`, so moving the baseline is a code change and a review tripwire. It is an explicit set
+  of CONTENT HASHES, never a filename pattern: a NEW, changed, or byte-different-copy in-scope file FAILS
+  (`UNLEDGERED AUDIO` / `PATH DRIFT` / `LEGACY NOT IN BASELINE`).
+  **The gate checks field PRESENCE and TYPE, never TRUTH** — a fabricated licence/source/attribution with all
+  fields filled in passes, and anyone with commit access can edit the gate itself. The guarantee is that
+  wrongdoing (an anchor flip, a new legacy entry, a `paths[]` addition, an allowlist entry, a fabricated
+  provenance record) is VISIBLE IN A REVIEWABLE DIFF, not that it is impossible.
+  **Scope is by EXTENSION, never by content, and two consequences are DECLARED, not hidden.** (1) Audio renamed
+  to an allowlisted extension (`notes.txt`, `data.json`, `.gitignore`) or tucked inside a `.zip` is out of scope
+  BY CONSTRUCTION and passes rc=0 — the gate catches ACCIDENTAL shipping (real audio under its own extension,
+  the ted.wav/jfk.wav incident), while a deliberate disguise is caught by the visible diff, not by the gate.
+  (2) There is a KNOWN extension collision: `.ts` and `.mts` are classified as source (they are TypeScript /
+  TypeScript-module files here) even though both are also MPEG transport-stream container extensions, so a real
+  MPEG-TS `.ts`/`.mts` is out of scope by deliberate decision (its sibling `.m2ts` stays in scope and fails
+  closed). Changing that classification is a code change; the note lives in `scripts/audio-provenance-lib.mjs`
+  and is asserted by `test/audio-provenance.test.mjs`.
+  When you add a sample clip: record its licence, source and attribution in the ledger; never declare a new
+  asset legacy, and never promote an unreconciled clip. The gate neither resolves nor ratifies the unlicensed
+  TED bytes.
 - **Every downloading demo is classified in the route inventory (Task 2b · Phase 1).**
   `download-routes.json` classifies all 270 built routes by download runtime/loader family
   (transformers-pipeline / -from_pretrained / -wrapped / -resumable-prefetch, webllm, mediapipe, raw-ort,
