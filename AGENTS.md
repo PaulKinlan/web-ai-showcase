@@ -272,6 +272,15 @@ short version for tools that look for `AGENTS.md`.
   fields filled in passes, and anyone with commit access can edit the gate itself. The guarantee is that
   wrongdoing (an anchor flip, a new legacy entry, a `paths[]` addition, an allowlist entry, a fabricated
   provenance record) is VISIBLE IN A REVIEWABLE DIFF, not that it is impossible.
+  **Scope is by EXTENSION, never by content, and two consequences are DECLARED, not hidden.** (1) Audio renamed
+  to an allowlisted extension (`notes.txt`, `data.json`, `.gitignore`) or tucked inside a `.zip` is out of scope
+  BY CONSTRUCTION and passes rc=0 — the gate catches ACCIDENTAL shipping (real audio under its own extension,
+  the ted.wav/jfk.wav incident), while a deliberate disguise is caught by the visible diff, not by the gate.
+  (2) There is a KNOWN extension collision: `.ts` and `.mts` are classified as source (they are TypeScript /
+  TypeScript-module files here) even though both are also MPEG transport-stream container extensions, so a real
+  MPEG-TS `.ts`/`.mts` is out of scope by deliberate decision (its sibling `.m2ts` stays in scope and fails
+  closed). Changing that classification is a code change; the note lives in `scripts/audio-provenance-lib.mjs`
+  and is asserted by `test/audio-provenance.test.mjs`.
   When you add a sample clip: record its licence, source and attribution in the ledger; never declare a new
   asset legacy, and never promote an unreconciled clip. The gate neither resolves nor ratifies the unlicensed
   TED bytes.

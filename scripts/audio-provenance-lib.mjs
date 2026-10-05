@@ -27,10 +27,20 @@ export const KNOWN_MEDIA_EXT = new Set([
   "m2v", "vob", "3gp", "3g2", "ts", "m2ts", "mts", "rmvb", "asf", "amv", "mxf", "y4m", "dv",
 ]);
 
-// KNOWN COLLISION, documented rather than hidden: `ts` is classified as TypeScript source here because
-// that is what a `.ts` file is in this repository, while `.ts` is also the MPEG transport-stream
-// container. An MPEG-TS file renamed `.ts` is therefore out of scope; if the repo ever bundles one, the
-// classification has to change (and that is a reviewable diff).
+// KNOWN COLLISION, documented rather than hidden: `ts` AND `mts` are classified as source above (they are
+// TypeScript / TypeScript-module files in this repository) even though both are ALSO MPEG transport-stream
+// container extensions. An MPEG-TS file renamed `.ts` or `.mts` is therefore out of scope BY CONSTRUCTION —
+// the deliberate counterpart of `.m2ts`, which stays in scope and fails closed. That asymmetry is a
+// decision, not an oversight: `.mts` cannot be pulled out of scope-safety without also pulling `.ts`, and
+// the repo really does track `.ts` source (search-protocol.ts, server.ts, server_test.ts) that must stay
+// out of scope. If the repo ever bundles a real MPEG-TS `.ts`/`.mts`, the classification has to change
+// (and that is a reviewable diff).
+//
+// SCOPE IS BY EXTENSION, NEVER BY CONTENT. Nothing here reads a file's magic bytes, so a WAV renamed
+// `notes.txt` (or hidden inside a `.zip`) is out of scope by construction and passes with rc=0 — the
+// residual is honest and accepted: this gate exists to catch ACCIDENTAL shipping of real audio under its
+// own extension (the ted.wav/jfk.wav incident), and a determined insider who renames a clip is caught by
+// the VISIBLE DIFF (new/changed bytes, a new ledger row, an allowlist edit), not by the gate.
 //
 // Extensions whose files cannot carry a playable audio track: source code, markup, styles, text and
 // documentation, config, still images, fonts, structured data/model weights, archives and other

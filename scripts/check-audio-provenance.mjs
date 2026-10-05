@@ -42,6 +42,16 @@
 // record each show up as a line someone can review — not that wrongdoing is impossible. Nothing here
 // resolves, ratifies or vouches for the rights status of any clip.
 //
+// SCOPE IS BY EXTENSION, NEVER BY CONTENT — and the residual is stated plainly. In-scope-ness comes from a
+// file's extension alone, so a WAV renamed to an allowlisted extension (`notes.txt`, `data.json`,
+// `.gitignore`) or tucked inside a `.zip` is out of scope BY CONSTRUCTION and passes rc=0 unmentioned. This
+// gate catches ACCIDENTAL shipping — real audio under its own extension, the ted.wav/jfk.wav incident — not
+// disguise: a determined insider who renames a clip is caught by the VISIBLE DIFF (the new/changed bytes, a
+// ledger row, an allowlist edit) a reviewer sees, not by this script. There is also a declared extension
+// collision: `ts`/`mts` are TypeScript source here even though both are MPEG-TS container extensions, so a
+// real MPEG-TS `.ts`/`.mts` is out of scope by deliberate decision (its sibling `.m2ts` stays in scope); see
+// scripts/audio-provenance-lib.mjs and AGENTS.md.
+//
 // THE BASELINE ANCHOR IS PINNED IN CODE. legacyBaseline.sha is ledger data, so on its own it is
 // self-declared: repointing it at a commit that contains a new wav (or at "HEAD") and regenerating
 // legacyBaseline.hashes would otherwise PASS while printing a new "frozen baseline DERIVED from <sha>"

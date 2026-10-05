@@ -7,9 +7,10 @@
 // tree, the wiring that keeps it in the gate chain, the DERIVED baseline (recomputed from git blobs at the
 // anchored commit and compared to the ledger's declared list), the INVERTED fail-closed scope rule (a .mkv —
 // the same Matroska container as .webm — and any unknown extension are in scope), the pinned baseline anchor
-// (a ledger-only sha flip is rejected), and — critically — a POSITIVE and several NEGATIVE fixture controls
-// proving a new undeclared file really fails, that an appended baseline hash cannot make the gate pass, and
-// that a stringy rightsCleared is rejected.
+// (a ledger-only sha flip is rejected), the DECLARED scope limits (the `.ts`/`.mts` MPEG-TS collision and the
+// extension-rename residual are decisions, pinned here and stated in AGENTS.md), and — critically — a POSITIVE
+// and several NEGATIVE fixture controls proving a new undeclared file really fails, that an appended baseline
+// hash cannot make the gate pass, and that a stringy rightsCleared is rejected.
 //
 // No browser, no network: git, the ledger, and a throwaway git repo in the OS temp dir.
 
@@ -243,6 +244,74 @@ test("the scope rule is INVERTED and fails closed on unknown extensions", () => 
   assert.equal(extensionOf(".gitignore"), "gitignore");
   assert.equal(extensionOf(".beads/hooks/pre-commit"), "");
   assert.equal(extensionOf("a/b/Archive.TAR.GZ"), "gz");
+});
+
+test("DECLARED SCOPE DECISION: a real MPEG-TS .mts is out of scope (the `.ts` collision sibling), unlike .m2ts", () => {
+  // Fix pass 4 (web-ai-showcase-eba): the reviewer found `.mts` — the UNDECLARED sibling of the declared
+  // `.ts` collision. An ffmpeg MPEG-TS carrying AAC, renamed `.mts`, is TypeScript-module source by its
+  // extension, so it is out of scope BY CONSTRUCTION and passes rc=0 with no mention; the byte-identical
+  // `.m2ts` is in scope and FAILS. That asymmetry is now a DOCUMENTED decision (lib KNOWN COLLISION note +
+  // AGENTS.md), and this test PINS it so an accidental change flips a test instead of slipping through review.
+  const MPEG_TS = Buffer.from("\x47\x40\x11\x10\x00\x42\xf0\x25\x00\x01\xc1\x00\x00\xff\x01\xff", "binary");
+  assert.ok(!inScope("models/new-demo/clip.mts"), ".mts must be out of scope (TypeScript-module source)");
+  assert.ok(!inScope("models/new-demo/clip.ts"), ".ts must be out of scope (TypeScript source)");
+  assert.ok(inScope("models/new-demo/clip.m2ts"), ".m2ts must be in scope (no source collision)");
+  const mts = "models/new-demo/clip.mts";
+  const dir = fixtureRepo(
+    { baseline: { "README.md": README }, now: { [mts]: MPEG_TS } },
+    baseLedger({ totals: { bundledFiles: 0, entries: 0 } }),
+  );
+  try {
+    const r = runGate(dir);
+    assert.equal(r.status, 0, `expected the documented out-of-scope PASS, got ${r.status}:\n${r.stderr}`);
+    assert.doesNotMatch(r.stderr, /clip\.mts/, "an out-of-scope .mts must not be named");
+    // The sibling .m2ts carrying the SAME bytes IS caught — the declared asymmetry is real, not theoretical.
+    writeFileSync(join(dir, "models/new-demo/clip.m2ts"), MPEG_TS);
+    execFileSync("git", ["add", "-A"], { cwd: dir });
+    const r2 = runGate(dir);
+    assert.equal(r2.status, 1, `expected the .m2ts sibling to FAIL, got ${r2.status}:\n${r2.stderr}`);
+    assert.match(r2.stderr, /UNLEDGERED AUDIO \(unknown content hash\): models\/new-demo\/clip\.m2ts/);
+    assert.match(r2.stderr, /a known media extension \(\.m2ts\)/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("DOCUMENTED RESIDUAL: a wav renamed to an allowlisted extension, or hidden in a .zip, passes unmentioned", () => {
+  // Fix pass 4 (web-ai-showcase-eba), doc gap 2: scope is EXTENSION-based, so it cannot see content. A WAV
+  // named `notes.txt` and a ZIP that smuggles a wav are both out of scope by construction. That consequence
+  // is stated in the gate header and AGENTS.md; this test PINS the mechanism so the limitation stays a
+  // declared one — audio renamed to an allowlisted extension is caught by the reviewable diff, not the gate.
+  const hidden = "models/new-demo/notes.txt";
+  const zipped = "models/new-demo/clip.zip";
+  const zip = Buffer.from("PK\x03\x04-a wav payload would live inside; the gate never decodes", "binary");
+  const dir = fixtureRepo(
+    { baseline: { "README.md": README }, now: { [hidden]: wavB, [zipped]: zip } },
+    baseLedger({ totals: { bundledFiles: 0, entries: 0 } }),
+  );
+  try {
+    const r = runGate(dir);
+    assert.equal(r.status, 0, `expected the documented residual PASS, got ${r.status}:\n${r.stderr}`);
+    assert.doesNotMatch(r.stderr, /notes\.txt/, "a renamed wav is out of scope and unmentioned");
+    assert.doesNotMatch(r.stderr, /clip\.zip/, "a wav hidden in a .zip is out of scope and unmentioned");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("the .ts/.mts collision and the rename residual are reachable from AGENTS.md and the lib", () => {
+  // Fix pass 4, doc gap 3: the collision note must be reachable from AGENTS.md, not only a code comment, and
+  // the rename residual must be admitted in both places.
+  const agents = readFileSync("AGENTS.md", "utf8");
+  const lib = readFileSync("scripts/audio-provenance-lib.mjs", "utf8");
+  assert.match(agents, /extension collision/i, "AGENTS.md must name the .ts/.mts collision");
+  assert.match(agents, /`\.mts`/, "AGENTS.md must name .mts explicitly");
+  assert.match(agents, /`\.m2ts`/, "AGENTS.md must name the in-scope sibling .m2ts");
+  assert.match(agents, /out of scope by deliberate decision/i, "AGENTS.md must call it a deliberate decision");
+  assert.match(agents, /renamed\s+to an allowlisted extension/i, "AGENTS.md must admit the rename residual");
+  assert.match(lib, /KNOWN COLLISION/);
+  assert.match(lib, /`ts` AND `mts`/, "the lib collision note must cover mts, not only ts");
+  assert.match(lib, /SCOPE IS BY EXTENSION, NEVER BY CONTENT/);
 });
 
 test("the gate's baseline anchor is pinned in code, not read from the ledger", () => {
