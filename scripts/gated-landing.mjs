@@ -117,11 +117,12 @@ import {
   mkdtempSync,
   openSync,
   readFileSync,
+  realpathSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
-import { pathToFileURL, realpathSync } from "node:url";
+import { pathToFileURL } from "node:url";
 
 /** Anchored update-row regex — the classification pattern (branch 3). Exported for tests. */
 export const UPDATE_ROW_RE = /^ *[0-9a-f]{4,}\.\.[0-9a-f]{4,} +HEAD -> /;
@@ -135,8 +136,7 @@ const PROBE_TIMEOUT_MS = 120_000;
 const SHA40 = /^[0-9a-f]{40}$/;
 
 const say = (msg) => console.log(`[gated-landing] ${msg}`);
-const readLines = (p) =>
-  readFileSync(p, "utf8").split(/\r?\n/).filter((l) => l.trim() !== "");
+const readLines = (p) => readFileSync(p, "utf8").split(/\r?\n/).filter((l) => l.trim() !== "");
 
 /**
  * Parse a captured dry-run into classification FACTS. The update row is matched LINE-ANCHORED
@@ -302,13 +302,17 @@ export function run(options) {
   const drylog = join(logDir, "dry-run.log");
   const probelog = join(logDir, "probe.log");
   const pushlog = join(logDir, "push.log");
-  say(`log dir ${logDir} (outside the repo: in-repo logs would dirty the clean-worktree precondition)`);
+  say(
+    `log dir ${logDir} (outside the repo: in-repo logs would dirty the clean-worktree precondition)`,
+  );
 
   // ---------- 0. PRECONDITIONS — explicit, not assumed ----------
   const targetSha = remoteSha(work, branch);
   if (targetSha === null) {
     say(`cannot resolve refs/heads/${branch} on origin — refusing to guess`);
-    say("(this script cannot CREATE a remote branch; push the first copy manually, then land with it)");
+    say(
+      "(this script cannot CREATE a remote branch; push the first copy manually, then land with it)",
+    );
     return 9;
   }
   const head = git(["rev-parse", "HEAD"], { cwd: work });
@@ -318,7 +322,7 @@ export function run(options) {
     return 9;
   }
   const dirty = git(["status", "--porcelain"], { cwd: work });
-  const dirtyText = (dirty.stdout ?? "");
+  const dirtyText = dirty.stdout ?? "";
   if (dirtyText.trim() !== "") {
     say("PRECONDITION FAILED: worktree is NOT clean:");
     for (const l of dirtyText.split(/\r?\n/).slice(0, 10)) if (l.trim()) say(`    | ${l}`);
@@ -329,8 +333,12 @@ export function run(options) {
   say(`precondition: worktree clean, HEAD=${headFull}, target(${branch})=${targetSha}`);
 
   if (headFull === targetSha && !canned) {
-    say("VERDICT: NOTHING TO LAND — HEAD already equals the target: my HEAD has nothing the target");
-    say("lacks (you have not merged yet, or you are about to land nothing). Probing the write path");
+    say(
+      "VERDICT: NOTHING TO LAND — HEAD already equals the target: my HEAD has nothing the target",
+    );
+    say(
+      "lacks (you have not merged yet, or you are about to land nothing). Probing the write path",
+    );
     say("with a throwaway ref; NOT pushing.");
     probeWritePath(work, probelog);
     return 2;
@@ -358,7 +366,9 @@ export function run(options) {
     copyFileSync(canned, drylog);
   } else {
     const f = git(["fetch", "-q", "origin"], { cwd: work }); // best-effort; the dry-run below
-    if (f.status !== 0) say(`fetch rc=${f.status} (best-effort; the dry-run contacts origin itself)`);
+    if (f.status !== 0) {
+      say(`fetch rc=${f.status} (best-effort; the dry-run contacts origin itself)`);
+    }
     const d = git(["push", "--dry-run", "origin", `HEAD:refs/heads/${branch}`], {
       cwd: work,
       logPath: drylog,
@@ -368,7 +378,11 @@ export function run(options) {
     dryRc = d.status;
     dryIncomplete = d.incomplete;
   }
-  say(`dry-run rc=${dryRc} (unpiped; artifact below is the evidence, not the status)`);
+  say(
+    canned
+      ? `dry-run: CANNED capture from ${canned} (nothing ran; there is no real rc)`
+      : `dry-run rc=${dryRc} (unpiped; artifact below is the evidence, not the status)`,
+  );
   for (const l of readLines(drylog)) say(`    | ${l}`);
 
   // Assert on the FILE (read back — the same bytes a reviewer would inspect).
@@ -391,7 +405,9 @@ export function run(options) {
       probeWritePath(work, probelog); // d2: throwaway-ref probe only; do NOT push
       return 2;
     case "unrecognised":
-      say("VERDICT: UNRECOGNISED OUTPUT — DO NOT PUSH (fail-closed). No update row, no up-to-date,");
+      say(
+        "VERDICT: UNRECOGNISED OUTPUT — DO NOT PUSH (fail-closed). No update row, no up-to-date,",
+      );
       say("no rejection. A git wording change, a locale, or a truncated capture falls through to");
       say("here; the safe answer is always 'do not push'.");
       return 4;
@@ -408,7 +424,9 @@ export function run(options) {
       say("genuine and contains no '[rejected]', but the sha it names is not what you gated.");
       return 1;
     case "dry-run-did-not-complete":
-      say("VERDICT: UNKNOWN — the dry-run did not complete (timeout/crash); a complete-looking row");
+      say(
+        "VERDICT: UNKNOWN — the dry-run did not complete (timeout/crash); a complete-looking row",
+      );
       say("in a killed capture is still never a pass. DO NOT PUSH.");
       return 4;
     default:
@@ -452,18 +470,22 @@ function main(argv) {
   const parsed = parseArgs(argv);
   if (parsed.error) {
     say(parsed.error);
-    say("usage: node scripts/gated-landing.mjs --branch <branch> [--workdir <dir>] " +
-      "[--stub-push] [--dry-run-output <file>] [--log-dir <dir>] (see the file header)");
+    say(
+      "usage: node scripts/gated-landing.mjs --branch <branch> [--workdir <dir>] " +
+        "[--stub-push] [--dry-run-output <file>] [--log-dir <dir>] (see the file header)",
+    );
     return 9;
   }
   if (parsed.help) {
-    say("usage: node scripts/gated-landing.mjs --branch <branch> [--workdir <dir>] " +
-      "[--stub-push] [--dry-run-output <file>] [--log-dir <dir>] (see the file header)");
+    say(
+      "usage: node scripts/gated-landing.mjs --branch <branch> [--workdir <dir>] " +
+        "[--stub-push] [--dry-run-output <file>] [--log-dir <dir>] (see the file header)",
+    );
     return 0;
   }
   return run(parsed);
 }
 
-const invokedAsScript =
-  process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href;
+const invokedAsScript = process.argv[1] &&
+  import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href;
 if (invokedAsScript) process.exitCode = main(process.argv.slice(2));
