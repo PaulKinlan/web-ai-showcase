@@ -5,9 +5,11 @@
 // prohibited) and seventeen jfk.wav copies shipped through every gate for six weeks without a single check
 // noticing. This suite pins the replacement station: the ledger's own contract, the gate's PASS on the real
 // tree, the wiring that keeps it in the gate chain, the DERIVED baseline (recomputed from git blobs at the
-// named commit and compared to the ledger's declared list), and — critically — a POSITIVE and several NEGATIVE
-// fixture controls proving a new undeclared file (including an audio-bearing .webm container) really fails,
-// that an appended baseline hash cannot make the gate pass, and that a stringy rightsCleared is rejected.
+// anchored commit and compared to the ledger's declared list), the INVERTED fail-closed scope rule (a .mkv —
+// the same Matroska container as .webm — and any unknown extension are in scope), the pinned baseline anchor
+// (a ledger-only sha flip is rejected), and — critically — a POSITIVE and several NEGATIVE fixture controls
+// proving a new undeclared file really fails, that an appended baseline hash cannot make the gate pass, and
+// that a stringy rightsCleared is rejected.
 //
 // No browser, no network: git, the ledger, and a throwaway git repo in the OS temp dir.
 
@@ -18,6 +20,13 @@ import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import {
+  BASELINE_SHA,
+  extensionOf,
+  inScope,
+  NON_AUDIO_EXT,
+  NON_AUDIO_PATH,
+} from "../scripts/audio-provenance-lib.mjs";
 
 const ROOT = process.cwd();
 const GATE = "scripts/check-audio-provenance.mjs";
@@ -87,8 +96,8 @@ test("the fail-closed audio gate passes on the current tree", () => {
   // Runs the real gate; a non-zero exit is reported with the gate's own stderr, which is the quotable failure.
   const r = spawnSync("node", [GATE], { cwd: ROOT, encoding: "utf8" });
   assert.equal(r.status, 0, `gate exited ${r.status}:\n${r.stderr}`);
-  assert.match(r.stderr, /^audio-provenance: \d+ audio files/m);
-  assert.match(r.stderr, /PASS — every audio file maps by content hash/);
+  assert.match(r.stderr, /^audio-provenance: \d+ in-scope files/m);
+  assert.match(r.stderr, /PASS — every in-scope file maps by content hash/);
 });
 
 test("the audio gate is wired into the gate chain (deno task gate) and CI", () => {
@@ -117,6 +126,7 @@ const WAV = Buffer.from("RIFF\x00\x00\x00\x00WAVEfmt ", "binary"); // bytes only
 const wavB = Buffer.concat([WAV, Buffer.from([1])]);
 const wavC = Buffer.concat([WAV, Buffer.from([2])]);
 const WEBM = Buffer.from("\x1a\x45\xdf\xa3-not-really-ebml", "binary");
+const MKV = Buffer.from("\x1a\x45\xdf\xa3-not-really-mkv", "binary");
 
 const GIT_ID = ["-c", "user.email=fixture@example.invalid", "-c", "user.name=fixture"];
 
@@ -160,8 +170,12 @@ const baseLedger = (over) => ({
   ...over,
 });
 
-function runGate(dir) {
-  return spawnSync("node", [GATE, "--root", dir], { cwd: ROOT, encoding: "utf8" });
+function runGate(dir, baselineSha) {
+  // Fixture repos pin their own baseline commit; the gate's real anchor is asserted separately against the
+  // real ledger, so this only supplies the --baseline-sha test hook (never set in CI).
+  const pinned = baselineSha ??
+    JSON.parse(readFileSync(join(dir, "audio-provenance/ledger.json"), "utf8")).legacyBaseline.sha;
+  return spawnSync("node", [GATE, "--root", dir, "--baseline-sha", pinned], { cwd: ROOT, encoding: "utf8" });
 }
 
 const sha = (buf) => createHash("sha256").update(buf).digest("hex");
@@ -183,24 +197,63 @@ const README = Buffer.from("# fixture\n");
 
 // ── The real tree: the baseline is DERIVED, the container fixture is declared ───────────────────
 
-test("the declared legacy baseline EQUALS the set re-derived from the named commit", () => {
-  // Independent of the gate: list the commit's tree, hash every in-scope blob, compare to the ledger.
-  // This is what makes "frozen baseline" a re-derived fact instead of a self-declaration.
-  const AUDIO = /\.(wav|mp3|ogg|m4a|flac|aac|opus|oga|aiff|aif|wma|webm|mp4|m4v)$/i;
+test("the declared legacy baseline EQUALS the set re-derived from the anchored commit", () => {
+  // Independent of the gate's own derivation: list the commit's tree, hash every in-scope blob with our own
+  // ls-tree + cat-file blob calls, compare to the ledger. This is what makes "frozen baseline" a re-derived
+  // fact instead of a self-declaration. The scope predicate is the shared one (tested directly below) so the
+  // test fails loudly if the allowlist and the ledger ever disagree about what is in scope.
+  assert.equal(ledger.legacyBaseline.sha, BASELINE_SHA, "the ledger anchor must equal the code anchor");
   const tree = execFileSync("git", ["ls-tree", "-r", "-z", ledger.legacyBaseline.sha], {
     cwd: ROOT,
     encoding: "utf8",
   });
-  const inScope = tree.split("\0").filter(Boolean).map((rec) => {
+  const inScopeSet = tree.split("\0").filter(Boolean).map((rec) => {
     const tab = rec.indexOf("\t");
     return { oid: rec.slice(0, tab).split(" ")[2], path: rec.slice(tab + 1) };
-  }).filter((f) => AUDIO.test(f.path));
+  }).filter((f) => inScope(f.path));
   const derived = new Set(
-    inScope.map((f) => sha(execFileSync("git", ["cat-file", "blob", f.oid], { cwd: ROOT, maxBuffer: 64 * 1024 * 1024 }))),
+    inScopeSet.map((f) => sha(execFileSync("git", ["cat-file", "blob", f.oid], { cwd: ROOT, maxBuffer: 64 * 1024 * 1024 }))),
   );
   assert.deepEqual([...derived].sort(), [...ledger.legacyBaseline.hashes].sort());
-  assert.equal(ledger.legacyBaseline.bundledFiles, inScope.length);
+  assert.equal(ledger.legacyBaseline.bundledFiles, inScopeSet.length);
   assert.equal(ledger.legacyBaseline.unreconciledContentHashes, derived.size);
+});
+
+test("the scope rule is INVERTED and fails closed on unknown extensions", () => {
+  // C1 of the delta re-review: the old rule was an ALLOWLIST of audio extensions, so .mkv — the same
+  // Matroska container as the admitted .webm — .mov, .ogv, .3gp, .mka, .caf and .w64 carried real audio and
+  // passed rc=0. Now every tracked file is in scope unless it is explicitly known not to carry audio.
+  for (const p of ["a.wav", "a.mp3", "a.webm", "a.mp4", "a.mkv", "a.mov", "a.ogv", "a.3gp", "a.mka", "a.caf", "a.w64", "a.opus"]) {
+    assert.ok(inScope(p), `${p} must be in scope (it can carry audio)`);
+  }
+  // Unknown and extension-less files are in scope by default — the whole point of the inversion.
+  for (const p of ["a.somebrandnewformat", "a", "models/x/Makefile", "a.bin", "a.dat"]) {
+    assert.ok(inScope(p), `${p} must be in scope (unknown ⇒ fail closed)`);
+  }
+  for (const p of ["a.md", "a.html", "a.css", "a.js", "a.mjs", "a.json", "a.png", "a.jpg", "a.woff2", "a.txt", ".gitignore", "a.yml"]) {
+    assert.ok(!inScope(p), `${p} must be out of scope (cannot carry audio)`);
+  }
+  // Extension-less and opaque .bin files are allowlisted BY EXACT PATH, so a new one is still in scope.
+  assert.ok(!inScope("models/speecht5-tts/speakers/awb.bin"));
+  assert.ok(!inScope(".beads/hooks/pre-commit"));
+  assert.ok(inScope("models/some-new-demo/weights.bin"), "a NEW opaque .bin must not ride the allowlist");
+  // Every allowlist entry carries a human-readable justification.
+  for (const [ext, why] of NON_AUDIO_EXT) assert.ok(why && why.length, `extension ${ext} has no justification`);
+  for (const [p, why] of NON_AUDIO_PATH) assert.ok(why && why.length, `path ${p} has no justification`);
+  assert.equal(extensionOf(".gitignore"), "gitignore");
+  assert.equal(extensionOf(".beads/hooks/pre-commit"), "");
+  assert.equal(extensionOf("a/b/Archive.TAR.GZ"), "gz");
+});
+
+test("the gate's baseline anchor is pinned in code, not read from the ledger", () => {
+  // Item 2 of fix pass 3: legacyBaseline.sha is ledger data; repointing it (at a commit that ships a new
+  // clip, or at "HEAD") and regenerating the hashes used to PASS while printing a new DERIVED line. The
+  // anchor lives in scripts/audio-provenance-lib.mjs, so changing the baseline is a code change.
+  assert.equal(BASELINE_SHA, "e9c20b75ba5b83866ad4367461a8100a07dc5afc");
+  assert.equal(ledger.legacyBaseline.sha, BASELINE_SHA);
+  const src = readFileSync("scripts/check-audio-provenance.mjs", "utf8");
+  assert.match(src, /BASELINE_SHA/, "the gate must use the pinned anchor");
+  assert.match(src, /BASELINE ANCHOR MOVED/, "the gate must reject a ledger-only anchor flip");
 });
 
 test("the audio-bearing CONTAINER fixture is declared, not allowlisted away", () => {
@@ -211,6 +264,61 @@ test("the audio-bearing CONTAINER fixture is declared, not allowlisted away", ()
   assert.ok(entry, `${webm} must have a ledger entry keyed by its content hash`);
   assert.ok(entry.paths.includes(webm));
   assert.match(entry.legacyReason, /Opus/);
+});
+
+test("NEGATIVE CONTROL: a .mkv container FAILS (UNLEDGERED AUDIO) — the decisive C1 remux case", () => {
+  // Fix pass 3, item 1: .mkv was NOT on yesterday's allowlist. It is the SAME Matroska container as .webm,
+  // which the gate admits, so remuxing the existing fixture to a sibling extension walked past the gate.
+  const rel = "models/new-demo/remuxed-sample.mkv";
+  const dir = fixtureRepo(
+    { baseline: { "README.md": README }, now: { [rel]: MKV } },
+    baseLedger({ totals: { bundledFiles: 0, entries: 0 } }),
+  );
+  try {
+    const r = runGate(dir);
+    assert.equal(r.status, 1, `expected FAIL, got ${r.status}:\n${r.stderr}`);
+    assert.match(r.stderr, new RegExp(`UNLEDGERED AUDIO \\(unknown content hash\\): ${rel}`));
+    assert.match(r.stderr, /a known media extension \(\.mkv\)/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("NEGATIVE CONTROL: an unknown extension FAILS (fail-closed, not skipped)", () => {
+  const rel = "models/new-demo/sample.somebrandnewformat";
+  const dir = fixtureRepo(
+    { baseline: { "README.md": README }, now: { [rel]: wavB } },
+    baseLedger({ totals: { bundledFiles: 0, entries: 0 } }),
+  );
+  try {
+    const r = runGate(dir);
+    assert.equal(r.status, 1, `expected FAIL, got ${r.status}:\n${r.stderr}`);
+    assert.match(r.stderr, new RegExp(`UNLEDGERED AUDIO \\(unknown content hash\\): ${rel}`));
+    assert.match(r.stderr, /extension \.somebrandnewformat, which is NOT on the cannot-contain-audio allowlist/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("NEGATIVE CONTROL: a ledger-only baseline anchor flip FAILS (BASELINE ANCHOR MOVED)", () => {
+  // Fix pass 3, item 2: legacyBaseline.sha is ledger data, so on its own it is self-declared. The gate pins
+  // the anchor in code; a ledger (or ledger-plus-hashes) flip that does not also change the code fails.
+  const rel = "models/fixture-a/ted.wav";
+  const dir = fixtureRepo({ baseline: { [rel]: wavC } }, baseLedger({
+    totals: { bundledFiles: 1, entries: 1 },
+    legacyBaseline: { sha: "0".repeat(40), note: "fixture", bundledFiles: 1, unreconciledContentHashes: 1, hashes: [sha(wavC)] },
+    entries: [legacyEntry(sha(wavC), rel, wavC)],
+  }));
+  try {
+    // The fixture ledger's own sha is accepted (that is the pin), but a DIFFERENT declared sha is not.
+    assert.equal(runGate(dir).status, 0, "the fixture's own pinned anchor must pass");
+    const flipped = runGate(dir, "f".repeat(40));
+    assert.equal(flipped.status, 1, `expected FAIL, got ${flipped.status}:\n${flipped.stderr}`);
+    assert.match(flipped.stderr, /FAIL — BASELINE ANCHOR MOVED/);
+    assert.match(flipped.stderr, /The anchor is CODE|anchor is CODE/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 // ── Fixture controls ───────────────────────────────────────────────────────────────────────────
@@ -241,7 +349,7 @@ test("POSITIVE CONTROL: a reconciled fixture asset (licence + source + attributi
   try {
     const r = runGate(dir);
     assert.equal(r.status, 0, `expected PASS, got ${r.status}:\n${r.stderr}`);
-    assert.match(r.stderr, /PASS — every audio file maps by content hash/);
+    assert.match(r.stderr, /PASS — every in-scope file maps by content hash/);
     assert.match(r.stderr, /frozen baseline DERIVED from/);
   } finally {
     rmSync(dir, { recursive: true, force: true });

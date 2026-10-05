@@ -1,27 +1,53 @@
 #!/usr/bin/env node
-// Fail-closed audio-provenance gate. Every audio file on the site MUST map, BY CONTENT HASH, to an
+// Fail-closed audio-provenance gate. Every in-scope file on the site MUST map, BY CONTENT HASH, to an
 // entry in audio-provenance/ledger.json. A reconciled entry must carry a licence, a traceable source
 // and an attribution; an unreconciled entry must be declared legacy AND its content hash must be part of
-// the legacy baseline DERIVED from the named baseline commit. Because it re-hashes every file, ANY new,
-// changed, or byte-different-copy audio file whose bytes aren't in the ledger fails the gate — you
-// cannot ship audio without recording its provenance first. This is the mechanical enforcement of "no
-// unverified source ships", the audio counterpart to scripts/check-image-provenance.mjs, and the station
-// that was missing when ten byte-identical ted.wav copies and seventeen jfk.wav copies shipped through
-// every gate unnoticed for six weeks.
+// the legacy baseline DERIVED from the anchored baseline commit. Because it re-hashes every file, ANY
+// new, changed, or byte-different-copy in-scope file whose bytes aren't in the ledger fails the gate —
+// you cannot ship audio without recording its provenance first. This is the mechanical enforcement of
+// "no unverified source ships", the audio counterpart to scripts/check-image-provenance.mjs, and the
+// station that was missing when ten byte-identical ted.wav copies and seventeen jfk.wav copies shipped
+// through every gate unnoticed for six weeks.
 //
-// SCOPE mirrors the image gate: `git ls-files` filtered by audio extension, i.e. every git-TRACKED file
-// under the site tree. Gitignored trees (node_modules/) are out of scope by construction, and there is
-// deliberately no filename exclusion — a committed test fixture is still bundled bytes and is in scope,
-// exactly as a fixture raster is in scope for the image gate.
+// SCOPE IS INVERTED AND FAILS CLOSED. This gate USED an ALLOWLIST of audio extensions, so any extension
+// not on the list was skipped silently: a committed .mkv (the SAME Matroska container as the .webm this
+// gate admits), .mov, .ogv, .3gp, .mka, .caf, .w64 all carried real audio and passed with rc=0. The rule
+// is now: every git-TRACKED file is IN SCOPE unless it is on the explicit "cannot contain audio"
+// allowlist (scripts/audio-provenance-lib.mjs — source code, markup, styles, text, config, still images,
+// fonts, data/model blobs, archives, certificates; extension-less files and opaque .bin blobs are listed
+// by exact path). An unknown extension, a new media extension, or an extension-less file therefore FAILS
+// the gate until a human adds it to that allowlist with a justification — the allowlist is a code change
+// (a reviewable diff), never a silent default. Gitignored trees (node_modules/) stay out of scope by
+// construction, and there is deliberately no filename exclusion: a committed test fixture is still
+// bundled bytes and is in scope, exactly as a fixture raster is in scope for the image gate.
 //
-// CONTAINER RULE. The scan covers the audio extensions (.wav .mp3 .ogg .m4a .flac .aac .opus .oga
-// .aiff .aif .wma) AND the containers that can carry an audio track (.webm .mp4 .m4v). This gate does
-// not decode a container to discover whether it actually holds audio, so it cannot tell an audio-bearing
-// .webm from a video-only one — and it must not guess. An allowlist that skipped containers is exactly
-// what let lib/__capture-selftest__/sample-clip.webm (VP9 video + Opus audio) ship with no ledger entry
-// while this gate passed. Containers are therefore DECLARED in full, audio track or not: every tracked
-// .webm/.mp4/.m4v file needs a ledger entry like any other bundled byte, and its entry says whether it
-// is known to carry audio.
+// FALSE-POSITIVE COST, stated plainly: a new legitimate NON-audio file type (a new font format, a doc
+// format, a project file) now makes this gate red until its extension is added to the allowlist. That is
+// the correct direction — loud, explicit and reviewable beats a real audio asset shipping silently
+// because nobody had added its extension to a list.
+//
+// CONTAINER RULE. This gate does not decode a container to discover whether it actually holds audio, so
+// it cannot tell an audio-bearing .webm from a video-only one — and it must not guess; guessing is what
+// caused the failure above. Containers are therefore DECLARED in full, audio track or not: every tracked
+// .webm/.mp4/.m4v/.mkv/.mov/.ogv/.3gp/.mka/... needs a ledger entry like any other bundled byte, and its
+// entry says whether it is known to carry audio. The known-media extension list in the lib is a
+// reporting aid, NOT the scope rule, and is explicitly non-exhaustive: scope comes from the
+// cannot-contain-audio allowlist, so an extension nobody thought of is in scope by default.
+//
+// WHAT THIS GATE DOES NOT DO — presence and type, never truth. It checks that provenance fields are
+// PRESENT and correctly TYPED, never that they are TRUE: a fabricated licence, source URL and
+// attribution, with every field filled in, passes rc=0. And anyone with commit access can edit this
+// gate itself. The guarantee is therefore that wrongdoing is VISIBLE IN A REVIEWABLE DIFF — a baseline
+// anchor flip, a new legacy entry, a paths[] addition, an allowlist entry, a fabricated provenance
+// record each show up as a line someone can review — not that wrongdoing is impossible. Nothing here
+// resolves, ratifies or vouches for the rights status of any clip.
+//
+// THE BASELINE ANCHOR IS PINNED IN CODE. legacyBaseline.sha is ledger data, so on its own it is
+// self-declared: repointing it at a commit that contains a new wav (or at "HEAD") and regenerating
+// legacyBaseline.hashes would otherwise PASS while printing a new "frozen baseline DERIVED from <sha>"
+// line. The anchor is therefore a documented constant in scripts/audio-provenance-lib.mjs
+// (BASELINE_SHA); if the ledger's sha disagrees the gate fails with BASELINE ANCHOR MOVED. Moving the
+// baseline is a CODE change and therefore a review tripwire, not a ledger edit.
 //
 // THE LEGACY BASELINE IS DERIVED, NOT TRUSTED. ledger.legacyBaseline.hashes is only a cross-check. At
 // gate time this script re-reads the named commit (legacyBaseline.sha) with `git ls-tree -r` +
@@ -43,13 +69,18 @@
 // provenance field is type-checked here.
 //
 // Usage: node scripts/check-audio-provenance.mjs [--json]
-// Test hooks (fixtures only, never set in CI): --root <dir> --ledger <path>
+// Test hooks (fixtures only, never set in CI): --root <dir> --ledger <path> --baseline-sha <sha>
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
+import {
+  BASELINE_SHA,
+  extensionOf,
+  inScope,
+  KNOWN_MEDIA_EXT,
+} from "./audio-provenance-lib.mjs";
 
-const AUDIO = /\.(wav|mp3|ogg|m4a|flac|aac|opus|oga|aiff|aif|wma|webm|mp4|m4v)$/i;
 const ARCHETYPES = new Set(["licensed", "first-party", "legacy-unreconciled"]);
 const GIT_MAX = 512 * 1024 * 1024;
 
@@ -60,6 +91,9 @@ const flag = (name, dflt) => {
 };
 const ROOT = flag("--root", new URL("..", import.meta.url).pathname);
 const LEDGER = flag("--ledger", join(ROOT, "audio-provenance/ledger.json"));
+// The anchored baseline commit: code, not ledger data (see the header). The hook exists so fixture
+// repos can point the gate at their own throwaway baseline; it is never set in CI.
+const ANCHOR = flag("--baseline-sha", BASELINE_SHA);
 
 const sha256 = (p) => createHash("sha256").update(readFileSync(p)).digest("hex");
 
@@ -79,7 +113,7 @@ function audioBlobsAt(commit) {
     if (tab < 0) continue;
     const [, type, oid] = rec.slice(0, tab).split(" ");
     const path = rec.slice(tab + 1);
-    if (type !== "blob" || !AUDIO.test(path)) continue;
+    if (type !== "blob" || !inScope(path)) continue;
     selected.push({ path, oid });
   }
   if (!selected.length) return { files: 0, hashes: new Set() };
@@ -109,9 +143,9 @@ try {
     maxBuffer: 64 * 1024 * 1024,
   })
     .split("\n")
-    .filter((f) => f && AUDIO.test(f));
+    .filter((f) => f && inScope(f));
 } catch (e) {
-  console.error(`FAIL — cannot enumerate tracked audio files at ${ROOT}:`, e.message);
+  console.error(`FAIL — cannot enumerate tracked in-scope files at ${ROOT}:`, e.message);
   process.exit(1);
 }
 
@@ -130,6 +164,19 @@ for (const k of ["policy", "legacyBaseline", "totals", "entries"]) {
 }
 
 const baseline = ledger.legacyBaseline;
+if (baseline.sha !== ANCHOR) {
+  console.error(
+    `FAIL — BASELINE ANCHOR MOVED: audio-provenance/ledger.json declares legacyBaseline.sha=${baseline.sha} ` +
+      `but this gate pins ${ANCHOR}.`,
+  );
+  console.error(
+    "  The anchor is CODE (scripts/audio-provenance-lib.mjs, BASELINE_SHA), not ledger data, precisely so a" +
+      " ledger-only flip — repointing the baseline at a commit that ships a new clip, or at \"HEAD\" — cannot" +
+      " make this gate pass. Moving the baseline is a code change and a review tripwire: it must update" +
+      " BASELINE_SHA in the same reviewable diff, with a reason.",
+  );
+  process.exit(1);
+}
 const declaredHashes = new Set(Array.isArray(baseline.hashes) ? baseline.hashes : []);
 const entryByHash = new Map();
 for (const e of ledger.entries) entryByHash.set(e.hash, e);
@@ -175,8 +222,14 @@ for (const f of files) {
   const h = sha256(join(ROOT, f));
   const e = entryByHash.get(h);
   if (!e) {
+    const ext = extensionOf(f);
+    const kind = KNOWN_MEDIA_EXT.has(ext)
+      ? `a known media extension (.${ext})`
+      : ext
+        ? `extension .${ext}, which is NOT on the cannot-contain-audio allowlist`
+        : "no extension, which is NOT on the cannot-contain-audio allowlist";
     problems.push(
-      `UNLEDGERED AUDIO (unknown content hash): ${f} — every bundled audio file must have a provenance entry; add it to audio-provenance/ledger.json`,
+      `UNLEDGERED AUDIO (unknown content hash): ${f} — this file is in scope (${kind}) and every in-scope file must have a provenance entry; add it to audio-provenance/ledger.json, or — only if it genuinely cannot carry audio — add its extension/path to scripts/audio-provenance-lib.mjs in the same reviewable diff`,
     );
     continue;
   }
@@ -302,7 +355,7 @@ if (declaredHashes.size !== baseline.unreconciledContentHashes) {
   );
 }
 const summary = {
-  trackedAudioFiles: files.length,
+  inScopeFiles: files.length,
   ledgerEntries: ledger.entries.length,
   reconciledFiles,
   legacyFiles,
@@ -331,14 +384,13 @@ if (problems.length) {
 }
 
 console.error(
-  `audio-provenance: ${files.length} audio files → ${ledger.entries.length} content hashes · ` +
+  `audio-provenance: ${files.length} in-scope files → ${ledger.entries.length} content hashes · ` +
     `${reconciledFiles} reconciled (licence + source + attribution) · ${legacyFiles} legacy-unreconciled ` +
-    `(frozen baseline DERIVED from ${baseline.sha.slice(0, 7)}: ${baselineHashes.size} hashes over ${
-      derived.files
-    } in-scope files, never retroactively passed) · ` +
+    `(frozen baseline DERIVED from ${baseline.sha.slice(0, 7)} [anchor pinned in code: BASELINE_SHA]: ` +
+    `${baselineHashes.size} hashes over ${derived.files} in-scope files, never retroactively passed) · ` +
     `${JSON.stringify(summary.byArchetype)}`,
 );
 console.error(
-  "PASS — every audio file maps by content hash to a declared provenance entry; no new, changed, or copied audio can ship undeclared.",
+  "PASS — every in-scope file maps by content hash to a declared provenance entry; scope is fail-closed (unknown extension ⇒ in scope), so no new, changed, or copied media can ship undeclared.",
 );
 process.exit(0);
