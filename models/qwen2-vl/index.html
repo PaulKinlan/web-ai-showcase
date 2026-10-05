@@ -159,7 +159,7 @@ const inputs = await processor(text, image);
 const streamer = new TextStreamer(processor.tokenizer,
   { skip_prompt: true, skip_special_tokens: true, callback_function: (t) => append(t) });
 await model.generate({ ...inputs, max_new_tokens: 200, do_sample: false, streamer });</code></pre>
-      <p class="muted">This page runs exactly that, in a Web Worker, and gates on a real WebGPU adapter first — if none exists it shows a labelled needs-WebGPU state instead of a fake answer.</p>
+      <p class="muted">This page runs exactly that, in a Web Worker, and gates on a real WebGPU adapter first — if none exists it shows a labelled needs-WebGPU state instead of a fake answer. If the GPU backend itself crashes inside the model (a known ORT WebGPU issue with this ONNX build on some browser/GPU/driver combinations), the page says so plainly with what you can do next — the raw kernel text is demoted to a collapsed technical detail, never the headline.</p>
     </section>
 
     <section aria-labelledby="ref-h">
@@ -186,7 +186,7 @@ await model.generate({ ...inputs, max_new_tokens: 200, do_sample: false, streame
     </style>
 
     <script type="module">
-      import { Qwen2VLEngine, fileToDataURL, escapeHTML, QWEN_CSS } from "./qwen2vl.js";
+      import { Qwen2VLEngine, fileToDataURL, escapeHTML, showRuntimeFailure, QWEN_CSS } from "./qwen2vl.js";
       import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
       const style = document.createElement("style"); style.textContent = QWEN_CSS; document.head.append(style);
       const $ = (id) => document.getElementById(id);
@@ -233,6 +233,11 @@ await model.generate({ ...inputs, max_new_tokens: 200, do_sample: false, streame
         },
         load: (onProgress) => engine.load(onProgress),
         onReady: () => { $("run").disabled = false; },
+        // Labelled degradation for known runtime failures (e.g. an ORT WebGPU kernel crash at
+        // session creation): the visitor gets what happened + what they can do, raw text demoted.
+        onError: (err) => showRuntimeFailure(
+          $("model-loader").querySelector(".status"), err, { phase: "Model initialisation" },
+        ),
       });
 
       $("run").addEventListener("click", async () => {
@@ -262,7 +267,12 @@ await model.generate({ ...inputs, max_new_tokens: 200, do_sample: false, streame
           $("status").textContent = "Done."; $("status").classList.add("ok");
         } catch (err) {
           $("answer").innerHTML = '<span class="muted">Generation failed.</span>';
-          $("status").textContent = "Generation failed: " + err.message; $("status").classList.add("err");
+          // Known runtime failure classes (ORT WebGPU kernel crash, device lost, OOM) get a
+          // labelled degradation; anything unclassified keeps the raw message (never silent).
+          if (!showRuntimeFailure($("status"), err)) {
+            $("status").textContent = "Generation failed: " + err.message;
+            $("status").classList.add("err");
+          }
         } finally {
           $("run").disabled = false;
         }
