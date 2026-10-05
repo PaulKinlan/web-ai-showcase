@@ -243,6 +243,18 @@ short version for tools that look for `AGENTS.md`.
   to pull license-verified originals), then regenerate the ledger and run the gate. CC-BY/CC-BY-SA images
   shown on a page get a visible credit via the shared annotator `public/image-credit.js` (include it once
   per page); the full record renders at `/image-credits/`. Strip EXIF on bundled images.
+- **Every bundled audio file needs a recorded provenance entry — fail-closed.** `node scripts/check-audio-provenance.mjs`
+  (in `deno task gate` + CI) re-hashes every tracked `.wav/.mp3/.ogg/.m4a/.flac` file and requires each to
+  map, BY CONTENT HASH, to an entry in `audio-provenance/ledger.json` (schema:
+  `audio-provenance/ledger.schema.json`). A reconciled entry needs `provenance.kind` + license + a traceable
+  source + attribution. Anything bundled before the gate is declared, hash by hash, as
+  `legacy-unreconciled` against the frozen `legacyBaseline` (`check-portfolio-acceptance.mjs`'s legacy-baseline
+  precedent — those files were never retroactively passed, and the TED clip's rights decision stays with the
+  owner in bead z79). The baseline is an explicit set of CONTENT HASHES, never a filename pattern: a NEW,
+  changed, or byte-different-copy audio file FAILS (`UNLEDGERED AUDIO` / `PATH DRIFT` / `LEGACY NOT IN BASELINE`).
+  When you add a sample clip: record its licence, source and attribution in the ledger; never declare a new
+  asset legacy, and never promote an unreconciled clip. The gate neither resolves nor ratifies the unlicensed
+  TED bytes.
 - **Every downloading demo is classified in the route inventory (Task 2b · Phase 1).**
   `download-routes.json` classifies all 270 built routes by download runtime/loader family
   (transformers-pipeline / -from_pretrained / -wrapped / -resumable-prefetch, webllm, mediapipe, raw-ort,
