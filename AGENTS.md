@@ -244,14 +244,20 @@ short version for tools that look for `AGENTS.md`.
   shown on a page get a visible credit via the shared annotator `public/image-credit.js` (include it once
   per page); the full record renders at `/image-credits/`. Strip EXIF on bundled images.
 - **Every bundled audio file needs a recorded provenance entry — fail-closed.** `node scripts/check-audio-provenance.mjs`
-  (in `deno task gate` + CI) re-hashes every tracked `.wav/.mp3/.ogg/.m4a/.flac` file and requires each to
-  map, BY CONTENT HASH, to an entry in `audio-provenance/ledger.json` (schema:
-  `audio-provenance/ledger.schema.json`). A reconciled entry needs `provenance.kind` + license + a traceable
-  source + attribution. Anything bundled before the gate is declared, hash by hash, as
-  `legacy-unreconciled` against the frozen `legacyBaseline` (`check-portfolio-acceptance.mjs`'s legacy-baseline
-  precedent — those files were never retroactively passed, and the TED clip's rights decision stays with the
-  owner in bead z79). The baseline is an explicit set of CONTENT HASHES, never a filename pattern: a NEW,
-  changed, or byte-different-copy audio file FAILS (`UNLEDGERED AUDIO` / `PATH DRIFT` / `LEGACY NOT IN BASELINE`).
+  (in `deno task gate` + CI) re-hashes every tracked `.wav/.mp3/.ogg/.m4a/.flac/.aac/.opus/.oga/.aiff/.aif/.wma`
+  file AND every tracked audio-capable container (`.webm/.mp4/.m4v` — containers are declared in full because
+  the gate does not decode them to discover an audio track, e.g. `lib/__capture-selftest__/sample-clip.webm`
+  carries Opus audio) and requires each to map, BY CONTENT HASH, to an entry in `audio-provenance/ledger.json`
+  (`audio-provenance/ledger.schema.json` is documentation only; the gate's in-code checks are the contract).
+  A reconciled entry needs `provenance.kind` + license + a traceable source + attribution, and `rightsCleared`
+  must be the literal JSON boolean true (the string `"false"` is truthy and is rejected). Anything bundled
+  before the gate is declared, hash by hash, as `legacy-unreconciled` against `legacyBaseline`
+  (`check-portfolio-acceptance.mjs`'s legacy-baseline precedent — those files were never retroactively passed,
+  and the TED clip's rights decision stays with the owner in bead z79). The baseline is DERIVED at gate time
+  from the named commit (`git ls-tree` + `git cat-file --batch`, hashing exactly as the working tree is hashed)
+  and `legacyBaseline.hashes` is only a cross-check that must match — appending a hash and bumping the counts
+  FAILS with `BASELINE MISMATCH`. It is an explicit set of CONTENT HASHES, never a filename pattern: a NEW,
+  changed, or byte-different-copy in-scope file FAILS (`UNLEDGERED AUDIO` / `PATH DRIFT` / `LEGACY NOT IN BASELINE`).
   When you add a sample clip: record its licence, source and attribution in the ledger; never declare a new
   asset legacy, and never promote an unreconciled clip. The gate neither resolves nor ratifies the unlicensed
   TED bytes.
