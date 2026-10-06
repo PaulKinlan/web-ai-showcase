@@ -27,6 +27,7 @@ const STUB = `(() => { const real = window.fetch; const H = ${JSON.stringify(HOS
     if (!String(u).endsWith('image-provenance/ledger.json')) return res;
     const l = await res.json();
     for (const e of l.entries) if (e.provenance) e.provenance.sourceUrl = H[n++ % H.length];
+    window.__stubbed = n;
     return new Response(JSON.stringify(l), { status: 200, headers: { 'content-type': 'application/json' } }); }; })()`;
 
 test("hostile ledger sourceUrl yields no live script/cross-origin href", { skip }, async () => {
@@ -51,12 +52,13 @@ test("hostile ledger sourceUrl yields no live script/cross-origin href", { skip 
         cards: document.querySelectorAll('figure.credit').length,
         bad: [...document.querySelectorAll('#sections a[href]')].map(a=>a.href).filter(h=>!/^https?:\\/\\/(127\\.0\\.0\\.1|commons\\.)/.test(h)),
         js: [...document.querySelectorAll('a[href]')].filter(a=>/^(javascript|data|vbscript):/i.test(a.getAttribute('href'))).length,
-        executed: !!window.__x })`,
+        executed: !!window.__x, stubbed: window.__stubbed|0 })`,
       }, blank.sessionId);
       v = JSON.parse(result.value);
       if (v.cards > 0) break;
     }
     assert.ok(v.cards > 0, "credit cards rendered");
+    assert.ok(v.stubbed > 0, "hostile stub rewrote ledger sourceUrls");
     assert.deepEqual(v.bad, []);
     assert.equal(v.js, 0);
     assert.equal(v.executed, false);

@@ -36,8 +36,14 @@ test("rejects hostile, encoded, mixed-case, protocol-relative and empty", () => 
     ]
   ) {
     const r = safeSourceHref(s, base);
+    if (s == null || typeof s !== "string" || !s.trim() || s === "http://") {
+      assert.equal(r, null, String(s));
+    }
     if (r !== null) assert.match(new URL(r).protocol, /^https?:$/, `unsafe: ${s} -> ${r}`);
-    if (typeof s === "string" && /^(\s*)(java\s*script:|data:|vbscript:|\/\/|\\\\|https:evil|htt\nps|ftp)/i.test(s)) {
+    if (
+      typeof s === "string" &&
+      /^(\s*)(java\s*script:|data:|vbscript:|\/\/|\\\\|https:evil|htt\nps|ftp)/i.test(s)
+    ) {
       assert.equal(r, null, s);
     }
   }
