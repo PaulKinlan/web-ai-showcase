@@ -9,9 +9,10 @@
 // Integration tests drive the real script against LOCAL-PATH bare remotes (no network). Both
 // refusal wordings were ALSO measured on the REAL origin (git 2.43.0, 2026-10-06, dry-run;
 // captures pasted on bead web-ai-showcase-2rj — the /tmp rehearsal paths are reclaimed):
-// '(non-fast-forward)' for diverged and ancestor pushes when the local tracking ref is current
-// (same wording as the captured bak-k3-p12 refusal and as the local-path remotes print even
-// pre-fetch), and '(fetch first)' when the remote ref has moved past the local tracking ref.
+// '(non-fast-forward)' for diverged and ancestor pushes with a current tracking ref (the same
+// wording the local-path remotes below print even pre-fetch, and the captured bak-k3-p12
+// refusal), and '(fetch first)' when the remote ref had moved past the local tracking ref —
+// git's hint names that condition as "the remote contains work that you do not have locally".
 // The fixtures below exercise both; the classifier matches the '[rejected]' token, never a
 // wording, so both are REFUSED.
 import { test } from "node:test";
@@ -248,9 +249,9 @@ test("integration REFUSED (REAL capture): diverged local-path remote, sha-ish re
   assert.equal(r.status, 1, r.stdout);
   const drylog = readFileSync(join(logDir, "dry-run.log"), "utf8");
   assert.ok(drylog.includes("[rejected]"), drylog);
-  // Measured: the LOCAL-PATH remote prints '(non-fast-forward)' pre-fetch — and so does the REAL
-  // origin for diverged/ancestor pushes with a current tracking ref; the REAL origin prints
-  // '(fetch first)' only when the remote moved past the local tracking ref (git 2.43.0,
+  // Measured: the LOCAL-PATH remote prints '(non-fast-forward)' pre-fetch — and the REAL origin
+  // printed it too for diverged/ancestor pushes with a current tracking ref; the REAL origin
+  // printed '(fetch first)' when the remote had moved past the local tracking ref (git 2.43.0,
   // web-ai-showcase-2rj, captures on the bead). The token, never the wording, is what matched.
   assert.ok(drylog.includes("(non-fast-forward)"), drylog);
   assert.equal(sh(["rev-parse", "refs/heads/main"], remote), before, "refusal must not push");
