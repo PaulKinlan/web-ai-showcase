@@ -66,13 +66,17 @@ try {
               const buttons = [...mount.querySelectorAll('.exg-item')];
               buttons[0].click();
               const cap = () => mount.querySelector('.exg-caption small');
+              // Let any async onerror/onload handler from injected markup fire before reading the canary.
+              await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(r, 300))));
+              // Page-level overflow assertion removed (web-ai-showcase-diy): inherited body{overflow-wrap:anywhere}
+              // makes it non-discriminating here; overflow is covered by responsive-check, conformance and
+              // probe-example-galleries.
               let caption = cap();
               const hostileResult = {
                 text: caption.textContent, anchors: caption.querySelectorAll('a').length,
                 injectedNodes: caption.querySelectorAll('img, svg, script').length,
                 executed: !!window.__galleryXss,
               };
-              const overflow = document.documentElement.scrollWidth > document.documentElement.clientWidth;
               buttons[1].click();
               caption = cap();
               const safeResult = {
@@ -83,7 +87,7 @@ try {
               buttons[2].click();
               caption = cap();
               const emptyResult = { text: caption.textContent, anchors: caption.querySelectorAll('a').length };
-              return { hostileResult, safeResult, emptyResult, overflow };
+              return { hostileResult, safeResult, emptyResult };
             } finally {
               window.fetch = realFetch;
             }
@@ -109,7 +113,6 @@ try {
         assert.equal(value.safeResult.rel, "noopener noreferrer");
         assert.equal(value.emptyResult.anchors, 0);
         assert.match(value.emptyResult.text, /No link/);
-        assert.equal(value.overflow, false);
         assert.deepEqual(page.errors, []);
         await screenshot(cdp, page.sessionId, `/tmp/yz5-gallery-attribution-${name}.png`);
       } finally {
