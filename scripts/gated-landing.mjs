@@ -29,12 +29,13 @@
 //     string whose PRESENCE is decisive.
 //   * THE UPDATE ROW IS AN ANCHORED REGEX, not a substring: prose that merely MENTIONS the row
 //     (git hints, echoed logs) must not satisfy it.
-//   * MATCH '[rejected]', NEVER A WORDING: the parenthetical is situation- and version-dependent
-//     and BOTH wordings occur against real remotes. Measured 2026-10-06 (git 2.43.0) against the
-//     real origin: a diverged push AND an ancestor push were each refused with
-//     '(non-fast-forward)' — as was the captured real-remote refusal in
-//     /tmp/gated-landing-rehearsal/logs-real-refusal/dry-run.log (bak-k3-p12, web-ai-showcase-2rj).
-//     '(fetch first)' also appears in real-remote refusals (web-ai-showcase-053 fixture). Only the
+//   * MATCH '[rejected]', NEVER A WORDING: BOTH parentheticals occur against real remotes, and
+//     which one prints depends on whether the local remote-tracking ref is stale. Measured
+//     2026-10-06 (git 2.43.0) against the real origin, dry-run: a diverged push AND an ancestor
+//     push with up-to-date tracking knowledge were each refused with '(non-fast-forward)' (as was
+//     the captured bak-k3-p12 refusal from the 053 rehearsal), while a push whose remote ref had
+//     moved PAST the local tracking ref was refused with '(fetch first)'. Both captures are
+//     pasted on bead web-ai-showcase-2rj (the /tmp rehearsal paths are reclaimed). Only the
 //     token '[rejected]' is decisive, so wording drift can never misclassify.
 //   * THE ROW'S NEW SHA IS THE SECOND VALUE ('<target-old>..<my-new>'). Measured on this repo
 //     (2026-10-05): pushing onto a strictly-behind ancestor printed '1a7c567..3e07c4c HEAD ->

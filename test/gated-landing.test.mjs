@@ -6,13 +6,14 @@
 //   * a row whose SECOND sha is not HEAD must fail (the first value is the remote's OLD sha);
 //   * the refusal token is '[rejected]' under BOTH measured wordings ('(fetch first)' and
 //     '(non-fast-forward)').
-// Integration tests drive the real script against LOCAL-PATH bare remotes (no network). The
-// '(non-fast-forward)' wording is what a local-path remote prints even pre-fetch — and it is NOT
-// exclusive to local remotes: the REAL origin was measured printing it too (diverged and ancestor
-// pushes alike, git 2.43.0, 2026-10-06; captured refusal:
-// /tmp/gated-landing-rehearsal/logs-real-refusal/dry-run.log, bak-k3-p12 — web-ai-showcase-2rj).
-// '(fetch first)' likewise occurs in real-remote refusals (053 fixture). Both are REFUSED: the
-// classifier matches the '[rejected]' token, never a wording.
+// Integration tests drive the real script against LOCAL-PATH bare remotes (no network). Both
+// refusal wordings were ALSO measured on the REAL origin (git 2.43.0, 2026-10-06, dry-run;
+// captures pasted on bead web-ai-showcase-2rj — the /tmp rehearsal paths are reclaimed):
+// '(non-fast-forward)' for diverged and ancestor pushes when the local tracking ref is current
+// (same wording as the captured bak-k3-p12 refusal and as the local-path remotes print even
+// pre-fetch), and '(fetch first)' when the remote ref has moved past the local tracking ref.
+// The fixtures below exercise both; the classifier matches the '[rejected]' token, never a
+// wording, so both are REFUSED.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -247,10 +248,10 @@ test("integration REFUSED (REAL capture): diverged local-path remote, sha-ish re
   assert.equal(r.status, 1, r.stdout);
   const drylog = readFileSync(join(logDir, "dry-run.log"), "utf8");
   assert.ok(drylog.includes("[rejected]"), drylog);
-  // Measured: the LOCAL-PATH remote's wording is '(non-fast-forward)' even pre-fetch — and the
-  // REAL origin prints the same token line for diverged and ancestor pushes (git 2.43.0,
-  // web-ai-showcase-2rj; see file header for the captured refusal). '(fetch first)' occurs in
-  // other real-remote refusals (fixture above). The token, never the wording, is what matched.
+  // Measured: the LOCAL-PATH remote prints '(non-fast-forward)' pre-fetch — and so does the REAL
+  // origin for diverged/ancestor pushes with a current tracking ref; the REAL origin prints
+  // '(fetch first)' only when the remote moved past the local tracking ref (git 2.43.0,
+  // web-ai-showcase-2rj, captures on the bead). The token, never the wording, is what matched.
   assert.ok(drylog.includes("(non-fast-forward)"), drylog);
   assert.equal(sh(["rev-parse", "refs/heads/main"], remote), before, "refusal must not push");
   assert.equal(originSha, before);
