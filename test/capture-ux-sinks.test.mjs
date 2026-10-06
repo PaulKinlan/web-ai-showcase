@@ -17,24 +17,34 @@ import test from "node:test";
 const SRC = fileURLToPath(new URL("../lib/capture-ux.js", import.meta.url));
 const HARNESS = fileURLToPath(new URL("../lib/__capture-selftest__/index.html", import.meta.url));
 
-/** Remove line and block comments (string contents are irrelevant for the tokens we search). */
+/** Remove block comments and whole-line/trailing-whitespace-preceded line comments.
+ *  Conservative on purpose: a `//` is only a comment start at line start or after whitespace,
+ *  so URL-ish `://` and `${base}//x` template content can never mask code that follows
+ *  (web-ai-showcase-zc7 reviewer P2 — the old pattern could mask a same-line sink). */
 function stripComments(src) {
   return src
     .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, " "))
-    .replace(/(^|[^:"'\\])\/\/[^\n]*/g, "$1");
+    .replace(/(^|[ \t])\/\/[^\n]*/g, "$1");
 }
 
 const code = stripComments(readFileSync(SRC, "utf8"));
 
-test("capture-ux.js contains no HTML sink in code (innerHTML family)", () => {
+test("capture-ux.js contains no HTML sink in code (innerHTML family + HTML parsing)", () => {
   for (const sink of [
     "innerHTML",
     "outerHTML",
     "insertAdjacentHTML",
+    "insertAdjacentElement",
     "document.write",
     "createContextualFragment",
+    '"text/html"',
+    "srcdoc",
   ]) {
     assert.ok(!code.includes(sink), `lib/capture-ux.js still contains the HTML sink: ${sink}`);
+  }
+  // DOMParser is only ever used for the icon path, and only as image/svg+xml.
+  for (const m of code.matchAll(/parseFromString\([^)]*\)/g)) {
+    assert.match(m[0], /"image\/svg\+xml"/, `unexpected DOMParser mime: ${m[0]}`);
   }
 });
 
@@ -53,6 +63,18 @@ test("icon: is allowlist-asserted and DOMParser-parsed (never HTML)", () => {
   assert.ok(
     /throw new TypeError\([^)]*module-local static SVG/.test(code),
     "trustedIconNode must throw a TypeError on non-allowlisted markup",
+  );
+  // Fail closed on namespace: XML parsing does NOT infer the SVG namespace from a bare <svg>,
+  // so the factories must declare xmlns and the parse result must be namespace-checked
+  // (web-ai-showcase-zc7 reviewer P0/P2 — a null-namespace root renders as an invisible inert
+  // element, silently stripping every icon).
+  assert.ok(
+    code.includes('<svg xmlns="http://www.w3.org/2000/svg"'),
+    "the _svg() template must declare the SVG xmlns",
+  );
+  assert.ok(
+    /namespaceURI !== "http:\/\/www\.w3\.org\/2000\/svg"/.test(code),
+    "trustedIconNode must reject a non-SVG-namespace parse result",
   );
   // The allowlist is built from the module's own icon factories only.
   const setBody = code.match(/TRUSTED_ICON_MARKUP = new Set\(\[([\s\S]*?)\]\)/);
@@ -74,9 +96,20 @@ test("dropzone accept string is built from textContent, not interpolated markup"
     "the dropzone text must be built from DOM nodes, not a markup template");
 });
 
-test("self-test harness drives the sink-closure proof headlessly", () => {
+test("self-test harness drives the sink-closure proof headlessly — and has no sink of its own", () => {
   const harness = readFileSync(HARNESS, "utf8");
   assert.ok(harness.includes("zc7-accept-is-text-not-markup"), "hostile-accept probe must be recorded");
   assert.ok(harness.includes("zc7-icons-render-via-allowlist"), "icon allowlist probe must be recorded");
   assert.ok(harness.includes('onerror="window.__zc7xss=1"'), "probe must use an executable-markup canary");
+  // The harness itself must not interpolate test details as markup (reviewer P1: a raw hostile
+  // detail string re-injected the payload into the results table and falsified the evidence).
+  assert.ok(!stripComments(harness).includes("innerHTML"), "the harness must not use innerHTML");
+  assert.ok(!harness.includes("dz-accept text=${JSON.stringify"), "probe details must not echo raw hostile markup");
+  // Both probes must also be recorded on the throw path.
+  const catchBlock = harness.match(/\} catch \(err\) \{([\s\S]*?)\} finally \{[\s\S]*?cap\?\.destroy/);
+  assert.ok(catchBlock, "probe catch/finally structure must exist");
+  assert.ok(
+    catchBlock[1].includes("zc7-accept-is-text-not-markup") && catchBlock[1].includes("zc7-icons-render-via-allowlist"),
+    "the catch path must record BOTH zc7 probes as failed",
+  );
 });
