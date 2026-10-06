@@ -75,7 +75,10 @@ export function cspDevEnabled(env: { get(name: string): string | undefined } = D
 }
 
 function stripUrlSecrets(value: string): string {
-  // Signed HF/CDN tokens live in the query string — never log them.
+  // Signed HF/CDN tokens live in the query string — never log them. Guarantee (reviewer P2 #5,
+  // precise): query + fragment are stripped from EVERY string, URL-parseable or not; path
+  // segments are retained (a secret in a path would survive — accepted residual, Chrome's
+  // report schema carries no such field today).
   try {
     const u = new URL(value);
     u.search = "";
@@ -86,58 +89,119 @@ function stripUrlSecrets(value: string): string {
   }
 }
 
-/** Reduce a CSP report body to flat, secret-free, length-capped fields (query strings stripped). */
+/** Reduce a CSP report body to flat, length-capped fields with query/fragment secrets stripped.
+ *  Accepts the legacy {csp-report:{...}} wrapper, flat CSP3 bodies, and single-entry
+ *  Reporting-API arrays [{type,body}] (reviewer P2 #6 — previously degraded to {}). */
 export function sanitizeCspReport(raw: unknown): Record<string, unknown> | null {
-  const body = (raw && typeof raw === "object" && "csp-report" in raw
-    ? (raw as Record<string, unknown>)["csp-report"]
-    : raw) as Record<string, unknown> | null;
+  let body: unknown = raw;
+  if (Array.isArray(body)) {
+    if (body.length !== 1) return null; // multi-entry arrays: unrecognized shape, refuse rather than half-log
+    body = body[0];
+  }
+  if (body && typeof body === "object" && "type" in body && "body" in body) {
+    body = (body as Record<string, unknown>)["body"]; // Reporting-API envelope
+  }
+  if (body && typeof body === "object" && "csp-report" in body) {
+    body = (body as Record<string, unknown>)["csp-report"];
+  }
   if (!body || typeof body !== "object") return null;
   const out: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(body)) {
+  for (const [k, v] of Object.entries(body as Record<string, unknown>)) {
+    const key = String(k).slice(0, 64); // reviewer P2 #4: keys are capped too
     if (typeof v === "string") {
-      const urlLike = /^(?:https?:|blob:|data:)/i.test(v) || /url|uri|referrer|source|sample|stack|policy/i.test(k);
-      out[k] = (urlLike ? stripUrlSecrets(v) : v).slice(0, 300);
+      out[key] = stripUrlSecrets(v); // EVERY string, not just URL-ish ones (reviewer P2 #5)
     } else if (typeof v === "number" || typeof v === "boolean") {
-      out[k] = v;
+      out[key] = v;
     }
     // Everything else (nested objects/arrays) is dropped: a report body must not smuggle blobs.
   }
   return out;
 }
 
+/** The sink (POST ingest + GET retrieval) exists only for the LOCAL harness: dev flag AND a
+ *  loopback peer. This makes the local-only posture structural, not a comment (reviewer P1/P2). */
+export function cspSinkAllowed(
+  remoteAddr: { hostname: string } | undefined,
+  enabled: boolean = cspDevEnabled(),
+): boolean {
+  if (!enabled || !remoteAddr) return false;
+  const h = remoteAddr.hostname;
+  return h === "::1" || h === "[::1]" || h === "localhost" || h === "127.0.0.1" || h.startsWith("127.");
+}
+
 // Ephemeral in-process sink (Phase 0): sanitized reports are kept in a bounded in-memory array
-// (retrievable via GET while the flag is on — Deno buffers stdout when redirected, so a
+// (retrievable via loopback GET while the flag is on — Deno buffers stdout when redirected, so a
 // stdout-only sink can lose every line to a SIGTERM) and echoed one-line-JSON to stdout.
 // No files, no credentials, nothing retained past the process.
 const CSP_REPORT_BUFFER_LIMIT = 1000;
+const CSP_REPORT_BODY_LIMIT = 65_536;
 const cspReports: Record<string, unknown>[] = [];
+let cspReportsDropped = 0;
 
-async function cspReportSink(request: Request): Promise<Response> {
-  if (!cspDevEnabled()) return isolated(new Response("Not found", { status: 404 }));
+/** Read at most `limit` bytes; null means over-limit (caller answers 413) — bounds the
+ *  ALLOCATION, not just the parsed string (reviewer P1). */
+async function readBodyCapped(request: Request, limit: number): Promise<string | null> {
+  const declared = Number(request.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > limit) return null;
+  if (!request.body) return "";
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > limit) {
+        await reader.cancel().catch(() => {});
+        return null;
+      }
+      chunks.push(value);
+    }
+  } finally {
+    try { reader.releaseLock(); } catch { /* already released */ }
+  }
+  const all = new Uint8Array(total);
+  let off = 0;
+  for (const c of chunks) { all.set(c, off); off += c.byteLength; }
+  return new TextDecoder().decode(all);
+}
+
+function sinkResponse(body: BodyInit | null, status: number, headers: Record<string, string> = {}): Response {
+  const r = isolated(new Response(body, { status, headers }));
+  r.headers.set("Cache-Control", "no-store"); // a JSON dump of report data is never cacheable (reviewer P2 #2)
+  return r;
+}
+
+async function cspReportSink(
+  request: Request,
+  remoteAddr: { hostname: string } | undefined,
+): Promise<Response> {
+  if (!cspSinkAllowed(remoteAddr)) return isolated(new Response("Not found", { status: 404 }));
   if (request.method === "GET") {
-    // Local harness retrieval endpoint (dev-flag only): the driver reads the buffer back before
-    // tearing the server down.
-    return isolated(
-      new Response(JSON.stringify({ count: cspReports.length, reports: cspReports }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      }),
+    // Local harness retrieval endpoint: the driver reads the buffer back before teardown.
+    return sinkResponse(
+      JSON.stringify({ count: cspReports.length, dropped: cspReportsDropped, reports: cspReports }),
+      200,
+      { "content-type": "application/json" },
     );
   }
   if (request.method !== "POST") {
-    return isolated(new Response("Method not allowed", { status: 405, headers: { Allow: "POST, GET" } }));
+    return sinkResponse("Method not allowed", 405, { Allow: "POST, GET" });
   }
   try {
-    const text = (await request.text()).slice(0, 65_536);
+    const text = await readBodyCapped(request, CSP_REPORT_BODY_LIMIT);
+    if (text === null) return sinkResponse("Report too large", 413);
     const clean = sanitizeCspReport(JSON.parse(text));
     if (clean) {
       const entry = { t: Date.now(), ...clean };
       if (cspReports.length < CSP_REPORT_BUFFER_LIMIT) cspReports.push(entry);
+      else cspReportsDropped++; // visible on GET, never a silent truncation (reviewer P2 #4)
       console.log(`CSP-REPORT ${JSON.stringify(entry)}`);
     }
-    return isolated(new Response(null, { status: 204 }));
+    return sinkResponse(null, 204);
   } catch {
-    return isolated(new Response("Bad report", { status: 400 }));
+    return sinkResponse("Bad report", 400);
   }
 }
 
@@ -146,7 +210,11 @@ function isolated(response: Response): Response {
   headers.delete("set-cookie");
   for (const [name, value] of Object.entries(ISOLATION_HEADERS)) headers.set(name, value);
   headers.set("Cache-Control", "public, max-age=0, must-revalidate");
-  // Phase 0 (web-ai-showcase-ega): Report-Only, dev-flagged, never enforced, never in production.
+  // Report-Only header (web-ai-showcase-ega): dev-flagged; NEVER enforced from this flag — the
+  // enforce flip is a separate, explicit decision (D1-D4). When Phase 1 turns the flag on in the
+  // Deno deployment this header is exactly what ships (Report-Only cannot block anything); the
+  // report SINK stays loopback-only via cspSinkAllowed, so production reports would need their
+  // own decision too.
   if (cspDevEnabled()) {
     headers.set(
       "Content-Security-Policy-Report-Only",
@@ -288,10 +356,13 @@ async function canonicalized(response: Response, request: Request, url: URL): Pr
 }
 
 export function createHandler(fetchUpstream: typeof fetch = fetch) {
-  return async (request: Request): Promise<Response> => {
+  return async (
+    request: Request,
+    info?: { remoteAddr?: { hostname: string } },
+  ): Promise<Response> => {
     const url = new URL(request.url);
-    // Phase 0 CSP report sink (dev-flagged; 404s when the flag is off — checked inside).
-    if (url.pathname === CSP_REPORT_PATH) return await cspReportSink(request);
+    // Phase 0 CSP report sink (dev-flagged AND loopback-only; 404s otherwise — checked inside).
+    if (url.pathname === CSP_REPORT_PATH) return await cspReportSink(request, info?.remoteAddr);
     if (request.method !== "GET" && request.method !== "HEAD") {
       return isolated(
         new Response("Method not allowed", { status: 405, headers: { Allow: "GET, HEAD" } }),

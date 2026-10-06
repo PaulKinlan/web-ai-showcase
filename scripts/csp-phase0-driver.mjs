@@ -4,8 +4,11 @@
 // Report-Only header + ephemeral sanitized stdout sink added in server.ts), then drives ONE
 // headless browser through representative routes, really running inference where the page offers
 // it, and collects: (a) server-side CSP-REPORT sink lines, (b) browser Log/console violations,
-// (c) every external origin actually contacted, (d) screenshots, (e) whether inference completed
-// (headless Chrome here has no WebGPU — SwiftShader/WASM path).
+// (c) every external origin contacted FROM THE PAGE CONTEXT (dedicated-worker requests are not
+//     attributed to the page session by CDP and are invisible here — jsdelivr/googleapis traffic
+//     happens inside the model workers; the sink + browser security log are the authoritative
+//     violation channels, this tally is indicative only), (d) screenshots, (e) whether inference
+//     completed (headless Chrome here has no WebGPU — SwiftShader/WASM path).
 //
 // Usage: OUTDIR=/tmp/klj-evidence/ega-phase0 node scripts/csp-phase0-driver.mjs
 // Run through fleet-gate (bounded); it kills the browser and the Deno server in `finally`.
@@ -75,7 +78,7 @@ const chrome = await launchChrome({ profilePrefix: "ega-phase0" });
 const cdp = new CDP(chrome.ws);
 let currentRoute = "(startup)";
 const externalHits = new Map(); // origin -> count
-const summary = { startedAt: new Date().toISOString(), policyHeader: null, routes: [], externalOrigins: {}, violationsBrowser: [], webgpu: null, sinkPositiveControl: null, sinkReports: null };
+const summary = { startedAt: new Date().toISOString(), policyHeader: null, routes: [], externalOrigins: {}, externalOriginsScope: "page-context only — dedicated-worker requests are not attributed by CDP (reviewer P2 #3)", violationsBrowser: [], webgpu: null, sinkPositiveControl: null, sinkReports: null };
 
 try {
   // Positive control: prove the report path itself works, so a zero-violation run can never be
@@ -168,7 +171,7 @@ try {
       while (Date.now() < deadline) {
         runEnabled = await ev(`(() => { const b = document.getElementById("run"); return !!b && !b.disabled; })()`);
         if (runEnabled === true) break;
-        if (runEnabled && runEnabled.__err) break;
+        if (runEnabled && runEnabled.__err) { console.log(`run-enable poll eval error: ${runEnabled.__err}`); break; }
         await sleep(1000);
       }
       // 3) click a sample chip first if nothing is preselected.
@@ -234,10 +237,12 @@ const serverLogText = readFileSync(serverLogPath, "utf8");
 const logLines = serverLogText.split("\n").filter((l) => l.startsWith("CSP-REPORT ")).map((l) => {
   try { return JSON.parse(l.slice("CSP-REPORT ".length)); } catch { return { raw: l.slice(0, 300) }; }
 });
-const sinkLines = Array.isArray(summary.sinkReports?.reports) && summary.sinkReports.reports.length
+const sinkLines = Array.isArray(summary.sinkReports?.reports)
   ? summary.sinkReports.reports
   : logLines;
-summary.sinkReportSource = Array.isArray(summary.sinkReports?.reports) ? "in-memory GET retrieval" : "stdout log";
+summary.sinkReportSource = Array.isArray(summary.sinkReports?.reports)
+  ? "in-memory GET retrieval"
+  : (logLines.length ? "stdout log" : `none (GET: ${JSON.stringify(summary.sinkReports).slice(0, 120)})`);
 const synthetic = sinkLines.filter((r) => r["synthetic-control"] === true || String(r["blocked-uri"] || r.blockedURI || "").includes("synthetic-control.invalid"));
 const real = sinkLines.filter((r) => !synthetic.includes(r));
 summary.violationsSink = real;
@@ -256,8 +261,18 @@ console.log(`browser-side violations: ${summary.violationsBrowser.length}`);
 console.log(`sink reports: ${real.length} real + ${synthetic.length} synthetic control (source: ${summary.sinkReportSource}; control POST: ${JSON.stringify(summary.sinkPositiveControl)})`);
 for (const v of summary.violationsBrowser.slice(0, 20)) console.log(`  [browser][${v.route}] ${v.text.slice(0, 200)}`);
 for (const v of real.slice(0, 20)) console.log(`  [sink] ${JSON.stringify(v).slice(0, 250)}`);
-console.log("external origins contacted:");
+console.log("external origins contacted (PAGE CONTEXT ONLY — worker requests invisible, reviewer P2 #3):");
 for (const [o, n] of summary.externalOriginList) console.log(`  ${n}x ${o}`);
-for (const r of summary.routes) console.log(`route ${r.route}: inference=${JSON.stringify(r.inference)?.slice(0, 180)}`);
+let routeFailures = 0;
+for (const r of summary.routes) {
+  console.log(`route ${r.route}: inference=${JSON.stringify(r.inference)?.slice(0, 180)}`);
+  // Truthful exit code: a route that promised inference and never enabled/completed it is a
+  // FAILED run, not a green one (reviewer P2 #7).
+  if (ROUTES.find((x) => x.name === r.route)?.runInference) {
+    const ok = r.inference && r.inference.enabled !== false && (r.inference.readout || /found|done/i.test(r.inference.status || ""));
+    if (!ok) { routeFailures++; console.log(`  ^^ ROUTE FAILURE: inference did not complete`); }
+  }
+}
 console.log(`\nfull summary: ${outPath}`);
-process.exit(0);
+console.log(routeFailures === 0 ? "PHASE 0 RUN OK" : `${routeFailures} ROUTE FAILURE(S)`);
+process.exit(routeFailures === 0 ? 0 : 1);

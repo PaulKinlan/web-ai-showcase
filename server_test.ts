@@ -2,6 +2,7 @@ import { assertEquals, assertMatch, assertNotMatch } from "jsr:@std/assert";
 import {
   CANONICAL_ORIGIN,
   createHandler,
+  cspSinkAllowed,
   sanitizeCspReport,
   ISOLATION_HEADERS,
   SITE_PREFIX,
@@ -301,4 +302,28 @@ Deno.test("CSP report sink GET retrieval is also 404 when the dev flag is off", 
   const response = await handle(new Request("https://webai.show/__csp-report"));
   assertEquals(response.status, 404);
   assertEquals(requests.length, 0);
+});
+
+Deno.test("cspSinkAllowed is structural: loopback AND flag, never either alone", () => {
+  assertEquals(cspSinkAllowed({ hostname: "127.0.0.1" }, true), true);
+  assertEquals(cspSinkAllowed({ hostname: "::1" }, true), true);
+  assertEquals(cspSinkAllowed({ hostname: "1.2.3.4" }, true), false);
+  assertEquals(cspSinkAllowed({ hostname: "webai.show" }, true), false);
+  assertEquals(cspSinkAllowed(undefined, true), false);
+  assertEquals(cspSinkAllowed({ hostname: "127.0.0.1" }, false), false);
+});
+
+Deno.test("sanitizeCspReport: Reporting-API envelopes, embedded queries, key caps (reviewer P2s)", () => {
+  // Single-entry Reporting-API array unwraps instead of degrading to {}.
+  const arr = sanitizeCspReport([{ type: "csp-violation", body: { documentURL: "https://x/y?token=SECRET", violatedDirective: "connect-src" } }]);
+  assertEquals(arr?.["documentURL"], "https://x/y");
+  assertEquals(arr?.["violatedDirective"], "connect-src");
+  // Multi-entry arrays are refused, not half-logged.
+  assertEquals(sanitizeCspReport([{ type: "csp-violation", body: {} }, { type: "csp-violation", body: {} }]), null);
+  // Query stripping applies to EVERY string, even one that is not URL-shaped (reviewer P2 #5b).
+  const prose = sanitizeCspReport({ note: "prefix https://cdn.example/x?Signature=MUSTNOTSHOW rest" });
+  assertNotMatch(JSON.stringify(prose), /MUSTNOTSHOW/);
+  // Keys are capped (reviewer P2 #4).
+  const longKey = sanitizeCspReport({ ["k".repeat(500)]: "v" });
+  assertEquals(Object.keys(longKey!)[0].length, 64);
 });
