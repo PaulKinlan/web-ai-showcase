@@ -75,7 +75,8 @@ const ROUTES = [
 const chrome = await launchChrome({ profilePrefix: "ega-phase0" });
 const cdp = new CDP(chrome.ws);
 let currentRoute = "(startup)";
-const summary = { startedAt: new Date().toISOString(), policyHeader: null, routes: [], externalOrigins: {}, violationsBrowser: [], webgpu: null, sinkPositiveControl: null };
+const externalHits = new Map(); // origin -> count
+const summary = { startedAt: new Date().toISOString(), policyHeader: null, routes: [], externalOrigins: {}, violationsBrowser: [], webgpu: null, sinkPositiveControl: null, sinkReports: null };
 
 try {
   // Positive control: prove the report path itself works, so a zero-violation run can never be
@@ -97,7 +98,6 @@ try {
   const probe = await fetch(`${ORIGIN}/`);
   summary.policyHeader = probe.headers.get("content-security-policy-report-only");
 
-  const externalHits = new Map(); // origin -> count
   cdp.on((msg) => {
     if (msg.method === "Network.responseReceived") {
       try {
@@ -209,17 +209,29 @@ try {
   }
 } finally {
   currentRoute = "(teardown)";
+  // Retrieve the in-memory sink buffer BEFORE killing the server: Deno buffers stdout when
+  // redirected, so the log file alone can come back empty — the GET endpoint is the reliable path.
+  try {
+    const r = await fetch(`${ORIGIN}/__csp-report`);
+    summary.sinkReports = r.status === 200 ? await r.json() : { error: `GET ${r.status}` };
+  } catch (e) {
+    summary.sinkReports = { error: String(e.message || e) };
+  }
   await chrome.kill?.().catch(() => {});
   deno.kill("SIGTERM");
-  await sleep(500);
+  await sleep(2000);
   try { deno.kill("SIGKILL"); } catch { /* already gone */ }
 }
 
 // ── 3. Collect the server-side sink lines ───────────────────────────────────────────────────────
 const serverLogText = readFileSync(serverLogPath, "utf8");
-const sinkLines = serverLogText.split("\n").filter((l) => l.startsWith("CSP-REPORT ")).map((l) => {
+const logLines = serverLogText.split("\n").filter((l) => l.startsWith("CSP-REPORT ")).map((l) => {
   try { return JSON.parse(l.slice("CSP-REPORT ".length)); } catch { return { raw: l.slice(0, 300) }; }
 });
+const sinkLines = Array.isArray(summary.sinkReports?.reports) && summary.sinkReports.reports.length
+  ? summary.sinkReports.reports
+  : logLines;
+summary.sinkReportSource = Array.isArray(summary.sinkReports?.reports) ? "in-memory GET retrieval" : "stdout log";
 const synthetic = sinkLines.filter((r) => r["synthetic-control"] === true || String(r["blocked-uri"] || r.blockedURI || "").includes("synthetic-control.invalid"));
 const real = sinkLines.filter((r) => !synthetic.includes(r));
 summary.violationsSink = real;
@@ -235,7 +247,7 @@ console.log("\n=== PHASE 0 SUMMARY ===");
 console.log(`policy served: ${summary.policyHeader ? "yes" : "NO"}`);
 console.log(`WebGPU in headless (SwiftShader): ${summary.webgpu}`);
 console.log(`browser-side violations: ${summary.violationsBrowser.length}`);
-console.log(`sink reports: ${real.length} real + ${synthetic.length} synthetic control (control sent: ${JSON.stringify(summary.sinkPositiveControl)})`);
+console.log(`sink reports: ${real.length} real + ${synthetic.length} synthetic control (source: ${summary.sinkReportSource}; control POST: ${JSON.stringify(summary.sinkPositiveControl)})`);
 for (const v of summary.violationsBrowser.slice(0, 20)) console.log(`  [browser][${v.route}] ${v.text.slice(0, 200)}`);
 for (const v of real.slice(0, 20)) console.log(`  [sink] ${JSON.stringify(v).slice(0, 250)}`);
 console.log("external origins contacted:");

@@ -295,3 +295,10 @@ Deno.test("sanitizeCspReport strips query secrets, flattens, caps, and rejects j
   assertEquals(sanitizeCspReport(null), null);
   assertEquals(sanitizeCspReport("not-an-object"), null);
 });
+
+Deno.test("CSP report sink GET retrieval is also 404 when the dev flag is off", async () => {
+  requests.length = 0;
+  const response = await handle(new Request("https://webai.show/__csp-report"));
+  assertEquals(response.status, 404);
+  assertEquals(requests.length, 0);
+});

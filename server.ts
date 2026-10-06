@@ -101,17 +101,36 @@ export function sanitizeCspReport(raw: unknown): Record<string, unknown> | null 
   return out;
 }
 
-// Ephemeral in-process sink (Phase 0): sanitized one-line JSON on stdout, which the local
-// harness/gate log captures. No files, no credentials, nothing retained past the process.
+// Ephemeral in-process sink (Phase 0): sanitized reports are kept in a bounded in-memory array
+// (retrievable via GET while the flag is on — Deno buffers stdout when redirected, so a
+// stdout-only sink can lose every line to a SIGTERM) and echoed one-line-JSON to stdout.
+// No files, no credentials, nothing retained past the process.
+const CSP_REPORT_BUFFER_LIMIT = 1000;
+const cspReports: Record<string, unknown>[] = [];
+
 async function cspReportSink(request: Request): Promise<Response> {
   if (!cspDevEnabled()) return isolated(new Response("Not found", { status: 404 }));
+  if (request.method === "GET") {
+    // Local harness retrieval endpoint (dev-flag only): the driver reads the buffer back before
+    // tearing the server down.
+    return isolated(
+      new Response(JSON.stringify({ count: cspReports.length, reports: cspReports }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+  }
   if (request.method !== "POST") {
-    return isolated(new Response("Method not allowed", { status: 405, headers: { Allow: "POST" } }));
+    return isolated(new Response("Method not allowed", { status: 405, headers: { Allow: "POST, GET" } }));
   }
   try {
     const text = (await request.text()).slice(0, 65_536);
     const clean = sanitizeCspReport(JSON.parse(text));
-    if (clean) console.log(`CSP-REPORT ${JSON.stringify({ t: Date.now(), ...clean })}`);
+    if (clean) {
+      const entry = { t: Date.now(), ...clean };
+      if (cspReports.length < CSP_REPORT_BUFFER_LIMIT) cspReports.push(entry);
+      console.log(`CSP-REPORT ${JSON.stringify(entry)}`);
+    }
     return isolated(new Response(null, { status: 204 }));
   } catch {
     return isolated(new Response("Bad report", { status: 400 }));
