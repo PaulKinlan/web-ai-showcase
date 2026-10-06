@@ -2,6 +2,7 @@ import { assertEquals, assertMatch, assertNotMatch } from "jsr:@std/assert";
 import {
   CANONICAL_ORIGIN,
   createHandler,
+  sanitizeCspReport,
   ISOLATION_HEADERS,
   SITE_PREFIX,
   UPSTREAM_ORIGIN,
@@ -253,4 +254,44 @@ Deno.test("returns an isolated 502 when GitHub Pages is unavailable", async () =
   const response = await failing(new Request(`${CANONICAL_ORIGIN}/`));
   assertEquals(response.status, 502);
   assertIsolated(response);
+});
+
+// ── Phase 0 CSP measurement sink (web-ai-showcase-ega): dev-flagged, OFF by default ──────────────
+Deno.test("CSP report sink is 404 and never proxied upstream when the dev flag is off", async () => {
+  requests.length = 0;
+  const response = await handle(
+    new Request("https://webai.show/__csp-report", {
+      method: "POST",
+      body: JSON.stringify({ "csp-report": { "blocked-uri": "https://evil.example/x" } }),
+      headers: { "content-type": "application/csp-report" },
+    }),
+  );
+  assertEquals(response.status, 404);
+  assertEquals(requests.length, 0, "the sink must never reach the upstream fetch");
+});
+
+Deno.test("ordinary responses carry no CSP header when the dev flag is off", async () => {
+  const response = await handle(new Request("https://webai.show/"));
+  assertEquals(response.headers.get("content-security-policy-report-only"), null);
+  assertEquals(response.headers.get("content-security-policy"), null);
+});
+
+Deno.test("sanitizeCspReport strips query secrets, flattens, caps, and rejects junk", async () => {
+  const clean = sanitizeCspReport({
+    "csp-report": {
+      "blocked-uri": "https://us.aws.cdn.hf.co/xet-bridge-us/abc?Signature=SUPERSECRET&Policy=xyz",
+      "document-uri": "https://webai.show/models/yolos-detection/?q=secret#frag",
+      "violated-directive": "connect-src",
+      "status-code": 200,
+      "nested": { "smuggled": "https://evil.example?token=abc" },
+      "long": "x".repeat(5000),
+    },
+  });
+  assertMatch(JSON.stringify(clean), /us\.aws\.cdn\.hf\.co\/xet-bridge-us\/abc"/);
+  assertNotMatch(JSON.stringify(clean), /SUPERSECRET|Policy=xyz|q=secret|smuggled|token=abc/);
+  assertEquals(clean!["violated-directive"], "connect-src");
+  assertEquals(clean!["status-code"], 200);
+  assertEquals((clean!["long"] as string).length, 300);
+  assertEquals(sanitizeCspReport(null), null);
+  assertEquals(sanitizeCspReport("not-an-object"), null);
 });

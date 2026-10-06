@@ -34,11 +34,102 @@ export const ISOLATION_HEADERS = {
   "X-Content-Type-Options": "nosniff",
 } as const;
 
+// ── Phase 0 CSP measurement (web-ai-showcase-ega) — DEV-FLAGGED, LOCAL-ONLY ─────────────────────
+// Inert unless CSP_REPORT_ONLY=1 is set at startup. This exists so a local browser harness can
+// measure REAL violations (Report-Only, nothing enforced) before the D1-D4 rollout decisions are
+// taken; production deployments must not set the flag. The policy below is the DRAFT derived
+// from the measured origin inventory on the bead: jsdelivr (transformers/ORT/tasks-vision),
+// esm.run (web-llm), huggingface.co + the *.hf.co LFS/xet CDN family (measured live: weight
+// resolves 302 to us.aws.cdn.hf.co — cdn-lfs*.huggingface.co alone would block every download),
+// storage.googleapis.com (mediapipe .tflite). 'unsafe-inline' in script-src/style-src is the
+// phase-0 measurement stance (1521 inline bootstrap scripts exist); nonce strategies are a
+// later decision. frame-ancestors is inert in Report-Only by spec — listed so the enforce flip
+// is a one-word change.
+export const CSP_PHASE0_POLICY = [
+  "default-src 'self'",
+  "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' https://cdn.jsdelivr.net https://esm.run",
+  "worker-src 'self' blob:",
+  "connect-src 'self' https://huggingface.co https://*.hf.co https://cdn.jsdelivr.net https://esm.run https://storage.googleapis.com",
+  "img-src 'self' data: blob: https:",
+  "media-src 'self' blob:",
+  "style-src 'self' 'unsafe-inline'",
+  "font-src 'self' data:",
+  "object-src 'none'",
+  "base-uri 'self'",
+  "form-action 'self'",
+  "frame-ancestors 'none'",
+].join("; ");
+
+export const CSP_REPORT_PATH = "/__csp-report";
+
+export function cspDevEnabled(env: { get(name: string): string | undefined } = Deno.env): boolean {
+  try {
+    return env.get("CSP_REPORT_ONLY") === "1";
+  } catch {
+    return false; // no --allow-env (e.g. deno test defaults): the feature is OFF.
+  }
+}
+
+function stripUrlSecrets(value: string): string {
+  // Signed HF/CDN tokens live in the query string — never log them.
+  try {
+    const u = new URL(value);
+    u.search = "";
+    u.hash = "";
+    return u.href.slice(0, 300);
+  } catch {
+    return value.replace(/[?#].*$/, "").slice(0, 300);
+  }
+}
+
+/** Reduce a CSP report body to flat, secret-free, length-capped fields (query strings stripped). */
+export function sanitizeCspReport(raw: unknown): Record<string, unknown> | null {
+  const body = (raw && typeof raw === "object" && "csp-report" in raw
+    ? (raw as Record<string, unknown>)["csp-report"]
+    : raw) as Record<string, unknown> | null;
+  if (!body || typeof body !== "object") return null;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(body)) {
+    if (typeof v === "string") {
+      const urlLike = /^(?:https?:|blob:|data:)/i.test(v) || /url|uri|referrer|source|sample|stack|policy/i.test(k);
+      out[k] = (urlLike ? stripUrlSecrets(v) : v).slice(0, 300);
+    } else if (typeof v === "number" || typeof v === "boolean") {
+      out[k] = v;
+    }
+    // Everything else (nested objects/arrays) is dropped: a report body must not smuggle blobs.
+  }
+  return out;
+}
+
+// Ephemeral in-process sink (Phase 0): sanitized one-line JSON on stdout, which the local
+// harness/gate log captures. No files, no credentials, nothing retained past the process.
+async function cspReportSink(request: Request): Promise<Response> {
+  if (!cspDevEnabled()) return isolated(new Response("Not found", { status: 404 }));
+  if (request.method !== "POST") {
+    return isolated(new Response("Method not allowed", { status: 405, headers: { Allow: "POST" } }));
+  }
+  try {
+    const text = (await request.text()).slice(0, 65_536);
+    const clean = sanitizeCspReport(JSON.parse(text));
+    if (clean) console.log(`CSP-REPORT ${JSON.stringify({ t: Date.now(), ...clean })}`);
+    return isolated(new Response(null, { status: 204 }));
+  } catch {
+    return isolated(new Response("Bad report", { status: 400 }));
+  }
+}
+
 function isolated(response: Response): Response {
   const headers = new Headers(response.headers);
   headers.delete("set-cookie");
   for (const [name, value] of Object.entries(ISOLATION_HEADERS)) headers.set(name, value);
   headers.set("Cache-Control", "public, max-age=0, must-revalidate");
+  // Phase 0 (web-ai-showcase-ega): Report-Only, dev-flagged, never enforced, never in production.
+  if (cspDevEnabled()) {
+    headers.set(
+      "Content-Security-Policy-Report-Only",
+      `${CSP_PHASE0_POLICY}; report-uri ${CSP_REPORT_PATH}`,
+    );
+  }
   return new Response(response.body, {
     status: response.status,
     statusText: response.statusText,
@@ -176,6 +267,8 @@ async function canonicalized(response: Response, request: Request, url: URL): Pr
 export function createHandler(fetchUpstream: typeof fetch = fetch) {
   return async (request: Request): Promise<Response> => {
     const url = new URL(request.url);
+    // Phase 0 CSP report sink (dev-flagged; 404s when the flag is off — checked inside).
+    if (url.pathname === CSP_REPORT_PATH) return await cspReportSink(request);
     if (request.method !== "GET" && request.method !== "HEAD") {
       return isolated(
         new Response("Method not allowed", { status: 405, headers: { Allow: "GET, HEAD" } }),
