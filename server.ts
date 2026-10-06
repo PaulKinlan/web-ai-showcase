@@ -66,6 +66,17 @@ function canonicalUrl(pathname: string): URL {
   return new URL(pathname, CANONICAL_ORIGIN);
 }
 
+// Every redirect this server emits MUST stay on CANONICAL_ORIGIN. WHATWG URL resolution treats a
+// leading "//" (or "\", a path separator for special schemes) as a network-path reference, so
+// new URL("//evil.com", CANONICAL_ORIGIN) resolves to https://evil.com/. Validate the RESOLVED
+// target's origin — never the raw input string — and refuse anything off-origin with a 404,
+// the same response the publicPath allowlist gives for unlisted paths.
+function canonicalRedirectTarget(pathname: string, search: string): URL | null {
+  const target = canonicalUrl(pathname);
+  target.search = search;
+  return target.origin === CANONICAL_ORIGIN ? target : null;
+}
+
 const LEGACY_DEPLOY_HOSTS = new Set([
   "web-ai-showcase.paulkinlan-ea.deno.net",
   "web-ai-showcase-isolated.paulkinlan-ea.deno.net",
@@ -159,13 +170,13 @@ export function createHandler(fetchUpstream: typeof fetch = fetch) {
 
     const legacyPath = stripLegacyPrefix(url.pathname);
     if (legacyPath !== null) {
-      const target = canonicalUrl(legacyPath);
-      target.search = url.search;
+      const target = canonicalRedirectTarget(legacyPath, url.search);
+      if (!target) return isolated(new Response("Not found", { status: 404 }));
       return isolated(Response.redirect(target, 308));
     }
     if (isLegacyDeployHost(url.hostname)) {
-      const target = canonicalUrl(url.pathname);
-      target.search = url.search;
+      const target = canonicalRedirectTarget(url.pathname, url.search);
+      if (!target) return isolated(new Response("Not found", { status: 404 }));
       return isolated(Response.redirect(target, 308));
     }
     if (!publicPath(url.pathname)) return isolated(new Response("Not found", { status: 404 }));
