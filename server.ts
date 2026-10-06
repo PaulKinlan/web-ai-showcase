@@ -66,15 +66,29 @@ function canonicalUrl(pathname: string): URL {
   return new URL(pathname, CANONICAL_ORIGIN);
 }
 
-// Every redirect this server emits MUST stay on CANONICAL_ORIGIN. WHATWG URL resolution treats a
-// leading "//" (or "\", a path separator for special schemes) as a network-path reference, so
-// new URL("//evil.com", CANONICAL_ORIGIN) resolves to https://evil.com/. Validate the RESOLVED
-// target's origin — never the raw input string — and refuse anything off-origin with a 404,
-// the same response the publicPath allowlist gives for unlisted paths.
-function canonicalRedirectTarget(pathname: string, search: string): URL | null {
-  const target = canonicalUrl(pathname);
-  target.search = search;
+// Every URL this server emits — a redirect Location, a Link: rel="canonical" header, or an
+// injected <link rel="canonical">/og:url — MUST resolve onto CANONICAL_ORIGIN. WHATWG URL
+// resolution treats a leading "//" (or "\", a path separator for special schemes) as a
+// network-path reference, so new URL("//evil.com", CANONICAL_ORIGIN) resolves to
+// https://evil.com/, and new URL("//", CANONICAL_ORIGIN) has an empty host and throws. Validate
+// the RESOLVED target's origin — never the raw input string — and refuse anything off-origin or
+// unparseable. Redirects refuse with a 404, the same response the publicPath allowlist gives for
+// unlisted paths; href sinks emit no canonical at all rather than an off-origin one.
+function canonicalTarget(pathname: string): URL | null {
+  let target: URL;
+  try {
+    target = canonicalUrl(pathname);
+  } catch {
+    return null;
+  }
   return target.origin === CANONICAL_ORIGIN ? target : null;
+}
+
+function canonicalRedirectTarget(pathname: string, search: string): URL | null {
+  const target = canonicalTarget(pathname);
+  if (!target) return null;
+  target.search = search;
+  return target;
 }
 
 const LEGACY_DEPLOY_HOSTS = new Set([
@@ -115,8 +129,8 @@ function rewriteApplicationUrls(source: string): string {
   return text.replace(/(["'`(=])\/web-ai-showcase\//g, "$1/");
 }
 
-function htmlWithCanonical(source: string, url: URL): string {
-  const href = canonicalUrl(url.pathname).href.replaceAll("&", "&amp;").replaceAll('"', "&quot;");
+function htmlWithCanonical(source: string, canonical: URL): string {
+  const href = canonical.href.replaceAll("&", "&amp;").replaceAll('"', "&quot;");
   const withoutOld = source
     .replace(/<link\s+[^>]*rel=["']canonical["'][^>]*>\s*/gi, "")
     .replace(/<meta\s+[^>]*(?:property|name)=["']og:url["'][^>]*>\s*/gi, "");
@@ -127,10 +141,10 @@ function htmlWithCanonical(source: string, url: URL): string {
 
 async function canonicalized(response: Response, request: Request, url: URL): Promise<Response> {
   const headers = new Headers(response.headers);
-  const canonical = canonicalUrl(url.pathname).href;
+  const canonical = canonicalTarget(url.pathname);
   const contentType = headers.get("content-type") ?? "";
   const rewritable = isRewritableContentType(contentType);
-  headers.set("Link", `<${canonical}>; rel="canonical"`);
+  if (canonical) headers.set("Link", `<${canonical.href}>; rel="canonical"`);
   // A rewritten GET is a different representation from GitHub Pages. Strip upstream validators on
   // HEAD too, otherwise a HEAD → conditional GET can incorrectly produce a 304 for upstream bytes.
   if (rewritable) {
@@ -153,7 +167,7 @@ async function canonicalized(response: Response, request: Request, url: URL): Pr
     );
   }
   let text = rewriteApplicationUrls(await response.text());
-  if (/^text\/html/i.test(contentType)) text = htmlWithCanonical(text, url);
+  if (canonical && /^text\/html/i.test(contentType)) text = htmlWithCanonical(text, canonical);
   return isolated(
     new Response(text, { status: response.status, statusText: response.statusText, headers }),
   );
