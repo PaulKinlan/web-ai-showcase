@@ -2,9 +2,14 @@
 // Page-level degradation acceptance for qwen2-vl (web-ai-showcase-oow).
 //
 // The route is WebGPU-only and the ORT WebGPU backend bundled with the pinned transformers.js
-// (3.7.5) crashes inside the model's own forward pass on some GPU/driver/browser builds — on THIS
-// box it fails deterministically in "[Concat] /model/layers.0/self_attn/Concat_7" (bead evidence:
-// every cell of a 10-cell run, dims 285–294). The shipped contract this validator drives FOR REAL
+// (3.7.5) crashes inside the model's own forward pass on some GPU/driver/browser builds
+// ("[Concat] /model/layers.0/self_attn/Concat_7" was seen in an EARLIER run on different hardware).
+// CORRECTION (oow review): on the box used for the d6adb38 run the adapter lacked shader-f16, init
+// failed with "The device (webgpu) does not support fp16.", and the generation path was NEVER
+// reached; the "10/10 product assertions" there were loader-label checks that pass with the fix
+// reverted. This validator REQUIRES the model to fail and needs a real shader-f16 GPU to reach
+// generation. For fix-vs-revert discrimination use scripts/validate-qwen2-vl-injected-errors.mjs
+// (INJECTED worker errors, labelled as such). The shipped contract this validator drives FOR REAL
 // in headless Chrome:
 //   1. The visitor NEVER sees the raw kernel string as the user-facing message.
 //   2. The page shows a LABELLED degradation: what happened + what the visitor can do.
@@ -12,8 +17,8 @@
 //      inspectable, never the headline).
 //   4. The answer region honestly says generation failed; no fake output.
 // Every published rung (overview + basics + practical + wild + multi-model) is driven at desktop
-// AND mobile. The 2.7 GB model downloads ONCE into a persistent throwaway profile and every later
-// cell initialises from the browser cache (the auto-init path returning visitors use).
+// AND mobile. Intended: the 2.7 GB model downloads once into a persistent profile and later cells
+// use the cache — NOT observed on the d6adb38 run (every cell logged download-required).
 //
 // This validator deliberately does NOT write a portfolio acceptance record: the family cannot
 // generate successfully on this box, and a "passing" record would misrepresent that. A PASS here
