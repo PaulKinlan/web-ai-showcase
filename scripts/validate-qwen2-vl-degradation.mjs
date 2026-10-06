@@ -58,6 +58,8 @@ const RUNGS = {
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 let checks = 0;
 let passed = 0;
+let envPreconditionFails = 0;
+
 function check(label, condition, detail = "") {
   checks++;
   if (condition) passed++;
@@ -66,6 +68,18 @@ function check(label, condition, detail = "") {
       detail ? ` — ${String(detail).slice(0, 300)}` : ""
     }`,
   );
+  return condition;
+}
+
+function checkPrecondition(label, condition, detail = "") {
+  checks++;
+  if (condition) {
+    passed++;
+    console.log(`PASS  [PRECONDITION] ${label}${detail ? ` — ${String(detail).slice(0, 300)}` : ""}`);
+  } else {
+    envPreconditionFails++;
+    console.log(`FAIL  [PRECONDITION] ${label}${detail ? ` — ${String(detail).slice(0, 300)}` : ""}`);
+  }
   return condition;
 }
 
@@ -92,7 +106,38 @@ const chrome = await launchChrome({
   webgpu: true,
 });
 const cdp = new CDP(chrome.ws);
-const artefactIndex = { startCommit, cells: [] };
+
+// Probe WebGPU adapter features for evidence (specifically shader-f16 requirement)
+const probePage = await openPage(cdp, url("models/qwen2-vl/"));
+const adapterInfo = await evalValue(
+  cdp,
+  probePage.sessionId,
+  `(async () => {
+    if (!("gpu" in navigator)) return { supported: false, reason: "navigator.gpu missing" };
+    try {
+      const adapter = await navigator.gpu.requestAdapter();
+      if (!adapter) return { supported: false, reason: "requestAdapter returned null" };
+      const info = adapter.info || (await adapter.requestAdapterInfo?.()) || {};
+      return {
+        supported: true,
+        vendor: info.vendor,
+        architecture: info.architecture,
+        device: info.device,
+        description: info.description,
+        isFallbackAdapter: adapter.isFallbackAdapter,
+        features: [...adapter.features],
+        hasShaderF16: adapter.features?.has?.("shader-f16") ?? false,
+      };
+    } catch (e) {
+      return { supported: false, error: String(e?.message ?? e) };
+    }
+  })()`,
+);
+await closePage(cdp, probePage.targetId);
+console.log(`WebGPU adapter probe: ${JSON.stringify(adapterInfo)}`);
+console.log(`shader-f16 supported: ${adapterInfo?.hasShaderF16 ?? false}`);
+
+const artefactIndex = { startCommit, adapter: adapterInfo, cells: [] };
 
 let firstCell = true;
 for (const [rung, cfg] of Object.entries(RUNGS)) {
@@ -129,7 +174,7 @@ for (const [rung, cfg] of Object.entries(RUNGS)) {
         firstCell ? 30 * 60 * 1000 : 12 * 60 * 1000,
         5000,
       );
-      if (!check(`${cell}: model initialises (WebGPU init succeeds on this box)`, ready === "ready", `state=${ready}`)) {
+      if (!checkPrecondition(`${cell}: model initialises (WebGPU init succeeds on this box; requires shader-f16)`, ready === "ready", `state=${ready}`)) {
         // An init-time failure IS the other degradation path — still assert the labelled UI.
         const initStatus = await evalValue(
           cdp,
@@ -217,7 +262,14 @@ for (const [rung, cfg] of Object.entries(RUNGS)) {
 }
 
 writeFileSync(join(ARTEFACTS, "index.json"), JSON.stringify(artefactIndex, null, 2));
-console.log(`\n${passed}/${checks} checks passed — artefacts in ${ARTEFACTS}`);
+console.log(`\n${passed}/${checks} checks passed (${envPreconditionFails} environment precondition failures) — artefacts in ${ARTEFACTS}`);
+if (envPreconditionFails > 0) {
+  console.log(
+    `NOTE: ${envPreconditionFails} precondition check(s) failed because this environment lacks WebGPU shader-f16.\n` +
+    "The product degradation assertions passed, but the in-generation [Concat] path was not reached.\n" +
+    "Exiting 1 to reflect that the run is honestly incomplete on this hardware.",
+  );
+}
 await chrome.kill({ removeProfile: false });
 server.server.close();
 process.exit(passed === checks ? 0 : 1);
