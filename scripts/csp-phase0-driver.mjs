@@ -14,7 +14,6 @@ import { mkdirSync, openSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import {
-  BASE,
   CDP,
   chromeAvailable,
   closePage,
@@ -128,7 +127,14 @@ try {
   for (const route of ROUTES) {
     currentRoute = route.name;
     console.log(`\n── route: ${route.path} (${route.name}) ──`);
-    const { targetId, sessionId, errors } = await openPage(cdp, `${ORIGIN}${BASE}${route.path.replace(/^\//, "")}`);
+    const { targetId, sessionId, errors } = await openPage(cdp, `${ORIGIN}/${route.path.replace(/^\//, "")}`);
+    // The Deno proxy 308-redirects the legacy /web-ai-showcase/ prefix to production webai.show,
+    // and the GH-Pages shell can location.replace() to canonical — a silent redirect would measure
+    // PRODUCTION (which sends no CSP) instead of the local Report-Only server. Fail loudly instead.
+    const docOrigin = await cdp.send("Runtime.evaluate", { expression: "location.origin", returnByValue: true }, sessionId).then((r) => r.result.value);
+    if (docOrigin !== ORIGIN) {
+      throw new Error(`route ${route.name}: document origin is ${docOrigin}, expected ${ORIGIN} — measurement would be against the wrong deployment`);
+    }
     const ev = async (expression, awaitPromise = false) => {
       const r = await cdp.send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise }, sessionId);
       if (r.exceptionDetails) return { __err: r.exceptionDetails.exception?.description || "eval error" };
