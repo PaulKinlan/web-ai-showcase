@@ -57,7 +57,7 @@
     <p class="crumbs"><a href="../wild/">← Wild</a> · <a href="../">Qwen2-VL</a></p>
 
     <script type="module">
-      import { Qwen2VLEngine, fileToDataURL, escapeHTML, showRuntimeFailure, QWEN_CSS } from "../qwen2vl.js";
+      import { Qwen2VLEngine, fileToDataURL, escapeHTML, showRuntimeFailure, clearRuntimeFailure, QWEN_CSS } from "../qwen2vl.js";
       import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
       import { loadPipeline } from "/web-ai-showcase/lib/webai.js";
       const style = document.createElement("style"); style.textContent = QWEN_CSS; document.head.append(style);
@@ -97,8 +97,15 @@
       createModelLoader({
         mount: $("model-loader"),
         model: { modelId: "onnx-community/Qwen2-VL-2B-Instruct", runtime: "transformers.js", dtype: "q4f16", sizeMB: 2700, requiresWebGPU: true },
-        load: (onProgress) => engine.load(onProgress),
-        onReady: () => { ready = true; $("run").disabled = false; },
+        load: (onProgress) => {
+          clearRuntimeFailure($("model-loader").querySelector(".status"));
+          return engine.load(onProgress);
+        },
+        onReady: () => {
+          clearRuntimeFailure($("model-loader").querySelector(".status"));
+          ready = true;
+          $("run").disabled = false;
+        },
         onError: (err) => showRuntimeFailure(
           $("model-loader").querySelector(".status"), err, { phase: "Model initialisation" },
         ),
@@ -119,9 +126,14 @@
         if (!ready) return;
         if (!currentImageURL) { $("status").textContent = "Pick a document first."; return; }
         $("run").disabled = true; $("copy").disabled = true;
+        clearRuntimeFailure($("status"));
+        clearRuntimeFailure($("sstatus"));
         $("status").classList.remove("err"); $("status").textContent = "Transcribing with Qwen2-VL…";
+        $("sstatus").classList.remove("err");
         $("transcript").innerHTML = '<span class="caret">&nbsp;</span>'; $("digest").innerHTML = '<span class="muted">Waiting for the transcript…</span>';
         let transcript = "";
+
+        // Stage 1: Qwen2-VL transcription
         try {
           await engine.generate(currentImageURL, "Transcribe all the text in this image, keeping the order and key numbers.", {
             maxTokens: 320,
@@ -130,21 +142,35 @@
           transcript = transcript.trim();
           $("transcript").textContent = transcript || "(no transcript)";
           $("status").textContent = "Transcript done — summarising…"; $("status").classList.add("ok");
+          clearRuntimeFailure($("status"));
           if (!transcript) throw new Error("empty transcript");
+        } catch (err) {
+          $("transcript").innerHTML = '<span class="muted">Transcription failed.</span>';
+          if (!showRuntimeFailure($("status"), err, { phase: "Transcription" })) {
+            $("status").textContent = "Transcription failed: " + err.message;
+            $("status").classList.add("err");
+          }
+          $("digest").innerHTML = '<span class="muted">Summary skipped.</span>';
+          $("run").disabled = false;
+          return;
+        }
 
+        // Stage 2: DistilBART summarisation
+        try {
           const summarise = await getSummariser();
           $("digest").innerHTML = '<span class="caret">&nbsp;</span>';
+          $("sstatus").classList.remove("err"); $("sstatus").textContent = "Summarising…";
           const out = await summarise(transcript, { max_new_tokens: 60 });
           const d = Array.isArray(out) ? (out[0]?.summary_text ?? "") : (out?.summary_text ?? "");
           lastDigest = d.trim(); $("digest").textContent = lastDigest || "(no digest)"; $("copy").disabled = !lastDigest;
           $("sstatus").textContent = "Done."; $("sstatus").classList.add("ok");
+          clearRuntimeFailure($("sstatus"));
         } catch (err) {
-          // The Qwen2-VL (transcribe) stage gets the labelled runtime degradation; the wasm
-          // summariser stage and anything unclassified keep the raw message (never silent).
-          if (!showRuntimeFailure($("status"), err)) {
-            $("status").textContent = "Failed: " + err.message; $("status").classList.add("err");
+          $("digest").innerHTML = '<span class="muted">Summarisation failed.</span>';
+          if (!showRuntimeFailure($("sstatus"), err, { phase: "Summarisation" })) {
+            $("sstatus").textContent = "Summarisation failed: " + err.message;
+            $("sstatus").classList.add("err");
           }
-          if ($("digest").querySelector(".caret")) $("digest").innerHTML = '<span class="muted">Summary skipped.</span>';
         } finally { $("run").disabled = false; }
       });
     </script>

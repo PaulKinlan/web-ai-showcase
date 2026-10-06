@@ -133,26 +133,15 @@ export function escapeHTML(s) {
 // role=status live region and demotes the raw text to a collapsed <details> (and it stays in the
 // console via the worker's console.error). Returns null for states the shared loader already labels
 // honestly (needs-WebGPU), so callers must leave those alone.
-const KERNEL_RE = /\[WebGPU\]|\bKernel\b[\s\S]{0,200}?failed|Failed to generate kernel/i;
+const KERNEL_RE =
+  /\[WebGPU\][\s\S]{0,200}?\b(?:kernel|fail(?:ed|ure)?|crash(?:ed)?)\b|\bKernel\b[\s\S]{0,200}?failed|Failed to generate kernel|\[Concat\][\s\S]{0,200}?failed/i;
 const DEVICE_LOST_RE = /device lost|GPUDevice.?lost|DeviceLostError/i;
-const OOM_RE = /out of memory|allocation failed|Array buffer allocation failed|\bOOM\b/i;
+const OOM_RE =
+  /\bout of memory\b|\bOOM\b|Array\s*buffer allocation failed|\b(?:memory|gpu\s*memory|vram|tensor|heap)\s+allocation failed/i;
 
 export function explainRuntimeFailure(err) {
   const raw = String(err?.message ?? err ?? "Unknown error");
   if (/^needs-webgpu$/i.test(raw.trim())) return null; // loader already shows the labelled state
-  if (KERNEL_RE.test(raw)) {
-    return {
-      kind: "webgpu-kernel",
-      raw,
-      headline: "This browser's WebGPU backend crashed while running Qwen2-VL.",
-      advice:
-        "The model loaded, but the GPU compute step failed inside the model itself — a known " +
-        "problem with this ONNX build on some browser, GPU and driver combinations, not something " +
-        "you did. What you can do: update your browser (a newer WebGPU runtime may fix it), try a " +
-        "different browser or GPU, or run one of the smaller on-device vision-language demos " +
-        "instead — SmolVLM, Moondream 2 or FastVLM work on far more devices.",
-    };
-  }
   if (DEVICE_LOST_RE.test(raw)) {
     return {
       kind: "device-lost",
@@ -174,7 +163,28 @@ export function explainRuntimeFailure(err) {
         "as Moondream 2 or SmolVLM.",
     };
   }
+  if (KERNEL_RE.test(raw)) {
+    return {
+      kind: "webgpu-kernel",
+      raw,
+      headline: "This browser's WebGPU backend crashed while running Qwen2-VL.",
+      advice:
+        "The model loaded, but the GPU compute step failed inside the model itself — a known " +
+        "problem with this ONNX build on some browser, GPU and driver combinations, not something " +
+        "you did. What you can do: update your browser (a newer WebGPU runtime may fix it), try a " +
+        "different browser or GPU, or run one of the smaller on-device vision-language demos " +
+        "instead — SmolVLM, Moondream 2 or FastVLM work on far more devices.",
+    };
+  }
   return null; // unclassified: the caller keeps its existing behaviour (raw message on the page)
+}
+
+// Remove any sibling .err-detail technical block from `statusEl` (e.g. on retry or success).
+export function clearRuntimeFailure(statusEl) {
+  if (!statusEl) return;
+  while (statusEl.nextElementSibling?.classList?.contains("err-detail")) {
+    statusEl.nextElementSibling.remove();
+  }
 }
 
 // Render a classified failure into `statusEl` (the page's role=status line): labelled headline +
@@ -184,8 +194,7 @@ export function explainRuntimeFailure(err) {
 export function showRuntimeFailure(statusEl, err, { phase = "Generation" } = {}) {
   const info = explainRuntimeFailure(err);
   // Clear any detail block from a previous failure so retries never stack them.
-  const next = statusEl.nextElementSibling;
-  if (next?.classList?.contains("err-detail")) next.remove();
+  clearRuntimeFailure(statusEl);
   if (!info) return false;
   statusEl.textContent = `${phase} failed. ${info.headline} ${info.advice}`;
   statusEl.classList.add("err");

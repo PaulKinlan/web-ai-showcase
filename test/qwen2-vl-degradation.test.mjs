@@ -8,7 +8,7 @@
 // scripts/validate-qwen2-vl-degradation.mjs.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { explainRuntimeFailure } from "../models/qwen2-vl/qwen2vl.js";
+import { explainRuntimeFailure, showRuntimeFailure, clearRuntimeFailure } from "../models/qwen2-vl/qwen2vl.js";
 
 // The exact measured crash signature from the bead (10-cell validator run, dims vary 285–294).
 const MEASURED_KERNEL_ERROR =
@@ -60,6 +60,133 @@ test("GPU device-lost and out-of-memory get their own labelled degradations", ()
 
 test("the loader's labelled needs-WebGPU state is left alone (null, not reclassified)", () => {
   assert.equal(explainRuntimeFailure(new Error("needs-webgpu")), null);
+});
+
+test("regex precedence: [WebGPU] prefix does not shadow device-lost or out-of-memory", () => {
+  // [WebGPU] device lost -> device-lost
+  const lost = explainRuntimeFailure(new Error("[WebGPU] device lost"));
+  assert.equal(lost?.kind, "device-lost");
+  assert.match(lost.headline, /took the GPU away/);
+
+  // [WebGPU] out of memory -> out-of-memory
+  const oom = explainRuntimeFailure(new Error("[WebGPU] out of memory"));
+  assert.equal(oom?.kind, "out-of-memory");
+  assert.match(oom.headline, /ran out of memory/);
+
+  // Real [Concat] ... failed error still -> webgpu-kernel
+  const concat = explainRuntimeFailure(new Error("[Concat] /model/layers.0/self_attn/Concat_7 failed"));
+  assert.equal(concat?.kind, "webgpu-kernel");
+  assert.match(concat.headline, /WebGPU backend crashed/);
+});
+
+test("bare [WebGPU] prefix without kernel/fail/crash keyword stays unclassified", () => {
+  const unclassifiedWebGPU = [
+    "[WebGPU] device initialized",
+    "[WebGPU] format rgba8unorm selected",
+  ];
+  for (const msg of unclassifiedWebGPU) {
+    assert.equal(explainRuntimeFailure(new Error(msg)), null, `should not classify: ${msg}`);
+  }
+});
+
+test("OOM_RE is restricted to memory contexts and does not match storage/quota errors", () => {
+  const quotaErrors = [
+    "Cache storage allocation failed",
+    "QuotaExceededError: Storage allocation failed",
+    "Disk quota exceeded",
+    "Cache allocation failed for model weights",
+  ];
+  for (const msg of quotaErrors) {
+    assert.equal(explainRuntimeFailure(new Error(msg)), null, `storage error must not be OOM: ${msg}`);
+  }
+
+  const validOOM = [
+    "Out of memory allocating tensor",
+    "Array buffer allocation failed",
+    "Memory allocation failed",
+    "GPU memory allocation failed",
+    "CUDA out of memory",
+  ];
+  for (const msg of validOOM) {
+    assert.equal(explainRuntimeFailure(new Error(msg))?.kind, "out-of-memory", `should classify as OOM: ${msg}`);
+  }
+});
+
+test("showRuntimeFailure and clearRuntimeFailure manage .err-detail DOM lifecycle", () => {
+  class MockElement {
+    constructor(tag) {
+      this.tagName = tag.toUpperCase();
+      this.textContent = "";
+      this._classes = new Set();
+      const self = this;
+      this.classList = {
+        add(c) { self._classes.add(c); },
+        remove(c) { self._classes.delete(c); },
+        contains(c) { return self._classes.has(c); },
+      };
+      this.nextElementSibling = null;
+      this.children = [];
+    }
+    get className() {
+      return Array.from(this._classes).join(" ");
+    }
+    set className(val) {
+      this._classes = new Set(String(val).trim().split(/\s+/).filter(Boolean));
+    }
+    append(...children) {
+      this.children.push(...children);
+    }
+    remove() {
+      if (this._prev) {
+        this._prev.nextElementSibling = this.nextElementSibling;
+        if (this.nextElementSibling) this.nextElementSibling._prev = this._prev;
+        this._prev = null;
+      }
+    }
+    insertAdjacentElement(position, el) {
+      if (position === "afterend") {
+        el.nextElementSibling = this.nextElementSibling;
+        if (this.nextElementSibling) this.nextElementSibling._prev = el;
+        el._prev = this;
+        this.nextElementSibling = el;
+      }
+    }
+  }
+
+  const prevDoc = globalThis.document;
+  try {
+    globalThis.document = {
+      createElement: (tag) => new MockElement(tag),
+    };
+
+    const statusEl = new MockElement("p");
+    statusEl.textContent = "Generating…";
+
+    // 1. Initial failure inserts .err-detail
+    const rendered = showRuntimeFailure(statusEl, new Error(MEASURED_KERNEL_ERROR));
+    assert.equal(rendered, true);
+    assert.ok(statusEl.classList.contains("err"));
+    assert.ok(!statusEl.classList.contains("ok"));
+    assert.ok(statusEl.nextElementSibling?.classList.contains("err-detail"));
+
+    // 2. Retry clears .err-detail before running
+    clearRuntimeFailure(statusEl);
+    assert.equal(statusEl.nextElementSibling, null, "retry must clear stale .err-detail");
+
+    // 3. Second failure inserts fresh .err-detail without stacking
+    showRuntimeFailure(statusEl, new Error(MEASURED_KERNEL_ERROR));
+    assert.ok(statusEl.nextElementSibling?.classList.contains("err-detail"));
+    assert.equal(statusEl.nextElementSibling.nextElementSibling, null, "must not stack .err-detail");
+
+    // 4. Successful completion clears .err-detail
+    statusEl.textContent = "Done.";
+    statusEl.classList.remove("err");
+    statusEl.classList.add("ok");
+    clearRuntimeFailure(statusEl);
+    assert.equal(statusEl.nextElementSibling, null, "successful completion must clear .err-detail");
+  } finally {
+    globalThis.document = prevDoc;
+  }
 });
 
 test("POSITIVE CONTROL: ordinary errors stay unclassified so pages keep surfacing them verbatim", () => {
