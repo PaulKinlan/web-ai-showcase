@@ -14,7 +14,7 @@ import {
   showRuntimeFailure,
 } from "../models/qwen2-vl/qwen2vl.js";
 
-// The exact measured crash signature from the bead (10-cell validator run, dims vary 285–294).
+// The exact measured crash signature from the bead (bead report from earlier hardware, dims vary 285–294; not reproduced on the d6adb38 box — see scripts/validate-qwen2-vl-degradation.mjs header).
 const MEASURED_KERNEL_ERROR =
   '[WebGPU] Kernel "[Concat] /model/layers.0/self_attn/Concat_7" failed. Error: Failed to ' +
   "generate kernel's output[0] with dims [1,2,286,128]. If you are running with pre-allocated " +

@@ -10,8 +10,9 @@
 //
 // Discriminating: with the product fixes present every cell passes; with models/qwen2-vl/ reverted
 // to the pre-fix files the labelled-message assertions FAIL (raw kernel text reaches the page).
+// Run with: [ONLY=overview,basics,...] node scripts/validate-qwen2-vl-injected-errors.mjs
 // Cells: generation error on overview/basics/practical/wild x desktop/mobile; initialisation error on
-// all five rungs x desktop/mobile. multi-model generation is NOT injected (stage 1 is a different model).
+// all five rungs x desktop/mobile. multi-model: init-error plus a stage-1 (Qwen2-VL transcription) generation error; stage 2 (a different model) is never reached.
 import {
   CDP,
   closePage,
@@ -71,8 +72,7 @@ const server = await startServer();
 const chrome = await launchChrome({ webgpu: true });
 const cdp = new CDP(chrome.ws);
 let stubFired = 0;
-cdp.on(async (msg) => {
-  if (msg.method !== "Fetch.requestPaused") return;
+async function fulfill(msg) {
   const { requestId } = msg.params;
   stubFired++;
   await cdp.send("Fetch.fulfillRequest", {
@@ -81,12 +81,19 @@ cdp.on(async (msg) => {
     responseHeaders: [{ name: "content-type", value: "text/javascript" }],
     body: Buffer.from(STUB(mode)).toString("base64"),
   }, msg.sessionId);
+}
+cdp.on((msg) => {
+  if (msg.method !== "Fetch.requestPaused") return;
+  fulfill(msg).catch((e) =>
+    console.log(`  [stub fulfill failed] ${String(e?.message ?? e).slice(0, 120)}`)
+  );
 });
+
 try {
   for (const [rung, route] of Object.entries(RUNGS)) {
     if (process.env.ONLY && !process.env.ONLY.split(",").includes(rung)) continue;
     for (const [vpName, vp] of [["desktop", DESKTOP], ["mobile", MOBILE]]) {
-      for (const m of rung === "multimodel" ? ["init"] : ["run", "init"]) {
+      for (const m of ["run", "init"]) {
         mode = m;
         const cell = `${rung}@${vpName}/${
           m === "init" ? "init-error" : "generation-error"

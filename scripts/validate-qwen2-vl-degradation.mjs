@@ -17,7 +17,7 @@
 //      inspectable, never the headline).
 //   4. The answer region honestly says generation failed; no fake output.
 // Every published rung (overview + basics + practical + wild + multi-model) is driven at desktop
-// AND mobile. Intended: the 2.7 GB model downloads once into a persistent profile and later cells
+// AND mobile. Intended: the 2.7 GB model downloads once into a per-run profile (reused across cells, never across runs) and later cells
 // use the cache — NOT observed on the d6adb38 run (every cell logged download-required).
 //
 // This validator deliberately does NOT write a portfolio acceptance record: the family cannot
