@@ -241,6 +241,39 @@
       record("audio-initial-rationale", stateOf("audio") === "idle", `audio state=${stateOf("audio")}`);
       record("file-initial-dropzone", stateOf("file") === "idle" && !!q("cap-file", ".cap__dropzone"),
         `file state=${stateOf("file")}`);
+
+      // PHASE 0b — zc7: the h() helper has no HTML sink. A caller-supplied `accept` string with
+      // hostile markup must render as plain text (textContent), icons must arrive through the
+      // allowlist + DOMParser `icon:` path as real SVG nodes, and nothing may execute.
+      (() => {
+        const hostile = 'image/*<img src=x onerror="window.__zc7xss=1">';
+        const probe = document.createElement("div");
+        probe.hidden = true;
+        document.body.append(probe);
+        let cap = null;
+        try {
+          cap = createCapture({ mount: probe, kind: "file", accept: hostile });
+          const dzAccept = probe.querySelector(".cap__dz-accept");
+          const injected = probe.querySelector("img");
+          const iconSvg = probe.querySelector(".cap__dz-icon svg");
+          const renderedAsText = !!dzAccept && dzAccept.textContent.includes("<img src=x");
+          // Detail strings must never carry the raw hostile markup: renderResults used to
+          // interpolate details as HTML, which re-injected the payload into the results table
+          // (web-ai-showcase-zc7 reviewer P1). Report booleans + length only.
+          record("zc7-accept-is-text-not-markup",
+            renderedAsText && !injected && window.__zc7xss !== 1,
+            `hostile accept rendered as text=${renderedAsText} (len=${dzAccept?.textContent.length || 0}), injected img=${!!injected}, xss flag=${window.__zc7xss === 1}`);
+          record("zc7-icons-render-via-allowlist",
+            !!iconSvg && iconSvg.namespaceURI === "http://www.w3.org/2000/svg" && typeof iconSvg.getBBox === "function",
+            `svg present=${!!iconSvg}, ns=${iconSvg?.namespaceURI || "none"}, SVGSVGElement=${iconSvg instanceof SVGSVGElement}`);
+        } catch (err) {
+          record("zc7-accept-is-text-not-markup", false, "threw: " + err.message);
+          record("zc7-icons-render-via-allowlist", false, "threw: " + err.message);
+        } finally {
+          cap?.destroy?.();
+          probe.remove();
+        }
+      })();
       const reqGated = q("cap-photo", ".cap__video-wrap .cap__video")?.srcObject == null;
       record("capture-gated-no-stream", reqGated, "no live stream before user grants access");
 
@@ -354,8 +387,16 @@
       const body = document.getElementById("st-body");
       body.replaceChildren(...results.tests.map((t) => {
         const tr = document.createElement("tr");
-        tr.innerHTML =
-          `<td>${t.name}</td><td class="${t.pass ? "st-pass" : "st-fail"}">${t.pass ? "PASS" : "FAIL"}</td><td class="st-note">${t.detail}</td>`;
+        // Build with textContent, never innerHTML: test details can contain caller-supplied
+        // hostile markup by design (zc7 probe) and must render inert even in the harness itself.
+        const tdName = tr.appendChild(document.createElement("td"));
+        tdName.textContent = t.name;
+        const tdPass = tr.appendChild(document.createElement("td"));
+        tdPass.className = t.pass ? "st-pass" : "st-fail";
+        tdPass.textContent = t.pass ? "PASS" : "FAIL";
+        const tdNote = tr.appendChild(document.createElement("td"));
+        tdNote.className = "st-note";
+        tdNote.textContent = t.detail;
         return tr;
       }));
       const passed = results.tests.filter((t) => t.pass).length;
