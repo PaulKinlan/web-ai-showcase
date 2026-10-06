@@ -67,7 +67,10 @@ try {
               buttons[0].click();
               const cap = () => mount.querySelector('.exg-caption small');
               // Let any async onerror/onload handler from injected markup fire before reading the canary.
-              await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(r, 100))));
+              await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(r, 300))));
+              // Page-level overflow assertion removed (web-ai-showcase-diy): inherited body{overflow-wrap:anywhere}
+              // makes it non-discriminating here; overflow is covered by responsive-check, conformance and
+              // probe-example-galleries.
               let caption = cap();
               const hostileResult = {
                 text: caption.textContent, anchors: caption.querySelectorAll('a').length,
