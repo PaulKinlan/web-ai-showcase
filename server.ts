@@ -41,15 +41,19 @@ export const ISOLATION_HEADERS = {
 // from the measured origin inventory on the bead: jsdelivr (transformers/ORT/tasks-vision),
 // esm.run (web-llm), huggingface.co + the *.hf.co LFS/xet CDN family (measured live: weight
 // resolves 302 to us.aws.cdn.hf.co — cdn-lfs*.huggingface.co alone would block every download),
-// storage.googleapis.com (mediapipe .tflite). 'unsafe-inline' in script-src/style-src is the
-// phase-0 measurement stance (1521 inline bootstrap scripts exist); nonce strategies are a
+// storage.googleapis.com (mediapipe .tflite). connect-src carries data: and blob: because
+// transformers.js fetches caller-provided data:/blob: image+audio URLs inside the worker
+// (MEASURED phase-0 run 4: a connect-src violation with blocked-uri 'data', source-file
+// cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.5, on yolos-detection — Report-Only only;
+// enforcing without data: would break image-input families). 'unsafe-inline' in script-src/style-src
+// is the phase-0 measurement stance (1521 inline bootstrap scripts exist); nonce strategies are a
 // later decision. frame-ancestors is inert in Report-Only by spec — listed so the enforce flip
 // is a one-word change.
 export const CSP_PHASE0_POLICY = [
   "default-src 'self'",
   "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' https://cdn.jsdelivr.net https://esm.run",
   "worker-src 'self' blob:",
-  "connect-src 'self' https://huggingface.co https://*.hf.co https://cdn.jsdelivr.net https://esm.run https://storage.googleapis.com",
+  "connect-src 'self' data: blob: https://huggingface.co https://*.hf.co https://cdn.jsdelivr.net https://esm.run https://storage.googleapis.com",
   "img-src 'self' data: blob: https:",
   "media-src 'self' blob:",
   "style-src 'self' 'unsafe-inline'",
