@@ -73,6 +73,36 @@ Deno.test("legacy prefixed paths redirect to the matching canonical path and que
   assertIsolated(response);
 });
 
+Deno.test("legacy prefixed redirects never leave the canonical origin", async () => {
+  // A remainder of "//evil.com" is a WHATWG network-path reference: resolving it against the
+  // canonical origin yields https://evil.com/. "\\" is a path separator for special schemes,
+  // so the backslash variants parse to the same "//…" pathname. All must be refused.
+  for (
+    const path of [
+      `${SITE_PREFIX}//evil.com`,
+      `${SITE_PREFIX}//evil.com/phish?from=webai`,
+      `${SITE_PREFIX}//webai.show.evil.com/`,
+      `${SITE_PREFIX}/\\evil.com`,
+      `${SITE_PREFIX}/\\evil.com\\phish`,
+    ]
+  ) {
+    const response = await handle(new Request(`${CANONICAL_ORIGIN}${path}`));
+    assertEquals(response.status, 404, path);
+    assertEquals(response.headers.get("location"), null, path);
+    assertIsolated(response);
+  }
+});
+
+Deno.test("legacy prefixed encoded-slash path still redirects, staying on the canonical origin", async () => {
+  // %2f is not a path separator in WHATWG URL parsing, so this is a plain path, not a
+  // network-path reference. The redirect must keep working and stay same-origin.
+  const response = await handle(new Request(`${CANONICAL_ORIGIN}${SITE_PREFIX}/%2f%2fevil.com`));
+  assertEquals(response.status, 308);
+  const location = response.headers.get("location");
+  assertEquals(location && new URL(location).origin, CANONICAL_ORIGIN);
+  assertIsolated(response);
+});
+
 Deno.test("legacy Deno deployment hosts redirect to webai.show", async () => {
   for (
     const host of [
@@ -83,6 +113,22 @@ Deno.test("legacy Deno deployment hosts redirect to webai.show", async () => {
     const response = await handle(new Request(`https://${host}/models/demo/?x=1`));
     assertEquals(response.status, 308);
     assertEquals(response.headers.get("location"), `${CANONICAL_ORIGIN}/models/demo/?x=1`);
+  }
+});
+
+Deno.test("legacy deploy-host redirects never leave the canonical origin", async () => {
+  for (
+    const host of [
+      "web-ai-showcase.paulkinlan-ea.deno.net",
+      "web-ai-showcase-isolated.paulkinlan-ea.deno.net",
+    ]
+  ) {
+    for (const path of ["//evil.com", "//evil.com/phish?from=deploy", "/\\evil.com"]) {
+      const response = await handle(new Request(`https://${host}${path}`));
+      assertEquals(response.status, 404, `${host}${path}`);
+      assertEquals(response.headers.get("location"), null, `${host}${path}`);
+      assertIsolated(response);
+    }
   }
 });
 
