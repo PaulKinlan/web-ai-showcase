@@ -122,6 +122,94 @@ export function escapeHTML(s) {
   ));
 }
 
+// Honest, labelled degradation for runtime failures (web-ai-showcase-oow). Qwen2-VL ships
+// WebGPU-only, and the ORT WebGPU backend bundled with the pinned transformers.js (3.7.5) can crash
+// inside the model's OWN forward pass on some GPU/driver/browser builds — measured:
+//   [WebGPU] Kernel "[Concat] /model/layers.0/self_attn/Concat_7" failed. Error: Failed to generate
+//   kernel's output[0] with dims [1,2,286,128]…
+// A visitor must never get that raw kernel string as the user-facing message. explainRuntimeFailure
+// classifies the known failure classes into { kind, headline, advice, raw } (plain-language what
+// happened + what the visitor can do); showRuntimeFailure renders it into the page's existing
+// role=status live region and demotes the raw text to a collapsed <details> (and it stays in the
+// console via the worker's console.error). Returns null for states the shared loader already labels
+// honestly (needs-WebGPU), so callers must leave those alone.
+const KERNEL_RE =
+  /\[WebGPU\][\s\S]{0,200}?\b(?:kernel|fail(?:ed|ure)?|crash(?:ed)?)\b|\bKernel\b[\s\S]{0,200}?failed|Failed to generate kernel|\[Concat\][\s\S]{0,200}?failed/i;
+const DEVICE_LOST_RE = /device lost|GPUDevice.?lost|DeviceLostError/i;
+const OOM_RE =
+  /\bout of memory\b|\bOOM\b|Array\s*buffer allocation failed|\b(?:memory|gpu\s*memory|vram|tensor|heap)\s+allocation failed/i;
+
+export function explainRuntimeFailure(err) {
+  const raw = String(err?.message ?? err ?? "Unknown error");
+  if (/^needs-webgpu$/i.test(raw.trim())) return null; // loader already shows the labelled state
+  if (DEVICE_LOST_RE.test(raw)) {
+    return {
+      kind: "device-lost",
+      raw,
+      headline: "The browser took the GPU away while Qwen2-VL was running.",
+      advice:
+        "This usually means a driver reset or GPU resource pressure. Reload the page and try " +
+        "again — closing other GPU-heavy tabs or apps first helps.",
+    };
+  }
+  if (OOM_RE.test(raw)) {
+    return {
+      kind: "out-of-memory",
+      raw,
+      headline: "This device ran out of memory running Qwen2-VL.",
+      advice:
+        "It is a ~2B-parameter model that needs several GB of free RAM and GPU memory. Close " +
+        "other tabs and apps, then retry — or use a smaller on-device vision-language demo such " +
+        "as Moondream 2 or SmolVLM.",
+    };
+  }
+  if (KERNEL_RE.test(raw)) {
+    return {
+      kind: "webgpu-kernel",
+      raw,
+      headline: "This browser's WebGPU backend crashed while running Qwen2-VL.",
+      advice:
+        "The GPU compute step failed inside the model itself — a known " +
+        "problem with this ONNX build on some browser, GPU and driver combinations, not something " +
+        "you did. What you can do: update your browser (a newer WebGPU runtime may fix it), try a " +
+        "different browser or GPU, or run one of the smaller on-device vision-language demos " +
+        "instead — SmolVLM, Moondream 2 or FastVLM work on far more devices.",
+    };
+  }
+  return null; // unclassified: the caller keeps its existing behaviour (raw message on the page)
+}
+
+// Remove any sibling .err-detail technical block from `statusEl` (e.g. on retry or success).
+export function clearRuntimeFailure(statusEl) {
+  if (!statusEl) return;
+  while (statusEl.nextElementSibling?.classList?.contains("err-detail")) {
+    statusEl.nextElementSibling.remove();
+  }
+}
+
+// Render a classified failure into `statusEl` (the page's role=status line): labelled headline +
+// advice as the user-facing message, raw runtime text in a collapsed <details> inserted right
+// after. Returns true when it rendered a classified degradation, false when the error was left to
+// the caller's existing handling.
+export function showRuntimeFailure(statusEl, err, { phase = "Generation" } = {}) {
+  const info = explainRuntimeFailure(err);
+  // Clear any detail block from a previous failure so retries never stack them.
+  clearRuntimeFailure(statusEl);
+  if (!info) return false;
+  statusEl.textContent = `${phase} failed. ${info.headline} ${info.advice}`;
+  statusEl.classList.add("err");
+  statusEl.classList.remove("ok");
+  const detail = document.createElement("details");
+  detail.className = "err-detail";
+  const summary = document.createElement("summary");
+  summary.textContent = "Technical detail (useful for a bug report)";
+  const pre = document.createElement("pre");
+  pre.textContent = info.raw;
+  detail.append(summary, pre);
+  statusEl.insertAdjacentElement("afterend", detail);
+  return true;
+}
+
 export const QWEN_CSS = `
 .vlm-grid { display:flex; flex-wrap:wrap; gap:1rem; align-items:flex-start; }
 .vlm-img-col { flex:1 1 280px; max-inline-size:420px; }
@@ -159,4 +247,9 @@ export const QWEN_CSS = `
 .turn.q { background:var(--bg-secondary); }
 .turn.a { background:var(--bg-raised); white-space:pre-wrap; line-height:1.6; }
 .turn .who { font-size:.68rem; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); display:block; margin-block-end:.2rem; }
+.err-detail { margin:.3rem 0 0; font-size:.78rem; color:var(--muted); }
+.err-detail summary { cursor:pointer; }
+.err-detail summary:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.err-detail pre { white-space:pre-wrap; word-break:break-word; font-size:.72rem; margin:.3rem 0 0;
+  padding:.5rem; border:1px solid var(--border); border-radius:6px; background:var(--bg-raised); }
 `;
