@@ -75,6 +75,7 @@ const CHECK_EXPR = `(() => {
       escaping.push({
         tag: el.tagName.toLowerCase(),
         id: el.id || null,
+        mutantTarget: el.getAttribute("data-mutant-target") || null,
         overViewportRight,
         overViewportLeft,
         overPanelRight,
@@ -91,6 +92,116 @@ const CHECK_EXPR = `(() => {
     controlsChecked: controls.length,
     escaping,
     pass: vw === requested && escaping.length === 0 && (sw - vw) <= 1
+  };
+})()`;
+
+// Clean panel baseline check for the mutant proof below. Asserts that before any injection, no
+// visible in-flow control inside a panel already escapes the panel's content edges (within a 1px
+// subpixel rendering tolerance matching the guard).
+const PANEL_BASELINE_EXPR = `(() => {
+  const panelFor = (el) => {
+    const panel = el.closest(".panel");
+    return !panel || panel === el ? null : panel;
+  };
+  const panelContentEdges = (panel) => {
+    const pr = panel.getBoundingClientRect();
+    const cs = getComputedStyle(panel);
+    return {
+      left: pr.left + parseFloat(cs.paddingLeft || 0) + parseFloat(cs.borderLeftWidth || 0),
+      right: pr.right - parseFloat(cs.paddingRight || 0) - parseFloat(cs.borderRightWidth || 0),
+    };
+  };
+  const controls = [...document.querySelectorAll("button, input, select, textarea, label, output")]
+    .filter((el) => {
+      const r = el.getBoundingClientRect();
+      const cs = getComputedStyle(el);
+      const inFlow = cs.position === "static" || cs.position === "relative";
+      return r.width > 0 && r.height > 0 && cs.display !== "none" && cs.visibility !== "hidden" &&
+        inFlow && panelFor(el) !== null;
+    });
+  const escaping = [];
+  for (const el of controls) {
+    const edges = panelContentEdges(panelFor(el));
+    const r = el.getBoundingClientRect();
+    const overRight = +(r.right - edges.right).toFixed(2);
+    const overLeft = +(edges.left - r.left).toFixed(2);
+    if (overRight > 1 || overLeft > 1) {
+      escaping.push({
+        tag: el.tagName.toLowerCase(),
+        id: el.id || null,
+        right: +r.right.toFixed(2),
+        left: +r.left.toFixed(2),
+        contentRight: +edges.right.toFixed(2),
+        contentLeft: +edges.left.toFixed(2),
+        overRight,
+        overLeft,
+      });
+    }
+  }
+  return {
+    controlsCount: controls.length,
+    escaping,
+    clean: escaping.length === 0,
+  };
+})()`;
+
+// Right-edge panel-escape mutant for the proof below. Selects a visible in-flow control inside a
+// panel that is currently CONTAINED (right edge within panel content right + 1px tolerance),
+// preferring the control closest to the panel's right content edge. Attaches a unique
+// `data-mutant-target` attribute token so measurements, the premise, and the final guard verdict
+// bind to the same control identity. Derives the injection offset from measured geometry
+// (panel content right - control right + 40px, min 40px) to guarantee escape past the panel's
+// right content edge. Returns independent before/after containment measurements and target token.
+const RIGHT_EDGE_ESCAPE_MUTANT = `(() => {
+  const panelFor = (el) => {
+    const panel = el.closest(".panel");
+    return !panel || panel === el ? null : panel;
+  };
+  const panelContentRight = (panel) => {
+    const pr = panel.getBoundingClientRect();
+    const cs = getComputedStyle(panel);
+    return pr.right - parseFloat(cs.paddingRight || 0) - parseFloat(cs.borderRightWidth || 0);
+  };
+  const controls = [...document.querySelectorAll("button, input, select, textarea, label, output")]
+    .filter((el) => {
+      const r = el.getBoundingClientRect();
+      const cs = getComputedStyle(el);
+      const offsetSettable = cs.position === "static" || cs.position === "relative";
+      const panel = panelFor(el);
+      if (!offsetSettable || !panel || r.width <= 0 || r.height <= 0 || cs.display === "none" || cs.visibility === "hidden") {
+        return false;
+      }
+      // Require the candidate control to be contained beforehand (within 1px tolerance)
+      const pr = panelContentRight(panel);
+      return r.right <= pr + 1;
+    });
+  if (controls.length === 0) {
+    return { found: false, reason: "no visible in-flow contained control inside a .panel" };
+  }
+  let best = null;
+  for (const el of controls) {
+    const gap = panelContentRight(panelFor(el)) - el.getBoundingClientRect().right;
+    if (best === null || Math.abs(gap) < Math.abs(best.gap)) best = { el, gap };
+  }
+  const targetToken = "mutant-target-" + Math.random().toString(36).slice(2, 10);
+  best.el.setAttribute("data-mutant-target", targetToken);
+  const panel = panelFor(best.el);
+  const panelRect = panel.getBoundingClientRect();
+  const btnRect = best.el.getBoundingClientRect();
+  const contentRight = panelContentRight(panel);
+  const offset = Math.max(panelRect.right - btnRect.right + 40, 40);
+  best.el.style.position = "relative";
+  best.el.style.left = offset + "px";
+  const after = best.el.getBoundingClientRect();
+  return {
+    found: true,
+    tag: best.el.tagName.toLowerCase(),
+    id: best.el.id || null,
+    targetToken,
+    offset: +offset.toFixed(2),
+    contentRight: +contentRight.toFixed(2),
+    beforeRight: +btnRect.right.toFixed(2),
+    afterRight: +after.right.toFixed(2),
   };
 })()`;
 
@@ -202,23 +313,65 @@ test("MUTANT PROOF: guard detects right-edge panel content box escape", { skip: 
     const { targetId, sessionId } = await openPage(cdp, url);
     await setViewport(cdp, sessionId, MOBILE);
 
-    // Inject right-edge escape mutant
-    await evalValue(
-      cdp,
-      sessionId,
-      `(() => {
-        const btn = document.querySelector(".panel button") || document.querySelector("button");
-        btn.style.position = "relative";
-        btn.style.left = "80px";
-      })()`,
-    );
+    // 1. Clean panel baseline assertion: verify independently of CHECK_EXPR that no visible
+    // in-flow control inside a panel already escapes its content box before injection.
+    const baseline = await evalValue(cdp, sessionId, PANEL_BASELINE_EXPR);
 
-    const mutated = await evalValue(cdp, sessionId, CHECK_EXPR);
+    // 2. Inject a right-edge escape mutant on a contained control. The mutant binds a unique
+    // data-mutant-target attribute and derives the offset from measured geometry.
+    const injected = await evalValue(cdp, sessionId, RIGHT_EDGE_ESCAPE_MUTANT);
+    const mutated = injected && injected.found ? await evalValue(cdp, sessionId, CHECK_EXPR) : null;
     await closePage(cdp, targetId);
 
-    assert.equal(mutated.pass, false, "Guard failed to detect right-edge panel escape mutant");
-    assert.ok(mutated.escaping.length > 0, "No escaping controls reported for right-edge mutant");
-    assert.ok(mutated.escaping.some((c) => c.overPanelRight > 1), "overPanelRight was not flagged");
+    // Verify baseline was clean before injection
+    assert.ok(
+      baseline && baseline.clean,
+      `HARNESS: panel baseline is not clean — pre-existing escaping controls detected before injection: ${JSON.stringify(
+        baseline?.escaping ?? null,
+      )}`,
+    );
+
+    // 3. Harness premise assertions (existence + independent before/after containment measurements):
+    assert.ok(
+      injected && injected.found,
+      `HARNESS: could not select a right-edge panel-escape target — ${
+        injected?.reason ?? "injection expression produced no result"
+      }`,
+    );
+
+    const TOLERANCE = 1.0; // 1px subpixel rendering tolerance matching guard
+    assert.ok(
+      injected.beforeRight <= injected.contentRight + TOLERANCE,
+      `HARNESS: selected control was not contained before injection — proof premise not met. Selected ${
+        injected.tag
+      }${injected.id ? "#" + injected.id : ""} (beforeRight: ${
+        injected.beforeRight
+      }, contentRight: ${injected.contentRight}, tolerance: ${TOLERANCE}px)`,
+    );
+    assert.ok(
+      injected.afterRight > injected.contentRight + TOLERANCE,
+      `HARNESS: the mutant did not escape — proof premise not met. Injected ${injected.tag}${
+        injected.id ? "#" + injected.id : ""
+      } by ${injected.offset}px (control right: ${injected.beforeRight} -> ${
+        injected.afterRight
+      }, panel content right: ${injected.contentRight}, tolerance: ${TOLERANCE}px)`,
+    );
+
+    // 4. Guard verdict assertions: verify CHECK_EXPR reports pass:false AND flags the
+    // specific injected control (bound by targetToken) as escaping the right panel edge.
+    assert.equal(
+      mutated.pass,
+      false,
+      "GUARD: the containment guard failed to report pass:false for a control driven past the panel's right content edge",
+    );
+    assert.ok(
+      mutated.escaping.some(
+        (c) => c.mutantTarget === injected.targetToken && c.overPanelRight > 1,
+      ),
+      `GUARD: the containment guard did not flag the injected control as escaping the panel's right content edge (target: ${
+        injected.targetToken
+      }, guard escaping: ${JSON.stringify(mutated.escaping)})`,
+    );
   } finally {
     await browser.kill();
     server.close();
