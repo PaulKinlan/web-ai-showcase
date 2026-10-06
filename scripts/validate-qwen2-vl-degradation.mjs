@@ -69,9 +69,7 @@ function check(label, condition, detail = "") {
   checks++;
   if (condition) passed++;
   console.log(
-    `${condition ? "PASS" : "FAIL"}  ${label}${
-      detail ? ` — ${String(detail).slice(0, 300)}` : ""
-    }`,
+    `${condition ? "PASS" : "FAIL"}  ${label}${detail ? ` — ${String(detail).slice(0, 300)}` : ""}`,
   );
   return condition;
 }
@@ -80,10 +78,14 @@ function checkPrecondition(label, condition, detail = "") {
   checks++;
   if (condition) {
     passed++;
-    console.log(`PASS  [PRECONDITION] ${label}${detail ? ` — ${String(detail).slice(0, 300)}` : ""}`);
+    console.log(
+      `PASS  [PRECONDITION] ${label}${detail ? ` — ${String(detail).slice(0, 300)}` : ""}`,
+    );
   } else {
     envPreconditionFails++;
-    console.log(`FAIL  [PRECONDITION] ${label}${detail ? ` — ${String(detail).slice(0, 300)}` : ""}`);
+    console.log(
+      `FAIL  [PRECONDITION] ${label}${detail ? ` — ${String(detail).slice(0, 300)}` : ""}`,
+    );
   }
   return condition;
 }
@@ -179,7 +181,13 @@ for (const [rung, cfg] of Object.entries(RUNGS)) {
         firstCell ? 30 * 60 * 1000 : 12 * 60 * 1000,
         5000,
       );
-      if (!checkPrecondition(`${cell}: model initialises (WebGPU init succeeds on this box; requires shader-f16)`, ready === "ready", `state=${ready}`)) {
+      if (
+        !checkPrecondition(
+          `${cell}: model initialises (WebGPU init succeeds on this box; requires shader-f16)`,
+          ready === "ready",
+          `state=${ready}`,
+        )
+      ) {
         // An init-time failure IS the other degradation path — still assert the labelled UI.
         const initStatus = await evalValue(
           cdp,
@@ -195,12 +203,16 @@ for (const [rung, cfg] of Object.entries(RUNGS)) {
         continue;
       }
 
-      // 2) Drive a real generation. On this box the ORT WebGPU Concat kernel crashes every time.
+      // 2) Drive a real generation. REQUIRES shader-f16 hardware: on the d6adb38 box init failed
+      // before generation ("The device (webgpu) does not support fp16."), so this path was never
+      // reached there and the [Concat] crash is NOT claimed to reproduce on this box (see header).
       if (cfg.prompt) {
         await evalValue(
           cdp,
           page.sessionId,
-          `(() => { const p = document.querySelector('#prompt'); if (p) p.value = ${JSON.stringify(cfg.prompt)}; return true; })()`,
+          `(() => { const p = document.querySelector('#prompt'); if (p) p.value = ${
+            JSON.stringify(cfg.prompt)
+          }; return true; })()`,
         );
       }
       await evalValue(cdp, page.sessionId, "document.querySelector('#run')?.click()");
@@ -213,7 +225,11 @@ for (const [rung, cfg] of Object.entries(RUNGS)) {
         3000,
       );
       const status = settled ??
-        (await evalValue(cdp, page.sessionId, "document.querySelector('#status')?.textContent || ''"));
+        (await evalValue(
+          cdp,
+          page.sessionId,
+          "document.querySelector('#status')?.textContent || ''",
+        ));
       const shot = join(ARTEFACTS, `${cell}.png`);
       await screenshot(cdp, page.sessionId, shot);
       const detailText = await evalValue(
@@ -232,7 +248,11 @@ for (const [rung, cfg] of Object.entries(RUNGS)) {
         )?.textContent?.trim() || null`,
       );
 
-      check(`${cell}: a failure state was reached (kernel crash reproduced)`, !!settled, status?.slice(0, 120));
+      check(
+        `${cell}: a failure state was reached (kernel crash reproduced)`,
+        !!settled,
+        status?.slice(0, 120),
+      );
       check(
         `${cell}: LABELLED degradation is the user-facing message`,
         /WebGPU backend crashed|took the GPU away|ran out of memory/i.test(status ?? ""),
@@ -240,7 +260,9 @@ for (const [rung, cfg] of Object.entries(RUNGS)) {
       );
       check(
         `${cell}: message says what the visitor can do`,
-        /update your browser|different browser|Reload the page|Close other tabs/i.test(status ?? ""),
+        /update your browser|different browser|Reload the page|Close other tabs/i.test(
+          status ?? "",
+        ),
       );
       check(
         `${cell}: NO raw kernel text in the user-facing message`,
@@ -258,7 +280,13 @@ for (const [rung, cfg] of Object.entries(RUNGS)) {
         /failed/i.test(answerText ?? ""),
         answerText?.slice(0, 80),
       );
-      artefactIndex.cells.push({ cell, status, detailText: detailText?.slice(0, 400), answerText, screenshot: shot });
+      artefactIndex.cells.push({
+        cell,
+        status,
+        detailText: detailText?.slice(0, 400),
+        answerText,
+        screenshot: shot,
+      });
     } finally {
       await closePage(cdp, page.targetId);
       firstCell = false;
@@ -267,12 +295,14 @@ for (const [rung, cfg] of Object.entries(RUNGS)) {
 }
 
 writeFileSync(join(ARTEFACTS, "index.json"), JSON.stringify(artefactIndex, null, 2));
-console.log(`\n${passed}/${checks} checks passed (${envPreconditionFails} environment precondition failures) — artefacts in ${ARTEFACTS}`);
+console.log(
+  `\n${passed}/${checks} checks passed (${envPreconditionFails} environment precondition failures) — artefacts in ${ARTEFACTS}`,
+);
 if (envPreconditionFails > 0) {
   console.log(
     `NOTE: ${envPreconditionFails} precondition check(s) failed because this environment lacks WebGPU shader-f16.\n` +
-    "The product degradation assertions passed, but the in-generation [Concat] path was not reached.\n" +
-    "Exiting 1 to reflect that the run is honestly incomplete on this hardware.",
+      "The product degradation assertions passed, but the in-generation [Concat] path was not reached.\n" +
+      "Exiting 1 to reflect that the run is honestly incomplete on this hardware.",
   );
 }
 await chrome.kill({ removeProfile: false });
