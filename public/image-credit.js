@@ -11,6 +11,8 @@
 // It is a no-op on pages that display no licensed image, safe with multiple sample strips, and re-runs on
 // dynamically-swapped sample images via a MutationObserver.
 
+import { safeSourceHref } from "../lib/safe-url.js";
+
 const REPO_ROOTS = ["/models/", "/media/", "/reports/", "/public/", "/image-provenance/"];
 
 // Derive the site base (…/web-ai-showcase/) and repo-relative path from an absolute image URL.
@@ -65,8 +67,9 @@ function creditLineHTML(entries, base) {
   const parts = [...seen.values()].map((p) => {
     const who = esc(p.creator || "web-ai-showcase");
     const lic = esc(p.licenseName || p.license || "");
-    const link = p.sourceUrl
-      ? ` <a href="${esc(p.sourceUrl)}" rel="noopener" target="_blank">↗</a>`
+    const href = safeSourceHref(p.sourceUrl); // http(s)/same-origin only; else no link
+    const link = href
+      ? ` <a href="${esc(href)}" rel="noopener noreferrer" target="_blank">↗</a>`
       : "";
     return `${who} — ${lic}${link}`;
   });
