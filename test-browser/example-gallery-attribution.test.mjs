@@ -4,6 +4,7 @@ import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import {
   CDP,
+  chromeAvailable,
   closePage,
   DESKTOP,
   launchChrome,
@@ -14,12 +15,20 @@ import {
   startServer,
 } from "../scripts/browser.mjs";
 
-const { server, port } = await startServer();
-const chrome = await launchChrome();
-const cdp = new CDP(chrome.ws);
+const browserSkip = chromeAvailable()
+  ? false
+  : "no Chrome/Chromium resolvable — browser-driven test; install one or set CHROME_BIN";
+let server, port, chrome, cdp;
 try {
+  if (!browserSkip) {
+    ({ server, port } = await startServer());
+    chrome = await launchChrome();
+    cdp = new CDP(chrome.ws);
+  }
   for (const [name, viewport] of [["desktop", DESKTOP], ["mobile", MOBILE]]) {
-    await test(`gallery attribution rejects hostile markup and links in ${name}`, async () => {
+    await test(`gallery attribution rejects hostile markup and links in ${name}`, {
+      skip: browserSkip,
+    }, async () => {
       const page = await openPage(cdp, `http://127.0.0.1:${port}/web-ai-showcase/`);
       try {
         await setViewport(cdp, page.sessionId, viewport);
@@ -63,6 +72,7 @@ try {
                 injectedNodes: caption.querySelectorAll('img, svg, script').length,
                 executed: !!window.__galleryXss,
               };
+              const overflow = document.documentElement.scrollWidth > document.documentElement.clientWidth;
               buttons[1].click();
               caption = cap();
               const safeResult = {
@@ -73,7 +83,6 @@ try {
               buttons[2].click();
               caption = cap();
               const emptyResult = { text: caption.textContent, anchors: caption.querySelectorAll('a').length };
-              const overflow = document.documentElement.scrollWidth > document.documentElement.clientWidth;
               return { hostileResult, safeResult, emptyResult, overflow };
             } finally {
               window.fetch = realFetch;
@@ -109,6 +118,6 @@ try {
     });
   }
 } finally {
-  chrome.kill();
-  server.close();
+  chrome?.kill();
+  server?.close();
 }

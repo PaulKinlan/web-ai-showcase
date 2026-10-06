@@ -33,6 +33,11 @@ test("gallery attribution links reject unsafe, empty, and disguised destinations
       "//evil.test/payload",
       "\\\\evil.test/payload",
       "https:evil.test/payload",
+      "java\tscript:alert(1)",
+      "java\nscript:alert(1)",
+      "javascript\t:alert(1)",
+      "\tjavascript:alert(1)",
+      "htt\nps://evil.test/x",
       "ftp://example.test/file",
     ]
   ) {
