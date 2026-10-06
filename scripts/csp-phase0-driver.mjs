@@ -74,15 +74,30 @@ const ROUTES = [
 
 const chrome = await launchChrome({ profilePrefix: "ega-phase0" });
 const cdp = new CDP(chrome.ws);
-const summary = { startedAt: new Date().toISOString(), policyHeader: null, routes: [], externalOrigins: {}, violationsBrowser: [], webgpu: null };
+let currentRoute = "(startup)";
+const summary = { startedAt: new Date().toISOString(), policyHeader: null, routes: [], externalOrigins: {}, violationsBrowser: [], webgpu: null, sinkPositiveControl: null };
 
 try {
+  // Positive control: prove the report path itself works, so a zero-violation run can never be
+  // misread as a dead sink. Marked synthetic and excluded from the violation tally.
+  try {
+    const ctl = await fetch(`${ORIGIN}/__csp-report`, {
+      method: "POST",
+      headers: { "content-type": "application/csp-report" },
+      body: JSON.stringify({ "csp-report": { "blocked-uri": "https://synthetic-control.invalid/x?Signature=must-be-stripped", "violated-directive": "default-src", "synthetic-control": true } }),
+    });
+    summary.sinkPositiveControl = { status: ctl.status };
+    console.log(`sink positive control: HTTP ${ctl.status} (expect 204)`);
+  } catch (e) {
+    summary.sinkPositiveControl = { error: String(e.message || e) };
+    console.log(`sink positive control FAILED: ${summary.sinkPositiveControl.error}`);
+  }
+
   // Record the exact served policy header (evidence).
   const probe = await fetch(`${ORIGIN}/`);
   summary.policyHeader = probe.headers.get("content-security-policy-report-only");
 
   const externalHits = new Map(); // origin -> count
-  let currentRoute = "(startup)";
   cdp.on((msg) => {
     if (msg.method === "Network.responseReceived") {
       try {
@@ -205,7 +220,10 @@ const serverLogText = readFileSync(serverLogPath, "utf8");
 const sinkLines = serverLogText.split("\n").filter((l) => l.startsWith("CSP-REPORT ")).map((l) => {
   try { return JSON.parse(l.slice("CSP-REPORT ".length)); } catch { return { raw: l.slice(0, 300) }; }
 });
-summary.violationsSink = sinkLines;
+const synthetic = sinkLines.filter((r) => r["synthetic-control"] === true || String(r["blocked-uri"] || r.blockedURI || "").includes("synthetic-control.invalid"));
+const real = sinkLines.filter((r) => !synthetic.includes(r));
+summary.violationsSink = real;
+summary.sinkSyntheticControlReceived = synthetic.length;
 summary.externalOriginList = [...externalHits.entries()].sort((a, b) => b[1] - a[1]);
 summary.finishedAt = new Date().toISOString();
 
@@ -217,9 +235,9 @@ console.log("\n=== PHASE 0 SUMMARY ===");
 console.log(`policy served: ${summary.policyHeader ? "yes" : "NO"}`);
 console.log(`WebGPU in headless (SwiftShader): ${summary.webgpu}`);
 console.log(`browser-side violations: ${summary.violationsBrowser.length}`);
-console.log(`sink reports: ${sinkLines.length}`);
+console.log(`sink reports: ${real.length} real + ${synthetic.length} synthetic control (control sent: ${JSON.stringify(summary.sinkPositiveControl)})`);
 for (const v of summary.violationsBrowser.slice(0, 20)) console.log(`  [browser][${v.route}] ${v.text.slice(0, 200)}`);
-for (const v of sinkLines.slice(0, 20)) console.log(`  [sink] ${JSON.stringify(v).slice(0, 250)}`);
+for (const v of real.slice(0, 20)) console.log(`  [sink] ${JSON.stringify(v).slice(0, 250)}`);
 console.log("external origins contacted:");
 for (const [o, n] of summary.externalOriginList) console.log(`  ${n}x ${o}`);
 for (const r of summary.routes) console.log(`route ${r.route}: inference=${JSON.stringify(r.inference)?.slice(0, 180)}`);
