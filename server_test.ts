@@ -73,6 +73,36 @@ Deno.test("legacy prefixed paths redirect to the matching canonical path and que
   assertIsolated(response);
 });
 
+Deno.test("legacy prefixed redirects never leave the canonical origin", async () => {
+  // A remainder of "//evil.com" is a WHATWG network-path reference: resolving it against the
+  // canonical origin yields https://evil.com/. "\\" is a path separator for special schemes,
+  // so the backslash variants parse to the same "//…" pathname. All must be refused.
+  for (
+    const path of [
+      `${SITE_PREFIX}//evil.com`,
+      `${SITE_PREFIX}//evil.com/phish?from=webai`,
+      `${SITE_PREFIX}//webai.show.evil.com/`,
+      `${SITE_PREFIX}/\\evil.com`,
+      `${SITE_PREFIX}/\\evil.com\\phish`,
+    ]
+  ) {
+    const response = await handle(new Request(`${CANONICAL_ORIGIN}${path}`));
+    assertEquals(response.status, 404, path);
+    assertEquals(response.headers.get("location"), null, path);
+    assertIsolated(response);
+  }
+});
+
+Deno.test("legacy prefixed encoded-slash path still redirects, staying on the canonical origin", async () => {
+  // %2f is not a path separator in WHATWG URL parsing, so this is a plain path, not a
+  // network-path reference. The redirect must keep working and stay same-origin.
+  const response = await handle(new Request(`${CANONICAL_ORIGIN}${SITE_PREFIX}/%2f%2fevil.com`));
+  assertEquals(response.status, 308);
+  const location = response.headers.get("location");
+  assertEquals(location && new URL(location).origin, CANONICAL_ORIGIN);
+  assertIsolated(response);
+});
+
 Deno.test("legacy Deno deployment hosts redirect to webai.show", async () => {
   for (
     const host of [
@@ -83,6 +113,22 @@ Deno.test("legacy Deno deployment hosts redirect to webai.show", async () => {
     const response = await handle(new Request(`https://${host}/models/demo/?x=1`));
     assertEquals(response.status, 308);
     assertEquals(response.headers.get("location"), `${CANONICAL_ORIGIN}/models/demo/?x=1`);
+  }
+});
+
+Deno.test("legacy deploy-host redirects never leave the canonical origin", async () => {
+  for (
+    const host of [
+      "web-ai-showcase.paulkinlan-ea.deno.net",
+      "web-ai-showcase-isolated.paulkinlan-ea.deno.net",
+    ]
+  ) {
+    for (const path of ["//evil.com", "//evil.com/phish?from=deploy", "/\\evil.com"]) {
+      const response = await handle(new Request(`https://${host}${path}`));
+      assertEquals(response.status, 404, `${host}${path}`);
+      assertEquals(response.headers.get("location"), null, `${host}${path}`);
+      assertIsolated(response);
+    }
   }
 });
 
@@ -138,6 +184,61 @@ Deno.test("does not expose repository internals", async () => {
     assertEquals(response.status, 404, path);
     assertIsolated(response);
   }
+});
+
+Deno.test("never emits an off-origin canonical href for network-path-reference paths", async () => {
+  // "//models/demo/" is a WHATWG network-path reference: new URL(pathname, CANONICAL_ORIGIN)
+  // resolves with "models" as the host, so any canonical derived from it would be cross-origin.
+  // The invariant canonicalRedirectTarget() enforces for redirects applies to the href sinks too:
+  // the response must carry NO canonical at all rather than one whose origin is not
+  // CANONICAL_ORIGIN.
+  const response = await handle(new Request(`${CANONICAL_ORIGIN}//models/demo/`));
+  assertEquals(response.status, 200);
+  const link = response.headers.get("link");
+  if (link !== null) {
+    const href = link.match(/^<([^>]+)>; rel="canonical"$/)?.[1];
+    assertEquals(href && new URL(href).origin, CANONICAL_ORIGIN);
+  }
+  const html = await response.text();
+  assertNotMatch(html, /<link rel="canonical"/, "injected <link rel=canonical>");
+  assertNotMatch(html, /og:url/, "injected og:url");
+  assertNotMatch(html, /https:\/\/models\//, "cross-origin host must not appear");
+  // URL rewriting still applies; only the canonical emission is refused.
+  assertMatch(html, /href="\/models\/demo\/"/);
+  assertIsolated(response);
+});
+
+Deno.test("malformed network-path-reference paths get an honest status, never a synthetic 5xx", async () => {
+  // "//" resolves to an empty host, so new URL throws. On the canonical host the upstream
+  // response must pass through untouched (the mock's 200) instead of a synthetic 502.
+  const passthrough = await handle(new Request(`${CANONICAL_ORIGIN}//`));
+  assertEquals(passthrough.status, 200);
+  assertEquals(passthrough.headers.get("link"), null);
+  assertNotMatch(await passthrough.text(), /<link rel="canonical"/);
+  assertIsolated(passthrough);
+
+  // "///evil.com" on a legacy deploy host reaches the redirect path, where the same throw must
+  // become a 404 — never an uncaught 500.
+  const response = await handle(
+    new Request("https://web-ai-showcase.paulkinlan-ea.deno.net///evil.com"),
+  );
+  assertEquals(response.status, 404);
+  assertEquals(response.headers.get("location"), null);
+  assertIsolated(response);
+});
+
+Deno.test("ordinary pages keep a same-origin canonical target", async () => {
+  // Regression: hardening the malformed cases must not break the canonical for real pages.
+  const response = await handle(new Request(`${CANONICAL_ORIGIN}/models/demo/`));
+  assertEquals(response.status, 200);
+  const link = response.headers.get("link");
+  const linkHref = link?.match(/^<([^>]+)>; rel="canonical"$/)?.[1];
+  assertEquals(linkHref && new URL(linkHref).origin, CANONICAL_ORIGIN);
+  assertEquals(linkHref, `${CANONICAL_ORIGIN}/models/demo/`);
+  const html = await response.text();
+  assertMatch(html, /<link rel="canonical" href="https:\/\/webai\.show\/models\/demo\/"/);
+  assertMatch(html, /<meta property="og:url" content="https:\/\/webai\.show\/models\/demo\/"/);
+  assertIsolated(response);
 });
 
 Deno.test("rejects state-changing methods", async () => {
