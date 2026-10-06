@@ -169,7 +169,7 @@ export function explainRuntimeFailure(err) {
       raw,
       headline: "This browser's WebGPU backend crashed while running Qwen2-VL.",
       advice:
-        "The model loaded, but the GPU compute step failed inside the model itself — a known " +
+        "The GPU compute step failed inside the model itself — a known " +
         "problem with this ONNX build on some browser, GPU and driver combinations, not something " +
         "you did. What you can do: update your browser (a newer WebGPU runtime may fix it), try a " +
         "different browser or GPU, or run one of the smaller on-device vision-language demos " +

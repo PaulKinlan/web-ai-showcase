@@ -8,7 +8,11 @@
 // scripts/validate-qwen2-vl-degradation.mjs.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { explainRuntimeFailure, showRuntimeFailure, clearRuntimeFailure } from "../models/qwen2-vl/qwen2vl.js";
+import {
+  clearRuntimeFailure,
+  explainRuntimeFailure,
+  showRuntimeFailure,
+} from "../models/qwen2-vl/qwen2vl.js";
 
 // The exact measured crash signature from the bead (10-cell validator run, dims vary 285–294).
 const MEASURED_KERNEL_ERROR =
@@ -74,7 +78,9 @@ test("regex precedence: [WebGPU] prefix does not shadow device-lost or out-of-me
   assert.match(oom.headline, /ran out of memory/);
 
   // Real [Concat] ... failed error still -> webgpu-kernel
-  const concat = explainRuntimeFailure(new Error("[Concat] /model/layers.0/self_attn/Concat_7 failed"));
+  const concat = explainRuntimeFailure(
+    new Error("[Concat] /model/layers.0/self_attn/Concat_7 failed"),
+  );
   assert.equal(concat?.kind, "webgpu-kernel");
   assert.match(concat.headline, /WebGPU backend crashed/);
 });
@@ -97,7 +103,11 @@ test("OOM_RE is restricted to memory contexts and does not match storage/quota e
     "Cache allocation failed for model weights",
   ];
   for (const msg of quotaErrors) {
-    assert.equal(explainRuntimeFailure(new Error(msg)), null, `storage error must not be OOM: ${msg}`);
+    assert.equal(
+      explainRuntimeFailure(new Error(msg)),
+      null,
+      `storage error must not be OOM: ${msg}`,
+    );
   }
 
   const validOOM = [
@@ -108,7 +118,11 @@ test("OOM_RE is restricted to memory contexts and does not match storage/quota e
     "CUDA out of memory",
   ];
   for (const msg of validOOM) {
-    assert.equal(explainRuntimeFailure(new Error(msg))?.kind, "out-of-memory", `should classify as OOM: ${msg}`);
+    assert.equal(
+      explainRuntimeFailure(new Error(msg))?.kind,
+      "out-of-memory",
+      `should classify as OOM: ${msg}`,
+    );
   }
 });
 
@@ -120,9 +134,15 @@ test("showRuntimeFailure and clearRuntimeFailure manage .err-detail DOM lifecycl
       this._classes = new Set();
       const self = this;
       this.classList = {
-        add(c) { self._classes.add(c); },
-        remove(c) { self._classes.delete(c); },
-        contains(c) { return self._classes.has(c); },
+        add(c) {
+          self._classes.add(c);
+        },
+        remove(c) {
+          self._classes.delete(c);
+        },
+        contains(c) {
+          return self._classes.has(c);
+        },
       };
       this.nextElementSibling = null;
       this.children = [];
@@ -176,7 +196,11 @@ test("showRuntimeFailure and clearRuntimeFailure manage .err-detail DOM lifecycl
     // 3. Second failure inserts fresh .err-detail without stacking
     showRuntimeFailure(statusEl, new Error(MEASURED_KERNEL_ERROR));
     assert.ok(statusEl.nextElementSibling?.classList.contains("err-detail"));
-    assert.equal(statusEl.nextElementSibling.nextElementSibling, null, "must not stack .err-detail");
+    assert.equal(
+      statusEl.nextElementSibling.nextElementSibling,
+      null,
+      "must not stack .err-detail",
+    );
 
     // 4. Successful completion clears .err-detail
     statusEl.textContent = "Done.";
@@ -202,4 +226,24 @@ test("POSITIVE CONTROL: ordinary errors stay unclassified so pages keep surfacin
   }
   // …and a TypeError that merely MENTIONS memory in passing must not be swallowed as OOM.
   assert.equal(explainRuntimeFailure(new Error("reading 'memory' of undefined")), null);
+});
+
+// Dual-signal precedence (web-ai-showcase-oow review M1): when one string carries BOTH a device-loss
+// or OOM signal AND a kernel-failure signal, the more specific class must win. Reordering the
+// classifier arms (KERNEL_RE first) must fail these.
+test("dual-signal: device-lost wins over a kernel-failure phrase", () => {
+  const r = explainRuntimeFailure(
+    new Error('[WebGPU] Kernel "[Concat] x" failed because the device lost context'),
+  );
+  assert.equal(r.kind, "device-lost");
+});
+test("dual-signal: out-of-memory wins over a kernel-failure phrase", () => {
+  const r = explainRuntimeFailure(
+    new Error('[WebGPU] Kernel "[Concat] x" failed: out of memory'),
+  );
+  assert.equal(r.kind, "out-of-memory");
+});
+test("advice is phase-neutral (does not claim the model loaded)", () => {
+  const r = explainRuntimeFailure(new Error("[Concat] /model/x failed"));
+  assert.ok(!/model loaded/i.test(r.advice), r.advice);
 });
