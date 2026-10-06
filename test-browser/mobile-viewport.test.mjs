@@ -94,6 +94,57 @@ const CHECK_EXPR = `(() => {
   };
 })()`;
 
+// Right-edge panel-escape mutant for the proof below. The target control is chosen BY GEOMETRY —
+// the visible in-flow control whose right edge sits nearest the panel's right edge — and the
+// injection distance is DERIVED (panel right - control right + 40px), so the escape is a guarantee
+// rather than a bet on a fixed 80px clearing that control's gap. `position: relative` is only used
+// where `left` is a genuine offset (static/relative), so the applied shift is the measured one.
+// Returns `{ found:false, reason }` instead of falling through to a different element when there is
+// no candidate, so the harness fails loudly.
+const RIGHT_EDGE_ESCAPE_MUTANT = `(() => {
+  const panelFor = (el) => {
+    const panel = el.closest(".panel");
+    return !panel || panel === el ? null : panel;
+  };
+  const panelContentRight = (panel) => {
+    const pr = panel.getBoundingClientRect();
+    const cs = getComputedStyle(panel);
+    return pr.right - parseFloat(cs.paddingRight || 0) - parseFloat(cs.borderRightWidth || 0);
+  };
+  const controls = [...document.querySelectorAll("button, input, select, textarea, label, output")]
+    .filter((el) => {
+      const r = el.getBoundingClientRect();
+      const cs = getComputedStyle(el);
+      const offsetSettable = cs.position === "static" || cs.position === "relative";
+      return r.width > 0 && r.height > 0 && cs.display !== "none" && cs.visibility !== "hidden" &&
+        offsetSettable && panelFor(el) !== null;
+    });
+  if (controls.length === 0) {
+    return { found: false, reason: "no visible in-flow control inside a .panel" };
+  }
+  let best = null;
+  for (const el of controls) {
+    const gap = panelContentRight(panelFor(el)) - el.getBoundingClientRect().right;
+    if (best === null || Math.abs(gap) < Math.abs(best.gap)) best = { el, gap };
+  }
+  const panel = panelFor(best.el);
+  const panelRect = panel.getBoundingClientRect();
+  const btnRect = best.el.getBoundingClientRect();
+  const offset = Math.max(panelRect.right - btnRect.right + 40, 40);
+  best.el.style.position = "relative";
+  best.el.style.left = offset + "px";
+  const after = best.el.getBoundingClientRect();
+  return {
+    found: true,
+    tag: best.el.tagName.toLowerCase(),
+    id: best.el.id || null,
+    offset: +offset.toFixed(2),
+    contentRight: +panelContentRight(panel).toFixed(2),
+    beforeRight: +btnRect.right.toFixed(2),
+    afterRight: +after.right.toFixed(2),
+  };
+})()`;
+
 test("360px mobile viewport: all 14 sub-class B routes fit within viewport and panel content box", { skip: browserSkip }, async (t) => {
   const { server, port } = await startServer();
   const browser = await launchChrome();
@@ -202,23 +253,32 @@ test("MUTANT PROOF: guard detects right-edge panel content box escape", { skip: 
     const { targetId, sessionId } = await openPage(cdp, url);
     await setViewport(cdp, sessionId, MOBILE);
 
-    // Inject right-edge escape mutant
-    await evalValue(
-      cdp,
-      sessionId,
-      `(() => {
-        const btn = document.querySelector(".panel button") || document.querySelector("button");
-        btn.style.position = "relative";
-        btn.style.left = "80px";
-      })()`,
-    );
-
-    const mutated = await evalValue(cdp, sessionId, CHECK_EXPR);
+    // Inject a right-edge escape mutant whose distance is DERIVED from the rendered geometry, so a
+    // correct guard MUST report it. The selected control (and its existence) is reported back so a
+    // failed premise can be attributed to the harness rather than blamed on the guard.
+    const injected = await evalValue(cdp, sessionId, RIGHT_EDGE_ESCAPE_MUTANT);
+    const mutated = injected && injected.found ? await evalValue(cdp, sessionId, CHECK_EXPR) : null;
     await closePage(cdp, targetId);
 
-    assert.equal(mutated.pass, false, "Guard failed to detect right-edge panel escape mutant");
-    assert.ok(mutated.escaping.length > 0, "No escaping controls reported for right-edge mutant");
-    assert.ok(mutated.escaping.some((c) => c.overPanelRight > 1), "overPanelRight was not flagged");
+    assert.ok(
+      injected && injected.found,
+      `HARNESS: could not select a right-edge panel-escape target — ${
+        injected?.reason ?? "injection expression produced no result"
+      }`,
+    );
+    assert.ok(
+      mutated && mutated.escaping.length > 0 && mutated.escaping.some((c) => c.overPanelRight > 1),
+      `HARNESS: the mutant did not escape — proof premise not met. Injected ${injected.tag}${
+        injected.id ? "#" + injected.id : ""
+      } by ${injected.offset}px (panel content right ${injected.contentRight}; control right ${
+        injected.beforeRight
+      } -> ${injected.afterRight}); guard escaping: ${JSON.stringify(mutated?.escaping ?? null)}`,
+    );
+    assert.equal(
+      mutated.pass,
+      false,
+      "GUARD: the containment guard failed to report pass:false for a control driven past the panel's right content edge",
+    );
   } finally {
     await browser.kill();
     server.close();
