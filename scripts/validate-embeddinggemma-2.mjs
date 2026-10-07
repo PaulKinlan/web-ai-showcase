@@ -323,8 +323,20 @@ async function exercise(routeName, viewportName, viewport, firstVisit = false) {
   return pass;
 }
 
+// One viewport per run when requested. The reaper killed the combined matrix at 8106 MB against a 4000 MB
+// limit: ten stages in one Chrome meant ten pages holding their Web Workers and WebGPU allocations at once.
+// Closing each page (above) is the real fix, but bounding a run to five stages keeps a re-run comfortably
+// inside the limit and means a failure costs half the time. VIEWPORTS=desktop|mobile|both.
+const viewportFilter = (process.env.VIEWPORTS || "both").toLowerCase();
+const viewportsToRun = [
+  ["desktop", DESKTOP],
+  ["mobile", MOBILE],
+].filter(([name]) => viewportFilter === "both" || viewportFilter === name);
+if (viewportsToRun.length === 0) throw new Error(`VIEWPORTS='${viewportFilter}' selected nothing; use desktop, mobile or both`);
+console.log(`VIEWPORTS=${viewportFilter} -> ${viewportsToRun.map(([n]) => n).join(", ")}`);
+
 let first = true;
-for (const [viewportName, viewport] of [["desktop", DESKTOP], ["mobile", MOBILE]]) {
+for (const [viewportName, viewport] of viewportsToRun) {
   for (const routeName of Object.keys(ROUTES)) {
     console.log(`\n=== ${routeName} · ${viewportName} ===`);
     await exercise(routeName, viewportName, viewport, first);
@@ -344,7 +356,8 @@ const ok = printAcceptanceSummary({
   passed,
   total,
   results,
-  expectedCells: Object.keys(ROUTES).length * 2,
+  // Must follow the viewport filter, or a single-viewport run reports half its cells as missing.
+  expectedCells: Object.keys(ROUTES).length * viewportsToRun.length,
 });
 try {
   // No removeProfile:false. That option skipped rmSync AND removed the instance from activeChromeInstances,
