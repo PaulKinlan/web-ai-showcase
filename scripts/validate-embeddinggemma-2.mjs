@@ -45,9 +45,11 @@ const ROUTES = {
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const { server, port } = await startServer();
 const chrome = await launchChrome({
-  userDataDir: "/tmp/eg2-acceptance-profile",
-  resetProfile: false,
-  removeProfileOnKill: false,
+  // Deliberately NOT overriding userDataDir/resetProfile/removeProfileOnKill. I had pinned a fixed profile
+  // and disabled its removal to cache the ~175 MB model between runs, and those three overrides accumulated
+  // 7.6 GiB of abandoned profiles in /tmp and triggered a disk-pressure alert. The harness defaults
+  // (isolated dir per run, reset, removed on kill, closure via registerGlobalExitHooks) are correct; a fresh
+  // download per run costs seconds and cannot leak. Do not re-add a persistent profile here.
   webgpu: true,
 });
 const cdp = new CDP(chrome.ws);
