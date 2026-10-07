@@ -45,7 +45,9 @@ const ROUTES = {
 };
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const { server, port } = await startServer();
+const PROFILE_PREFIX = "embeddinggemma-2";
 const chrome = await launchChrome({
+  profilePrefix: PROFILE_PREFIX,
   // Deliberately NOT overriding userDataDir/resetProfile/removeProfileOnKill. I had pinned a fixed profile
   // and disabled its removal to cache the ~175 MB model between runs, and those three overrides accumulated
   // 7.6 GiB of abandoned profiles in /tmp and triggered a disk-pressure alert. The harness defaults
@@ -197,6 +199,19 @@ async function exercise(routeName, viewportName, viewport, firstVisit = false) {
       // The baseline row must be labelled as the baseline rather than showing a bare delta, so a page that
       // silently dropped its control row cannot pass just by producing five finite cosines.
       ok = check(`${viewportName} Basics: baseline row labelled`, basics.deltas.filter((d) => /baseline/i.test(d)).length === 1, JSON.stringify(basics.deltas)) && ok;
+      // Five identical cosines plus a baseline label would satisfy everything above while demonstrating no
+      // prefix effect at all, so require real variation AND require the DISPLAYED deltas to reconcile with
+      // the cosines (delta_i = cosine_i - cosine_baseline). That ties the table's two numeric columns
+      // together, which is the property the page exists to show.
+      const baselineIdx = basics.deltas.findIndex((d) => /baseline/i.test(d));
+      const uniqueCos = new Set(basics.rows.map((v) => v.toFixed(3))).size;
+      ok = check(`${viewportName} Basics: cosine values actually vary across prefixes`, uniqueCos > 1, `distinct=${uniqueCos} rows=${JSON.stringify(basics.rows)}`) && ok;
+      const cosBase = basics.rows[baselineIdx];
+      const deltaReconciles = Number.isFinite(cosBase) && basics.rows.every((cos, i) => {
+        const shown = Number(String(basics.deltas[i]).match(/[-+]?\d*\.?\d+/)?.[0]);
+        return Number.isFinite(shown) && Math.abs(shown - (cos - cosBase)) <= 0.002;
+      });
+      ok = check(`${viewportName} Basics: displayed deltas reconcile with the cosine column`, deltaReconciles, `baseline=${cosBase} deltas=${JSON.stringify(basics.deltas)}`) && ok;
       ok = await hygiene(page, route, viewportName) && ok;
       pass = ok;
     } else if (routeName === "practical") {
@@ -243,11 +258,28 @@ async function exercise(routeName, viewportName, viewport, firstVisit = false) {
       ok = check(`${viewportName} Wild: each rendered hit carries its language`, wild.hits.every(h => /\[[A-Z]{2}\]/.test(h.head) || /Language:/i.test(h.sub)), JSON.stringify(wild.hits.slice(0, 2).map(h => h.head))) && ok;
       const topCodeMatch = wild.hits[0]?.head.match(/\[([A-Z]{2})\]/);
       const topCode = topCodeMatch ? topCodeMatch[1] : "";
-      // Require a real language code on the top hit. Without the Boolean(topCode) term a page whose rows
-      // carried no language tag at all would satisfy the old `: true` branch and pass vacuously.
-      const verdictMatchesTop = Boolean(wild.verdict) && Boolean(topCode) && wild.verdict.includes(`[${topCode}]`);
-      const verdictHasMargin = /margin/i.test(wild.verdict);
-      ok = check(`${viewportName} Wild: verdict is non-empty and reports measured top-1 language and margin`, Boolean(wild.verdict) && verdictMatchesTop && verdictHasMargin, wild.verdict) && ok;
+      // The verdict must be tied STRUCTURALLY to the rendered ranking, not by substring. A plain
+      // includes(`[${topCode}]`) is unsound because the query-language code is emitted before the top-hit
+      // code in several verdict variants, so a verdict naming a different top-1 could still contain the top
+      // row's code. Instead: take the code the verdict associates with its own cosine (the last code before
+      // the word "cosine"), and require its stated cosine and margin to equal the rendered rank-1 and rank-2
+      // scores. That is the property that matters — the page's stated outcome agrees with its own numbers —
+      // and it deliberately does NOT require the cross-lingual target to be rank 1, since the page reports a
+      // losing target honestly.
+      const verdictCosMatch = String(wild.verdict).match(/cosine\s+(\d+\.\d{3})/);
+      const beforeCosine = String(wild.verdict).split(/cosine/i)[0] || "";
+      const codesBeforeCosine = [...beforeCosine.matchAll(/\[([A-Z]{2})\]/g)].map((m) => m[1]);
+      const verdictCode = codesBeforeCosine.length ? codesBeforeCosine[codesBeforeCosine.length - 1] : "";
+      const verdictMarginMatch = String(wild.verdict).match(/margin(?:\s+of|:)\s*([-+]?\d+\.\d{3})/);
+      const renderedTop = wild.hits[0]?.score;
+      const renderedSecond = wild.hits[1]?.score;
+      const expectedMargin = (Number.isFinite(renderedTop) && Number.isFinite(renderedSecond)) ? (renderedTop - renderedSecond).toFixed(3) : null;
+      const verdictNamesTop = Boolean(verdictCode) && Boolean(topCode) && verdictCode === topCode;
+      const verdictScoreAgrees = Boolean(verdictCosMatch) && Number.isFinite(renderedTop) && verdictCosMatch[1] === renderedTop.toFixed(3);
+      const verdictMarginAgrees = Boolean(verdictMarginMatch) && expectedMargin !== null && Math.abs(Number(verdictMarginMatch[1]) - Number(expectedMargin)) <= 0.002;
+      ok = check(`${viewportName} Wild: verdict names the rendered top-1 language as its top hit`, verdictNamesTop, `verdictCode=${verdictCode} topCode=${topCode} verdict="${String(wild.verdict).slice(0, 160)}"`) && ok;
+      ok = check(`${viewportName} Wild: verdict's stated cosine equals the rendered rank-1 score`, verdictScoreAgrees, `stated=${verdictCosMatch ? verdictCosMatch[1] : null} rendered=${Number.isFinite(renderedTop) ? renderedTop.toFixed(3) : null}`) && ok;
+      ok = check(`${viewportName} Wild: verdict's stated margin equals the rendered rank-1 minus rank-2 gap`, verdictMarginAgrees, `stated=${verdictMarginMatch ? verdictMarginMatch[1] : null} expected=${expectedMargin}`) && ok;
       ok = await hygiene(page, route, viewportName) && ok;
       pass = ok;
     } else if (routeName === "multimodel") {
@@ -369,10 +401,27 @@ try {
   // No removeProfile:false. That option skipped rmSync AND removed the instance from activeChromeInstances,
   // so the exit hook had nothing left to clean and EVERY completed run abandoned its isolated profile in
   // /tmp with cached weights and shaders. The harness default removes it, and the global exit hooks cover
-  // the signal paths.
+  // SIGINT/SIGTERM/SIGHUP.
+  //
+  // KNOWN LIMIT, stated rather than implied: SIGKILL cannot run exit hooks, so a mid-run SIGKILL DOES leave
+  // this run's profile behind, and a Chrome that fails during startup can leave one that was never
+  // registered. That is inherent to signal-skipping kills, not a bug this code can fix; it is exactly what
+  // happened when the memory reaper killed an earlier matrix and a 963M profile survived. So the profile fix
+  // is complete for normal and handled-signal exits, NOT for every possible exit path. Do not claim more.
   await chrome.kill?.();
 } catch {
   /* ignore */
 }
 server.close();
+// Printed from the validator itself so the retained output file carries the teardown evidence rather than
+// requiring the caller's wrapper log to be believed. Scoped to THIS run's profile prefix, so another lane's
+// leftover directory cannot make this line pass or fail.
+try {
+  const { execSync } = await import("node:child_process");
+  const chromeN = Number(String(execSync("ps -eo comm | awk '$1 ~ /^chrome/ {n++} END {print n+0}'", { encoding: "utf8" })).trim());
+  const thisRunProfiles = Number(String(execSync(`ls -d /tmp/webai-chrome-profile-${PROFILE_PREFIX}-* 2>/dev/null | wc -l`, { encoding: "utf8" })).trim());
+  console.log(`TEARDOWN chrome=${chromeN} profilesForThisRun=${thisRunProfiles} (SIGKILL cannot run exit hooks; a killed run may still leave a profile)`);
+} catch (e) {
+  console.log(`TEARDOWN check unavailable: ${e.message}`);
+}
 process.exit(ok ? 0 : 1);
