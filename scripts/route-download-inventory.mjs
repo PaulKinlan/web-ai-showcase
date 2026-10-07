@@ -38,7 +38,11 @@ const FAMILIES = {
   },
   "mediapipe": {
     test: (t) =>
-      /lib\/mediapipe\.js|FilesetResolver|tasks-vision|tasks-genai|\.task\b|\.tflite\b/.test(t),
+      // The bundle-name alternatives are ANCHORED to a quoted filename. A bare /\.task\b/ also matches
+      // ordinary JavaScript property access (`${p.task}`, `row.task.id`), which classified any route that
+      // reads a `.task` property as MediaPipe. Note readAll() concatenates only .js/.mjs/.html, so a
+      // FilesetResolver mention that lives in a route's conformance.json is not visible here either.
+      /lib\/mediapipe\.js|FilesetResolver|tasks-vision|tasks-genai|["'][^"']*\.task["']|["'][^"']*\.tflite["']/.test(t),
     byteControl: "runtime-owned",
     resume: "runtime-owned",
     note:
