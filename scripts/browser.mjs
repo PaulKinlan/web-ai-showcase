@@ -247,6 +247,43 @@ async function stopProcessTree(proc) {
   });
 }
 
+export const HEADLESS_CHROME_CRASH_SUPPRESSION_FLAGS = [
+  "--disable-breakpad",
+  "--disable-crashpad-for-testing",
+];
+
+export function getChromeLaunchArgs({ userDataDir, extraArgs = [], webgpu = false } = {}) {
+  const wantWebGPU = webgpu || extraArgs.some((a) => typeof a === "string" && (a.includes("webgpu") || a.includes("vulkan")));
+  const gpuArgs = wantWebGPU
+    ? ["--enable-unsafe-webgpu", "--use-angle=vulkan", "--enable-features=Vulkan"]
+    : ["--disable-gpu"];
+  return [
+    "--headless=new",
+    "--no-sandbox",
+    ...gpuArgs,
+    "--disable-dev-shm-usage",
+    "--hide-scrollbars",
+    "--remote-debugging-port=0",
+    // Suppress Chrome crashpad handler daemon processes (web-ai-showcase-9z1).
+    // In headless test runs, chrome_crashpad_handler detaches into its own process group
+    // reparented to PID 1, escaping signalProcessTree group kills and leaking background daemons.
+    // Chrome 154 recognizes --disable-breakpad and --disable-crashpad-for-testing (--disable-crash-reporter
+    // is absent/no-op on modern Chrome).
+    ...HEADLESS_CHROME_CRASH_SUPPRESSION_FLAGS,
+    // Chrome 111+ rejects DevTools WebSocket upgrades unless the connecting origin is allow-listed.
+    // Without this the CDP client's WS handshake is closed immediately ("ws error"). Harmless on older
+    // Chrome. Required for the harness to run on modern Chrome.
+    "--remote-allow-origins=*",
+    // CDP-synthesised clicks are not user gestures, so AudioContext.resume() would hang forever when a
+    // validator exercises a real play button. Allow autoplay in the TEST browser only (shipped pages
+    // still resume on genuine user clicks). Standard practice (Puppeteer/Playwright default).
+    "--autoplay-policy=no-user-gesture-required",
+    ...extraArgs.filter((a) => !gpuArgs.includes(a)),
+    ...(userDataDir ? [`--user-data-dir=${userDataDir}`] : []),
+    "about:blank",
+  ];
+}
+
 async function spawnChromeOnce(userDataDir, resetProfile, extraArgs = [], webgpu = false) {
   if (resetProfile) {
     try {
@@ -263,29 +300,8 @@ async function spawnChromeOnce(userDataDir, resetProfile, extraArgs = [], webgpu
       } catch { /* ignore */ }
     }
   }
-  const wantWebGPU = webgpu || extraArgs.some((a) => typeof a === "string" && (a.includes("webgpu") || a.includes("vulkan")));
-  const gpuArgs = wantWebGPU
-    ? ["--enable-unsafe-webgpu", "--use-angle=vulkan", "--enable-features=Vulkan"]
-    : ["--disable-gpu"];
-  const proc = spawn(findChrome(), [
-    "--headless=new",
-    "--no-sandbox",
-    ...gpuArgs,
-    "--disable-dev-shm-usage",
-    "--hide-scrollbars",
-    "--remote-debugging-port=0",
-    // Chrome 111+ rejects DevTools WebSocket upgrades unless the connecting origin is allow-listed.
-    // Without this the CDP client's WS handshake is closed immediately ("ws error"). Harmless on older
-    // Chrome. Required for the harness to run on modern Chrome.
-    "--remote-allow-origins=*",
-    // CDP-synthesised clicks are not user gestures, so AudioContext.resume() would hang forever when a
-    // validator exercises a real play button. Allow autoplay in the TEST browser only (shipped pages
-    // still resume on genuine user clicks). Standard practice (Puppeteer/Playwright default).
-    "--autoplay-policy=no-user-gesture-required",
-    ...extraArgs.filter((a) => !gpuArgs.includes(a)),
-    `--user-data-dir=${userDataDir}`,
-    "about:blank",
-  ], { detached: detachedProcessGroup, stdio: ["ignore", "ignore", "ignore"] });
+  const args = getChromeLaunchArgs({ userDataDir, extraArgs, webgpu });
+  const proc = spawn(findChrome(), args, { detached: detachedProcessGroup, stdio: ["ignore", "ignore", "ignore"] });
   const portFile = join(userDataDir, "DevToolsActivePort");
   let wsUrl = null;
   for (let i = 0; i < 150 && !wsUrl; i++) {
