@@ -1,6 +1,7 @@
-// Client for the EmbeddingGemma 2 pages. It owns the worker handshake for the THREE message kinds this
-// model needs (text, media, re-load-with-more-encoders), the encoder-budget metadata that makes
-// "selective encoder loading" honest, and a gallery renderer for image/video results.
+// Client for the EmbeddingGemma 2 pages. It owns the worker handshake for text embedding and selective
+// configuration. Upstream describes multimodal capabilities (images, video, audio) in the same vector
+// space, but this family is text-only by decision: media inference is unproven on this VM and no page
+// exercises cross-modal retrieval.
 //
 // The pure maths (cosine, Matryoshka truncation, similarity matrix, PCA-2D, spherical k-means) and the
 // matrix / projection / ranked-list renderers are NOT re-implemented here: they are the same algorithms
@@ -29,27 +30,28 @@ export const WORKERS = { egemma2: `${MODELS_BASE}/embeddinggemma-2/worker.js` };
 export const MODEL_ID = "onnx-community/embeddinggemma-2-ONNX";
 
 /**
- * The three selectively-loadable graphs, with the q4 download each one adds (decimal MB, measured from
- * the Hub file sizes) and the capability it buys. `text` is the always-on backbone.
+ * The three upstream graphs, with the q4 download each one adds (decimal MB, measured from the Hub
+ * file sizes) and card-documented capabilities. This showcase runs the text backbone only; vision and
+ * audio are not loaded or verified here.
  */
 export const ENCODERS = {
   text: {
     label: "Text + code",
     params: "270M (130M transformer + 140M embedder)",
     q4MB: 175,
-    adds: "Passages, queries, code, 100+ languages — 768-d vectors, 8192-token context.",
+    adds: "Passages, queries, code, 100+ languages — 768-d vectors (model card documents 8192-token context; exported config differs, unverified here).",
   },
   vision: {
     label: "Images + video frames",
     params: "170M",
     q4MB: 109,
-    adds: "An image — or sampled video frames — lands in the same space as text, so text can rank images.",
+    adds: "Documented by model card to map images/video frames into the same space as text; not loaded or verified in this showcase.",
   },
   audio: {
     label: "Audio",
     params: "300M",
     q4MB: 189,
-    adds: "Mono 16 kHz speech and environmental sound, ~25 tokens per second of audio.",
+    adds: "Documented by model card for mono 16 kHz speech and environmental sound (~25 tokens/s); not loaded or verified in this showcase.",
   },
 };
 
@@ -66,7 +68,7 @@ export const WASM_BLOCKED_NOTE =
   "for the text encoder alone, which is not a phone-sized download.";
 
 /**
- * Worker client. Protocol: `load` / `run` / `runMedia` / `unload` in; `progress` / `ready` / `result` /
+ * Worker client. Protocol: `load` / `run` / `runBatch` / `unload` in; `progress` / `ready` / `result` /
  * `unloaded` / `error` out. Unlike the sibling embedders this client can RE-load with more encoders,
  * so `ready` is not a one-shot latch.
  */
@@ -151,17 +153,6 @@ export class EmbedClient2 {
     return this._request(id, { type: "runBatch", id, items, label });
   }
 
-  /**
-   * Media → { embeddings, norms, dim, softTokens, ms, device }.
-   * `images`/`videos` are samples (nested lists). `maxSoftTokens` moves the documented vision token budget
-   * (70 / 140 / 280 / 560 / 1120 per image) — fewer soft tokens means less image detail but proportionally
-   * less compute, which is visible as real latency on a software adapter.
-   */
-  embedMedia({ images = null, videos = null, text = null, maxSoftTokens = null } = {}) {
-    const id = ++this._id;
-    return this._request(id, { type: "runMedia", id, images, videos, text, maxSoftTokens });
-  }
-
   _request(id, payload) {
     return new Promise((resolve, reject) => {
       this._pending.set(id, { resolve, reject });
@@ -172,86 +163,6 @@ export class EmbedClient2 {
 
 /** The engine every page on this family uses. */
 export class EmbeddingGemma2Engine extends EmbedClient2 {}
-
-/**
- * Render image (or video-frame) tiles with a cosine score against one query vector. Used by the
- * cross-modal rung, where an IMAGE is the retrieved item and the query is TEXT (or vice versa).
- */
-export function renderGallery(container, items, { scoreLabel = "cosine" } = {}) {
-  container.replaceChildren(...items.map((it, i) => {
-    const card = document.createElement("figure");
-    card.className = "gallery-card";
-    const media = it.src
-      ? Object.assign(document.createElement("img"), {
-        src: it.src,
-        alt: it.alt ?? it.label ?? `Result ${i + 1}`,
-        loading: "lazy",
-        decoding: "async",
-        fetchpriority: i < 2 ? "high" : "auto",
-      })
-      : Object.assign(document.createElement("div"), { className: "gallery-missing", textContent: "no preview" });
-    if (!it.src && it.preview) media.style.background = it.preview;
-    const cap = document.createElement("figcaption");
-    const label = document.createElement("span");
-    label.className = "gallery-label";
-    label.textContent = it.label ?? `#${i + 1}`;
-    const score = document.createElement("span");
-    score.className = "gallery-score";
-    score.textContent = typeof it.score === "number" ? `${scoreLabel} ${it.score.toFixed(3)}` : "";
-    cap.append(label, score);
-    if (it.sub) {
-      const sub = document.createElement("span");
-      sub.className = "gallery-sub";
-      sub.textContent = it.sub;
-      cap.append(sub);
-    }
-    card.append(media, cap);
-    return card;
-  }));
-}
-
-/** A compact "which encoders are loaded" table — the honest budget readout for selective loading. */
-export function renderEncoderBudget(container, enabled, totalMB) {
-  const table = document.createElement("table");
-  table.className = "inside-table encoder-table";
-  const caption = document.createElement("caption");
-  caption.textContent =
-    "EmbeddingGemma 2 is a 270M text backbone plus two independently loadable encoders. Only the graphs " +
-    "you enable are downloaded.";
-  const thead = document.createElement("thead");
-  const hr = document.createElement("tr");
-  for (const label of ["Encoder", "Parameters", "q4 download", "State", "What it adds"]) {
-    const th = document.createElement("th");
-    th.scope = "col";
-    th.textContent = label;
-    hr.append(th);
-  }
-  thead.append(hr);
-  const body = document.createElement("tbody");
-  for (const key of ["text", "vision", "audio"]) {
-    const e = ENCODERS[key];
-    const on = !!enabled[key];
-    const tr = document.createElement("tr");
-    tr.className = on ? "on" : "off";
-    const th = document.createElement("th");
-    th.scope = "row";
-    th.textContent = e.label;
-    const cells = [e.params, `${e.q4MB} MB`, on ? "loaded" : "not loaded", e.adds];
-    tr.append(th, ...cells.map((text) => {
-      const td = document.createElement("td");
-      td.textContent = text;
-      return td;
-    }));
-    body.append(tr);
-  }
-  table.append(caption, thead, body);
-  const note = document.createElement("p");
-  note.className = "ctx-note";
-  note.textContent =
-    `Loaded budget: ${totalMB} MB (q4). Enabling an encoder re-creates the session — an explicit, priced ` +
-    `choice, not a free toggle.`;
-  container.replaceChildren(table, note);
-}
 
 /** CSS the second family adds on top of the shared embedder styles. */
 export const EGEMMA2_CSS = `${EGEMMA_CSS}

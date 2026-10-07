@@ -3,16 +3,20 @@
 // Model: onnx-community/embeddinggemma-2-ONNX (canonical weights google/embeddinggemma-2), q4, WebGPU.
 //
 // What makes EmbeddingGemma 2 different from every other embedder in this showcase:
-//   1. It is MULTIMODAL into one space: text (incl. code), images, video and audio all project into the
-//      SAME 768-d vector space, so a text query can rank an image and an image can rank a passage.
-//      Text is the 270M backbone; vision (170M) and audio (300M) are SEPARATE ONNX graphs in the same repo.
+//   1. Upstream documents it as MULTIMODAL into one space: Google's model card describes text (incl. code),
+//      images, video, and audio all projecting into the same 768-d vector space. This showcase does not
+//      exercise multimodal retrieval: this family is text-only by decision, and the worker loads the
+//      text encoder only (the 270M backbone). The vision (170M) and audio (300M) ONNX graphs are not loaded.
 //   2. Those encoders are SELECTIVELY LOADABLE — dropping vision_config/audio_config before
 //      AutoModel.from_pretrained means the text-only page downloads 175 MB, not 473 MB. That budget
 //      choice is the point of the multi-model rung, so the worker reports exactly which graphs it loaded.
 //   3. Text is INSTRUCTION-PROMPTED with the documented task prefixes (`task: search result | query: …`,
 //      `classification`, `clustering`, `sentence similarity`, documents as `title: … | text: …`).
 //   4. It is MATRYOSHKA: the 768-d vector truncates to 512 / 256 / 128 and is re-normalized after slicing.
-//   5. Context is 8192 tokens (v1 was 2048). Images cost ~280 soft tokens, video ~140 per frame.
+//   5. The model card documents an 8192-token context window (v1 was 2048) while the exported config.json
+//      sets different values (262144 / 512); neither figure is verified by any page here (demos use short
+//      bounded passages). The soft-token costs (~280 per image, ~140 per video frame) are card figures for
+//      encoders this family does not load.
 //
 // Two measured facts that shape this worker (real headless Chrome, 2026-10-07):
 //   • The QUANTIZED exports cannot create a session on the ONNX Runtime Web WASM execution provider:
@@ -287,8 +291,12 @@ async function embedBatch(id, items, label) {
 }
 
 /**
- * Embed media. `images` are data/object URLs; one list entry per sample, so N images embedded separately
- * are `[[a],[b]]` while a single sample made of two images is `[a,b]` (documented nesting rule).
+ * Embed media. NOTE: This path is not reachable from any page in this family today: the showcase is
+ * text-only by decision, no page sends runMedia, and media inference is unproven on this VM (a software
+ * WebGPU adapter). The handler is kept intact to avoid breaking the worker message protocol, but a reader
+ * should not mistake this unexercised path for a working feature.
+ * Upstream contract: `images` are data/object URLs; one list entry per sample, so N images embedded
+ * separately are `[[a],[b]]` while a single sample made of two images is `[a,b]` (documented nesting rule).
  * Video frames arrive as URLs and are decoded with `load_video` (browser decoding, 1 frame/second by
  * default and uniformly subsampled above 32 frames).
  */
