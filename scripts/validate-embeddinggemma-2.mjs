@@ -23,6 +23,7 @@ import {
   launchChrome,
   MOBILE,
   openPage,
+  closePage,
   printAcceptanceSummary,
   repoRoot,
   setViewport,
@@ -135,11 +136,12 @@ const matrixCells =
 
 async function exercise(routeName, viewportName, viewport, firstVisit = false) {
   const route = ROUTES[routeName];
-  const page = await openPage(cdp, url(route));
-  await setViewport(cdp, page.sessionId, viewport);
+  let page = null;
   let ok = true;
   let pass = false;
   try {
+    page = await openPage(cdp, url(route));
+    await setViewport(cdp, page.sessionId, viewport);
     if (routeName === "overview") {
       await readyControls(page, firstVisit, "#run");
       ok = check(`${viewportName} overview: WebGPU-only limitation is stated on the page`,
@@ -241,7 +243,9 @@ async function exercise(routeName, viewportName, viewport, firstVisit = false) {
       ok = check(`${viewportName} Wild: each rendered hit carries its language`, wild.hits.every(h => /\[[A-Z]{2}\]/.test(h.head) || /Language:/i.test(h.sub)), JSON.stringify(wild.hits.slice(0, 2).map(h => h.head))) && ok;
       const topCodeMatch = wild.hits[0]?.head.match(/\[([A-Z]{2})\]/);
       const topCode = topCodeMatch ? topCodeMatch[1] : "";
-      const verdictMatchesTop = Boolean(wild.verdict) && (topCode ? wild.verdict.includes(`[${topCode}]`) : true);
+      // Require a real language code on the top hit. Without the Boolean(topCode) term a page whose rows
+      // carried no language tag at all would satisfy the old `: true` branch and pass vacuously.
+      const verdictMatchesTop = Boolean(wild.verdict) && Boolean(topCode) && wild.verdict.includes(`[${topCode}]`);
       const verdictHasMargin = /margin/i.test(wild.verdict);
       ok = check(`${viewportName} Wild: verdict is non-empty and reports measured top-1 language and margin`, Boolean(wild.verdict) && verdictMatchesTop && verdictHasMargin, wild.verdict) && ok;
       ok = await hygiene(page, route, viewportName) && ok;
@@ -308,6 +312,12 @@ async function exercise(routeName, viewportName, viewport, firstVisit = false) {
   } catch (error) {
     check(`${viewportName} ${routeName}: drive failed`, false, error.message);
     pass = false;
+  } finally {
+    // Close every target instead of leaving it open. Ten stages ran in one Chrome, so without this all ten
+    // pages kept their Web Worker and WebGPU allocations alive at once on a box with 2 shared CPUs.
+    if (page?.targetId) {
+      try { await closePage(cdp, page.targetId); } catch { /* teardown must not fail the run */ }
+    }
   }
   results.push({ route, viewport: viewportName, pass });
   return pass;
@@ -337,7 +347,11 @@ const ok = printAcceptanceSummary({
   expectedCells: Object.keys(ROUTES).length * 2,
 });
 try {
-  chrome.kill?.({ removeProfile: false });
+  // No removeProfile:false. That option skipped rmSync AND removed the instance from activeChromeInstances,
+  // so the exit hook had nothing left to clean and EVERY completed run abandoned its isolated profile in
+  // /tmp with cached weights and shaders. The harness default removes it, and the global exit hooks cover
+  // the signal paths.
+  await chrome.kill?.();
 } catch {
   /* ignore */
 }
