@@ -185,10 +185,16 @@ async function exercise(routeName, viewportName, viewport, firstVisit = false) {
       await readyControls(page, false, "#run");
       ok = check(`${viewportName} Basics: run clicked`, await evaluate(page.sessionId, click("#run"))) && ok;
       await waitFor(page.sessionId, `Number.isFinite(Number(document.querySelector('#score')?.textContent))`, "Basics cosine");
-      const basics = JSON.parse(await evaluate(page.sessionId, `JSON.stringify({score:Number(document.querySelector('#score')?.textContent),rows:[...document.querySelectorAll('#prefixTable tbody tr')].map(r=>Number(r.querySelector('td:last-child')?.textContent)),mode:document.querySelector('#rMode')?.textContent,tok:document.querySelector('#rTok')?.textContent,dim:document.querySelector('#rDim')?.textContent})`));
+      // Read the COSINE column (3rd cell) for the finite check, not td:last-child: the last cell is the delta
+      // column, and the baseline row renders "0.000 (baseline)", so Number() on it is NaN and would fail a
+      // correct page. The baseline row is asserted separately for its own text, which is the real property.
+      const basics = JSON.parse(await evaluate(page.sessionId, `JSON.stringify({score:Number(document.querySelector('#score')?.textContent),rows:[...document.querySelectorAll('#prefixTable tbody tr')].map(r=>Number(r.querySelector('td:nth-child(3)')?.textContent)),deltas:[...document.querySelectorAll('#prefixTable tbody tr')].map(r=>r.querySelector('td:last-child')?.textContent||''),mode:document.querySelector('#rMode')?.textContent,tok:document.querySelector('#rTok')?.textContent,dim:document.querySelector('#rDim')?.textContent})`));
       ok = check(`${viewportName} Basics: real cosine in (0,1]`, basics.score > 0 && basics.score <= 1.0001, String(basics.score)) && ok;
       ok = check(`${viewportName} Basics: 768-d output reported`, basics.dim === "768", String(basics.dim)) && ok;
       ok = check(`${viewportName} Basics: prefix comparison table computed from real embeddings`, basics.rows.length >= 5 && basics.rows.every(Number.isFinite), JSON.stringify(basics.rows)) && ok;
+      // The baseline row must be labelled as the baseline rather than showing a bare delta, so a page that
+      // silently dropped its control row cannot pass just by producing five finite cosines.
+      ok = check(`${viewportName} Basics: baseline row labelled`, basics.deltas.filter((d) => /baseline/i.test(d)).length === 1, JSON.stringify(basics.deltas)) && ok;
       ok = await hygiene(page, route, viewportName) && ok;
       pass = ok;
     } else if (routeName === "practical") {
