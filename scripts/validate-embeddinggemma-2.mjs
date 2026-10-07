@@ -333,11 +333,17 @@ const viewportsToRun = [
   ["mobile", MOBILE],
 ].filter(([name]) => viewportFilter === "both" || viewportFilter === name);
 if (viewportsToRun.length === 0) throw new Error(`VIEWPORTS='${viewportFilter}' selected nothing; use desktop, mobile or both`);
+// Focused re-drive: name the routes you actually changed, so confirming a fix does not cost a full matrix.
+// ROUTES=basics,overview (comma-separated names from ROUTES). Default is every route.
+const routeFilter = (process.env.ROUTES || "").trim().toLowerCase();
+const routesToRun = Object.keys(ROUTES).filter((name) => !routeFilter || routeFilter.split(",").map((s) => s.trim()).includes(name));
+if (routesToRun.length === 0) throw new Error(`ROUTES='${routeFilter}' matched nothing; known: ${Object.keys(ROUTES).join(", ")}`);
+console.log(`ROUTES=${routeFilter || "all"} -> ${routesToRun.join(", ")}`);
 console.log(`VIEWPORTS=${viewportFilter} -> ${viewportsToRun.map(([n]) => n).join(", ")}`);
 
 let first = true;
 for (const [viewportName, viewport] of viewportsToRun) {
-  for (const routeName of Object.keys(ROUTES)) {
+  for (const routeName of routesToRun) {
     console.log(`\n=== ${routeName} · ${viewportName} ===`);
     await exercise(routeName, viewportName, viewport, first);
     first = false;
@@ -357,7 +363,7 @@ const ok = printAcceptanceSummary({
   total,
   results,
   // Must follow the viewport filter, or a single-viewport run reports half its cells as missing.
-  expectedCells: Object.keys(ROUTES).length * viewportsToRun.length,
+  expectedCells: routesToRun.length * viewportsToRun.length,
 });
 try {
   // No removeProfile:false. That option skipped rmSync AND removed the instance from activeChromeInstances,
