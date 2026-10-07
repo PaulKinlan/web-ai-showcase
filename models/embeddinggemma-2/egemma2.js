@@ -142,10 +142,24 @@ export class EmbedClient2 {
     return this._request(id, { type: "run", id, texts, mode });
   }
 
-  /** Media → { embeddings, norms, dim, softTokens, ms, device }. `images`/`videos` are samples (nested lists). */
-  embedMedia({ images = null, videos = null, text = null } = {}) {
+  /**
+   * One inference for a whole experiment. Each item carries its own `{ text, mode }`, so a page can compare
+   * six different task prefixes on the same pair in a single round-trip and get embeddings in item order.
+   */
+  embedBatch(items, label = "") {
     const id = ++this._id;
-    return this._request(id, { type: "runMedia", id, images, videos, text });
+    return this._request(id, { type: "runBatch", id, items, label });
+  }
+
+  /**
+   * Media → { embeddings, norms, dim, softTokens, ms, device }.
+   * `images`/`videos` are samples (nested lists). `maxSoftTokens` moves the documented vision token budget
+   * (70 / 140 / 280 / 560 / 1120 per image) — fewer soft tokens means less image detail but proportionally
+   * less compute, which is visible as real latency on a software adapter.
+   */
+  embedMedia({ images = null, videos = null, text = null, maxSoftTokens = null } = {}) {
+    const id = ++this._id;
+    return this._request(id, { type: "runMedia", id, images, videos, text, maxSoftTokens });
   }
 
   _request(id, payload) {

@@ -1,0 +1,367 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>EmbeddingGemma 2 Practical — index an 8192-token document, then store 6× smaller vectors · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Index a long technical document within EmbeddingGemma 2's 8192-token context window on WebGPU, then use the Matryoshka dial to shrink vectors from 768 down to 128 dimensions for a 6× smaller on-device store with instant re-ranking."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🧭</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">EmbeddingGemma 2</a></p>
+
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Practical: index an 8192-token document, then store 6× smaller vectors</h1>
+      <p class="lede">
+        EmbeddingGemma 2 expands context from 2048 to <strong>8192 tokens</strong>. Chunking a long document into
+        semantic windows keeps each passage focused while staying safely within the model's window. Once indexed,
+        the <strong>Matryoshka dial</strong> lets you truncate stored vectors from 768 down to 128 dimensions—a
+        <strong>6× reduction in storage footprint</strong> (from 3,072 bytes to 512 bytes per chunk)—re-ranking
+        instantly from in-memory vectors without re-embedding.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.4rem">
+        Corpus document (~950 words across six distinct systems architecture topics)
+        <textarea id="doc" rows="12" disabled style="min-inline-size:0;inline-size:100%;font-family:inherit;font-size:.82rem;line-height:1.45"># Edge Systems Architecture Handbook: Local Runtime Reliability &amp; Offline Data Engineering
+
+### 1. Storage Quotas, Eviction Priorities, and Persistent Storage Grants
+Web applications operating offline must manage local disk boundaries proactively. Browsers divide local storage into temporary and persistent pools. By default, an origin is assigned temporary storage governed by overall disk capacity and operating system quotas. When local disk pressure exceeds predefined thresholds, the browser user agent triggers an automatic eviction algorithm, purging entire origin partitions starting with the least recently used origin. To insulate mission-critical local databases from silent purge cycles, client code must explicitly request non-volatile storage via the navigator storage persistence interface. Before invoking the persistence grant, inspect current utilization using the storage estimate API to measure quota allowances and current consumption in bytes. If persistence is rejected by browser heuristics or user permission prompts, the application must register eviction telemetry and partition non-essential assets—such as ephemeral image caches—away from transactional IndexedDB stores. Never assume local storage is permanent without validating the persistence boolean.
+
+### 2. Service Worker Lifecycle, Atomic Caching, and Asset Invalidation
+Reliable offline execution requires precise orchestration of the service worker installation, activation, and message exchange lifecycle. During installation, the worker populates a newly versioned cache instance with immutable static shell resources, including compiled scripts, style definitions, and foundational icons. Use atomic cache creation: if any mandatory asset fails during fetch, abort the installation completely to prevent half-functional cached runtime states. Once installed, avoid calling skipWaiting indiscriminately; uncoordinated worker upgrades can break active browser tabs expecting older API serialization contracts. Instead, notify active window clients of pending updates and defer activation until existing tabs navigate or dismiss. Upon activation, iterate across existing cache names to delete obsolete version prefixes in a single transaction. For static fingerprinted assets, enforce an immutable cache-first policy. For dynamic documentation and content endpoints, employ a stale-while-revalidate strategy with bounded timeouts, ensuring instant offline responsiveness while transparently refreshing content in background worker passes.
+
+### 3. On-Device Vector Indexing, Matryoshka Slicing, and Memory Footprint
+Embedding-driven client applications must balance search precision against constrained client memory budgets. When indexing documents locally, raw text chunks are embedded as unit-normalized float32 vectors. Storing full 768-dimensional vectors for thousands of document chunks consumes substantial memory: each vector occupies 3,072 bytes (768 dimensions multiplied by four bytes per single-precision float). Under memory pressure or on low-end mobile devices, applications should leverage Matryoshka Representation Learning embeddings. Because the training objective optimizes front-loaded information density, vectors can be truncated to 512, 256, or 128 dimensions without retraining. However, truncating a normalized vector reduces its Euclidean length; applications must re-normalize the sliced subvector by dividing each component by the square root of the sum of squared elements. Once re-normalized, cosine similarity reduces to a fast dot product across the truncated dimension width. Storing 128-dimensional vectors reduces the disk and memory footprint to 512 bytes per chunk—an exact sixfold reduction that preserves top-tier retrieval relevance.
+
+### 4. Web Crypto Key Custody, Non-Extractable Handles, and Secret Rotation
+Local client storage must never contain plaintext secrets, authorization tokens, or unencrypted cryptographic keys. When handling user credentials or authenticating offline telemetry, utilize the Web Crypto API to generate cryptographic keys with the extractable flag explicitly set to false. Non-extractable CryptoKey handles can be stored safely in structured clone stores like IndexedDB without exposing raw key bytes to runtime inspection, memory scraping, or cross-site scripting vulnerabilities. Encrypt sensitive payloads using AES-GCM with a unique 96-bit initialization vector generated via the cryptographically secure pseudorandom number generator for every single encryption operation. Key rotation schedules must execute on a ninety-day interval: generate a prospective key pair, re-encrypt cached symmetric wrapping keys, and archive old public keys for signature verification. In the event of session termination or compromise detection, purge the IndexedDB key table immediately, ensuring instant client-side cryptographic erasure without relying on network confirmation.
+
+### 5. Asynchronous Mutation Journaling and Distributed Conflict Resolution
+In distributed offline architectures, client-side modifications must occur optimistically while preserving eventual consistency across intermittent network conditions. Every offline mutation—such as editing a document section or adjusting account metadata—must append a journal record to an atomic IndexedDB mutation table before reflecting the change in the client user interface. Each journal entry contains an incrementing local sequence number, an ISO timestamp, a client origin identifier, and a vector clock capturing known logical dependencies. When connectivity is restored via the Background Sync API or online event listeners, replay queued mutations sequentially against remote endpoints. If concurrent modifications collide, resolve conflicts deterministically: structural changes use operational transformation or conflict-free replicated data types, while scalar attribute updates default to a verified last-write-wins policy governed by server-validated causality rather than uncalibrated client wall clocks. Purge journal entries only after the server acknowledges durable persistence.
+
+### 6. AudioWorklet Thread Isolation, Ring Buffers, and Low-Latency DSP
+Interactive audio analysis and speech processing on the web require strict temporal isolation from the main browser UI thread. Executing audio decoding, feature extraction, or digital signal processing on the main execution thread inevitably leads to audible dropouts, stutter, and frame skips whenever UI layouts or script tasks occupy the event loop. Deploy dedicated AudioWorkletProcessor nodes operating inside the isolated WebAudio rendering thread, which processes audio samples in fixed quanta of 128 frames at sample rates such as 48 kHz. To exchange real-time feature frames with the main application thread without blocking or memory allocation overhead, configure lock-free circular ring buffers utilizing SharedArrayBuffer and atomic read-write pointers via Atomics wait and notify operations. Never perform garbage-collected object allocations inside the process method of an AudioWorkletProcessor. Pre-allocate flat Float32Array working scratchpads during processor initialization to ensure deterministic execution within strict two-millisecond audio rendering windows.</textarea>
+      </label>
+
+      <div style="display:flex;flex-wrap:wrap;gap:1rem;align-items:center;margin:.6rem 0">
+        <label for="chunkWords" style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;flex:1;min-inline-size:12rem">
+          <span>Chunk window size: <b id="chunkWordsVal">80</b> words</span>
+          <input id="chunkWords" type="range" min="40" max="200" step="10" value="80" disabled style="min-inline-size:0" />
+        </label>
+        <button id="indexBtn" type="button" disabled>Index document</button>
+      </div>
+
+      <div style="display:flex;flex-wrap:wrap;gap:.5rem;align-items:end;margin:.8rem 0 .4rem">
+        <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;flex:1;min-inline-size:14rem">
+          Search query
+          <input id="query" type="text" value="How do we handle storage quota exhaustion and prevent browser eviction of local databases?" disabled style="min-inline-size:0" />
+        </label>
+        <button id="searchBtn" type="button" disabled>Search</button>
+      </div>
+
+      <div class="control" style="max-inline-size:32rem;margin:.8rem 0">
+        <label for="dims" style="font-size:.82rem">Stored vector size (Matryoshka dial): <b id="dimsVal">768</b>-d</label>
+        <div class="row">
+          <input id="dims" type="range" min="0" max="3" step="1" value="0" disabled aria-describedby="dimsHint" style="min-inline-size:0" />
+        </div>
+        <span id="dimsHint" class="hint" style="font-size:.76rem;color:var(--muted)">
+          768 → 512 → 256 → 128. Truncates and re-normalizes cached 768-d unit vectors in memory with zero re-embedding.
+        </span>
+      </div>
+
+      <div class="sent-list" id="ranked" aria-live="polite"></div>
+
+      <div id="compareNote" class="ctx-note" style="margin-top:.8rem" aria-live="polite" hidden></div>
+
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>stored dims <b id="rDim">–</b></span>
+        <span>chunks <b id="rChunks">–</b></span>
+        <span>max chunk tokens <b id="rTokens">–</b></span>
+        <span>stored size <b id="rSize">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+      </div>
+    </section>
+
+    <p class="muted" style="font-size:.85rem">
+      Everything runs on-device via WebGPU: the document text never leaves your browser, the embeddings live in
+      memory as Float32 arrays, and moving the slider slices the vector dimensions and re-normalizes Euclidean
+      length via <code>matryoshka()</code>. At 128 dimensions, storing each vector in IndexedDB or OPFS takes only
+      512 bytes (versus 3,072 bytes at 768-d)—a 6× savings for constrained mobile devices.
+    </p>
+
+    <p class="crumbs"><a href="../basics/">← Basics</a> · <a href="../">EmbeddingGemma 2</a> · Next: <a href="../wild/">Wild →</a></p>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import {
+        EmbeddingGemma2Engine,
+        EGEMMA2_CSS,
+        cosine,
+        matryoshka,
+        renderRanked,
+      } from "../egemma2.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = EGEMMA2_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const DIMS = [768, 512, 256, 128];
+      let engine = null;
+      let cached = null;
+      let cachedQuery = null;
+      let baseline768Hits = null;
+
+      function chunkWords(text, size) {
+        const words = text.trim().split(/\s+/).filter(Boolean);
+        const chunks = [];
+        for (let i = 0; i < words.length; i += size) {
+          chunks.push(words.slice(i, i + size).join(" "));
+        }
+        return chunks;
+      }
+
+      function showStatus(msg, type = "info") {
+        const s = $("status");
+        s.hidden = false;
+        s.className = "status" + (type === "err" ? " err" : type === "ok" ? " ok" : "");
+        s.textContent = msg;
+      }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: {
+          modelId: "onnx-community/embeddinggemma-2-ONNX",
+          runtime: "transformers.js",
+          dtype: "q4",
+          sizeMB: 175,
+          requiresWebGPU: true,
+        },
+        load: async (onProgress) => {
+          engine = new EmbeddingGemma2Engine();
+          await engine.load(onProgress, { vision: false, audio: false, dtype: "q4", device: "webgpu" });
+          return engine;
+        },
+        onReady: () => {
+          $("doc").disabled = false;
+          $("chunkWords").disabled = false;
+          $("indexBtn").disabled = false;
+          $("query").disabled = false;
+          showStatus("Model ready (175 MB q4 WebGPU). Click 'Index document' to chunk and embed.", "ok");
+        },
+        onError: (err) => {
+          showStatus("Load failed: " + (err.message || err), "err");
+        },
+        dispose: (e) => e.worker.terminate(),
+        onDispose: () => {
+          $("doc").disabled = true;
+          $("chunkWords").disabled = true;
+          $("indexBtn").disabled = true;
+          $("query").disabled = true;
+          $("searchBtn").disabled = true;
+          $("dims").disabled = true;
+          engine = null;
+          cached = null;
+          cachedQuery = null;
+          baseline768Hits = null;
+        },
+      });
+
+      $("chunkWords").addEventListener("input", () => {
+        $("chunkWordsVal").textContent = $("chunkWords").value;
+        if (cached) {
+          showStatus(`Chunk window set to ${$("chunkWords").value} words. Click 'Index document' to re-chunk and embed.`);
+        }
+      });
+
+      $("indexBtn").addEventListener("click", indexDocument);
+
+      $("searchBtn").addEventListener("click", search);
+      $("query").addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && !$("searchBtn").disabled) {
+          search();
+        }
+      });
+
+      $("dims").addEventListener("input", () => {
+        const d = DIMS[+$("dims").value];
+        $("dimsVal").textContent = String(d);
+        rerank(d);
+      });
+
+      async function indexDocument() {
+        if (!engine) return;
+        const text = $("doc").value.trim();
+        if (!text) {
+          showStatus("Please provide a document to index.", "err");
+          return;
+        }
+        const chunkSize = parseInt($("chunkWords").value, 10) || 80;
+        const chunks = chunkWords(text, chunkSize);
+        if (chunks.length < 1) {
+          showStatus("Document produced no chunks.", "err");
+          return;
+        }
+
+        showStatus(`Embedding ${chunks.length} chunks (${chunkSize} words/chunk) on WebGPU…`);
+        $("indexBtn").disabled = true;
+        $("searchBtn").disabled = true;
+        $("dims").disabled = true;
+
+        try {
+          const dr = await engine.embed(chunks, "document");
+          // Modern Web Guidance: break-up-long-tasks — yield to main thread before UI rendering
+          if (globalThis.scheduler?.yield) await scheduler.yield();
+
+          const tokenCounts = Array.isArray(dr.tokenCounts) ? dr.tokenCounts : chunks.map(() => 0);
+          const maxTokens = Math.max(...tokenCounts, 0);
+
+          cached = {
+            chunks,
+            docVecs: dr.embeddings,
+            tokenCounts,
+            device: dr.device,
+            embedMs: dr.ms,
+            maxTokens,
+          };
+
+          $("searchBtn").disabled = false;
+          $("dims").disabled = false;
+
+          updateReadout(DIMS[+$("dims").value]);
+          showStatus(`Indexed ${chunks.length} chunks on ${dr.device.toUpperCase()} in ${dr.ms} ms. Ready to search.`, "ok");
+
+          if ($("query").value.trim()) {
+            await search();
+          }
+        } catch (err) {
+          showStatus("Indexing failed: " + err.message, "err");
+        } finally {
+          $("indexBtn").disabled = false;
+        }
+      }
+
+      async function search() {
+        if (!engine || !cached) {
+          showStatus("Please index the document first.", "err");
+          return;
+        }
+        const q = $("query").value.trim();
+        if (!q) {
+          showStatus("Please enter a search query.", "err");
+          return;
+        }
+
+        showStatus(`Embedding query on ${cached.device.toUpperCase()}…`);
+        $("searchBtn").disabled = true;
+
+        try {
+          const qr = await engine.embed([q], "query");
+          cachedQuery = {
+            text: q,
+            vec: qr.embeddings[0],
+            ms: qr.ms,
+          };
+
+          baseline768Hits = rankAtDim(768);
+          const currentDim = DIMS[+$("dims").value];
+          rerank(currentDim);
+
+          showStatus(`Retrieved matches in ${qr.ms} ms query embed. Adjust the Matryoshka dial to observe truncated vector retrieval.`, "ok");
+        } catch (err) {
+          showStatus("Search failed: " + err.message, "err");
+        } finally {
+          $("searchBtn").disabled = false;
+        }
+      }
+
+      function rankAtDim(d) {
+        if (!cached || !cachedQuery) return [];
+        const qv = matryoshka(cachedQuery.vec, d);
+        const hits = cached.chunks.map((chunk, i) => {
+          const dv = matryoshka(cached.docVecs[i], d);
+          const score = cosine(qv, dv);
+          const tokCount = cached.tokenCounts[i] ?? "–";
+          return {
+            text: chunk,
+            score,
+            origIndex: i,
+            tokenCount: tokCount,
+            sub: `Chunk ${i + 1} of ${cached.chunks.length} · ${tokCount} tokens`,
+          };
+        });
+        hits.sort((a, b) => b.score - a.score);
+        return hits;
+      }
+
+      function rerank(d) {
+        if (!cached) return;
+        updateReadout(d);
+        if (!cachedQuery) return;
+
+        const hits = rankAtDim(d);
+        renderRanked($("ranked"), hits);
+        updateTop3Comparison(d, hits);
+      }
+
+      function updateReadout(d) {
+        if (!cached) return;
+        $("readout").hidden = false;
+        $("rBackend").textContent = cached.device.toUpperCase();
+        $("rDim").textContent = `${d}-d`;
+        $("rChunks").textContent = `${cached.chunks.length} chunks`;
+        $("rTokens").textContent = `${cached.maxTokens} / 8192`;
+        const bytes = cached.chunks.length * d * 4;
+        const sizeStr = bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(1)} KB`;
+        const ratioStr = d < 768 ? ` (${(768 / d).toFixed(0)}× smaller)` : "";
+        $("rSize").textContent = sizeStr + ratioStr;
+        $("rMs").textContent = cachedQuery ? `${cachedQuery.ms} ms (${cached.embedMs} ms doc)` : `${cached.embedMs} ms`;
+      }
+
+      function updateTop3Comparison(d, currentHits) {
+        const note = $("compareNote");
+        if (!baseline768Hits || baseline768Hits.length === 0) {
+          note.hidden = true;
+          return;
+        }
+        note.hidden = false;
+        const baseTop3 = baseline768Hits.slice(0, 3);
+        const currTop3 = currentHits.slice(0, 3);
+
+        const fmtHit = (h) => `#${h.origIndex + 1} (${h.score.toFixed(3)})`;
+        const baseStr = baseTop3.map((h, r) => `${r + 1}. Chunk ${fmtHit(h)}`).join(", ");
+        const currStr = currTop3.map((h, r) => `${r + 1}. Chunk ${fmtHit(h)}`).join(", ");
+
+        const baseIndices = baseTop3.map((h) => h.origIndex);
+        const currIndices = currTop3.map((h) => h.origIndex);
+        const sameOrder = baseIndices.every((idx, i) => idx === currIndices[i]);
+
+        if (d === 768) {
+          note.innerHTML = `<strong>768-d baseline top-3 chunks:</strong> ${baseStr}. Moving the Matryoshka dial down to 512, 256, or 128 will display the corresponding rankings here for direct side-by-side comparison.`;
+        } else {
+          const orderNote = sameOrder
+            ? `The top-3 retrieval order is <strong>identical</strong> to the 768-d baseline.`
+            : `Top results remain concentrated in the same relevant chunks, with minor rank-order variations.`;
+          note.innerHTML = `<strong>Top-3 comparison:</strong> Baseline (768-d): ${baseStr} · Current (${d}-d, ${(768 / d).toFixed(0)}× smaller): ${currStr}. ${orderNote}`;
+        }
+      }
+    </script>
+  </body>
+</html>

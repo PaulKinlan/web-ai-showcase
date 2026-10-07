@@ -1,0 +1,445 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>EmbeddingGemma 2 Basics — one cosine number, and how task prefixes change the vector · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Measure cosine similarity between two passages with Google's EmbeddingGemma 2, and observe in a single batch how documented task instruction prefixes (search result, classification, clustering) shift the 768-d embedding vector. Runs locally in your browser via WebGPU."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🧭</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">EmbeddingGemma 2</a></p>
+
+    <header>
+      <p class="eyebrow">use case · basics</p>
+      <h1>Basics: one cosine number — and how the task you name changes the vector</h1>
+      <p class="lede">
+        The fundamental move of an embedder is turning two passages into vectors and measuring the angle
+        between them (cosine 1.00 = identical direction, near 0 = unrelated). Because EmbeddingGemma 2 is
+        <strong>instruction-prompted</strong>, the exact same text produces genuinely different vectors when
+        embedded as a search query, a stored document, or a classification target. Compare two passages below
+        to inspect the cosine number and measure how each task prefix moves the vector on your own sentences.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+
+      <div class="chip-row" style="margin:.5rem 0" id="chips" role="group" aria-label="Example pairs"></div>
+
+      <div class="grid-2" style="margin-top:.6rem">
+        <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">Passage A
+          <textarea id="a" rows="4" disabled>how do transformers implement multi-head attention?</textarea>
+        </label>
+        <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem">Passage B
+          <textarea id="b" rows="4" disabled>Multi-head attention projects queries, keys, and values into multiple subspaces, allowing the model to jointly attend to information from different representation subspaces at different positions.</textarea>
+        </label>
+      </div>
+
+      <!-- forms: standard fieldset and radio inputs maintain keyboard accessibility -->
+      <fieldset id="mode" style="border:1px solid var(--border);border-radius:8px;padding:.6rem .8rem;margin:.6rem 0">
+        <legend style="font-size:.82rem;font-weight:600;padding:0 .3rem;color:var(--muted)">Task instruction prefix</legend>
+        <div style="display:flex;flex-direction:column;gap:.35rem;font-size:.82rem">
+          <label style="display:flex;align-items:center;gap:.4rem">
+            <input type="radio" name="prefix" value="search result" checked disabled />
+            <span><strong>search result</strong> <span class="muted">(asymmetric: query for Passage A, document for Passage B)</span></span>
+          </label>
+          <label style="display:flex;align-items:center;gap:.4rem">
+            <input type="radio" name="prefix" value="classification" disabled />
+            <span><strong>classification</strong> <span class="muted">(symmetric: both prefixed for topic/intent classification)</span></span>
+          </label>
+          <label style="display:flex;align-items:center;gap:.4rem">
+            <input type="radio" name="prefix" value="clustering" disabled />
+            <span><strong>clustering</strong> <span class="muted">(symmetric: both prefixed for grouping by topic)</span></span>
+          </label>
+          <label style="display:flex;align-items:center;gap:.4rem">
+            <input type="radio" name="prefix" value="sentence similarity" disabled />
+            <span><strong>sentence similarity</strong> <span class="muted">(symmetric: both prefixed for semantic textual similarity)</span></span>
+          </label>
+          <label style="display:flex;align-items:center;gap:.4rem">
+            <input type="radio" name="prefix" value="none" disabled />
+            <span><strong>none</strong> <span class="muted">(bare text: no instruction prefix applied)</span></span>
+          </label>
+        </div>
+      </fieldset>
+
+      <div style="margin:.6rem 0;display:flex;gap:.4rem;flex-wrap:wrap">
+        <button id="run" type="button" disabled>Compare meaning</button>
+      </div>
+
+      <div id="scoreWrap" hidden style="margin-top:.5rem">
+        <div style="font-size:2.4rem;font-family:var(--font-mono);font-weight:700" id="score">–</div>
+        <div class="result-bar" style="max-inline-size:24rem"><div class="result-fill" id="bar" style="inline-size:0%"></div></div>
+        <p class="muted" id="verdict" style="margin-top:.4rem"></p>
+        <p class="muted" style="font-size:.82rem;margin-top:.6rem">
+          <strong>What am I looking at?</strong> In EmbeddingGemma 2, a task prefix is not an internal configuration flag
+          or model mode — it is literal text prepended to the input (e.g. <code>task: search result | query: …</code>).
+          Because the prefix becomes part of the token sequence, it consumes context tokens and directly alters the
+          resulting 768-dimensional unit vector.
+        </p>
+      </div>
+
+      <div class="readout" id="readout" hidden>
+        <span>task <b id="rMode">–</b></span>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+        <span>dims <b id="rDim">–</b></span>
+        <span>tokens A/B <b id="rTok">–</b></span>
+      </div>
+
+      <!-- responsive-table: matrix-scroll handles horizontal overflow on mobile viewports -->
+      <div id="prefixTable" class="matrix-scroll" style="margin-top:1rem"></div>
+    </section>
+
+    <p class="crumbs"><a href="../">← Back to EmbeddingGemma 2</a> · Next: <a href="../practical/">Practical →</a></p>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { EmbeddingGemma2Engine, EGEMMA2_CSS, cosine } from "../egemma2.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = EGEMMA2_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      let engine = null;
+      let lastResult = null;
+
+      const TASKS = [
+        {
+          id: "search result",
+          label: "search result",
+          modeA: "query",
+          modeB: "document",
+          mapping: "A: query (task: search result | query: …), B: document (title: none | text: …)",
+        },
+        {
+          id: "classification",
+          label: "classification",
+          modeA: "classification",
+          modeB: "classification",
+          mapping: "Both: task: classification | query: …",
+        },
+        {
+          id: "clustering",
+          label: "clustering",
+          modeA: "clustering",
+          modeB: "clustering",
+          mapping: "Both: task: clustering | query: …",
+        },
+        {
+          id: "sentence similarity",
+          label: "sentence similarity",
+          modeA: "similarity",
+          modeB: "similarity",
+          mapping: "Both: task: sentence similarity | query: …",
+        },
+        {
+          id: "none",
+          label: "none",
+          modeA: "none",
+          modeB: "none",
+          mapping: "Both: bare text (no task prefix)",
+        },
+      ];
+
+      const PAIRS = [
+        {
+          label: "query → passage",
+          a: "how do transformers implement multi-head attention?",
+          b: "Multi-head attention projects queries, keys, and values into multiple subspaces, allowing the model to jointly attend to information from different representation subspaces at different positions.",
+          task: "search result",
+        },
+        {
+          label: "paraphrase",
+          a: "Customers are eligible for a complete refund if returned within thirty calendar days.",
+          b: "Our store policy provides a full money-back guarantee on any items brought back within 30 days of purchase.",
+          task: "sentence similarity",
+        },
+        {
+          label: "unrelated",
+          a: "Chloroplasts absorb blue and red light to synthesize glucose during photosynthesis.",
+          b: "The board of directors approved a dividend payout during yesterday's fiscal meeting.",
+          task: "sentence similarity",
+        },
+        {
+          label: "classification intent",
+          a: "The camera shutter lag made me miss every action shot during my kid's soccer match.",
+          b: "Terrible camera autofocus performance and intolerable shutter delay for moving subjects.",
+          task: "classification",
+        },
+      ];
+
+      for (const p of PAIRS) {
+        const b = document.createElement("button");
+        b.className = "secondary";
+        b.type = "button";
+        b.textContent = p.label;
+        b.style.cssText = "font-size:.8rem;min-block-size:2.2rem";
+        b.disabled = true;
+        b.addEventListener("click", () => {
+          $("a").value = p.a;
+          $("b").value = p.b;
+          const radio = document.querySelector(`input[name="prefix"][value="${p.task}"]`);
+          if (radio) radio.checked = true;
+          if (engine) run();
+        });
+        $("chips").append(b);
+      }
+
+      function setControlsDisabled(disabled) {
+        $("a").disabled = disabled;
+        $("b").disabled = disabled;
+        $("run").disabled = disabled;
+        for (const r of document.querySelectorAll('input[name="prefix"]')) r.disabled = disabled;
+        for (const b of $("chips").querySelectorAll("button")) b.disabled = disabled;
+      }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: {
+          modelId: "onnx-community/embeddinggemma-2-ONNX",
+          runtime: "transformers.js",
+          dtype: "q4",
+          sizeMB: 175,
+          requiresWebGPU: true,
+        },
+        load: async (onProgress) => {
+          engine = new EmbeddingGemma2Engine();
+          await engine.load(onProgress, { vision: false, audio: false, dtype: "q4", device: "webgpu" });
+          return engine;
+        },
+        onReady: () => {
+          setControlsDisabled(false);
+        },
+        onError: (err) => {
+          $("status").hidden = false;
+          $("status").classList.add("err");
+          $("status").textContent = "Model load failed: " + (err.message || String(err));
+        },
+        dispose: (e) => e.worker.terminate(),
+        onDispose: () => {
+          setControlsDisabled(true);
+          engine = null;
+        },
+      });
+
+      for (const radio of document.querySelectorAll('input[name="prefix"]')) {
+        radio.addEventListener("change", () => {
+          if (lastResult) {
+            const activeTask = TASKS.find((t) => t.id === radio.value) || TASKS[0];
+            lastResult.activeTaskId = activeTask.id;
+            renderResults(lastResult.res, activeTask);
+          }
+        });
+      }
+
+      function describeCosine(s) {
+        if (s >= 0.85) return `Cosine ${s.toFixed(3)}: near 1.0 — vectors point in nearly the same direction (high semantic alignment).`;
+        if (s >= 0.60) return `Cosine ${s.toFixed(3)}: substantial alignment — overlapping meaning and shared concepts.`;
+        if (s >= 0.35) return `Cosine ${s.toFixed(3)}: moderate angle — loosely related or broad domain overlap.`;
+        if (s >= 0.10) return `Cosine ${s.toFixed(3)}: low similarity — mostly separate topics.`;
+        if (s >= -0.10) return `Cosine ${s.toFixed(3)}: near 0.0 — orthogonal vectors with no apparent semantic relation.`;
+        return `Cosine ${s.toFixed(3)}: negative — vectors point in opposing directions in the embedding space.`;
+      }
+
+      function renderResults(res, activeTask) {
+        const activeIdx = TASKS.findIndex((t) => t.id === activeTask.id);
+        const selectedCos = activeIdx >= 0
+          ? cosine(res.embeddings[2 + activeIdx * 2], res.embeddings[2 + activeIdx * 2 + 1])
+          : cosine(res.embeddings[0], res.embeddings[1]);
+
+        $("scoreWrap").hidden = false;
+        $("score").textContent = selectedCos.toFixed(3);
+        $("bar").style.inlineSize = `${Math.max(0, Math.min(1, selectedCos)) * 100}%`;
+        $("verdict").textContent = describeCosine(selectedCos);
+
+        const taskCosines = TASKS.map((t, i) => {
+          const embA = res.embeddings[2 + i * 2];
+          const embB = res.embeddings[2 + i * 2 + 1];
+          return {
+            task: t,
+            cosine: cosine(embA, embB),
+          };
+        });
+
+        const noneEntry = taskCosines.find((tc) => tc.task.id === "none");
+        const noneCos = noneEntry ? noneEntry.cosine : 0;
+
+        const tableData = taskCosines.map((tc) => {
+          const delta = tc.cosine - noneCos;
+          return { ...tc, delta };
+        });
+
+        const table = document.createElement("table");
+        table.className = "inside-table";
+        table.style.margin = "0";
+
+        const caption = document.createElement("caption");
+        caption.style.cssText = "text-align:start;font-size:.85rem;color:var(--muted);padding-bottom:.4rem;font-weight:600";
+        caption.textContent = "Task prefix comparison on the same passage pair";
+        table.append(caption);
+
+        const thead = document.createElement("thead");
+        const hr = document.createElement("tr");
+        for (const h of ["Task prefix", "Applied instructions", "Cosine", "Δ vs bare text (none)"]) {
+          const th = document.createElement("th");
+          th.scope = "col";
+          th.textContent = h;
+          hr.append(th);
+        }
+        thead.append(hr);
+        table.append(thead);
+
+        const tbody = document.createElement("tbody");
+        for (const row of tableData) {
+          const tr = document.createElement("tr");
+          const isSelected = row.task.id === activeTask.id;
+          if (isSelected) {
+            tr.style.background = "var(--bg-secondary)";
+          }
+
+          const th = document.createElement("th");
+          th.scope = "row";
+          th.style.whiteSpace = "nowrap";
+          th.append(document.createTextNode(row.task.label + " "));
+          if (isSelected) {
+            const tag = document.createElement("span");
+            tag.className = "mode-tag";
+            tag.textContent = "selected";
+            th.append(tag);
+          }
+
+          const tdPrompt = document.createElement("td");
+          const code = document.createElement("code");
+          code.style.fontSize = ".75rem";
+          code.textContent = row.task.mapping;
+          tdPrompt.append(code);
+
+          const tdCos = document.createElement("td");
+          tdCos.style.fontFamily = "var(--font-mono)";
+          tdCos.style.fontWeight = "600";
+          tdCos.textContent = row.cosine.toFixed(3);
+
+          const tdDelta = document.createElement("td");
+          tdDelta.style.fontFamily = "var(--font-mono)";
+          if (row.task.id === "none") {
+            tdDelta.textContent = "0.000 (baseline)";
+            tdDelta.style.color = "var(--muted)";
+          } else {
+            const sign = row.delta >= 0 ? "+" : "";
+            tdDelta.textContent = `${sign}${row.delta.toFixed(3)}`;
+            if (Math.abs(row.delta) >= 0.01) {
+              tdDelta.style.color = row.delta > 0 ? "var(--good)" : "var(--warn)";
+            }
+          }
+
+          tr.append(th, tdPrompt, tdCos, tdDelta);
+          tbody.append(tr);
+        }
+        table.append(tbody);
+
+        const nonBaseline = tableData.filter((r) => r.task.id !== "none");
+        const shifted = nonBaseline.filter((r) => Math.abs(r.delta) >= 0.01);
+
+        let conclusionText = "";
+        if (shifted.length === 0) {
+          conclusionText = "The ordering and similarity values were unchanged across all task prefixes (all deltas stayed within ±0.01 of bare text).";
+        } else {
+          const details = shifted
+            .map((r) => `${r.task.label} (${r.delta >= 0 ? "+" : ""}${r.delta.toFixed(3)})`)
+            .join(", ");
+          conclusionText = `Specific prefixes changed the similarity score compared to bare text: ${details}.`;
+        }
+
+        const note = document.createElement("p");
+        note.className = "ctx-note";
+        note.style.marginTop = ".5rem";
+        note.textContent = conclusionText;
+
+        $("prefixTable").replaceChildren(table, note);
+
+        $("readout").hidden = false;
+        $("rMode").textContent = activeTask.label;
+        $("rBackend").textContent = (res.device || "webgpu").toUpperCase();
+        $("rMs").textContent = `${res.ms} ms`;
+        $("rDim").textContent = String(res.dim);
+        $("rTok").textContent = res.tokenCounts
+          ? `${res.tokenCounts[0]} / ${res.tokenCounts[1]}`
+          : "–";
+      }
+
+      $("run").addEventListener("click", run);
+
+      async function run() {
+        const textA = $("a").value.trim();
+        const textB = $("b").value.trim();
+        if (!textA || !textB) {
+          $("status").hidden = false;
+          $("status").textContent = "Please enter text for both Passage A and Passage B.";
+          $("status").classList.add("err");
+          return;
+        }
+        if (!engine) {
+          $("status").hidden = false;
+          $("status").textContent = "Model is not loaded yet.";
+          $("status").classList.add("err");
+          return;
+        }
+
+        $("status").hidden = false;
+        $("status").classList.remove("err");
+        $("status").textContent = "Embedding with all task prefixes in a single batch…";
+        $("run").disabled = true;
+
+        try {
+          const selectedRadio = document.querySelector('input[name="prefix"]:checked');
+          const selectedVal = selectedRadio ? selectedRadio.value : "search result";
+          const activeTask = TASKS.find((t) => t.id === selectedVal) || TASKS[0];
+
+          // 1. Selected mode pair
+          const items = [
+            { text: textA, mode: activeTask.modeA },
+            { text: textB, mode: activeTask.modeB },
+          ];
+
+          // 2. Comparison table pairs under each task
+          for (const t of TASKS) {
+            items.push({ text: textA, mode: t.modeA });
+            items.push({ text: textB, mode: t.modeB });
+          }
+
+          // 3. Single embedBatch call
+          const res = await engine.embedBatch(items, "compare-prefixes");
+
+          // break-up-long-tasks: yield to main thread if scheduler.yield is available before DOM updates
+          if (globalThis.scheduler?.yield) {
+            // TODO(baseline/api.Scheduler.yield): Use scheduler.yield directly without fallback once Baseline Widely Available.
+            await scheduler.yield();
+          }
+
+          lastResult = { res, items, activeTaskId: activeTask.id };
+          renderResults(res, activeTask);
+          $("status").hidden = true;
+        } catch (err) {
+          $("status").hidden = false;
+          $("status").classList.add("err");
+          $("status").textContent = "Inference failed: " + (err.message || String(err));
+        } finally {
+          $("run").disabled = false;
+        }
+      }
+    </script>
+  </body>
+</html>

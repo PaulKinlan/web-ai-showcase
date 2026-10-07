@@ -216,6 +216,37 @@ async function embedText(id, texts, mode) {
     mode,
     ms: Math.round(performance.now() - t0),
     device,
+    dtype,
+    modalities: loadedModalities,
+  });
+}
+
+/**
+ * One inference for a whole experiment: each item gets its OWN task prefix and text, and all of them go
+ * through the model as a single padded batch. This is how the prefix-comparison page can show six
+ * different promptings of the same pair without paying six round-trips to the worker.
+ */
+async function embedBatch(id, items, label) {
+  await ensureLoaded({ vision: loadedModalities.vision, audio: loadedModalities.audio });
+  const t0 = performance.now();
+  const prompted = items.map((it) => (PROMPTS[it.mode] || PROMPTS.none)(it.text));
+  const inputs = tokenizer(prompted, { padding: true, truncation: true });
+  const output = await model(inputs);
+  const { embeddings, norms, dim, nan } = unpack(output, items.length);
+  post({
+    type: "result",
+    id,
+    kind: "batch",
+    label,
+    items,
+    prompted,
+    embeddings,
+    norms,
+    dim,
+    nan,
+    ms: Math.round(performance.now() - t0),
+    device,
+    dtype,
     modalities: loadedModalities,
   });
 }
@@ -226,10 +257,13 @@ async function embedText(id, texts, mode) {
  * Video frames arrive as URLs and are decoded with `load_video` (browser decoding, 1 frame/second by
  * default and uniformly subsampled above 32 frames).
  */
-async function embedMedia(id, { images = null, videos = null, text = null } = {}) {
+async function embedMedia(id, { images = null, videos = null, text = null, maxSoftTokens = null } = {}) {
   await ensureLoaded({ vision: (images?.length ?? 0) > 0 || (videos?.length ?? 0) > 0, audio: false });
   const { load_image, load_video } = await getLib();
   const proc = await getProcessor();
+  // Vision token budget: 70 / 140 / 280 (default) / 560 / 1120 soft tokens per image. It is a documented
+  // knob that trades image detail for latency and context, so it is worth being able to move at runtime.
+  if (maxSoftTokens && proc.image_processor) proc.image_processor.max_soft_tokens = maxSoftTokens;
   const t0 = performance.now();
 
   const imageSamples = images ? await Promise.all(images.map(async (sample) => {
@@ -261,8 +295,10 @@ async function embedMedia(id, { images = null, videos = null, text = null } = {}
     dim,
     nan,
     softTokens,
+    maxSoftTokens,
     ms: Math.round(performance.now() - t0),
     device,
+    dtype,
     modalities: loadedModalities,
   });
 }
@@ -290,6 +326,8 @@ self.addEventListener("message", async (e) => {
       await ensureLoaded({ vision: data.vision === true, audio: data.audio === true, dtype: data.dtype || "q4" });
     } else if (data.type === "run") {
       await embedText(data.id, data.texts, data.mode);
+    } else if (data.type === "runBatch") {
+      await embedBatch(data.id, data.items, data.label);
     } else if (data.type === "runMedia") {
       await embedMedia(data.id, data);
     } else if (data.type === "unload") {
