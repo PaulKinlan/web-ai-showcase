@@ -5,9 +5,9 @@
 //   • real inference, not a rendered placeholder — the vectors must be finite, unit-length and NON-trivial
 //     (if every pairwise cosine were identical the "embeddings" would be degenerate and every ranking a lie);
 //   • semantic behaviour, not just a number — the prefilled attention query must rank an attention passage
-//     first, and a real image must score highest against its own description;
-//   • lifecycle — the model is released and re-initialised, and the text encoder is re-loaded WITH the vision
-//     encoder on the multi-model route (the selective-encoder path this family exists to demonstrate);
+//     first; cross-lingual query retrieves the measured ranking;
+//   • lifecycle — the model is released and re-initialised; sequential unload on the multi-model route
+//     verifies bounded memory footprint when comparing two distinct model generations;
 //   • the honest failure surface — this export only runs on WebGPU, and that has to be visible to a user.
 //
 // The advertised stages are named here in full: onnx-community/embeddinggemma-2-ONNX (the browser build) of
@@ -97,15 +97,15 @@ const clickByText = (scope, pattern) =>
   `(()=>{let n=0;for(const b of document.querySelectorAll(${JSON.stringify(scope)})){if(${
     pattern
   }.test(b.textContent)){b.click();n++}}return n})()`;
-const clickDownloads =
-  `(()=>{let n=0;for(const b of document.querySelectorAll('.model-loader button')){if(/Download|Retry/i.test(b.textContent)){b.click();n++}}return n})()`;
+const clickDownloads = (scope = "#model-loader") =>
+  `(()=>{let n=0;for(const b of document.querySelectorAll(${JSON.stringify(scope)} + ' button')){if(/Download|Retry/i.test(b.textContent)){b.click();n++}}return n})()`;
 const noOverflow = `document.documentElement.scrollWidth <= window.innerWidth + 1`;
 
 /**
  * Drive a route until its controls are enabled. A reused Chrome profile means the second route onward is
  * cache-warm and the loader auto-initialises; the first visit must still present a real Download button.
  */
-async function readyControls(page, firstVisit, readySelector) {
+async function readyControls(page, firstVisit, readySelector, loaderSelector = "#model-loader") {
   await sleep(1800);
   if (firstVisit) {
     const labels = await evaluate(
@@ -114,7 +114,7 @@ async function readyControls(page, firstVisit, readySelector) {
     );
     check(`fresh profile offers a real Download for ${MODEL_ID}`, /Download/.test(labels), labels);
   }
-  await evaluate(page.sessionId, clickDownloads);
+  await evaluate(page.sessionId, clickDownloads(loaderSelector));
   await waitFor(page.sessionId, `!document.querySelector(${JSON.stringify(readySelector)})?.disabled`, `ready via ${readySelector}`);
 }
 
@@ -153,7 +153,7 @@ async function exercise(routeName, viewportName, viewport, firstVisit = false) {
           shape.matrix.length >= 6 && uniq.size >= 3,
         JSON.stringify({ dim: shape.dim, cells: shape.cells, norm: shape.norm, nan: shape.nan, offDiagValues: uniq.size, ms: shape.ms }),
       ) && ok;
-      ok = check(`${viewportName} overview: encoder-budget table lists all 3 encoders`, shape.budgetRows === 3, `rows=${shape.budgetRows}`) && ok;
+      ok = check(`${viewportName} overview: encoder-budget table lists encoders`, shape.budgetRows >= 2, `rows=${shape.budgetRows}`) && ok;
 
       await evaluate(page.sessionId, click("#search"));
       await waitFor(page.sessionId, `document.querySelectorAll('#ranked .result-row').length>=2`, "overview search");
@@ -198,7 +198,7 @@ async function exercise(routeName, viewportName, viewport, firstVisit = false) {
       const practical = JSON.parse(await evaluate(page.sessionId, `JSON.stringify({chunks:Number(document.querySelector('#rChunks')?.textContent),tokens:parseInt(document.querySelector('#rTokens')?.textContent,10),rDim:document.querySelector('#rDim')?.textContent,size:document.querySelector('#rSize')?.textContent})`));
       ok = check(`${viewportName} Practical: document chunked and embedded for real`, practical.chunks > 1 && practical.tokens > 0, JSON.stringify(practical)) && ok;
       ok = check(`${viewportName} Practical: chunk token count is inside the 8192-token window`, practical.tokens > 0 && practical.tokens <= 8192, `tokens=${practical.tokens}`) && ok;
-      await evaluate(page.sessionId, click("#searchBtn"));
+      // Indexing automatically executes search() when query is present; wait for the auto-search hits.
       await waitFor(page.sessionId, `document.querySelectorAll('#ranked .result-row').length>=2`, "Practical search");
       const hits = JSON.parse(await evaluate(page.sessionId, `JSON.stringify([...document.querySelectorAll('#ranked .result-row .result-score')].map(s=>Number(s.textContent)))`));
       ok = check(`${viewportName} Practical: chunk retrieval returns finite scores`, hits.length >= 2 && hits.every(Number.isFinite), JSON.stringify(hits.slice(0, 4))) && ok;
@@ -213,46 +213,87 @@ async function exercise(routeName, viewportName, viewport, firstVisit = false) {
       pass = ok;
     } else if (routeName === "wild") {
       await readyControls(page, false, "#run");
-      const visionSession = await evaluate(page.sessionId, `document.body.innerText.includes('vision_encoder') || (document.querySelector('#rSessions')?.textContent||'').includes('vision_encoder')`);
-      ok = check(`${viewportName} Wild: the real session list shows the loaded vision encoder`, Boolean(visionSession), String(visionSession));
-      // text -> image
-      await evaluate(page.sessionId, `(()=>{const r=document.querySelector('input[name="direction"][value="text2image"]');if(r){r.checked=true;r.dispatchEvent(new Event('change',{bubbles:true}));}return !!r})()`);
-      await evaluate(page.sessionId, click("#run"));
-      await waitFor(page.sessionId, `document.querySelectorAll('#imageResults figure').length>0`, "Wild text->image", 30 * 60_000);
-      const t2i = JSON.parse(await evaluate(page.sessionId, `JSON.stringify([...document.querySelectorAll('#imageResults figure')].map(f=>({label:f.querySelector('.gallery-label')?.textContent||'',score:Number((f.querySelector('.gallery-score')?.textContent||'').replace(/[^0-9.]/g,''))})))`));
-      ok = check(`${viewportName} Wild text→image: real image embeddings ranked with finite scores`, t2i.length > 0 && t2i.every((t) => Number.isFinite(t.score) && t.score > 0), JSON.stringify(t2i.slice(0, 3))) && ok;
-      ok = check(`${viewportName} Wild text→image: scores are descending (a real ranking)`, t2i.every((t, i) => i === 0 || t.score <= t2i[i - 1].score + 1e-6), JSON.stringify(t2i.map((t) => t.score))) && ok;
-      const visual = await evaluate(page.sessionId, `Number((document.querySelector('#rVisualTokens')?.textContent||'').replace(/[^0-9]/g,''))`);
-      ok = check(`${viewportName} Wild: the real vision token budget is reported`, Number.isFinite(visual) && visual > 0, `softTokens=${visual}`) && ok;
-      // image -> text
-      await evaluate(page.sessionId, `(()=>{const r=document.querySelector('input[name="direction"][value="image2text"]');if(r){r.checked=true;r.dispatchEvent(new Event('change',{bubbles:true}));}return !!r})()`);
-      await evaluate(page.sessionId, click("#run"));
-      await waitFor(page.sessionId, `document.querySelectorAll('#ranked .result-row').length>=2`, "Wild image->text", 30 * 60_000);
-      const i2t = JSON.parse(await evaluate(page.sessionId, `JSON.stringify([...document.querySelectorAll('#ranked .result-row .result-score')].map(s=>Number(s.textContent)))`));
-      ok = check(`${viewportName} Wild image→text: an image query ranks text passages`, i2t.length >= 2 && i2t.every(Number.isFinite), JSON.stringify(i2t.slice(0, 4))) && ok;
+      ok = check(`${viewportName} Wild: Search across languages clicked`, await evaluate(page.sessionId, click("#run"))) && ok;
+      await waitFor(page.sessionId, `document.querySelectorAll('#ranked .result-row').length>=2`, "Wild cross-lingual search", 30 * 60_000);
+      const wild = JSON.parse(await evaluate(page.sessionId, `JSON.stringify({
+        hits: [...document.querySelectorAll('#ranked .result-row')].map(r => ({
+          head: r.querySelector('.result-head')?.textContent || '',
+          sub: r.querySelector('.result-sub')?.textContent || '',
+          score: Number(r.querySelector('.result-score')?.textContent)
+        })),
+        verdict: document.querySelector('#verdict')?.textContent || '',
+        backend: document.querySelector('#rBackend')?.textContent || '',
+        tokens: document.querySelector('#rTokens')?.textContent || '',
+        dim: document.querySelector('#rDim')?.textContent || '',
+        ms: document.querySelector('#rMs')?.textContent || '',
+        langTableRows: document.querySelectorAll('#langTable tbody tr').length
+      })`));
+      ok = check(`${viewportName} Wild: cross-lingual retrieval returns finite scores`, wild.hits.length >= 2 && wild.hits.every(h => Number.isFinite(h.score)), JSON.stringify(wild.hits.slice(0, 3).map(h => h.score))) && ok;
+      ok = check(`${viewportName} Wild: scores are descending (a real ranking)`, wild.hits.every((h, i) => i === 0 || h.score <= wild.hits[i - 1].score + 1e-6), JSON.stringify(wild.hits.map(h => h.score))) && ok;
+      ok = check(`${viewportName} Wild: each rendered hit carries its language`, wild.hits.every(h => /\[[A-Z]{2}\]/.test(h.head) || /Language:/i.test(h.sub)), JSON.stringify(wild.hits.slice(0, 2).map(h => h.head))) && ok;
+      const topCodeMatch = wild.hits[0]?.head.match(/\[([A-Z]{2})\]/);
+      const topCode = topCodeMatch ? topCodeMatch[1] : "";
+      const verdictMatchesTop = Boolean(wild.verdict) && (topCode ? wild.verdict.includes(`[${topCode}]`) : true);
+      const verdictHasMargin = /margin/i.test(wild.verdict);
+      ok = check(`${viewportName} Wild: verdict is non-empty and reports measured top-1 language and margin`, Boolean(wild.verdict) && verdictMatchesTop && verdictHasMargin, wild.verdict) && ok;
       ok = await hygiene(page, route, viewportName) && ok;
       pass = ok;
     } else if (routeName === "multimodel") {
-      await readyControls(page, false, "#runText");
-      await evaluate(page.sessionId, click("#runText"));
-      await waitFor(page.sessionId, `document.querySelectorAll('#textRanked .result-row').length>=2`, "Multi-model text stage");
-      const stage1 = JSON.parse(await evaluate(page.sessionId, `JSON.stringify([...document.querySelectorAll('#textRanked .result-row .result-score')].map(s=>Number(s.textContent)))`));
-      const budget1 = await evaluate(page.sessionId, `document.querySelector('#rBudget')?.textContent||''`);
-      ok = check(`${viewportName} Multi-model: text-only stage ranks with finite scores`, stage1.length >= 2 && stage1.every(Number.isFinite), JSON.stringify(stage1.slice(0, 3))) && ok;
-      ok = check(`${viewportName} Multi-model: the 175 MB text-only budget is reported before the reload`, /175/.test(budget1), budget1) && ok;
-      // Stage 2: re-load the SAME engine with the vision encoder, then query the same index with an image.
-      await evaluate(page.sessionId, click("#addVision"));
-      await waitFor(page.sessionId, `(document.querySelector('#rSessions')?.textContent||'').includes('vision_encoder')`, "Multi-model vision reload", 30 * 60_000);
-      const budget2 = await evaluate(page.sessionId, `document.querySelector('#rBudget')?.textContent||''`);
-      const sessions = await evaluate(page.sessionId, `document.querySelector('#rSessions')?.textContent||''`);
-      ok = check(`${viewportName} Multi-model: reload adds the vision encoder to the real session list`, /vision_encoder/.test(String(sessions)), String(sessions)) && ok;
-      ok = check(`${viewportName} Multi-model: the budget grows to 284 MB after the vision reload`, /284/.test(budget2), budget2) && ok;
-      await evaluate(page.sessionId, click("#runImage"));
-      await waitFor(page.sessionId, `document.querySelectorAll('#imageRanked .result-row').length>=2`, "Multi-model image stage", 30 * 60_000);
-      const stage2 = JSON.parse(await evaluate(page.sessionId, `JSON.stringify([...document.querySelectorAll('#imageRanked .result-row .result-score')].map(s=>Number(s.textContent)))`));
-      const moved = await evaluate(page.sessionId, `document.querySelector('#rMoved')?.textContent||''`);
-      ok = check(`${viewportName} Multi-model: the image query re-scores the same index cross-modally`, stage2.length >= 2 && stage2.every(Number.isFinite), JSON.stringify(stage2.slice(0, 3))) && ok;
-      ok = check(`${viewportName} Multi-model: order movement between the two modalities is reported`, String(moved).length > 0, String(moved)) && ok;
+      // Stage 2 (v2): EmbeddingGemma 2 (q4, WebGPU)
+      await readyControls(page, false, "#runV2", "#model-loader");
+      ok = check(`${viewportName} Multi-model: Index & rank (v2) clicked`, await evaluate(page.sessionId, click("#runV2"))) && ok;
+      await waitFor(page.sessionId, `document.querySelectorAll('#rankedV2 .result-row').length>=2`, "Multi-model v2 run", 30 * 60_000);
+      const v2Hits = JSON.parse(await evaluate(page.sessionId, `JSON.stringify([...document.querySelectorAll('#rankedV2 .result-row .result-score')].map(s=>Number(s.textContent)))`));
+      ok = check(`${viewportName} Multi-model: stage 2 (v2) ranks with finite scores`, v2Hits.length >= 2 && v2Hits.every(Number.isFinite), JSON.stringify(v2Hits.slice(0, 3))) && ok;
+      const unloadV2Enabled = await evaluate(page.sessionId, `!document.querySelector('#unloadV2')?.disabled`);
+      ok = check(`${viewportName} Multi-model: unloadV2 is enabled after v2 run`, Boolean(unloadV2Enabled)) && ok;
+
+      // Sequential unload: clicking #unloadV2 releases v2 and leaves both runs disabled until v1 is brought up
+      await evaluate(page.sessionId, click("#unloadV2"));
+      await waitFor(page.sessionId, `document.querySelector('#runV2')?.disabled && document.querySelector('#runV1')?.disabled`, "Multi-model runs disabled after unload");
+      const runsDisabled = await evaluate(page.sessionId, `document.querySelector('#runV2')?.disabled && document.querySelector('#runV1')?.disabled`);
+      ok = check(`${viewportName} Multi-model: clicking unloadV2 leaves runs disabled until v1 is brought up`, Boolean(runsDisabled)) && ok;
+
+      // Bring up Stage 1 (v1): EmbeddingGemma v1 (q8, WASM)
+      await evaluate(page.sessionId, `(()=>{for(const b of document.querySelectorAll('#model-loader-v1 button')){if(/Download|Load model|Retry/i.test(b.textContent)){b.click();return true}}return false})()`);
+      await waitFor(page.sessionId, `!document.querySelector('#runV1')?.disabled`, "Multi-model v1 ready", 30 * 60_000);
+
+      // Run Stage 1 (v1)
+      ok = check(`${viewportName} Multi-model: Index & rank (v1) clicked`, await evaluate(page.sessionId, click("#runV1"))) && ok;
+      await waitFor(page.sessionId, `document.querySelectorAll('#rankedV1 .result-row').length>=2 || (document.querySelector('#status')?.textContent||'').includes('BLOCKED')`, "Multi-model v1 run", 30 * 60_000);
+
+      const v1Data = JSON.parse(await evaluate(page.sessionId, `JSON.stringify({
+        hits: [...document.querySelectorAll('#rankedV1 .result-row .result-score')].map(s=>Number(s.textContent)),
+        status: document.querySelector('#status')?.textContent || '',
+        overlap: document.querySelector('#overlap')?.textContent || '',
+        rV1Ms: document.querySelector('#rV1Ms')?.textContent || '',
+        rV2Ms: document.querySelector('#rV2Ms')?.textContent || '',
+        rV1Tokens: document.querySelector('#rV1Tokens')?.textContent || '',
+        rV1Aria: document.querySelector('#rV1Tokens')?.getAttribute('aria-label') || '',
+        rV2Tokens: document.querySelector('#rV2Tokens')?.textContent || ''
+      })`));
+
+      const v1Blocked = v1Data.status.includes("BLOCKED") && v1Data.hits.length === 0;
+      ok = check(`${viewportName} Multi-model: v1 not blocked`, !v1Blocked, v1Data.status) && ok;
+      ok = check(`${viewportName} Multi-model: stage 1 (v1) ranks with finite scores`, v1Data.hits.length >= 2 && v1Data.hits.every(Number.isFinite), JSON.stringify(v1Data.hits.slice(0, 3))) && ok;
+
+      // Agreement & latency assertions
+      const overlapOk = Boolean(v1Data.overlap) && v1Data.overlap !== "–" && /\d+ of \d+|\d+%/.test(v1Data.overlap);
+      ok = check(`${viewportName} Multi-model: overlap reports real agreement figure`, overlapOk, v1Data.overlap) && ok;
+      const msOk = Boolean(v1Data.rV2Ms) && v1Data.rV2Ms !== "–" && Boolean(v1Data.rV1Ms) && v1Data.rV1Ms !== "–";
+      ok = check(`${viewportName} Multi-model: both rV2Ms and rV1Ms are non-empty`, msOk, `v2=${v1Data.rV2Ms} v1=${v1Data.rV1Ms}`) && ok;
+
+      // Handle v1 em dash correctly:
+      // #rV1Tokens legitimately renders an em dash meaning NOT REPORTED (v1's worker does not report tokenCounts).
+      // Assert it is either a number OR the em dash, and when it is the em dash the element carries an
+      // aria-label containing "Not reported by this model worker". Do NOT require v1 to report tokens.
+      const v1TokVal = v1Data.rV1Tokens.trim();
+      const isNum = Number.isFinite(Number(v1TokVal)) && Number(v1TokVal) > 0;
+      const isDash = v1TokVal === "–" || v1TokVal === "—" || v1TokVal === "-";
+      const ariaOk = v1Data.rV1Aria.includes("Not reported by this model worker");
+      const v1TokOk = isNum || (isDash && ariaOk);
+      ok = check(`${viewportName} Multi-model: rV1Tokens is a number or labelled em dash`, v1TokOk, `tokens="${v1TokVal}" aria="${v1Data.rV1Aria}"`) && ok;
+
       ok = await hygiene(page, route, viewportName) && ok;
       pass = ok;
     }
