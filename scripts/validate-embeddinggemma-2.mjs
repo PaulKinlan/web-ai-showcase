@@ -136,6 +136,13 @@ async function hygiene(page, route, viewport) {
 const matrixCells =
   `JSON.stringify([...document.querySelectorAll('#matrix .sim-matrix td')].map(td=>td.textContent).filter(t=>t!==''))`;
 
+// Index of the row the page labelled as the baseline, or 0 when there is none (the labelled-row check
+// reports that case separately, so this only has to avoid throwing).
+function baselineIdxOf(basics) {
+  const i = basics.deltas.findIndex((d) => /baseline/i.test(d));
+  return i >= 0 ? i : 0;
+}
+
 async function exercise(routeName, viewportName, viewport, firstVisit = false) {
   const route = ROUTES[routeName];
   let page = null;
@@ -192,13 +199,22 @@ async function exercise(routeName, viewportName, viewport, firstVisit = false) {
       // Read the COSINE column (3rd cell) for the finite check, not td:last-child: the last cell is the delta
       // column, and the baseline row renders "0.000 (baseline)", so Number() on it is NaN and would fail a
       // correct page. The baseline row is asserted separately for its own text, which is the real property.
-      const basics = JSON.parse(await evaluate(page.sessionId, `JSON.stringify({score:Number(document.querySelector('#score')?.textContent),rows:[...document.querySelectorAll('#prefixTable tbody tr')].map(r=>Number(r.querySelector('td:nth-child(3)')?.textContent)),deltas:[...document.querySelectorAll('#prefixTable tbody tr')].map(r=>r.querySelector('td:last-child')?.textContent||''),mode:document.querySelector('#rMode')?.textContent,tok:document.querySelector('#rTok')?.textContent,dim:document.querySelector('#rDim')?.textContent})`));
+      const basics = JSON.parse(await evaluate(page.sessionId, `JSON.stringify({score:Number(document.querySelector('#score')?.textContent),rows:[...document.querySelectorAll('#prefixTable tbody tr')].map(r=>Number(r.querySelector('td:nth-child(3)')?.textContent)),deltas:[...document.querySelectorAll('#prefixTable tbody tr')].map(r=>r.querySelector('td:last-child')?.textContent||''),prompts:[...document.querySelectorAll('#prefixTable tbody tr')].map(r=>r.querySelector('td:nth-child(2)')?.textContent||''),conclusion:document.querySelector('#prefixTable .ctx-note')?.textContent||'',mode:document.querySelector('#rMode')?.textContent,tok:document.querySelector('#rTok')?.textContent,dim:document.querySelector('#rDim')?.textContent})`));
       ok = check(`${viewportName} Basics: real cosine in (0,1]`, basics.score > 0 && basics.score <= 1.0001, String(basics.score)) && ok;
       ok = check(`${viewportName} Basics: 768-d output reported`, basics.dim === "768", String(basics.dim)) && ok;
-      ok = check(`${viewportName} Basics: prefix comparison table computed from real embeddings`, basics.rows.length >= 5 && basics.rows.every(Number.isFinite), JSON.stringify(basics.rows)) && ok;
+      // Honest name: this asserts the table is internally consistent, NOT that the vectors were really
+      // produced by the model. A varying but fabricated table would satisfy it, so the descriptor says what
+      // it checks rather than more than it checks.
+      ok = check(`${viewportName} Basics: prefix comparison table is internally consistent (5 finite cosines)`, basics.rows.length >= 5 && basics.rows.every(Number.isFinite), JSON.stringify(basics.rows)) && ok;
+      // The selected score must be one of the table's own cosines, not an unrelated number.
+      ok = check(`${viewportName} Basics: selected score is one of the table rows`, basics.rows.some((v) => Math.abs(v - basics.score) <= 0.0005), `score=${basics.score} rows=${JSON.stringify(basics.rows)}`) && ok;
       // The baseline row must be labelled as the baseline rather than showing a bare delta, so a page that
       // silently dropped its control row cannot pass just by producing five finite cosines.
       ok = check(`${viewportName} Basics: baseline row labelled`, basics.deltas.filter((d) => /baseline/i.test(d)).length === 1, JSON.stringify(basics.deltas)) && ok;
+      // The labelled row must be the genuinely BARE row, not just any row someone labelled. The page renders
+      // each row's prompt mapping in the 2nd cell, and the no-prefix row's mapping says so in words.
+      const baselinePrompt = basics.prompts[baselineIdxOf(basics)] ?? "";
+      ok = check(`${viewportName} Basics: labelled row is the bare no-prefix row`, /bare text|no task prefix/i.test(String(baselinePrompt)), `prompt="${String(baselinePrompt).slice(0, 80)}"`) && ok;
       // Five identical cosines plus a baseline label would satisfy everything above while demonstrating no
       // prefix effect at all, so require real variation AND require the DISPLAYED deltas to reconcile with
       // the cosines (delta_i = cosine_i - cosine_baseline). That ties the table's two numeric columns
@@ -212,6 +228,15 @@ async function exercise(routeName, viewportName, viewport, firstVisit = false) {
         return Number.isFinite(shown) && Math.abs(shown - (cos - cosBase)) <= 0.002;
       });
       ok = check(`${viewportName} Basics: displayed deltas reconcile with the cosine column`, deltaReconciles, `baseline=${cosBase} deltas=${JSON.stringify(basics.deltas)}`) && ok;
+      // Tie the page's OWN conclusion sentence to its own numbers, using the ±0.01 rule the page states. This
+      // catches a conclusion that contradicts the table without hard-coding an effect size the model must
+      // show, which would false-fail on a run where prefixes genuinely do not move the score.
+      const maxAbsDelta = Math.max(...basics.rows.map((cos) => Math.abs(cos - cosBase)));
+      const conclusion = String(basics.conclusion);
+      const conclusionConsistent = /unchanged/i.test(conclusion)
+        ? maxAbsDelta < 0.01
+        : (/changed the similarity/i.test(conclusion) ? maxAbsDelta >= 0.01 : true);
+      ok = check(`${viewportName} Basics: table conclusion agrees with the table's own deltas`, conclusionConsistent, `maxAbsDelta=${maxAbsDelta.toFixed(3)} conclusion="${conclusion.slice(0, 90)}"`) && ok;
       ok = await hygiene(page, route, viewportName) && ok;
       pass = ok;
     } else if (routeName === "practical") {
@@ -280,6 +305,35 @@ async function exercise(routeName, viewportName, viewport, firstVisit = false) {
       ok = check(`${viewportName} Wild: verdict names the rendered top-1 language as its top hit`, verdictNamesTop, `verdictCode=${verdictCode} topCode=${topCode} verdict="${String(wild.verdict).slice(0, 160)}"`) && ok;
       ok = check(`${viewportName} Wild: verdict's stated cosine equals the rendered rank-1 score`, verdictScoreAgrees, `stated=${verdictCosMatch ? verdictCosMatch[1] : null} rendered=${Number.isFinite(renderedTop) ? renderedTop.toFixed(3) : null}`) && ok;
       ok = check(`${viewportName} Wild: verdict's stated margin equals the rendered rank-1 minus rank-2 gap`, verdictMarginAgrees, `stated=${verdictMarginMatch ? verdictMarginMatch[1] : null} expected=${expectedMargin}`) && ok;
+      // The verdict's CLASSIFICATION and any stated target RANK must also agree with the rendered data.
+      // Without this a page could label a genuinely cross-lingual result "Monolingual", or claim a target
+      // "ranked #2" when it ranked last, and still satisfy the code/cosine/margin checks above.
+      const vText = String(wild.verdict);
+      const codesInVerdict = [...vText.matchAll(/\[([A-Z]{2})\]/g)].map((m) => m[1]);
+      const firstCode = codesInVerdict[0] || "";
+      const claimsMono = /Monolingual/i.test(vText);
+      const claimsSuccess = /succeeded/i.test(vText);
+      const expectedMatch = vText.match(/Expected target was \[([A-Z]{2})\], which ranked #(\d+)/);
+      // "Monolingual" asserts the top hit is in the query's OWN language, so the first code (the query
+      // language in that variant) must equal the top hit code.
+      const monoConsistent = !claimsMono || (Boolean(firstCode) && firstCode === topCode);
+      // A claimed cross-lingual SUCCESS must not also carry a miss-note, and must name two languages that
+      // actually differ — otherwise "succeeded" is unfalsifiable.
+      const successConsistent = !claimsSuccess || (!expectedMatch && Boolean(firstCode) && firstCode !== topCode);
+      ok = check(`${viewportName} Wild: a claimed monolingual hit really is same-language`, monoConsistent, `claimsMono=${claimsMono} firstCode=${firstCode} topCode=${topCode}`) && ok;
+      ok = check(`${viewportName} Wild: a claimed cross-lingual success names two different languages and no miss-note`, successConsistent, `claimsSuccess=${claimsSuccess} hasMissNote=${Boolean(expectedMatch)} firstCode=${firstCode} topCode=${topCode}`) && ok;
+      // When the verdict states a miss ("Expected target was [X], which ranked #N"), the rank must match the
+      // position that target actually occupies in the rendered list.
+      let targetRankOk = true;
+      let targetRankDetail = "no miss-note";
+      if (expectedMatch) {
+        const targetCode = expectedMatch[1];
+        const statedRank = Number(expectedMatch[2]);
+        const renderedIdx = wild.hits.findIndex((h) => (String(h.head).match(/\[([A-Z]{2})\]/) || [])[1] === targetCode);
+        targetRankOk = renderedIdx >= 0 && renderedIdx + 1 === statedRank;
+        targetRankDetail = `target=[${targetCode}] statedRank=${statedRank} renderedIdx=${renderedIdx}`;
+      }
+      ok = check(`${viewportName} Wild: a stated target rank matches where that target really ranked`, targetRankOk, targetRankDetail) && ok;
       ok = await hygiene(page, route, viewportName) && ok;
       pass = ok;
     } else if (routeName === "multimodel") {
@@ -397,6 +451,7 @@ const ok = printAcceptanceSummary({
   // Must follow the viewport filter, or a single-viewport run reports half its cells as missing.
   expectedCells: routesToRun.length * viewportsToRun.length,
 });
+const runProfileDir = chrome.userDataDir || null;
 try {
   // No removeProfile:false. That option skipped rmSync AND removed the instance from activeChromeInstances,
   // so the exit hook had nothing left to clean and EVERY completed run abandoned its isolated profile in
@@ -416,11 +471,19 @@ server.close();
 // Printed from the validator itself so the retained output file carries the teardown evidence rather than
 // requiring the caller's wrapper log to be believed. Scoped to THIS run's profile prefix, so another lane's
 // leftover directory cannot make this line pass or fail.
+// Scoped to THIS run's own profile directory, which the harness exposes as chrome.userDataDir. An earlier
+// version globbed a per-SLUG pattern, which a concurrent run or a leftover from a SIGKILLed run would have
+// made non-zero for reasons unrelated to this run — a reviewer caught that the comment claimed per-run
+// scoping the code did not implement. Bound: SIGKILL cannot run exit hooks, so a killed run may still leave
+// its directory behind; this line measures the normal path and says which dir it means.
 try {
   const { execSync } = await import("node:child_process");
-  const chromeN = Number(String(execSync("ps -eo comm | awk '$1 ~ /^chrome/ {n++} END {print n+0}'", { encoding: "utf8" })).trim());
-  const thisRunProfiles = Number(String(execSync(`ls -d /tmp/webai-chrome-profile-${PROFILE_PREFIX}-* 2>/dev/null | wc -l`, { encoding: "utf8" })).trim());
-  console.log(`TEARDOWN chrome=${chromeN} profilesForThisRun=${thisRunProfiles} (SIGKILL cannot run exit hooks; a killed run may still leave a profile)`);
+  const { existsSync } = await import("node:fs");
+  const stillExists = runProfileDir ? existsSync(runProfileDir) : null;
+  const procsOnThisProfile = runProfileDir
+    ? Number(String(execSync(`ps -eo args | grep -c -- "--user-data-dir=${runProfileDir}" || true`, { encoding: "utf8" })).trim())
+    : -1;
+  console.log(`TEARDOWN profileDir=${runProfileDir} stillExists=${stillExists} chromeProcsOnThisProfile=${procsOnThisProfile} (SIGKILL cannot run exit hooks; a killed run may still leave a profile)`);
 } catch (e) {
   console.log(`TEARDOWN check unavailable: ${e.message}`);
 }
