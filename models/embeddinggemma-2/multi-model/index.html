@@ -41,15 +41,11 @@
 
       <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
         Corpus (one passage per line)
-        <textarea id="corpus" rows="10" disabled style="min-inline-size:0;inline-size:100%;font-family:inherit;font-size:.82rem;line-height:1.45">Narrow cobblestone alleyways, medieval masonry arches, and historic whitewashed facades winding through an ancient European town quarter where only foot traffic can pass.
-High-resolution orbital radar scans of Martian volcanic calderas, impact craters, and ancient dry river valley networks etched across the red planetary crust.
+        <textarea id="corpus" rows="6" disabled style="min-inline-size:0;inline-size:100%;font-family:inherit;font-size:.82rem;line-height:1.45">Narrow cobblestone alleyways, medieval masonry arches, and historic whitewashed facades winding through an ancient European town quarter.
+High-resolution orbital radar scans of Martian volcanic calderas, impact craters, and dry river networks etched across the planetary crust.
 Bioluminescent siphonophores and pelagic organisms pulsating through dark abyssal ocean waters surrounded by deep-sea coral reef ecosystems.
-Crusty sourdough artisan bread loaves cooling on a wooden baker rack immediately after being removed from a wood-fired stone deck oven.
+Crusty sourdough artisan bread loaves cooling on a wooden baker rack immediately after removal from a wood-fired stone deck oven.
 A restored nineteenth-century steam locomotive pulling passenger carriages along iron railway tracks across a high timber trestle bridge.
-An antique wooden violin resting on velvet lining, displaying carved scrollwork, spruce soundboard grain, and a polished amber varnish finish.
-Freshly harvested citrus fruits including ripe oranges, Meyer lemons, limes, and grapefruits displayed under natural lighting on an orchard table.
-Studio photographic portrait of a young woman posed reclining on an upholstered armchair, dressed in a tailored wool cardigan and pleated skirt.
-Glaciated granite peaks and snow-covered ridgelines towering above a pristine alpine mountain valley under clear blue skies.
 Distributed key-value storage nodes replicating transaction logs across independent fault domains using asynchronous quorum consensus protocols.</textarea>
       </label>
 
@@ -60,7 +56,7 @@ Distributed key-value storage nodes replicating transaction logs across independ
         </label>
         <label style="display:flex;flex-direction:column;gap:.2rem;font-size:.82rem">
           Shortlist (top-k)
-          <input id="topk" type="number" min="2" max="8" value="4" style="inline-size:5rem;min-inline-size:0" disabled />
+          <input id="topk" type="number" min="2" max="6" value="3" style="inline-size:5rem;min-inline-size:0" disabled />
         </label>
       </div>
 
@@ -147,6 +143,8 @@ Distributed key-value storage nodes replicating transaction logs across independ
 
       let client2 = null;
       let client1 = null;
+      let v2AllScored = null;
+      let v1AllScored = null;
       let v2Shortlist = null;
       let v1Shortlist = null;
       let isUnloadingV2 = false;
@@ -187,13 +185,13 @@ Distributed key-value storage nodes replicating transaction logs across independ
             } catch { /* ignore */ }
             client2 = null;
           }
-          updateInputsState();
           const releaseBtn = Array.from($("model-loader").querySelectorAll("button")).find(
             (b) => b.textContent.includes("Release")
           );
           if (releaseBtn) {
             releaseBtn.click();
           }
+          updateInputsState();
           showStatus("Model 2 (EmbeddingGemma 2 q4) unloaded: WebGPU session disposed, worker terminated, ~175 MB released from memory.", false);
         } finally {
           isUnloadingV2 = false;
@@ -212,13 +210,13 @@ Distributed key-value storage nodes replicating transaction logs across independ
             } catch { /* ignore */ }
             client1 = null;
           }
-          updateInputsState();
           const releaseBtn = Array.from($("model-loader-v1").querySelectorAll("button")).find(
             (b) => b.textContent.includes("Release")
           );
           if (releaseBtn) {
             releaseBtn.click();
           }
+          updateInputsState();
           showStatus("Model 1 (EmbeddingGemma v1 q8) unloaded: WASM session disposed, worker terminated, ~314 MB released from memory.", false);
         } finally {
           isUnloadingV1 = false;
@@ -232,13 +230,13 @@ Distributed key-value storage nodes replicating transaction logs across independ
           return;
         }
         if (!v2Shortlist) {
-          $("overlap").textContent = "Model 1 evaluated. Run Model 2 to compare agreement.";
-          $("verdict").textContent = "Awaiting Model 2 results.";
+          $("overlap").textContent = "–";
+          $("verdict").textContent = "Model 2 results not available. Both models must complete inference to compare agreement.";
           return;
         }
         if (!v1Shortlist) {
-          $("overlap").textContent = "Model 2 evaluated. Run Model 1 to compare agreement.";
-          $("verdict").textContent = "Awaiting Model 1 results.";
+          $("overlap").textContent = "–";
+          $("verdict").textContent = "Model 1 results not available. Both models must complete inference to compare agreement.";
           return;
         }
 
@@ -263,7 +261,7 @@ Distributed key-value storage nodes replicating transaction logs across independ
       async function runV2() {
         const texts = parseLines($("corpus").value);
         const q = $("query").value.trim();
-        const k = Math.max(2, Math.min(8, +$("topk").value || 4));
+        const k = Math.max(2, Math.min(6, +$("topk").value || 3));
         if (texts.length < 2 || !q) {
           showStatus("Need a query and at least two corpus passages.", true);
           return;
@@ -276,33 +274,35 @@ Distributed key-value storage nodes replicating transaction logs across independ
         showStatus("Running Model 2 (EmbeddingGemma 2 q4 WebGPU) inference…", false);
         try {
           if (globalThis.scheduler?.yield) await scheduler.yield();
-          const [dr, qr] = await Promise.all([
-            client2.embed(texts, "document"),
-            client2.embed([q], "query"),
-          ]);
-          const qv = qr.embeddings[0];
-          const scored = dr.texts.map((text, i) => ({
+          const items = [{ text: q, mode: "query" }, ...texts.map((text) => ({ text, mode: "document" }))];
+          const res = await client2.embedBatch(items);
+          const qv = res.embeddings[0];
+          v2AllScored = texts.map((text, i) => ({
             text,
-            score: cosine(qv, dr.embeddings[i]),
+            score: cosine(qv, res.embeddings[i + 1]),
           })).sort((a, b) => b.score - a.score);
-          v2Shortlist = scored.slice(0, k);
+          v2Shortlist = v2AllScored.slice(0, k);
           renderRanked($("rankedV2"), v2Shortlist);
 
-          const docTokens = Array.isArray(dr.tokenCounts) ? dr.tokenCounts.reduce((sum, n) => sum + (n || 0), 0) : null;
-          const qTokens = Array.isArray(qr.tokenCounts) ? qr.tokenCounts[0] : null;
-          const totalTokens = (docTokens != null && qTokens != null) ? docTokens + qTokens : null;
-          const totalMs = (dr.ms || 0) + (qr.ms || 0);
+          const totalTokens = Array.isArray(res.tokenCounts) && res.tokenCounts.length === items.length && res.tokenCounts.every((n) => typeof n === "number")
+            ? res.tokenCounts.reduce((sum, n) => sum + n, 0)
+            : null;
+          const totalMs = typeof res.ms === "number" ? res.ms : null;
 
           $("rV2Tokens").textContent = totalTokens != null ? `${totalTokens}` : "–";
-          $("rV2Ms").textContent = `${totalMs} ms`;
+          $("rV2Ms").textContent = totalMs != null ? `${totalMs} ms` : "–";
           $("readout").hidden = false;
-          showStatus(`Model 2 complete: indexed ${texts.length} passages in ${totalMs} ms.`, false);
+          showStatus(`Model 2 complete: indexed ${texts.length} passages in ${totalMs ?? "–"} ms.`, false);
           updateComparison(k);
         } catch (err) {
-          showStatus(`Model 2 inference failed: ${String(err?.message || err)}`, true);
+          const errMsg = String(err?.message || err);
+          showStatus(`BLOCKED: Model 2 (v2) inference failed: ${errMsg}`, true);
+          v2AllScored = null;
+          v2Shortlist = null;
           $("rankedV2").replaceChildren();
           $("rV2Tokens").textContent = "–";
           $("rV2Ms").textContent = "–";
+          updateComparison(k);
         } finally {
           if (client2) $("runV2").disabled = false;
         }
@@ -311,7 +311,7 @@ Distributed key-value storage nodes replicating transaction logs across independ
       async function runV1() {
         const texts = parseLines($("corpus").value);
         const q = $("query").value.trim();
-        const k = Math.max(2, Math.min(8, +$("topk").value || 4));
+        const k = Math.max(2, Math.min(6, +$("topk").value || 3));
         if (texts.length < 2 || !q) {
           showStatus("Need a query and at least two corpus passages.", true);
           return;
@@ -319,6 +319,9 @@ Distributed key-value storage nodes replicating transaction logs across independ
         if (!client1) {
           showStatus("Model 1 is not loaded. Click 'Load model into memory' in the loader above.", true);
           return;
+        }
+        if (client2) {
+          await unloadV2();
         }
         $("runV1").disabled = true;
         showStatus("Running Model 1 (EmbeddingGemma v1 q8 WASM) inference…", false);
@@ -329,25 +332,34 @@ Distributed key-value storage nodes replicating transaction logs across independ
             client1.embed([q], "query"),
           ]);
           const qv = qr.embeddings[0];
-          const scored = dr.texts.map((text, i) => ({
+          v1AllScored = dr.texts.map((text, i) => ({
             text,
             score: cosine(qv, dr.embeddings[i]),
           })).sort((a, b) => b.score - a.score);
-          v1Shortlist = scored.slice(0, k);
+          v1Shortlist = v1AllScored.slice(0, k);
           renderRanked($("rankedV1"), v1Shortlist);
 
-          const docTokens = Array.isArray(dr.tokenCounts) ? dr.tokenCounts.reduce((sum, n) => sum + (n || 0), 0) : null;
-          const qTokens = Array.isArray(qr.tokenCounts) ? qr.tokenCounts[0] : null;
-          const totalTokens = (docTokens != null && qTokens != null) ? docTokens + qTokens : null;
-          const totalMs = (dr.ms || 0) + (qr.ms || 0);
+          let totalTokens = null;
+          if (
+            Array.isArray(dr.tokenCounts) &&
+            dr.tokenCounts.length === texts.length &&
+            dr.tokenCounts.every((n) => typeof n === "number") &&
+            Array.isArray(qr.tokenCounts) &&
+            typeof qr.tokenCounts[0] === "number"
+          ) {
+            totalTokens = dr.tokenCounts.reduce((sum, n) => sum + n, 0) + qr.tokenCounts[0];
+          }
+          const totalMs = (typeof dr.ms === "number" ? dr.ms : 0) + (typeof qr.ms === "number" ? qr.ms : 0);
 
           $("rV1Tokens").textContent = totalTokens != null ? `${totalTokens}` : "–";
-          $("rV1Ms").textContent = `${totalMs} ms`;
+          $("rV1Ms").textContent = totalMs > 0 ? `${totalMs} ms` : "–";
           $("readout").hidden = false;
           showStatus(`Model 1 complete: indexed ${texts.length} passages in ${totalMs} ms.`, false);
           updateComparison(k);
         } catch (err) {
-          showStatus(`BLOCKED: Model 1 (v1) inference failed: ${String(err?.message || err)}`, true);
+          const errMsg = String(err?.message || err);
+          showStatus(`BLOCKED: Model 1 (v1) inference failed: ${errMsg}`, true);
+          v1AllScored = null;
           v1Shortlist = null;
           $("rankedV1").replaceChildren();
           $("rV1Tokens").textContent = "–";
@@ -362,6 +374,19 @@ Distributed key-value storage nodes replicating transaction logs across independ
       $("runV1").addEventListener("click", runV1);
       $("unloadV2").addEventListener("click", unloadV2);
       $("unloadV1").addEventListener("click", unloadV1);
+
+      $("topk").addEventListener("input", () => {
+        const k = Math.max(2, Math.min(6, +$("topk").value || 3));
+        if (v2AllScored) {
+          v2Shortlist = v2AllScored.slice(0, k);
+          renderRanked($("rankedV2"), v2Shortlist);
+        }
+        if (v1AllScored) {
+          v1Shortlist = v1AllScored.slice(0, k);
+          renderRanked($("rankedV1"), v1Shortlist);
+        }
+        updateComparison(k);
+      });
 
       createModelLoader({
         mount: $("model-loader"),
@@ -382,13 +407,31 @@ Distributed key-value storage nodes replicating transaction logs across independ
           updateInputsState();
         },
         onError: (err) => {
-          showStatus(`Model 2 (EmbeddingGemma 2) failed to load: ${String(err?.message || err)}`, true);
+          const errMsg = String(err?.message || err);
+          showStatus(`BLOCKED: Model 2 (EmbeddingGemma 2) failed to load: ${errMsg}`, true);
+          v2AllScored = null;
+          v2Shortlist = null;
+          $("rankedV2").replaceChildren();
+          $("rV2Tokens").textContent = "–";
+          $("rV2Ms").textContent = "–";
+          updateInputsState();
+          updateComparison(+$("topk").value || 3);
         },
         dispose: async () => {
-          await unloadV2();
+          if (client2) {
+            try {
+              if (client2.worker) {
+                client2.worker.postMessage({ type: "unload" });
+                client2.worker.terminate();
+              }
+            } catch { /* ignore */ }
+            client2 = null;
+          }
         },
         onDispose: () => {
+          client2 = null;
           updateInputsState();
+          showStatus("Model 2 (EmbeddingGemma 2 q4) released from memory (~175 MB freed).", false);
         },
       });
 
@@ -402,6 +445,9 @@ Distributed key-value storage nodes replicating transaction logs across independ
           requiresWebGPU: false,
         },
         load: async (onProgress) => {
+          if (client2) {
+            await unloadV2();
+          }
           client1 = new EmbedClient("/web-ai-showcase/models/embeddinggemma/worker.js");
           await client1.load(onProgress);
           return client1;
@@ -411,13 +457,30 @@ Distributed key-value storage nodes replicating transaction logs across independ
           updateInputsState();
         },
         onError: (err) => {
-          showStatus(`BLOCKED: Model 1 (v1) failed to load: ${String(err?.message || err)}`, true);
+          const errMsg = String(err?.message || err);
+          showStatus(`BLOCKED: Model 1 (v1) failed to load: ${errMsg}`, true);
+          v1AllScored = null;
+          v1Shortlist = null;
+          $("rankedV1").replaceChildren();
+          $("rV1Tokens").textContent = "–";
+          $("rV1Ms").textContent = "–";
+          updateInputsState();
+          updateComparison(+$("topk").value || 3);
         },
         dispose: async () => {
-          await unloadV1();
+          if (client1) {
+            try {
+              if (client1.worker) {
+                client1.worker.terminate();
+              }
+            } catch { /* ignore */ }
+            client1 = null;
+          }
         },
         onDispose: () => {
+          client1 = null;
           updateInputsState();
+          showStatus("Model 1 (EmbeddingGemma v1 q8) released from memory (~314 MB freed).", false);
         },
       });
     </script>

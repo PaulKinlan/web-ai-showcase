@@ -193,7 +193,9 @@ async function exercise(routeName, viewportName, viewport, firstVisit = false) {
       await readyControls(page, false, "#indexBtn");
       await evaluate(page.sessionId, click("#indexBtn"));
       await waitFor(page.sessionId, `Number(document.querySelector('#rChunks')?.textContent)>1`, "Practical index");
-      const practical = JSON.parse(await evaluate(page.sessionId, `JSON.stringify({chunks:Number(document.querySelector('#rChunks')?.textContent),tokens:Number(document.querySelector('#rTokens')?.textContent),rDim:document.querySelector('#rDim')?.textContent,size:document.querySelector('#rSize')?.textContent})`));
+      // #rTokens now reports a compound value (largest chunk + indexed total), so parse the leading integer
+      // rather than coercing the whole string: Number("32 (248 total)") is NaN and would fail a passing page.
+      const practical = JSON.parse(await evaluate(page.sessionId, `JSON.stringify({chunks:Number(document.querySelector('#rChunks')?.textContent),tokens:parseInt(document.querySelector('#rTokens')?.textContent,10),rDim:document.querySelector('#rDim')?.textContent,size:document.querySelector('#rSize')?.textContent})`));
       ok = check(`${viewportName} Practical: document chunked and embedded for real`, practical.chunks > 1 && practical.tokens > 0, JSON.stringify(practical)) && ok;
       ok = check(`${viewportName} Practical: chunk token count is inside the 8192-token window`, practical.tokens > 0 && practical.tokens <= 8192, `tokens=${practical.tokens}`) && ok;
       await evaluate(page.sessionId, click("#searchBtn"));
