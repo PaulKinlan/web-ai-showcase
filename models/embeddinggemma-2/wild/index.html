@@ -1,0 +1,347 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>EmbeddingGemma 2 Wild — cross-modal retrieval: text finds images, images find text · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="EmbeddingGemma 2 maps text and photographs into one shared 768-d vector space: text queries rank images, and an image ranks text passages with no translation step. Runs locally on WebGPU."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🧭</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">EmbeddingGemma 2</a></p>
+
+    <header>
+      <p class="eyebrow">use case · wild</p>
+      <h1>Wild: text finds images, and images find text — one 768-d space, both directions</h1>
+      <p class="lede">
+        Most embedding models read text alone. EmbeddingGemma 2 pairs its 270M text backbone with a 170M vision encoder
+        that projects photographs directly into the <strong>same 768-dimensional space</strong>. That means a text query
+        can rank images by visual meaning, and a photograph can rank text passages without an intermediate captioning or
+        translation step. Pick a search direction below, search the photograph library with text, or rank passages using an
+        image. Both directions run below directly in your browser over WebGPU.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+
+      <div style="margin-top:.8rem">
+        <h3 style="margin-bottom:.3rem;font-size:1rem">1. Example photograph library</h3>
+        <p class="muted" style="font-size:.82rem;margin:0 0 .5rem">
+          Eight curated local photographs covering portraits, street scenes, objects, landscapes, and textures. Click a photo to select it as the query for image-to-text search.
+        </p>
+        <div id="gallery"></div>
+      </div>
+
+      <fieldset id="direction" style="margin:.9rem 0;padding:.6rem .8rem;border:1px solid var(--border);border-radius:8px;max-inline-size:100%;box-sizing:border-box">
+        <legend style="font-weight:600;padding:0 .3rem;font-size:.85rem;color:var(--color)">2. Search direction</legend>
+        <div class="chip-row">
+          <label style="display:inline-flex;align-items:center;gap:.35rem;cursor:pointer;font-size:.85rem">
+            <input type="radio" name="direction" value="text2image" checked />
+            <span><strong>Text → Image</strong>: query ranks photo library</span>
+          </label>
+          <label style="display:inline-flex;align-items:center;gap:.35rem;cursor:pointer;font-size:.85rem">
+            <input type="radio" name="direction" value="image2text" />
+            <span><strong>Image → Text</strong>: selected photo ranks corpus</span>
+          </label>
+        </div>
+      </fieldset>
+
+      <div id="text2image-controls">
+        <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.4rem">
+          Text query (embedded with task: search result | query: …)
+          <input id="query" type="text" value="fresh citrus fruits on a table" disabled style="inline-size:100%;box-sizing:border-box;min-inline-size:0" />
+        </label>
+      </div>
+
+      <div id="image2text-controls" hidden>
+        <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.4rem">
+          Passage corpus (one per line — embedded with title: none | text: …)
+          <textarea id="corpus" rows="9" disabled style="inline-size:100%;box-sizing:border-box;min-inline-size:0;font-family:var(--font-mono);font-size:.8rem;resize:vertical">A studio portrait of a young woman seated indoors, wearing a skirt and striped cardigan.
+A cobblestone pedestrian street in a historic European town lined with weathered stone walls.
+Fresh ripe citrus fruits including oranges and lemons arranged neatly on a flat surface.
+A domestic dog standing alert outdoors on open ground near a wire fence.
+A panoramic view of an alpine mountain valley with green hills and scattered evergreens.
+A rustic surface of whitewashed wooden planks displaying natural grain and paint texture.
+A statistical diagram displaying quantitative comparison bars and labelled metric axes.
+An illuminated metropolitan city skyline seen at night across calm dark water.</textarea>
+        </label>
+      </div>
+
+      <div style="margin:.8rem 0">
+        <button id="run" type="button" disabled>Search images with text</button>
+      </div>
+
+      <div id="imageResultsSection">
+        <h3 id="imageResultsHeading" style="margin-top:1rem;font-size:1rem">Ranked photos (Text → Image)</h3>
+        <div class="gallery" id="imageResults" aria-live="polite"></div>
+      </div>
+
+      <div id="rankedSection">
+        <h3 id="rankedHeading" style="margin-top:1rem;font-size:1rem">Ranked passages (Image → Text)</h3>
+        <div class="sent-list" id="ranked" aria-live="polite"></div>
+      </div>
+
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>sessions <b id="rSessions">–</b></span>
+        <span>visual tokens <b id="rVisualTokens">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+        <span>items <b id="rN">–</b></span>
+      </div>
+    </section>
+
+    <p class="muted ctx-note" style="margin-top:1rem;line-height:1.5">
+      What this costs: the vision encoder is a separate 109 MB graph (bringing total q4 download to 284 MB), images are
+      tokenized at ~280 soft tokens each, and video frames go through the same encoder at ~140 tokens per frame. Both
+      modalities share the 8192-token context window.
+    </p>
+
+    <p class="crumbs"><a href="../practical/">← Practical</a> · <a href="../">EmbeddingGemma 2</a> · Next: <a href="../multi-model/">Multi-model →</a></p>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>.
+      Runs locally via <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import {
+        EmbeddingGemma2Engine,
+        cosine,
+        parseLines,
+        renderRanked,
+        renderGallery,
+        EGEMMA2_CSS,
+      } from "../egemma2.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+      import { createExampleGallery } from "/web-ai-showcase/lib/example-gallery.js";
+
+      const style = document.createElement("style");
+      style.textContent = EGEMMA2_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+
+      let engine = null;
+      let galleryApi = null;
+      let galleryAssets = [];
+      let selectedAsset = null;
+
+      function getDirection() {
+        const checked = document.querySelector('input[name="direction"]:checked');
+        return checked ? checked.value : "text2image";
+      }
+
+      function syncDirectionUI() {
+        const isT2I = getDirection() === "text2image";
+        $("text2image-controls").hidden = !isT2I;
+        $("image2text-controls").hidden = isT2I;
+        $("run").textContent = isT2I ? "Search images with text" : "Search passages with selected photo";
+      }
+
+      document.querySelectorAll('input[name="direction"]').forEach((r) => {
+        r.addEventListener("change", syncDirectionUI);
+      });
+
+      // Manifest URL resolution: the showcase assets live at /web-ai-showcase/media/manifest.json.
+      const manifestUrl = "/web-ai-showcase/media/manifest.json";
+      try {
+        galleryApi = await createExampleGallery({
+          mount: $("gallery"),
+          manifestUrl,
+          limit: 8,
+          filter: (a) => Boolean(a?.formats?.jpg),
+          onSelect: (asset) => {
+            selectedAsset = asset;
+          },
+        });
+
+        const manifestAbs = new URL(manifestUrl, document.baseURI).href;
+        galleryAssets = (galleryApi?.assets || []).map((a) => ({
+          ...a,
+          url: new URL((a.formats.jpg || a.formats.webp).path, manifestAbs).href,
+        }));
+
+        if (galleryAssets.length) {
+          selectedAsset = galleryAssets[0];
+          galleryApi.selectId?.(galleryAssets[0].id);
+        }
+      } catch (err) {
+        $("status").hidden = false;
+        $("status").classList.add("err");
+        $("status").textContent = "Could not initialize image gallery: " + (err?.message || err);
+      }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: {
+          modelId: "onnx-community/embeddinggemma-2-ONNX",
+          runtime: "transformers.js",
+          dtype: "q4",
+          sizeMB: 284,
+          requiresWebGPU: true,
+        },
+        load: async (onProgress) => {
+          engine = new EmbeddingGemma2Engine();
+          await engine.load(onProgress, { vision: true, audio: false, dtype: "q4", device: "webgpu" });
+          return engine;
+        },
+        onReady: () => {
+          $("query").disabled = false;
+          $("corpus").disabled = false;
+          $("run").disabled = false;
+          $("readout").hidden = false;
+          $("rBackend").textContent = (engine?.device || "webgpu").toUpperCase();
+          const sessions = engine?.sessions || [];
+          $("rSessions").textContent = sessions.join(", ");
+          if (!sessions.includes("vision_encoder")) {
+            $("status").hidden = false;
+            $("status").classList.add("err");
+            $("status").textContent =
+              "Vision encoder failed to load into session (sessions: " +
+              (sessions.join(", ") || "none") +
+              "). Multimodal retrieval requires vision_encoder.";
+          }
+        },
+        onError: (err) => {
+          $("status").hidden = false;
+          $("status").classList.add("err");
+          $("status").textContent = "Model load failed: " + (err?.message || err);
+        },
+        dispose: (e) => e?.worker?.terminate(),
+        onDispose: () => {
+          $("query").disabled = true;
+          $("corpus").disabled = true;
+          $("run").disabled = true;
+          engine = null;
+        },
+      });
+
+      $("run").addEventListener("click", run);
+      $("query").addEventListener("keydown", (e) => {
+        if (e.key === "Enter") run();
+      });
+
+      async function run() {
+        if (!engine) return;
+        const dir = getDirection();
+        $("status").hidden = false;
+        $("status").classList.remove("err");
+        $("run").disabled = true;
+
+        try {
+          if (dir === "text2image") {
+            const q = $("query").value.trim();
+            if (!q) {
+              $("status").classList.add("err");
+              $("status").textContent = "Please enter a search query.";
+              return;
+            }
+            if (!galleryAssets.length) {
+              $("status").classList.add("err");
+              $("status").textContent = "Gallery images not loaded.";
+              return;
+            }
+
+            $("status").textContent = "Embedding text query and gallery images…";
+            const t0 = performance.now();
+
+            // Embed query as 'query'
+            const qr = await engine.embed([q], "query");
+            const qv = qr.embeddings[0];
+
+            // Modern Web Guidance: break-up-long-tasks — yield to keep UI responsive between stages
+            if (globalThis.scheduler?.yield) await scheduler.yield();
+
+            // Embed 8 gallery images nested as [[url1], [url2], ...]
+            const ir = await engine.embedMedia({
+              images: galleryAssets.map((a) => [a.url]),
+            });
+
+            if (globalThis.scheduler?.yield) await scheduler.yield();
+
+            const hits = galleryAssets
+              .map((asset, i) => ({
+                src: asset.url,
+                label: asset.familyRelevance || asset.id,
+                score: cosine(qv, ir.embeddings[i]),
+                sub: asset.creator ? `${asset.creator} (${asset.licenseName || asset.license})` : (asset.licenseName || ""),
+                alt: asset.description || asset.id,
+              }))
+              .sort((a, b) => b.score - a.score);
+
+            renderGallery($("imageResults"), hits, { scoreLabel: "cosine vs query" });
+
+            $("readout").hidden = false;
+            $("rBackend").textContent = (ir.device || qr.device || engine.device || "webgpu").toUpperCase();
+            $("rSessions").textContent = (engine.sessions || []).join(", ");
+            $("rVisualTokens").textContent = String(ir.softTokens?.image ?? 280);
+            $("rMs").textContent = `${qr.ms + ir.ms} ms`;
+            $("rN").textContent = `${hits.length} images`;
+            $("status").hidden = true;
+          } else {
+            // image2text
+            const selected = selectedAsset || galleryAssets[0];
+            if (!selected?.url) {
+              $("status").classList.add("err");
+              $("status").textContent = "Please select an image in the gallery first.";
+              return;
+            }
+            const texts = parseLines($("corpus").value);
+            if (texts.length < 2) {
+              $("status").classList.add("err");
+              $("status").textContent = "Corpus needs at least two distinct passages.";
+              return;
+            }
+
+            $("status").textContent = "Embedding selected photo and text corpus…";
+            const t0 = performance.now();
+
+            // Embed selected image
+            const imgResult = await engine.embedMedia({
+              images: [[selected.url]],
+            });
+            const imgVec = imgResult.embeddings[0];
+
+            if (globalThis.scheduler?.yield) await scheduler.yield();
+
+            // Embed texts as documents
+            const textResult = await engine.embed(texts, "document");
+
+            if (globalThis.scheduler?.yield) await scheduler.yield();
+
+            const hits = textResult.texts
+              .map((text, i) => ({
+                text,
+                score: cosine(imgVec, textResult.embeddings[i]),
+                sub: textResult.tokenCounts?.[i] ? `${textResult.tokenCounts[i]} tokens` : "",
+              }))
+              .sort((a, b) => b.score - a.score);
+
+            renderRanked($("ranked"), hits);
+
+            $("readout").hidden = false;
+            $("rBackend").textContent = (textResult.device || imgResult.device || engine.device || "webgpu").toUpperCase();
+            $("rSessions").textContent = (engine.sessions || []).join(", ");
+            $("rVisualTokens").textContent = String(imgResult.softTokens?.image ?? 280);
+            $("rMs").textContent = `${imgResult.ms + textResult.ms} ms`;
+            $("rN").textContent = `${texts.length} passages`;
+            $("status").hidden = true;
+          }
+        } catch (err) {
+          $("status").hidden = false;
+          $("status").classList.add("err");
+          $("status").textContent = "Search failed: " + (err?.message || err);
+        } finally {
+          $("run").disabled = false;
+        }
+      }
+    </script>
+  </body>
+</html>

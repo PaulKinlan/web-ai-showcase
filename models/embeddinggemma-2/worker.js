@@ -231,6 +231,16 @@ async function embedBatch(id, items, label) {
   const t0 = performance.now();
   const prompted = items.map((it) => (PROMPTS[it.mode] || PROMPTS.none)(it.text));
   const inputs = tokenizer(prompted, { padding: true, truncation: true });
+  // Real per-item token counts for the padded batch, taken from the file's own attention mask: the true
+  // length of each sequence, padding excluded, counted AFTER its prefix was prepended.
+  const tokenCounts = (() => {
+    try {
+      const mask = inputs.attention_mask.tolist();
+      return mask.map((row) => row.reduce((sum, v) => sum + (v ? 1 : 0), 0));
+    } catch {
+      return null;
+    }
+  })();
   const output = await model(inputs);
   const { embeddings, norms, dim, nan } = unpack(output, items.length);
   post({
@@ -244,6 +254,7 @@ async function embedBatch(id, items, label) {
     norms,
     dim,
     nan,
+    tokenCounts,
     ms: Math.round(performance.now() - t0),
     device,
     dtype,
