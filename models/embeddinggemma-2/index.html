@@ -1,0 +1,454 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>EmbeddingGemma 2 — one 768-d space for text, images, video and audio · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="EmbeddingGemma 2 maps text, code, images, video and audio into a single 768-dimensional vector space on-device: a 270M text backbone with separately loadable vision and audio encoders, Matryoshka-truncatable to 128 dimensions, 8192-token context, Apache-2.0. Real retrieval in your browser."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🧭</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a></p>
+
+    <header>
+      <p class="eyebrow">feature-extraction · text + images + video + audio · WebGPU · q4 175–473 MB</p>
+      <h1>EmbeddingGemma 2 — one vector space for four modalities</h1>
+      <p class="lede">
+        Every other embedder here reads one modality. <strong>EmbeddingGemma 2</strong> (Google DeepMind,
+        2026) puts <strong>text, code, images, video frames and audio into the same 768-dimensional
+        space</strong>, so a sentence can rank a photograph and a photograph can rank a passage. It is built
+        from a 270M text backbone with <strong>separately loadable</strong> vision and audio encoders — you
+        download only the ones you use — and it is <strong>Apache-2.0</strong>. Search across passages below,
+        watch the similarity matrix, then shrink the vector to 128 dimensions. Nothing leaves your device.
+      </p>
+    </header>
+
+    <section class="panel" aria-labelledby="glance-h">
+      <h3 id="glance-h">At a glance</h3>
+      <table class="inside-table">
+        <tbody>
+          <tr><th>Model</th><td><a href="https://huggingface.co/google/embeddinggemma-2" target="_blank" rel="noopener">google/embeddinggemma-2</a> · run via the <a href="https://huggingface.co/onnx-community/embeddinggemma-2-ONNX" target="_blank" rel="noopener">onnx-community/embeddinggemma-2-ONNX</a> build</td></tr>
+          <tr><th>Task / pipeline</th><td><code>feature-extraction</code> (multimodal encoder)</td></tr>
+          <tr><th>Parameters</th><td><strong>740M total</strong> — 270M text backbone (130M transformer + 140M embedder), 170M vision encoder, 300M audio encoder. <strong>Each encoder loads independently.</strong></td></tr>
+          <tr><th>Output</th><td><strong>768-d</strong> native, mean-pooled inside the graph plus a 512→768 projection. Vectors come back L2-normalized, so cosine similarity is a plain dot product.</td></tr>
+          <tr><th>Matryoshka dims</th><td><strong>768 → 512 → 256 → 128</strong>; re-normalize after truncating (a sliced unit vector is not unit length any more).</td></tr>
+          <tr><th>Context</th><td><strong>8192 tokens</strong>, 1024-token sliding window. One shared budget: an image ≈ 280 soft tokens, a video frame ≈ 140, audio ≈ 25/sec.</td></tr>
+          <tr><th>Prompts</th><td>Task-instruction prefixes — <code>task: search result | query: …</code>, <code>task: classification | query: …</code>, documents as <code>title: … | text: …</code> — the same convention as EmbeddingGemma 1.</td></tr>
+          <tr><th>Quantization</th><td>q4 (4-bit) by default; q8 (314 MB) available. <strong>fp16 is not offered</strong> — see the note below.</td></tr>
+          <tr><th>Backend</th><td><strong>WebGPU</strong> (required — see the measured note below)</td></tr>
+          <tr><th>Download</th><td>175 MB text-only · 284 MB text + vision · 473 MB text + vision + audio (q4, decimal MB)</td></tr>
+          <tr><th>License</th><td><a href="https://ai.google.dev/gemma/docs/gemma_4_license" target="_blank" rel="noopener">Apache-2.0</a> — the first EmbeddingGemma release that is not under the Gemma Terms of Use</td></tr>
+          <tr><th>Languages</th><td>100+ languages and code (+~14% on code retrieval vs EmbeddingGemma 1 on MTEB-code)</td></tr>
+          <tr><th>Web APIs</th><td>WebGPU, Web Workers, <code>&lt;progress&gt;</code>, <code>content-visibility</code> — Baseline widely available apart from WebGPU</td></tr>
+        </tbody>
+      </table>
+
+      <p class="muted" style="font-size:.82rem">
+        <strong>Two measured facts that shaped this page.</strong>
+        (1) <em>This export only runs on WebGPU.</em> The q4/q8 builds block-quantize the 262,144-entry
+        embedding table, and the ONNX Runtime Web WASM execution provider has no kernel for that op —
+        session creation fails with <code>GatherBlockQuantized … /model/embed_tokens/Gather_Quant</code>.
+        The fp32 export does load on WASM, but that is 1085 MB for the text encoder alone. The WASM path is
+        therefore reported as blocked rather than papered over.
+        (2) <em>fp16 is off the table</em>: the model card warns the activation range exceeds fp16's dynamic
+        range and the model then returns NaN or silently degraded vectors instead of raising, and this
+        adapter refuses fp16 outright (<code>The device (webgpu) does not support fp16</code>).
+      </p>
+    </section>
+
+    <section class="panel" aria-labelledby="run-h">
+      <h3 id="run-h">Run it</h3>
+      <p class="muted">
+        Put one passage per line. They are embedded in <span class="mode-tag">document</span> mode
+        (<code>title: none | text: …</code>); the query is embedded in <span class="mode-tag">query</span>
+        mode. The matrix is the cosine between every pair; the scatter is a 2D PCA of the 768-d vectors.
+      </p>
+
+      <div id="model-loader"></div>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
+        Passages (one per line)
+        <textarea id="sentences" rows="8">Transformers replaced recurrence with self-attention, weighing every token against every other in parallel.
+Attention lets a model focus on the most relevant parts of the input when producing each output token.
+Our refund policy allows returns within 30 days of purchase for a full refund.
+Customers may send items back for a month after buying them and get their money back.
+Photosynthesis converts sunlight, water and carbon dioxide into glucose and oxygen in plant chloroplasts.
+La Torre Eiffel, terminada en 1889, es un monumento de hierro forjado en el Campo de Marte de París.</textarea>
+      </label>
+      <div class="chip-row" style="margin:.5rem 0">
+        <button id="run" type="button" disabled>Embed &amp; compare</button>
+        <button id="reset" type="button" class="secondary">Reset examples</button>
+      </div>
+      <p class="status" id="rowStatus" role="status" aria-live="polite" hidden></p>
+
+      <div class="grid-2">
+        <div>
+          <h3 style="margin-top:.4rem">Cosine similarity matrix</h3>
+          <div class="matrix-scroll" id="matrix" aria-live="polite"></div>
+        </div>
+        <div>
+          <h3 style="margin-top:.4rem">2D map (PCA)</h3>
+          <div id="projection" aria-live="polite"></div>
+          <p class="muted" id="explained" style="font-size:.78rem;font-family:var(--font-mono)"></p>
+        </div>
+      </div>
+
+      <div style="margin-top:1rem">
+        <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;max-inline-size:34rem">
+          Semantic search — rank the passages above by meaning
+          <span style="display:flex;gap:.4rem;flex-wrap:wrap">
+            <input id="query" type="text" value="how do neural networks pay attention?" style="flex:1;min-inline-size:12rem" disabled />
+            <button id="search" type="button" disabled>Search</button>
+          </span>
+        </label>
+        <div class="sent-list" id="ranked" aria-live="polite"></div>
+      </div>
+
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>dtype <b id="rDtype">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+        <span>passages <b id="rN">–</b></span>
+        <span>dims <b id="rDim">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="inside-h">
+      <h3 id="inside-h">See inside — the vector, the budget, and Matryoshka shrinking</h3>
+      <p class="muted" id="insideWhat">
+        Each passage becomes one <strong>768-number unit vector</strong>. Pick a passage to see the real
+        numbers, its token count against the 8192-token budget, and its magnitude — the graph already
+        normalized it, so ‖v‖ is 1 by construction and cosine is a dot product.
+      </p>
+      <div id="insideEmpty" class="muted" style="font-family:var(--font-mono);font-size:.8rem">Embed some passages above to inspect a vector.</div>
+      <div id="insideWrap" hidden>
+        <label style="font-size:.82rem;display:flex;gap:.4rem;align-items:center;flex-wrap:wrap">
+          Inspect passage
+          <select id="pick"></select>
+        </label>
+        <div class="readout">
+          <span>dimensions <b>768</b></span>
+          <span>tokens <b id="iTok">–</b> / 8192</span>
+          <span>‖v‖ <b id="iNorm">–</b></span>
+          <span>non-finite <b id="iNan">–</b></span>
+        </div>
+        <p class="muted" style="font-size:.78rem;margin:.3rem 0">First 128 of 768 dimensions (indigo = positive, amber = negative, brighter = larger magnitude):</p>
+        <div class="vec-strip" id="vecStrip"></div>
+        <p class="muted" style="font-size:.78rem;font-family:var(--font-mono);margin-top:.5rem;word-break:break-all" id="vecHead"></p>
+      </div>
+
+      <hr style="border:0;border-top:1px solid var(--border);margin:1.2rem 0" />
+      <h4 style="margin:.2rem 0">Selective encoder loading — the actual on-device budget</h4>
+      <p class="muted">
+        The text backbone is always loaded. The vision and audio encoders are independent graphs you can
+        leave on the shelf: dropping their configs before the model is created means their files are never
+        fetched. This is why the same model is a 175 MB text embedder <em>or</em> a 473 MB four-modality
+        embedder.
+      </p>
+      <div id="budget"></div>
+
+      <hr style="border:0;border-top:1px solid var(--border);margin:1.2rem 0" />
+      <h4 style="margin:.2rem 0">Matryoshka — how much survives truncation?</h4>
+      <p class="muted">
+        The first 512 / 256 / 128 numbers of the vector are each trained to be a usable embedding on their
+        own. Pick two passages, truncate both to each size, re-normalize, and compare — this is the same
+        measurement Google publishes in the model card, on your own text.
+      </p>
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem;align-items:end;margin:.4rem 0">
+        <label style="font-size:.8rem;display:flex;flex-direction:column;gap:.2rem">A <select id="matA"></select></label>
+        <label style="font-size:.8rem;display:flex;flex-direction:column;gap:.2rem">B <select id="matB"></select></label>
+        <button id="matRun" type="button" class="secondary" disabled>Compare across dimensions</button>
+      </div>
+      <div id="matBars" class="mat-bars" aria-live="polite"></div>
+    </section>
+
+    <section aria-labelledby="why-h">
+      <h2 id="why-h">Why it matters</h2>
+      <p>
+        Multimodal retrieval has meant two models and a projection layer: one encoder for text, one for
+        images, trained to agree. EmbeddingGemma 2 removes that seam — <strong>one model, one 768-d space,
+        four modalities</strong> — and it is small enough to ship in a tab, so the index never leaves the
+        device.
+      </p>
+      <ul>
+        <li><strong>Search your photo library by description</strong> — "two cats asleep on a couch" ranks your own images, locally, with no upload and no OCR step.</li>
+        <li><strong>Search a photo to find the writing about it</strong> — the reverse direction, in the same index: give it an image and rank your notes, tickets or documentation.</li>
+        <li><strong>One index for mixed media</strong> — a support corpus with screenshots, recordings and text collapses into a single vector store instead of three.</li>
+        <li><strong>Right-size the download</strong> — text-only for a search box, add vision only on the screen that needs it; the budget is an explicit choice with a measured price.</li>
+        <li><strong>Shrink the store 6×</strong> — Matryoshka-truncate to 128-d for constrained devices and keep most of the retrieval quality.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="uc-h">
+      <h2 id="uc-h">Use cases</h2>
+      <div class="model-grid">
+        <a class="model-card" href="basics/"><h3>Basics</h3><p class="muted">One cosine number — and how EmbeddingGemma 2's task prefixes change a vector depending on the job you give it.</p></a>
+        <a class="model-card" href="practical/"><h3>Practical</h3><p class="muted">Index a long document that only fits because the context is 8192 tokens, then shrink the stored vector to 128-d and watch the ranking hold.</p></a>
+        <a class="model-card" href="wild/"><h3>Wild</h3><p class="muted">Text finds images and images find text: real cross-modal retrieval through the vision encoder, both directions, in one shared space.</p></a>
+        <a class="model-card" href="multi-model/"><h3>Multi-model</h3><p class="muted">Stage the encoders: build the index with the 175 MB text model, then add the vision encoder and re-rank the same index with a picture.</p></a>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-h">
+      <h2 id="api-h">How the API works</h2>
+      <p>
+        Unlike the single-graph embedders, this one needs <code>AutoModel</code> directly rather than the
+        <code>feature-extraction</code> pipeline — the pipeline loads <em>every</em> encoder, which defeats
+        selective loading. Dropping the unused configs before the model is created is what keeps the text-only
+        page at 175 MB:
+      </p>
+      <pre><code>import { AutoConfig, AutoModel, AutoTokenizer } from "@huggingface/transformers@4.3.1";
+
+const model_id = "onnx-community/embeddinggemma-2-ONNX";
+
+const config = await AutoConfig.from_pretrained(model_id);
+config.vision_config = config.audio_config = null;   // text-only: never fetch those graphs
+
+const model = await AutoModel.from_pretrained(model_id, {
+  config,
+  device: "webgpu",
+  dtype: { model: "q4" },          // fp16 is unsafe for this model — do not use it
+});
+const tokenizer = await AutoTokenizer.from_pretrained(model_id);
+
+// Task prefixes are part of using the model correctly.
+const texts = [
+  "task: search result | query: Which planet is known as the Red Planet?",
+  "title: none | text: Mars, known for its reddish appearance, is often referred to as the Red Planet.",
+];
+const { sentence_embedding } = await model(await tokenizer(texts, { padding: true, truncation: true }));
+// -> [2, 768], already L2-normalized, so cosine similarity is a dot product.
+
+// Matryoshka: keep the leading 256 numbers and re-normalize.
+const small = sentence_embedding.slice(null, [0, 256]).normalize(2, -1);</code></pre>
+      <p class="muted">
+        Images and video frames go through <code>AutoProcessor</code> plus the same <code>model(...)</code>
+        call, so their vectors land in the same space as the text vectors. The worker owns all of this and
+        reports which graphs the session actually contains; see the <a href="wild/">Wild</a> page for the
+        cross-modal path.
+      </p>
+    </section>
+
+    <section aria-labelledby="ref-h">
+      <h2 id="ref-h">References</h2>
+      <ul>
+        <li><a href="https://huggingface.co/google/embeddinggemma-2" target="_blank" rel="noopener">Model card — google/embeddinggemma-2</a> (Apache-2.0)</li>
+        <li><a href="https://huggingface.co/onnx-community/embeddinggemma-2-ONNX" target="_blank" rel="noopener">ONNX / Transformers.js build — onnx-community/embeddinggemma-2-ONNX</a></li>
+        <li><a href="https://ai.google.dev/gemma/docs/embeddinggemma" target="_blank" rel="noopener">EmbeddingGemma documentation (Google AI Edge)</a></li>
+        <li><a href="https://blog.google/innovation-and-ai/technology/developers-tools/embeddinggemma-2" target="_blank" rel="noopener">EmbeddingGemma 2 launch post</a></li>
+        <li><a href="https://arxiv.org/abs/2205.13147" target="_blank" rel="noopener">Paper — Matryoshka Representation Learning (Kusupati et al., 2022)</a></li>
+        <li><a href="https://huggingface.co/docs/transformers.js/index" target="_blank" rel="noopener">Transformers.js documentation</a></li>
+      </ul>
+    </section>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import {
+        EmbeddingGemma2Engine,
+        EGEMMA2_CSS,
+        budgetMB,
+        cosine,
+        matryoshka,
+        parseLines,
+        pca2d,
+        renderEncoderBudget,
+        renderMatrix,
+        renderProjection,
+        renderRanked,
+        simMatrix,
+      } from "./egemma2.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = EGEMMA2_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      let engine = null;
+      const DEFAULT = $("sentences").value;
+      let last = null;
+
+      renderEncoderBudget($("budget"), { text: true, vision: false, audio: false }, budgetMB({ text: true }));
+
+      $("reset").addEventListener("click", () => {
+        $("sentences").value = DEFAULT;
+      });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: {
+          modelId: "onnx-community/embeddinggemma-2-ONNX",
+          runtime: "transformers.js",
+          dtype: "q4",
+          sizeMB: 175,
+          requiresWebGPU: true,
+        },
+        load: async (onProgress) => {
+          engine = new EmbeddingGemma2Engine();
+          const info = await engine.load(onProgress, { vision: false, audio: false, dtype: "q4", device: "webgpu" });
+          renderEncoderBudget($("budget"), info.modalities, budgetMB(info.modalities));
+          return engine;
+        },
+        onReady: () => {
+          $("run").disabled = false;
+          $("query").disabled = false;
+          $("search").disabled = false;
+        },
+        dispose: (e) => e.worker.terminate(),
+        onDispose: () => {
+          $("run").disabled = true;
+          $("query").disabled = true;
+          $("search").disabled = true;
+          engine = null;
+        },
+      });
+
+      $("run").addEventListener("click", run);
+      async function run() {
+        const texts = parseLines($("sentences").value);
+        if (texts.length < 2) {
+          $("rowStatus").hidden = false;
+          $("rowStatus").textContent = "Give at least two distinct passages.";
+          $("rowStatus").classList.add("err");
+          return;
+        }
+        $("rowStatus").hidden = false;
+        $("rowStatus").classList.remove("err");
+        $("rowStatus").textContent = "Embedding…";
+        $("run").disabled = true;
+        try {
+          const r = await engine.embed(texts, "document");
+          last = r;
+          renderMatrix($("matrix"), simMatrix(r.embeddings), r.texts);
+          const { points, explained } = pca2d(r.embeddings);
+          renderProjection($("projection"), points, r.texts);
+          $("explained").textContent = `PC1+PC2 explain ${(explained * 100).toFixed(0)}% of the variance`;
+          $("readout").hidden = false;
+          $("rBackend").textContent = r.device.toUpperCase();
+          $("rDtype").textContent = r.dtype ?? "q4";
+          $("rMs").textContent = r.ms + " ms";
+          $("rN").textContent = r.texts.length;
+          $("rDim").textContent = r.dim;
+          fillInside(r);
+          fillMat(r);
+          $("rowStatus").textContent = `Done — ${r.texts.length} passages, ${r.dim}-d each.`;
+          $("rowStatus").classList.add("ok");
+        } catch (err) {
+          $("rowStatus").textContent = "Embedding failed: " + err.message;
+          $("rowStatus").classList.add("err");
+        } finally {
+          $("run").disabled = false;
+        }
+      }
+
+      $("search").addEventListener("click", search);
+      $("query").addEventListener("keydown", (e) => {
+        if (e.key === "Enter") search();
+      });
+      async function search() {
+        const q = $("query").value.trim();
+        const texts = parseLines($("sentences").value);
+        if (!q || texts.length < 1) return;
+        $("search").disabled = true;
+        try {
+          const [qr, dr] = await Promise.all([engine.embed([q], "query"), engine.embed(texts, "document")]);
+          const qv = qr.embeddings[0];
+          const hits = dr.texts
+            .map((text, i) => ({ text, score: cosine(qv, dr.embeddings[i]) }))
+            .sort((a, b) => b.score - a.score);
+          renderRanked($("ranked"), hits);
+        } catch (err) {
+          $("ranked").textContent = "Search failed: " + err.message;
+        } finally {
+          $("search").disabled = false;
+        }
+      }
+
+      function fillInside(r) {
+        $("insideEmpty").hidden = true;
+        $("insideWrap").hidden = false;
+        $("pick").replaceChildren(...r.texts.map((t, i) => {
+          const o = document.createElement("option");
+          o.value = String(i);
+          o.textContent = `D${i + 1} — ${t.length > 40 ? t.slice(0, 39) + "…" : t}`;
+          return o;
+        }));
+        showVector(0);
+      }
+      $("pick").addEventListener("change", (e) => showVector(+e.target.value));
+      function showVector(i) {
+        if (!last) return;
+        const v = last.embeddings[i];
+        $("iNorm").textContent = (last.norms[i] ?? 1).toFixed(4);
+        $("iTok").textContent = last.tokenCounts?.[i] ?? "–";
+        $("iNan").textContent = String(last.nan ?? 0);
+        const maxAbs = Math.max(...v.slice(0, 128).map(Math.abs)) || 1;
+        $("vecStrip").replaceChildren(...v.slice(0, 128).map((val) => {
+          const cell = document.createElement("span");
+          cell.className = "vec-cell";
+          const t = Math.abs(val) / maxAbs;
+          const hue = val >= 0 ? "var(--accent)" : "var(--warn)";
+          cell.style.background = `color-mix(in srgb, ${hue} ${(t * 100).toFixed(0)}%, var(--bg-raised))`;
+          cell.title = val.toFixed(4);
+          return cell;
+        }));
+        $("vecHead").textContent = "[" + v.slice(0, 8).map((x) => x.toFixed(4)).join(", ") + ", … ] (768-d unit vector)";
+      }
+
+      function fillMat(r) {
+        const opts = () => r.texts.map((t, i) => {
+          const o = document.createElement("option");
+          o.value = String(i);
+          o.textContent = `D${i + 1} — ${t.length > 34 ? t.slice(0, 33) + "…" : t}`;
+          return o;
+        });
+        $("matA").replaceChildren(...opts());
+        $("matB").replaceChildren(...opts());
+        if (r.texts.length > 1) $("matB").value = "1";
+        $("matRun").disabled = false;
+      }
+      $("matRun").addEventListener("click", () => {
+        if (!last) return;
+        const a = last.embeddings[+$("matA").value];
+        const b = last.embeddings[+$("matB").value];
+        const dims = [768, 512, 256, 128];
+        const full = cosine(a, b);
+        $("matBars").replaceChildren(...dims.map((d) => {
+          const c = cosine(matryoshka(a, d), matryoshka(b, d));
+          const row = document.createElement("div");
+          row.className = "mat-row";
+          const lab = document.createElement("span");
+          lab.className = "lab";
+          lab.textContent = `${d}-d`;
+          const track = document.createElement("div");
+          track.className = "mat-track";
+          const fill = document.createElement("div");
+          fill.className = "mat-fill";
+          fill.style.inlineSize = `${Math.max(0, Math.min(1, c)) * 100}%`;
+          track.append(fill);
+          const val = document.createElement("span");
+          val.className = "val";
+          val.textContent = c.toFixed(3);
+          row.append(lab, track, val);
+          return row;
+        }));
+        const note = document.createElement("p");
+        note.className = "ctx-note";
+        note.style.marginTop = ".5rem";
+        note.textContent =
+          `Full 768-d cosine ${full.toFixed(3)}. Storing 128-d instead of 768-d is 6× fewer numbers per vector ` +
+          `— and the model card's own MTEB multilingual score only falls from 61.36 to 57.89 at 128-d.`;
+        $("matBars").append(note);
+      });
+    </script>
+  </body>
+</html>
