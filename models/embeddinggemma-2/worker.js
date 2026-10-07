@@ -226,23 +226,47 @@ async function embedText(id, texts, mode) {
  * through the model as a single padded batch. This is how the prefix-comparison page can show six
  * different promptings of the same pair without paying six round-trips to the worker.
  */
+/**
+ * Batch embed. Each item may carry its own `maxTokens`: the tokenizer lives HERE, so a length limit is
+ * applied in the worker rather than by a second tokenizer on the main thread. Items are grouped by their
+ * limit so a mixed batch costs one model call per distinct limit instead of one call per item, and the
+ * merged result preserves the caller's item order.
+ */
 async function embedBatch(id, items, label) {
   await ensureLoaded({ vision: loadedModalities.vision, audio: loadedModalities.audio });
   const t0 = performance.now();
   const prompted = items.map((it) => (PROMPTS[it.mode] || PROMPTS.none)(it.text));
-  const inputs = tokenizer(prompted, { padding: true, truncation: true });
-  // Real per-item token counts for the padded batch, taken from the file's own attention mask: the true
-  // length of each sequence, padding excluded, counted AFTER its prefix was prepended.
-  const tokenCounts = (() => {
+  const groups = new Map();
+  prompted.forEach((p, i) => {
+    const limit = Number.isFinite(items[i]?.maxTokens) ? items[i].maxTokens : null;
+    if (!groups.has(limit)) groups.set(limit, []);
+    groups.get(limit).push(i);
+  });
+  const dims = new Array(items.length);
+  const tokenCounts = new Array(items.length);
+  const norms = new Array(items.length);
+  let dim = null;
+  let nan = 0;
+  for (const [limit, indices] of groups) {
+    const inputs = tokenizer(
+      indices.map((i) => prompted[i]),
+      limit ? { padding: true, truncation: true, max_length: limit } : { padding: true, truncation: true },
+    );
+    // Real per-item token counts from the file's own attention mask: true length, padding excluded,
+    // counted AFTER the prefix was prepended and AFTER any length limit was applied.
     try {
       const mask = inputs.attention_mask.tolist();
-      return mask.map((row) => row.reduce((sum, v) => sum + (v ? 1 : 0), 0));
-    } catch {
-      return null;
-    }
-  })();
-  const output = await model(inputs);
-  const { embeddings, norms, dim, nan } = unpack(output, items.length);
+      mask.forEach((row, k) => {
+        tokenCounts[indices[k]] = row.reduce((sum, v) => sum + (v ? 1 : 0), 0);
+      });
+    } catch { /* counts are advisory, never invented */ }
+    const output = await model(inputs);
+    const un = unpack(output, indices.length);
+    dim = un.dim;
+    nan += un.nan;
+    un.embeddings.forEach((d, k) => { dims[indices[k]] = d; });
+    un.norms.forEach((n, k) => { norms[indices[k]] = n; });
+  }
   post({
     type: "result",
     id,
@@ -250,7 +274,7 @@ async function embedBatch(id, items, label) {
     label,
     items,
     prompted,
-    embeddings,
+    embeddings: dims,
     norms,
     dim,
     nan,
