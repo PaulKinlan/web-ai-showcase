@@ -32,7 +32,7 @@ async function ensureLoaded() {
   const dev = useGpu ? "webgpu" : "wasm";
   const dtype = useGpu ? "q4f16" : "q4";
   console.log(`[chat worker] loading ${MODEL_ID} on ${dev} (${dtype})`);
-  generator = await pipeline("text-generation", MODEL_ID, {
+  generator = await pipeline("text-generation", "onnx-community/Qwen2.5-0.5B-Instruct", {
     device: dev,
     dtype,
     progress_callback: (p) => post({ type: "progress", p }),
