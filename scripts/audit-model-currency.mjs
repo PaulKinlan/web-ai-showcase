@@ -481,8 +481,18 @@ export function checkRuntimePins() {
   let swGeneratedRange = null;
   try {
     const swLines = readFileSync(ROOT + "sw.js", "utf8").split("\n");
-    const start = swLines.findIndex((l) => l.includes(">>> runtime-integrity (generated"));
-    const end = swLines.findIndex((l) => l.includes("<<< runtime-integrity"));
+    const starts = swLines.map((l, n) => (l.includes(">>> runtime-integrity (generated") ? n : -1)).filter((n) => n >= 0);
+    const ends = swLines.map((l, n) => (l.includes("<<< runtime-integrity") ? n : -1)).filter((n) => n >= 0);
+    // FAIL CLOSED on a missing OR DUPLICATED marker. With duplicates, findIndex would silently pick the
+    // first of each and could exempt a span wider than the real manifest. Refuse the exemption and say so
+    // loudly rather than guessing which marker is genuine.
+    const start = starts.length === 1 ? starts[0] : -1;
+    const end = ends.length === 1 ? ends[0] : -1;
+    if (starts.length !== 1 || ends.length !== 1) {
+      errors.push(
+        `sw.js must contain exactly one '>>> runtime-integrity (generated' marker and one '<<< runtime-integrity' marker (found ${starts.length} and ${ends.length}); the derived-inventory exemption is disabled so nothing is skipped`,
+      );
+    }
     // [start + 2, end] is the generated block WITHOUT either marker line, so a pin written on a marker
     // line is never exempt. Note this range can never be made airtight by arithmetic alone: a line
     // inserted just above the closing marker always lands inside it. That is why the exemption is
