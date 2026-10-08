@@ -40,32 +40,38 @@ export const PIN_SCAN_TARGETS =
 // Single-sourced pin patterns: the text scans and the fail-closed binary pass both use them, so
 // detection cannot drift between the passes.
 //
-// VERSION_TOKEN captures the FULL runtime version token up to the first real delimiter, and the
-// captured string is then validated in JavaScript against the allowlist. It requires MAJOR.MINOR.PATCH
-// and then takes every following version character (digits, letters, '.', '-', '+', '_'), so an
-// unauthorised suffix is captured IN FULL and rejected rather than truncated down to an allowed base.
+// VERSION_TOKEN captures the WHOLE RAW candidate after the package marker (`onnxruntime-web@` or
+// `@huggingface/transformers@`), and that exact raw string is compared against the allowlist — never
+// stripped, never normalised, never decoded, never passed through a context heuristic. It requires
+// MAJOR.MINOR.PATCH and then takes every following version character (digits, letters, '.', '-', '+',
+// '_') PLUS the unreviewed specifier suffixes '?', '#', '%', '='. Those four are captured (not treated
+// as delimiters) so a query/hash/percent-encoded suffix can never be dropped down to an allowed base.
 // (Examples below are written as bare version strings so this file does not itself trip the scans.)
 //   `3.7.5+build1`   -> captured in full, rejected ('+build1' survives)
 //   `3.7.5.evil`     -> captured in full, rejected
 //   `3.7.5_evil`     -> captured in full, rejected
 //   `3.7.5evil`      -> captured in full, rejected
 //   `3.7.5-`         -> captured in full, rejected
+//   `3.7.5.`         -> captured in full, rejected (a trailing dot is part of the candidate; a prose
+//                       sentence-ending period is now a DELIBERATE false red — the prose author rewords)
+//   `3.7.5?x=1`      -> captured in full, rejected (query-suffixed specifiers are UNREVIEWED)
+//   `3.7.5#x`        -> captured in full, rejected (hash-suffixed specifiers are UNREVIEWED)
+//   `3.7.5%2Fdist`   -> captured in full, rejected (a percent-encoded separator is part of the candidate)
 //   `1.24.0-dev.20251116-b39e144322` -> full dev token (authorised only via measuredVersions)
-// The optional-hyphen-group form the reviewer defeated (`(-[0-9A-Za-z]...)?`) left a version like
-// `3.7.5+build1` truncating to `3.7.5` because `+`/`.`/`_`/a bare letter were never part of the token.
-// `+` and `_` are not npm semver characters, but they MUST be captured (never treated as delimiters)
-// so the full offending string is judged instead of its allowed numeric prefix. The required X.Y.Z
-// prefix still keeps a bare prose shorthand like `1.21` (which is not a pin) from being reported as a
-// phantom version. The string is valid both as POSIX ERE (for grep -E) and as a JavaScript RegExp,
-// which is how the grep scans and the in-process extraction share one definition.
-export const VERSION_TOKEN = "[0-9]+\\.[0-9]+\\.[0-9]+[0-9A-Za-z._+-]*";
+// A `/` immediately after the version is a REAL URL path separator and terminates the candidate, so an
+// exact authorised version followed by `/dist/...` is GREEN; whitespace, quotes, `)`, `,`, and end of
+// line also terminate the candidate. `+` and `_` are not npm semver characters but MUST be captured so
+// the full offending string is judged instead of its allowed numeric prefix. The required X.Y.Z prefix
+// keeps a bare prose shorthand like `1.21` (not a pin) from being reported as a phantom version. The
+// string is valid both as POSIX ERE (for grep -E) and as a JavaScript RegExp, which is how the grep
+// scans and the in-process extraction share one definition.
+export const VERSION_TOKEN = "[0-9]+\\.[0-9]+\\.[0-9]+[0-9A-Za-z._+?%#=-]*";
 export const ORT_PIN_PATTERN = `onnxruntime-web@${VERSION_TOKEN}`;
 export const TJS_PIN_PATTERN = `@huggingface/transformers@${VERSION_TOKEN}`;
 // In-process full-version captures for the two text scans. The scans read each matching LINE (not
-// `grep -o` records) and re-run these regexes over the line content, capturing the FULL token so a
-// version cannot be truncated to its numeric prefix, and leaving the character immediately AFTER the
-// match available from the SAME match object's end index (the URL-path discriminator, see
-// normaliseCapturedVersion below). Shares VERSION_TOKEN with the grep patterns above.
+// `grep -o` records) and re-run these regexes over the line content, capturing the WHOLE RAW candidate
+// so a version can never be truncated to its numeric prefix or have a suffix dropped. Shares
+// VERSION_TOKEN with the grep patterns above.
 const ORT_FULL_VERSION_RE = new RegExp(`onnxruntime-web@(${VERSION_TOKEN})`, "g");
 const TJS_FULL_VERSION_RE = new RegExp(`@huggingface/transformers@(${VERSION_TOKEN})`, "g");
 // Full-token captures for the two single-file shared pins checked below (web-llm, mediapipe). They
@@ -82,34 +88,15 @@ export const MIN_EVIDENCE_LENGTH = 5;
 export const REVIEWED_ON_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 export const SEMVER_VERSION_RE = /^[0-9]+\.[0-9]+\.[0-9]+$/;
 
-// Trailing-full-stop normalisation for captured version tokens (web-ai-showcase-mtu). VERSION_TOKEN's
-// greedy tail `[0-9A-Za-z._+-]*` includes '.', so a legitimate pin followed by a sentence-ending period
-// — e.g. `@huggingface/transformers@3.7.5.` in prose — is captured as `3.7.5.` and would fail the
-// allowlist as an unauthorised suffix (a false red). A lone trailing full stop is prose punctuation,
-// never part of a version, so we strip ALL trailing '.' characters off the captured token before
-// validating. Trailing '-', '+', '_', interior dots, and real suffixes (`.evil`, `+build1`, `evil`)
-// are NOT stripped: those are version characters that must still be judged in full, so a genuinely
-// suffixed pin still fails. `3.7.5..` and `3.7.5...` normalise to `3.7.5` the same way.
-//
-// SCOPE: this is prose normalisation, so the CALL SITES apply it ONLY to hits OUTSIDE the
-// derived-inventory files (sw.js's generated block, runtime-integrity.json, scripts/runtime-integrity.mjs).
-// Those files are machine-produced JSON/JS with no prose; a trailing dot there is an anomaly, not
-// punctuation, so their captured tokens are validated RAW and must keep failing.
-export const stripTrailingDots = (version) => version.replace(/\.+$/, "");
-
-// URL-path discriminator (web-ai-showcase-mtu). stripTrailingDots treats a lone trailing full stop as
-// prose punctuation — correct for a sentence like "pinned to 3.7.5." in a comment, but WRONG for a real
-// CDN URL whose version token ends in a trailing dot immediately before the path (e.g. `1.21.0.` before
-// `/dist/`), where the dotted string is the actual (invalid) version and normalising it to `1.21.0`
-// would let a previously-failing pin PASS (a false green, worse than the false red the normalisation
-// fixed). The two cases are distinguishable without guessing file type: a legitimate pinned URL always
-// has a path immediately after the version, so the character following the matched token is `/`. When
-// that follower is `/`, the token is part of a URL path and is validated RAW (no dot stripping); any
-// other follower (whitespace, end of line, a quote, `)`, `,`, etc.) is prose and keeps the trailing-dot
-// normalisation. `nextChar` must be read from the SAME match object's end index (not re-derived by a
-// second regex) so the discriminator can never disagree with the captured token.
-export const normaliseCapturedVersion = (rawVersion, nextChar) =>
-  nextChar === "/" ? rawVersion : stripTrailingDots(rawVersion);
+// STRICT RAW (web-ai-showcase-mtu): the captured token is the WHOLE RAW candidate and is compared
+// against the allowlist exactly as captured — never stripped, never normalised, never decoded, never
+// context-heuristicked. A trailing full stop is part of the candidate and therefore FAILS; sentence
+// punctuation in prose is now a DELIBERATE false red (accepted: the prose author rewords). Query (`?`)
+// and hash (`#`) suffixed specifiers are UNREVIEWED and FAIL CLOSED (we never assume they select the
+// same bytes as the bare version); a percent-encoded separator (`%2F`) is part of the candidate and
+// FAILS. There is deliberately no punctuation exception and no comment detector here: both would
+// re-open the truncation hole this gate exists to close. The derived-inventory exemption
+// (isDerivedInventoryHit below) keeps using this same unmodified raw candidate.
 
 const args = process.argv.slice(2);
 const CHECK_ONLY = args.includes("--check");
@@ -379,6 +366,10 @@ export function findPinsInBinaryFiles() {
   return [...found.values()].sort((a, b) => a.file.localeCompare(b.file));
 }
 
+// NARROW CLAIM (web-ai-showcase-mtu): this gate validates LITERAL numeric-version runtime references in
+// the scanned paths (PIN_SCAN_TARGETS) only. It does NOT claim to cover dynamically built URLs,
+// floating/`latest` specifiers, transitive downloads, or unscanned paths — those remain separate,
+// tracked gaps (floating pins, constant-built ORT URLs), not something this gate silently absorbs.
 export function checkRuntimePins() {
   if (!existsSync(ALLOWLIST_PATH)) {
     return ["missing scripts/runtime-pin-allowlist.json — runtime pin allowlist required"];
@@ -588,9 +579,8 @@ export function checkRuntimePins() {
   // A pin is in the DERIVED region when it lives in one of the generated-inventory files, or inside the
   // sw.js generated block. (The block is the only part of sw.js that is exempt; the rest of sw.js is
   // scanned as normal prose.) This is the file/line half of the exemption — the version half is checked
-  // separately in isDerivedInventoryHit — and it ALSO scopes the trailing-dot normalisation
-  // (web-ai-showcase-mtu): a trailing full stop is prose punctuation only OUTSIDE these machine-produced
-  // JSON/JS files, so the normalisation is applied only to non-derived hits.
+  // separately in isDerivedInventoryHit. The raw candidate is passed through UNMODIFIED: no normalisation
+  // is applied to any hit, derived or not.
   const isDerivedRegion = (file, lineNo) => {
     if (!file || !derivedInventoryFiles.has(file)) return false;
     if (file !== "sw.js") return true; // runtime-integrity.json / scripts/runtime-integrity.mjs are wholly derived
@@ -625,25 +615,17 @@ export function checkRuntimePins() {
       const lineNo = hit ? hit[2] : null;
       const content = hit ? hit[3] : line;
       // Enumerate EVERY match on the line (grep emits each matching line once; matchAll re-reads the
-      // content so a multi-match line cannot hide its later versions). The capture uses the FULL version
-      // token (including any suffix) so `1.21.0+malicious` is never truncated to `1.21.0`.
+      // content so a multi-match line cannot hide its later versions). The capture uses the WHOLE RAW
+      // candidate (including any suffix) so `1.21.0+malicious` is never truncated to `1.21.0`.
       for (const m of content.matchAll(ORT_FULL_VERSION_RE)) {
         scannedCounts.onnxruntimeWeb++;
         const rawVersion = m[1];
         if (!rawVersion) continue;
-        // The character immediately AFTER the match, read from the SAME match object's end index. See
-        // normaliseCapturedVersion: `/` means the token is part of a URL path (keep RAW, so `1.21.0.`
-        // before `/dist/` still fails); anything else is prose and gets trailing-dot normalisation.
-        const nextChar = content[m.index + m[0].length] ?? "";
-        // A trailing full stop is prose punctuation ONLY outside the derived-inventory files. The
-        // derived files (sw.js generated block, runtime-integrity.json, scripts/runtime-integrity.mjs) are
-        // machine-produced JSON/JS with no prose, so a trailing dot there is an anomaly and is validated
-        // RAW (it must keep failing rather than normalising to an allowed base). The exemption check also
-        // receives the RAW token, so a trailing-dot version is never read as a measured one.
-        const derived = isDerivedRegion(file, lineNo);
-        const v = derived ? rawVersion : normaliseCapturedVersion(rawVersion, nextChar);
+        // STRICT RAW: the whole captured candidate is judged exactly as captured (no trailing-dot
+        // stripping, no query/hash/percent decoding). The derived-inventory exemption also receives this
+        // same unmodified raw candidate.
         if (isDerivedInventoryHit(file, lineNo, "onnxruntime-web", rawVersion)) continue;
-        foundOrt.add(v);
+        foundOrt.add(rawVersion);
       }
     }
     for (const v of foundOrt) {
@@ -668,8 +650,7 @@ export function checkRuntimePins() {
     const raw = execSync(
       // Full-line capture (no -o). grep emits each matching line once; matchAll below re-reads the
       // content and enumerates EVERY match, so a second, unapproved pin on the same line is still judged
-      // independently (the old -o approach also split matches, but it discarded the character AFTER each
-      // match, which the URL-path discriminator needs — see normaliseCapturedVersion).
+      // independently.
       `grep -I -rnE '${TJS_PIN_PATTERN}' ${PIN_SCAN_TARGETS} 2>/dev/null || true`,
       { cwd: ROOT, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
     );
@@ -680,19 +661,17 @@ export function checkRuntimePins() {
       const file = tjsHit ? tjsHit[1] : colonIdx >= 0 ? line.slice(0, colonIdx) : line;
       const lineNo = tjsHit ? tjsHit[2] : null;
       const content = tjsHit ? tjsHit[3] : line;
-      // Enumerate EVERY match on the line, not just the first. The capture uses the full version token
-      // (including any -prerelease suffix) so `3.7.5-evil.1` is never truncated to `3.7.5`.
+      // Enumerate EVERY match on the line, not just the first, so a second unapproved pin on the same
+      // line is still judged independently. The capture uses the whole raw candidate (including any
+      // suffix) so `3.7.5-evil.1` is never truncated to `3.7.5`.
       const matches = [...content.matchAll(TJS_FULL_VERSION_RE)];
       if (matches.length === 0) continue;
-      const derived = isDerivedRegion(file, lineNo);
       for (const m of matches) {
         scannedCounts.transformers++;
         const rawVersion = m[1];
         if (isDerivedInventoryHit(file, lineNo, "@huggingface/transformers", rawVersion)) continue;
-        // Same discriminator as the ORT scan: `/` immediately after the match means a URL path, so the
-        // token is validated RAW; otherwise a trailing full stop is prose punctuation and is stripped.
-        const nextChar = content[m.index + m[0].length] ?? "";
-        const v = derived ? rawVersion : normaliseCapturedVersion(rawVersion, nextChar);
+        // STRICT RAW: judged exactly as captured (see VERSION_TOKEN).
+        const v = rawVersion;
         if (v === allowedTjsShared) continue;
 
         const allowedSlugs = tjsOverrideMap.get(v);
