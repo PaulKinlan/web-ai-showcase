@@ -505,6 +505,36 @@ for (const rt of STRICT_RUNTIMES) {
   }
 }
 
+// --- Floating specifiers must never bypass the exact-version allowlist ---------------------------
+// Each probe is a CDN package URL in an isolated model worker. A scan requiring X.Y.Z misses these.
+const FLOATING_RUNTIME_CASES = [
+  { pkg: "@huggingface/transformers", specifiers: ["latest", "next", "3", "3.7", "^3.7.5", "v3.7.5", "3.x"] },
+  { pkg: "onnxruntime-web", specifiers: ["latest", "1"] },
+];
+for (const { pkg, specifiers } of FLOATING_RUNTIME_CASES) {
+  for (const specifier of specifiers) {
+    test(`FLOATING: ${pkg}@${specifier} is rejected and named`, () => {
+      expectExecutableUrlVerdict(
+        `https://cdn.jsdelivr.net/npm/${pkg}@${specifier}/dist/x.js`,
+        { status: 1, needle: specifier },
+        `${pkg}@${specifier} must not bypass the runtime-pin allowlist`,
+      );
+    });
+  }
+}
+for (const { pkg, version } of [
+  { pkg: "@huggingface/transformers", version: "3.7.5" },
+  { pkg: "onnxruntime-web", version: "1.21.0" },
+]) {
+  test(`FLOATING control: ${pkg}@${version} remains authorized`, () => {
+    expectExecutableUrlVerdict(
+      `https://cdn.jsdelivr.net/npm/${pkg}@${version}/dist/x.js`,
+      { status: 0 },
+      `${pkg}@${version} exact authorized pin must remain green`,
+    );
+  });
+}
+
 // --- DELIBERATE prose false reds ------------------------------------------------------------------
 // Sentence punctuation is part of the candidate and FAILS. A prose comment ending a sentence right after
 // a pinned version is an ACCEPTED false red — the prose author rewords. There is deliberately no
