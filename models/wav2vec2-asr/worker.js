@@ -13,8 +13,6 @@
 
 import { TRANSFORMERS_URL } from "/web-ai-showcase/lib/webai.js";
 
-const MODEL = "Xenova/wav2vec2-base-960h";
-
 // id → character, from the model's vocab.json (deterministic for this pinned model).
 // 0 = <pad> (the CTC BLANK), 4 = "|" (word boundary), 1/2/3 = special tokens (rarely the argmax).
 const ID2CHAR = {
@@ -72,10 +70,10 @@ async function webgpuUsable() {
 
 async function loadOn(dev) {
   const { AutoProcessor, AutoModelForCTC } = await import(TRANSFORMERS_URL);
-  processor = await AutoProcessor.from_pretrained(MODEL, {
+  processor = await AutoProcessor.from_pretrained("Xenova/wav2vec2-base-960h", {
     progress_callback: (p) => post({ type: "progress", p }),
   });
-  model = await AutoModelForCTC.from_pretrained(MODEL, {
+  model = await AutoModelForCTC.from_pretrained("Xenova/wav2vec2-base-960h", {
     device: dev,
     dtype: "q8", // maps to onnx/model_quantized.onnx
     progress_callback: (p) => post({ type: "progress", p }),

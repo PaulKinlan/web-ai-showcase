@@ -6,6 +6,7 @@
 // Primary path: WebGPU + q4f16. Honest WASM q4 fallback when there's no GPU adapter (slower, still real).
 
 import { TRANSFORMERS_URL } from "/web-ai-showcase/lib/webai.js";
+import { basicFallback, evaluateCleanup } from "./cleanup-quality.mjs";
 
 const MODEL_ID = "onnx-community/Qwen2.5-0.5B-Instruct";
 let generator = null;
@@ -33,7 +34,7 @@ async function ensureLoaded() {
   const dev = useGpu ? "webgpu" : "wasm";
   const dtype = useGpu ? "q4f16" : "q4";
   console.log(`[cleanup worker] loading ${MODEL_ID} on ${dev} (${dtype})`);
-  generator = await pipeline("text-generation", MODEL_ID, {
+  generator = await pipeline("text-generation", "onnx-community/Qwen2.5-0.5B-Instruct", {
     device: dev,
     dtype,
     progress_callback: (p) => post({ type: "progress", p }),
@@ -53,6 +54,8 @@ async function cleanup(id, transcript) {
   const { TextStreamer } = mod;
   const messages = [
     { role: "system", content: SYSTEM },
+    { role: "user", content: "THE WEATHER IS NICE TODAY" },
+    { role: "assistant", content: "The weather is nice today." },
     { role: "user", content: transcript },
   ];
   let text = "";
@@ -74,9 +77,14 @@ async function cleanup(id, transcript) {
   });
   const ms = Math.round(performance.now() - t0);
   const full = out?.[0]?.generated_text;
-  const finalText = (Array.isArray(full) ? (full.at(-1)?.content ?? "") : String(full ?? "")) ||
-    text;
-  post({ type: "result", id, text: finalText.trim(), ms, device });
+  const modelText = ((Array.isArray(full) ? (full.at(-1)?.content ?? "") : String(full ?? "")) ||
+    text).trim();
+  const quality = evaluateCleanup(transcript, modelText);
+  // Do not call an unpunctuated or rewritten model result a successful cleanup.
+  // The deterministic minimum is useful to the reader, but visibly labelled
+  // and rejected by acceptance as a model cleanup failure.
+  post({ type: "result", id, text: quality.valid ? modelText : basicFallback(transcript),
+    modelText, isFallback: !quality.valid, quality, ms, device });
 }
 
 self.addEventListener("message", async (e) => {

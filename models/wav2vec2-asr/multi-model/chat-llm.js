@@ -59,7 +59,7 @@ export class ChatLLM {
     });
   }
 
-  /** Restore casing + punctuation on a raw CTC transcript. Returns { text, ms, device }. onToken streams. */
+  /** Attempt model cleanup; returns { text, modelText, isFallback, quality, ms, device }. onToken streams the model's unverified output. */
   cleanup(transcript, onToken) {
     const id = ++this._id;
     return new Promise((resolve, reject) => {
