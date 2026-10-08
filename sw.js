@@ -129,6 +129,26 @@ const RUNTIME_INTEGRITY = {
     "bytes": 357582,
     "policy": "verify-then-cache"
   },
+  "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.24.0-dev.20251116-b39e144322/dist/ort-wasm-simd-threaded.asyncify.mjs": {
+    "sha256": "4b90d459fc7b1c57b8744cfc8acda25930016f9cd8f264b33bd12f0c01b18bca",
+    "bytes": 48536,
+    "policy": "verify-then-cache"
+  },
+  "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.24.0-dev.20251116-b39e144322/dist/ort-wasm-simd-threaded.asyncify.wasm": {
+    "sha256": "8a38f6b173b3af049f4b489bedbe1da253ceed7a1720f96cdef603f2836b665c",
+    "bytes": 26915928,
+    "policy": "verify-then-cache"
+  },
+  "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.26.0-dev.20260416-b7804b056c/dist/ort-wasm-simd-threaded.asyncify.mjs": {
+    "sha256": "5959c6733039619c9af710d8e1bae8d6e84402787990637be987c2b1bd6c5fa9",
+    "bytes": 47389,
+    "policy": "verify-then-cache"
+  },
+  "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.26.0-dev.20260416-b7804b056c/dist/ort-wasm-simd-threaded.asyncify.wasm": {
+    "sha256": "e0c0c6d3e73d43b8a249972f8358f845b08cc16fec3c80efafdf8bed40366786",
+    "bytes": 23567050,
+    "policy": "verify-then-cache"
+  },
   "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.31.0-dev.20260914-8d85527a0/dist/ort-wasm-simd-threaded.asyncify.mjs": {
     "sha256": "0966b6105cd936744498aa60df7a22cbd47af3374dbc64a9ab561c08a71e3611",
     "bytes": 53057,
@@ -177,28 +197,49 @@ function runtimeIntegrityKey(url) {
 }
 
 async function verifiedLibraryResponse(req, sha256) {
+  // Cache operations use the SAME normalised key as the manifest lookup. Cache Storage matches on the
+  // full URL including the query string, so keying by req would store a second copy under "...?ts=1"
+  // and then miss it offline - the verified copy is there and unusable.
+  const key = runtimeIntegrityKey(req.url);
   // Both the read and the eviction are scoped to the cache this worker owns. caches.match() searches
   // EVERY cache in the origin, so a matching entry in a cache we do not own would be re-read on every
   // request, evict nothing, and force a network fetch each time - an unrecoverable 502 while offline.
   const shell = await caches.open(SHELL_CACHE);
-  const cached = await shell.match(req);
+  const cached = await shell.match(key);
   if (cached) {
-    if (await sha256Hex(await cached.clone().arrayBuffer()) === sha256) return cached;
+    // An opaque response cannot be read at all: arrayBuffer() throws on it. Treat that as unverified
+    // rather than letting the throw escape the fetch handler.
+    let cachedHash = null;
+    try {
+      cachedHash = await sha256Hex(await cached.clone().arrayBuffer());
+    } catch {
+      cachedHash = null;
+    }
+    if (cachedHash === sha256) return cached;
     // Poisoned after it was stored. Evict it BEFORE refetching, and await it: a delete left in flight
     // can land after the clean copy is stored and wipe the good entry instead of the bad one.
-    await shell.delete(req).catch(() => {});
+    await shell.delete(key).catch(() => {});
   }
   let res;
   try {
-    res = await fetch(req);
+    // FORCE a readable response. A pinned asset can be requested no-cors: MediaPipe loads its runtime
+    // glue with importScripts(), which the Fetch spec defines as a no-cors request. An opaque response
+    // has status 0 and ok false, so the previous `if (!res.ok) return res` let it return EARLY - the
+    // script was handed to the worker with no hash check at all, and could never have been hashed even
+    // if it reached the check. jsDelivr sends access-control-allow-origin: *, so cors mode yields a
+    // readable response that can be verified and cached.
+    res = await fetch(req.url, { mode: "cors", credentials: "omit" });
   } catch {
-    // Offline with no verified copy available. Fail closed: an unverified runtime is not served.
+    // Offline, or the CORS fetch failed. Fail closed: an unverified runtime is not served.
     return integrityFailure();
   }
+  // Fail closed on anything whose bytes we cannot prove. This is the specific case that made the
+  // MediaPipe hole possible, so it is checked before any truthiness test on the response.
+  if (res.type === "opaque" || res.type === "opaqueredirect" || res.status === 0) return integrityFailure();
   if (!res.ok) return res;
   if (await sha256Hex(await res.clone().arrayBuffer()) !== sha256) return integrityFailure();
   const copy = res.clone();
-  shell.put(req, copy).catch(() => {});
+  shell.put(key, copy).catch(() => {});
   return res;
 }
 

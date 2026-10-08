@@ -61,6 +61,16 @@ const ORT_ASSETS = [
   // manifest and silently drops to pass-through (served unverified, never persisted).
   "onnxruntime-web@1.31.0-dev.20260914-8d85527a0/dist/ort-wasm-simd-threaded.asyncify.mjs",
   "onnxruntime-web@1.31.0-dev.20260914-8d85527a0/dist/ort-wasm-simd-threaded.asyncify.wasm",
+  // transformers 4.2.0 (7 built routes) carries TWO dev literals for ort and the browser picks one;
+  // which one is not observable without driving a route to inference, and every 4.2.0 route loads a
+  // model of 1 GB or more so the audit never got that far. Both are pinned so the choice is covered
+  // either way - over-pinning costs a manifest line, while under-pinning is a live unverified runtime.
+  // A reviewer's report quoted 1.26.0-dev.20260416 WITHOUT the commit suffix; that exact version 404s,
+  // which is why these were taken from the bundle's own literals and then measured, not from the report.
+  "onnxruntime-web@1.26.0-dev.20260416-b7804b056c/dist/ort-wasm-simd-threaded.asyncify.mjs",
+  "onnxruntime-web@1.26.0-dev.20260416-b7804b056c/dist/ort-wasm-simd-threaded.asyncify.wasm",
+  "onnxruntime-web@1.24.0-dev.20251116-b39e144322/dist/ort-wasm-simd-threaded.asyncify.mjs",
+  "onnxruntime-web@1.24.0-dev.20251116-b39e144322/dist/ort-wasm-simd-threaded.asyncify.wasm",
 ];
 // Exact versioned URLs used by BUILT routes that do not come from either bundle above. Every entry here
 // was measured before being added: status 200, no redirect, no query string, and

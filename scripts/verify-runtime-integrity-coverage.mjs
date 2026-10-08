@@ -198,7 +198,11 @@ for (const entry of report) {
   // bundle and never starts a runtime, so its runtime-asset coverage is unproven. Say so rather than
   // letting a one-URL COMPLETE read as a clean bill of health for that family.
   if (entry.urls.length > 0 && !entry.urls.some((u) => u.url.includes(".wasm"))) {
-    console.log("  NOTE: no runtime binary was exercised on this route, so its runtime-asset coverage is unproven");
+    // Counted as inconclusive, not just noted. A reviewer showed the NOTE alone let the audit exit 0
+    // while the 4.2.0 route had never started a runtime at all, so its companion assets were unmeasured
+    // and unpinned - a green over a family nobody looked at. An unexercised route cannot be a pass.
+    inconclusive++;
+    console.log("  INCONCLUSIVE: no runtime binary was exercised on this route, so its runtime-asset coverage is unproven");
   }
 }
 console.log(`\nRESULT routes=${report.length} uncoveredUrls=${gaps} inconclusive=${inconclusive}`);

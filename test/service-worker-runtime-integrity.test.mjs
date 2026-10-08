@@ -198,6 +198,69 @@ test("a poisoned entry in a foreign cache does not shadow the clean copy in the 
   assert.equal(await store.get(ALLOWED).text(), CLEAN, "the clean shell entry must not be evicted");
 });
 
+// The hole a reviewer found in the previous revision, pinned as a test. MediaPipe loads its runtime glue
+// with importScripts(), which the Fetch spec defines as a no-cors request; the response is opaque, so it
+// has status 0 and ok false. The old code tested `!res.ok` BEFORE any readability check and returned the
+// response early, handing the script to the worker with no hash check at all. An opaque response must
+// now fail closed, because its bytes cannot be proven.
+test("an opaque response is never served for a pinned url", async () => {
+  const { request, store } = await loadWorker({
+    stored: new Map(),
+    network: () =>
+      Promise.resolve({
+        type: "opaque",
+        status: 0,
+        ok: false,
+        clone() { return this; },
+        arrayBuffer() { return Promise.reject(new TypeError("The response is opaque")); },
+      }),
+  });
+  const res = await request(ALLOWED);
+  assert.equal(res.status, 502, "unverifiable bytes must not be handed to the page");
+  assert.equal(store.has(ALLOWED), false, "an opaque response must never be stored");
+});
+
+// A cached opaque/corrupt entry cannot be read, so hashing it throws. That must not escape the fetch
+// handler as an unhandled rejection; it is unverified and so it is evicted and the run fails closed.
+test("an unreadable cached entry fails closed instead of throwing", async () => {
+  const { request, store } = await loadWorker({
+    stored: new Map([[ALLOWED, {
+      type: "opaque",
+      status: 0,
+      ok: false,
+      clone() { return this; },
+      arrayBuffer() { return Promise.reject(new TypeError("The response is opaque")); },
+    }]]),
+    network: () => Promise.reject(new Error("offline")),
+  });
+  const res = await request(ALLOWED);
+  assert.equal(res.status, 502);
+  assert.equal(store.has(ALLOWED), false, "the unreadable entry must be evicted");
+});
+
+// Query-string normalisation has to apply to the CACHE KEY too, or a verified asset stored under the
+// bare URL is missed by the next request that carries a query string - duplicated in cache and
+// unavailable offline. This failed before the cache key was normalised.
+test("a queried request reuses the verified entry stored under the bare url", async () => {
+  let networkCalls = 0;
+  const { request } = await loadWorker({
+    stored: new Map(),
+    network: () => { networkCalls++; return Promise.resolve(jsResponse(CLEAN)); },
+  });
+  const first = await request(ALLOWED);
+  assert.equal(await first.text(), CLEAN);
+  assert.equal(networkCalls, 1);
+
+  // Same asset, query string appended, network now unavailable: the verified copy must be reused.
+  const offline = await loadWorker({
+    stored: new Map([[ALLOWED, jsResponse(CLEAN)]]),
+    network: () => Promise.reject(new Error("offline")),
+  });
+  const second = await offline.request(`${ALLOWED}?ts=1`);
+  assert.equal(second.status, 200, "a queried request must reuse the verified cache entry");
+  assert.equal(await second.text(), CLEAN);
+});
+
 test("the manifest embedded in sw.js matches runtime-integrity.json", () => {
   const start = SW_SOURCE.indexOf("// >>> runtime-integrity");
   const end = SW_SOURCE.indexOf("// <<< runtime-integrity");
