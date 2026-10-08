@@ -4,7 +4,7 @@
 //   onnx-community/whisper-base_timestamped (all routes, q8 WASM in the test browser)
 //   onnx-community/Kokoro-82M-v1.0-ONNX (multi-model speak-back stage)
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -16,12 +16,16 @@ import {
   openPage,
   repoRoot,
   setViewport,
+  screenshot,
   startServer,
 } from "./browser.mjs";
 
 const WRITE_RUN = process.argv.includes("--write-run");
 const RUN_RECORD = join(repoRoot, "models/whisper-speech-to-text/acceptance-run.json");
 const PROFILE_DIR = mkdtempSync(join(tmpdir(), "whisper-acceptance-"));
+const EVIDENCE_DIR = process.env.WHISPER_CREDIT_EVIDENCE_DIR || join(tmpdir(), "7nr-whisper-jfk-credit");
+mkdirSync(EVIDENCE_DIR, { recursive: true });
+const CREDIT_URL = "https://github.com/PaulKinlan/web-ai-showcase/blob/ab33435d6c4a50ca5d02184e8445b61998eb88fc/audio-provenance/ledger.json";
 const ROUTES = {
   overview: "models/whisper-speech-to-text/",
   basics: "models/whisper-speech-to-text/basics/",
@@ -147,7 +151,7 @@ async function drive(rung, viewport) {
         statuses:[...document.querySelectorAll('.model-loader .status')].map(x=>x.textContent.trim()),
         overflow:document.documentElement.scrollWidth-innerWidth,
         visibleStatus:!document.getElementById('status')?.hidden,
-        credits:/credits and provenance/i.test(document.body.innerText)
+        credits:/JFK audio source and attribution record/.test(document.body.innerText)
       }))()`,
     );
     mark(
@@ -259,6 +263,47 @@ async function drive(rung, viewport) {
 
     mark("no-console-errors", page.errors.length === 0, page.errors.join(" | "));
     mark("no-network-failures", page.netFailures.length === 0, page.netFailures.join(" | "));
+
+    const credit = await evaluate(page.sessionId, `(() => {
+      const a = [...document.querySelectorAll('a')].find(x => x.textContent.trim() ===
+        'JFK audio source and attribution record');
+      if (!a) return null;
+      a.scrollIntoView({block:'center'});
+      return {href:a.href, visible:!!a.getClientRects().length,
+        context:a.parentElement.textContent.trim()};
+    })()`);
+    await screenshot(cdp, page.sessionId, join(EVIDENCE_DIR, `${viewport}-${rung}.png`));
+    const visible = credit?.visible && credit.href.startsWith(CREDIT_URL) &&
+      /John F\. Kennedy/.test(credit.context) && /public domain/.test(credit.context);
+    let responseStatus = 0;
+    cdp.on((msg) => {
+      if (msg.sessionId === page.sessionId && msg.method === "Network.responseReceived" &&
+          msg.params.type === "Document" && msg.params.response.url.startsWith(CREDIT_URL)) {
+        responseStatus = msg.params.response.status;
+      }
+    });
+    if (visible) {
+      await evaluate(page.sessionId, `(() => {
+        const a = [...document.querySelectorAll('a')].find(x => x.textContent.trim() ===
+          'JFK audio source and attribution record');
+        setTimeout(() => a.click(), 0);
+        return true;
+      })()`);
+      await waitFor(page.sessionId, `location.href.startsWith(${JSON.stringify(CREDIT_URL)})`,
+        30_000, `${label} credit navigation`, 500);
+      await waitFor(page.sessionId,
+        `document.body?.innerText.includes('627f0e49f927ffcd4120ed60a035ff2f8d448e2e7469452c7ecaffed06fe135b')`,
+        30_000, `${label} credit content`, 500);
+    }
+    const content = visible && await evaluate(page.sessionId, `(() => {
+      const body = document.body?.innerText || '';
+      return ['627f0e49f927ffcd4120ed60a035ff2f8d448e2e7469452c7ecaffed06fe135b',
+        'John F. Kennedy', 'Public domain', 'models/whisper-speech-to-text/jfk.wav']
+        .map(text => body.includes(text));
+    })()`);
+    mark("JFK credit opens content-verified live ledger", visible && responseStatus >= 200 &&
+      responseStatus < 400 && content?.every(Boolean),
+      JSON.stringify({credit, responseStatus, content}));
   } catch (error) {
     ok = false;
     check(`${label} completed`, false, error.message);
