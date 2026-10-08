@@ -21,7 +21,7 @@
 // mutation be judged by the CURRENT source rather than the last committed snapshot.
 import assert from "node:assert/strict";
 import { execSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdtempSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -48,9 +48,27 @@ export function materializeIsolatedRepo() {
   );
   // Overlay the working-tree audit script (the file under test) onto the committed snapshot. See the
   // OVERLAY note above for why this lives in the helper rather than in the individual tests.
-  copyFileSync(
-    join(ROOT, "scripts/audit-model-currency.mjs"),
-    join(dir, "scripts/audit-model-currency.mjs"),
-  );
+  // web-ai-showcase-j9z: the gate is now a small module graph (the audit script imports the literal
+  // scanner, which imports the single parser entry point) plus the reviewed golden ledger, so the
+  // overlay covers the whole graph — the two mutating isolation tests still can never diverge, and
+  // uncommitted local edits to ANY gate module are what gets judged.
+  const OVERLAY_FILES = [
+    "scripts/audit-model-currency.mjs",
+    "scripts/runtime-pin-literals.mjs",
+    "scripts/runtime-pin-parser.mjs",
+    "inventory/runtime-pin-marker-ledger.json",
+    "package.json",
+  ];
+  for (const f of OVERLAY_FILES) {
+    const srcPath = join(ROOT, f);
+    if (!existsSync(srcPath)) continue;
+    mkdirSync(dirname(join(dir, f)), { recursive: true });
+    copyFileSync(srcPath, join(dir, f));
+  }
+  // The literal pass parses with the pinned acorn/parse5 deps (bead j6i). The isolated copy has no
+  // install step, so link the repo's node_modules (installed via fleet-deps / npm ci in CI) into it.
+  if (existsSync(join(ROOT, "node_modules")) && !existsSync(join(dir, "node_modules"))) {
+    symlinkSync(join(ROOT, "node_modules"), join(dir, "node_modules"), "dir");
+  }
   return dir;
 }

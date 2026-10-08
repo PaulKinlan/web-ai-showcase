@@ -31,6 +31,8 @@ const ROOT = new URL("..", import.meta.url).pathname;
 const SNAPSHOT = ROOT + "inventory/model-currency.json";
 const REPORT_JSON = ROOT + "reports/model-currency.json";
 const REPORT_MD = ROOT + "reports/model-currency.md";
+import { checkLiteralRuntimePins } from "./runtime-pin-literals.mjs";
+
 export const ALLOWLIST_PATH = ROOT + "scripts/runtime-pin-allowlist.json";
 // runtime-integrity.json is included so its contents are deliberately monitored: the reviewer of the
 // derived-inventory exemption showed that listing a file as exempt while never scanning it makes the
@@ -733,6 +735,22 @@ export function checkRuntimePins() {
     }
   } catch (e) {
     errors.push(`failed to scan binary-classified files for runtime pins: ${e.message}`);
+  }
+
+  // 4. Additive whole-raw LITERAL pass (web-ai-showcase-j9z): every executable
+  //    string/template/script-src literal bearing a package marker is judged on
+  //    its COMPLETE raw specifier via the AST parser entry point, and every
+  //    nonnumeric marker occurrence must match the reviewed golden ledger.
+  //    Fail-closed on nested templates, floating specifiers, cooked escapes,
+  //    unsupported contexts and unparseable marker/sink-bearing sources.
+  //    Counters are ADDITIVE (literalScannedCounts) and never mask the legacy
+  //    scannedCounts floors above.
+  try {
+    const literal = checkLiteralRuntimePins(ROOT, PIN_SCAN_TARGETS, allowlist, isDerivedInventoryHit);
+    errors.push(...literal.errors);
+    errors.literalScannedCounts = literal.counters;
+  } catch (e) {
+    errors.push(`literal runtime-pin pass failed closed: ${e.message}`);
   }
 
   // Non-vacuity signal: how many pin occurrences the text scans actually examined. Attached to the
