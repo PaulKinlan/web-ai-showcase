@@ -1,11 +1,11 @@
 // Test suite for scripts/measure-raw-ort-dual-runtime.mjs adapter improvements (bead ij4).
-// Validates B0, B2, B3, B4, B5 and the critical behavioural rule without browser or network calls.
+// Validates F1, F2, F3, F4, F5 and the critical behavioural rule without browser or network calls.
 
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -13,18 +13,139 @@ import {
   checkWebGPUAvailable,
   classify,
   computeDecodedSha256,
+  computeDecodedSha256FromCdp,
   createUniqueProfilePath,
+  decodeCdpResponseBody,
   fetchDecodedSha256,
+  getDecodedResourceFromCdp,
   getFilteredRoutes,
   getFilteredViewports,
+  getLaunchOptionsForRoute,
   handleTargetAttached,
   loadAllEngines,
   resolveJsDelivrIntegrity,
   ROUTES,
+  routeRequiresWebGPU,
+  run,
   setupTargetAutoAttach,
   summarize,
   verifyRunResults,
 } from "../scripts/measure-raw-ort-dual-runtime.mjs";
+import { isStaleProfileDirName } from "../scripts/browser.mjs";
+
+function createMockHarness({
+  onWorkerNetworkEnable = null,
+  onGetResponseBody = null,
+  loaderStates = ["ready"],
+  requests = [],
+  fetchFn = async () => ({ ok: true, status: 200, arrayBuffer: async () => Buffer.from("test") }),
+} = {}) {
+  const launchedInstances = [];
+  const cdpCallLog = [];
+  let activeProfile = null;
+
+  const mockStartServer = async () => ({
+    server: { close: () => {} },
+    port: 9999,
+  });
+
+  const mockLaunchChrome = async (opts) => {
+    activeProfile = opts.userDataDir;
+    let killed = false;
+    const instance = {
+      ws: `ws://mock-chrome-${launchedInstances.length}`,
+      kill: async () => { killed = true; },
+      opts,
+      get killed() { return killed; },
+    };
+    launchedInstances.push(instance);
+    return instance;
+  };
+
+  const cdpInstances = [];
+  const mockCdpFactory = (ws) => {
+    const listeners = [];
+    const cdp = {
+      ws,
+      on: (cb) => { listeners.push(cb); },
+      send: async (method, params, sessionId) => {
+        cdpCallLog.push({ method, params, sessionId });
+        if (method === "Target.setAutoAttach") {
+          return {};
+        }
+        if (method === "Target.setDiscoverTargets") {
+          return {};
+        }
+        if (method === "Network.enable") {
+          if (sessionId && sessionId.startsWith("worker-") && onWorkerNetworkEnable) {
+            await onWorkerNetworkEnable(sessionId, params);
+          }
+          return {};
+        }
+        if (method === "Runtime.runIfWaitingForDebugger") {
+          return {};
+        }
+        if (method === "Runtime.evaluate") {
+          if (params?.expression?.includes(".model-loader")) {
+            return { result: { value: loaderStates } };
+          }
+          if (params?.expression?.includes("navigator.gpu")) {
+            return { result: { value: { ok: true } } };
+          }
+          return { result: { value: {} } };
+        }
+        if (method === "Network.getResponseBody") {
+          if (onGetResponseBody) return await onGetResponseBody(params, sessionId);
+          return { body: "console.log('test');", base64Encoded: false };
+        }
+        return {};
+      },
+      emit: (msg) => {
+        for (const cb of listeners) cb(msg);
+      },
+    };
+    cdpInstances.push(cdp);
+    return cdp;
+  };
+
+  const mockOpenPage = async (cdp, _url) => {
+    for (const req of requests) {
+      cdp.emit({
+        method: "Network.requestWillBeSent",
+        params: { requestId: req.id, request: { url: req.url } },
+        sessionId: req.sessionId || "page-s1",
+      });
+      cdp.emit({
+        method: "Network.responseReceived",
+        params: { requestId: req.id, response: { status: req.status || 200 } },
+        sessionId: req.sessionId || "page-s1",
+      });
+      cdp.emit({
+        method: "Network.loadingFinished",
+        params: { requestId: req.id, encodedDataLength: req.bytes || 100 },
+        sessionId: req.sessionId || "page-s1",
+      });
+    }
+    return { targetId: "page-t1", sessionId: "page-s1", errors: [] };
+  };
+
+  const mockClosePage = async () => {};
+  const mockSetViewport = async () => {};
+
+  return {
+    launchedInstances,
+    cdpCallLog,
+    cdpInstances,
+    mockStartServer,
+    mockLaunchChrome,
+    mockCdpFactory,
+    mockOpenPage,
+    mockClosePage,
+    mockSetViewport,
+    fetchFn,
+    getActiveProfile: () => activeProfile,
+  };
+}
 
 test("(1) route entry exists for embeddinggemma-2/basics/ and is selected by ROUTE_ONLY filter", () => {
   const entry = ROUTES.find((r) => r.slug === "embeddinggemma-2");
@@ -96,7 +217,7 @@ test("(2b) loadAllEngines fails closed immediately when model-loader enters unsu
   );
 });
 
-test("(3a) createUniqueProfilePath produces unique profile directories per run", () => {
+test("(3a) createUniqueProfilePath produces unique profile directories matching stale-profile prune pattern", () => {
   const path1 = createUniqueProfilePath();
   const path2 = createUniqueProfilePath();
   assert.notEqual(path1, path2, "successive profile paths must be distinct");
@@ -105,46 +226,79 @@ test("(3a) createUniqueProfilePath produces unique profile directories per run",
     join(tmpdir(), "webai-dual-runtime-profile"),
     "must not be the hardcoded static path",
   );
-  assert.match(path1, /webai-dual-runtime-profile-/);
+  // Matches the harness webai-chrome-profile pattern
+  assert.match(path1, /webai-chrome-profile-dualruntime-/);
+
+  // Verifies stale-profile prune compatibility (browser.mjs:939, :951)
+  const dirName = path1.split("/").pop();
+  assert.equal(isStaleProfileDirName(dirName), true, "directory name must match isStaleProfileDirName");
+  const pidMatch = dirName.match(/webai-chrome-profile-[^-]+-(\d+)-/);
+  assert.ok(pidMatch, "directory name must match PID extraction regex");
+  assert.equal(Number(pidMatch[1]), process.pid, "extracted PID must match current process PID");
 });
 
-test("(3b) profile directory is removed on normal and failure paths in finally block", async () => {
-  // Normal/success path lifecycle
-  const testDirSuccess = join(
-    tmpdir(),
-    `test-profile-lifecycle-ok-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-  );
-  mkdirSync(testDirSuccess, { recursive: true });
-  assert.equal(existsSync(testDirSuccess), true);
-
-  try {
-    // Normal run work happens here
-  } finally {
-    rmSync(testDirSuccess, { recursive: true, force: true });
-  }
-  assert.equal(existsSync(testDirSuccess), false, "profile must be removed on success path");
-
-  // Timeout/failure path lifecycle
-  const testDirFail = join(
-    tmpdir(),
-    `test-profile-lifecycle-fail-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-  );
-  mkdirSync(testDirFail, { recursive: true });
-  assert.equal(existsSync(testDirFail), true);
-
-  await assert.rejects(async () => {
-    try {
-      throw new Error("simulated run failure");
-    } finally {
-      rmSync(testDirFail, { recursive: true, force: true });
-    }
+test("(3b) profile directory is created by run() and removed on success and failure paths (B2 / F4)", async () => {
+  let createdProfileOk = null;
+  const harnessOk = createMockHarness({
+    requests: [{ id: "req-1", url: "http://127.0.0.1/app.js", status: 200, bytes: 50 }],
   });
-  assert.equal(existsSync(testDirFail), false, "profile must be removed on failure/timeout path");
+
+  const testRoutes = [
+    {
+      slug: "bert-base-turkish-cased-ner",
+      route: "models/bert-base-turkish-cased-ner/multi-model/",
+      control: null,
+      expect: "test",
+    },
+  ];
+
+  await run({
+    routes: testRoutes,
+    env: { ROUTE_ONLY: "bert-base-turkish-cased-ner", VIEWPORT_ONLY: "desktop" },
+    startServerFn: harnessOk.mockStartServer,
+    launchChromeFn: (opts) => {
+      createdProfileOk = opts.userDataDir;
+      assert.equal(existsSync(createdProfileOk), true, "profile directory must exist during run");
+      return harnessOk.mockLaunchChrome(opts);
+    },
+    cdpFactory: harnessOk.mockCdpFactory,
+    openPageFn: harnessOk.mockOpenPage,
+    closePageFn: harnessOk.mockClosePage,
+    setViewportFn: harnessOk.mockSetViewport,
+    sleepFn: async () => {},
+  });
+
+  assert.ok(createdProfileOk, "profile must have been created");
+  assert.equal(existsSync(createdProfileOk), false, "profile directory must be unlinked on success path");
+
+  // Failure path:
+  let createdProfileFail = null;
+  const harnessFail = createMockHarness();
+  await assert.rejects(async () => {
+    await run({
+      routes: testRoutes,
+      env: { ROUTE_ONLY: "bert-base-turkish-cased-ner", VIEWPORT_ONLY: "desktop" },
+      startServerFn: harnessFail.mockStartServer,
+      launchChromeFn: (opts) => {
+        createdProfileFail = opts.userDataDir;
+        assert.equal(existsSync(createdProfileFail), true, "profile directory must exist during run");
+        return harnessFail.mockLaunchChrome(opts);
+      },
+      cdpFactory: harnessFail.mockCdpFactory,
+      openPageFn: async () => {
+        throw new Error("simulated page load failure");
+      },
+      closePageFn: harnessFail.mockClosePage,
+      setViewportFn: harnessFail.mockSetViewport,
+      sleepFn: async () => {},
+    });
+  });
+
+  assert.ok(createdProfileFail, "profile must have been created");
+  assert.equal(existsSync(createdProfileFail), false, "profile directory must be unlinked on failure path");
 });
 
 test("(4) decoded-byte hashing is used for jsDelivr pin candidates, not encoded transfer length", async () => {
-  // Simulate an asset where encoded wire transfer size differs from decoded bytes:
-  // (e.g. 4.3.1 entrypoint is 167590 wire vs 586230 decoded).
   const decodedString = "DECODED_TEST_PAYLOAD_TRANSFORMERS_4_3_1_".repeat(14656);
   const decodedBuf = Buffer.from(decodedString, "utf8");
   const expectedSha256 = createHash("sha256").update(decodedBuf).digest("hex");
@@ -153,7 +307,6 @@ test("(4) decoded-byte hashing is used for jsDelivr pin candidates, not encoded 
 
   const fakeUrl = "https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.1";
 
-  // Mock fetch function returning decoded buffer
   const mockFetch = async (url) => {
     if (url === fakeUrl) {
       return {
@@ -175,7 +328,6 @@ test("(4) decoded-byte hashing is used for jsDelivr pin candidates, not encoded 
   assert.equal(integrity[fakeUrl].decodedBytes, decodedBytesLength);
   assert.notEqual(integrity[fakeUrl].decodedBytes, wireEncodedLength);
 
-  // Test summarize with simulated Network events
   const events = [
     { kind: "request", id: "req-1", url: fakeUrl },
     { kind: "finished", id: "req-1", encodedDataLength: wireEncodedLength },
@@ -310,33 +462,59 @@ test("(6a) default scoping (unset env) keeps all routes and both viewports", () 
   assert.deepEqual(viewports, ["desktop", "mobile"]);
 });
 
-test("(6b) ROUTE_ONLY scopes both main routes and control loop", () => {
-  const env = { ROUTE_ONLY: "embeddinggemma-2" };
-  const scoped = getFilteredRoutes(ROUTES, env);
-  assert.equal(scoped.length, 1);
-  assert.equal(scoped[0].slug, "embeddinggemma-2");
+test("(6b) ROUTE_ONLY scopes both main routes and control loop in real runner path", async () => {
+  const measuredRoutes = [];
+  const harness = createMockHarness({
+    requests: [{ id: "req-1", url: "http://127.0.0.1/app.js", status: 200, bytes: 50 }],
+  });
 
-  // In the runner, loop 1 iterates scoped routes and loop 2 iterates scoped routes:
-  const loop1Routes = scoped.map((r) => r.route);
-  const loop2Controls = scoped.map((r) => r.control).filter(Boolean);
+  await run({
+    env: { ROUTE_ONLY: "embeddinggemma-2", VIEWPORT_ONLY: "desktop" },
+    startServerFn: harness.mockStartServer,
+    launchChromeFn: harness.mockLaunchChrome,
+    cdpFactory: harness.mockCdpFactory,
+    openPageFn: async (cdp, url) => {
+      measuredRoutes.push(url);
+      return harness.mockOpenPage(cdp, url);
+    },
+    closePageFn: harness.mockClosePage,
+    setViewportFn: harness.mockSetViewport,
+    sleepFn: async () => {},
+  });
 
-  assert.deepEqual(loop1Routes, ["models/embeddinggemma-2/basics/"]);
-  assert.deepEqual(loop2Controls, ["models/embeddinggemma-2/"]);
+  assert.equal(measuredRoutes.length, 2);
+  assert.ok(measuredRoutes[0].includes("models/embeddinggemma-2/basics/"));
+  assert.ok(measuredRoutes[1].includes("models/embeddinggemma-2/"));
+  assert.equal(measuredRoutes.some((u) => u.includes("bert")), false);
+  assert.equal(measuredRoutes.some((u) => u.includes("model2vec")), false);
+  assert.equal(measuredRoutes.some((u) => u.includes("yolo")), false);
 });
 
-test("(6c) VIEWPORT_ONLY scopes viewport selection and skips control when desktop excluded", () => {
-  const envDesktop = { VIEWPORT_ONLY: "desktop" };
-  const vpsDesktop = getFilteredViewports(envDesktop);
-  assert.deepEqual(vpsDesktop, ["desktop"]);
-  assert.equal(vpsDesktop.includes("desktop"), true, "desktop control loop runs");
+test("(6c) VIEWPORT_ONLY scopes viewport selection and skips control when desktop excluded in real runner path", async () => {
+  const measuredRoutes = [];
+  const harness = createMockHarness({
+    requests: [{ id: "req-1", url: "http://127.0.0.1/app.js", status: 200, bytes: 50 }],
+  });
 
-  const envMobile = { VIEWPORT_ONLY: "mobile" };
-  const vpsMobile = getFilteredViewports(envMobile);
-  assert.deepEqual(vpsMobile, ["mobile"]);
-  assert.equal(vpsMobile.includes("desktop"), false, "desktop control loop is skipped");
+  await run({
+    env: { ROUTE_ONLY: "embeddinggemma-2", VIEWPORT_ONLY: "mobile" },
+    startServerFn: harness.mockStartServer,
+    launchChromeFn: harness.mockLaunchChrome,
+    cdpFactory: harness.mockCdpFactory,
+    openPageFn: async (cdp, url) => {
+      measuredRoutes.push(url);
+      return harness.mockOpenPage(cdp, url);
+    },
+    closePageFn: harness.mockClosePage,
+    setViewportFn: harness.mockSetViewport,
+    sleepFn: async () => {},
+  });
+
+  assert.equal(measuredRoutes.length, 1);
+  assert.ok(measuredRoutes[0].includes("models/embeddinggemma-2/basics/"));
 });
 
-test("(7) unexercised route or zero-request result is treated as FAILURE/INCONCLUSIVE", () => {
+test("(7) unexercised route, zero-request result, or missing hash is treated as FAILURE/INCONCLUSIVE", () => {
   // Case 1: zero bytes / zero requests captured
   const zeroBytes = [
     {
@@ -363,26 +541,53 @@ test("(7) unexercised route or zero-request result is treated as FAILURE/INCONCL
   assert.equal(res2.ok, false);
   assert.ok(res2.failures.some((f) => f.includes("never reached 'ready'")));
 
-  // Case 3: valid run with requests and ready
+  // Case 3: valid run with requests and ready and correct jsDelivr hash
   const valid = [
     {
       route: "models/embeddinggemma-2/basics/",
       viewport: "desktop",
       ready: true,
       totalBytes: 586230,
+      observedJsDelivrUrls: ["https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.1"],
+      jsDelivrEntries: {
+        "https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.1": {
+          url: "https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.1",
+          sha256: "8d6716d9086f57c30a4bf367dba61b887593573c770c454465e8019b2703e743",
+          decodedBytes: 586230,
+        },
+      },
     },
   ];
   const res3 = verifyRunResults(valid);
   assert.equal(res3.ok, true);
   assert.equal(res3.failures.length, 0);
 
-  // Case 4: empty rows (no routes executed)
+  // Case 4: observed jsDelivr URL has missing or error hash entry (F2)
+  const missingHash = [
+    {
+      route: "models/embeddinggemma-2/basics/",
+      viewport: "desktop",
+      ready: true,
+      totalBytes: 586230,
+      observedJsDelivrUrls: ["https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.1"],
+      jsDelivrEntries: {
+        "https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.1": {
+          url: "https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.1",
+          error: "HTTP 404 Not Found",
+        },
+      },
+    },
+  ];
+  const res4 = verifyRunResults(missingHash);
+  assert.equal(res4.ok, false);
+  assert.ok(res4.failures.some((f) => f.includes("failed to resolve decoded SHA-256 for observed jsDelivr URL")));
+
+  // Case 5: empty rows (no routes executed)
   const empty = verifyRunResults([]);
   assert.equal(empty.ok, false);
 });
 
-test("(8) structural falsification against pre-adapter baseline (commit c357b18)", () => {
-  // Read the pre-adapter code directly from git to prove that every blocker would FAIL against it
+test("(8a) structural falsification against pre-adapter baseline (commit c357b18)", () => {
   const preAdapterSource = execFileSync("git", [
     "show",
     "c357b18:scripts/measure-raw-ort-dual-runtime.mjs",
@@ -498,4 +703,292 @@ test("(8) structural falsification against pre-adapter baseline (commit c357b18)
     false,
     "pre-adapter lacked verifyRunResults",
   );
+});
+
+test("(8b) structural falsification against pre-fix review baseline (commit f3e2b98)", () => {
+  const preFixSource = execFileSync("git", [
+    "show",
+    "f3e2b98:scripts/measure-raw-ort-dual-runtime.mjs",
+  ], {
+    encoding: "utf8",
+  });
+
+  // Falsify F1: pre-fix code discarded page auto-attach and swallowed worker attach errors
+  assert.equal(
+    preFixSource.includes("setupTargetAutoAttach(cdp, page.sessionId).catch(() => {})"),
+    true,
+    "pre-fix code discarded page auto-attach errors via catch-empty",
+  );
+  assert.equal(
+    preFixSource.includes("void handleTargetAttached(cdp, msg.params, { tracked }).catch"),
+    true,
+    "pre-fix code swallowed attached target setup errors in void-catch",
+  );
+
+  // Falsify F2: pre-fix verifyRunResults never checked jsDelivr integrity entries
+  assert.equal(
+    preFixSource.includes("observedJsDelivrUrls"),
+    false,
+    "pre-fix code lacked observedJsDelivrUrls tracking",
+  );
+  assert.equal(
+    preFixSource.includes("failed to resolve decoded SHA-256 for observed jsDelivr URL"),
+    false,
+    "pre-fix verifyRunResults never checked for missing or failed jsDelivr decoded SHA-256",
+  );
+
+  // Falsify F3: pre-fix code applied webgpu: true unconditionally and lacked routeRequiresWebGPU
+  assert.equal(
+    preFixSource.includes("routeRequiresWebGPU"),
+    false,
+    "pre-fix code lacked routeRequiresWebGPU helper",
+  );
+  assert.equal(
+    preFixSource.includes("getLaunchOptionsForRoute"),
+    false,
+    "pre-fix code lacked getLaunchOptionsForRoute",
+  );
+  assert.equal(
+    preFixSource.includes("webgpu: true,\n    });\n    const cdp = new CDP(chrome.ws);"),
+    true,
+    "pre-fix code launched single Chrome instance with unconditional webgpu: true",
+  );
+
+  // Falsify F4: pre-fix profile directory was not compatible with harness stale-prune pattern
+  assert.equal(
+    preFixSource.includes('webai-dual-runtime-profile-'),
+    true,
+    "pre-fix code generated webai-dual-runtime-profile- which fails isStaleProfileDirName",
+  );
+  assert.equal(
+    preFixSource.includes('createIsolatedProfileDir("dualruntime")'),
+    false,
+    "pre-fix code lacked harness stale-prune profile prefix",
+  );
+
+  // Falsify F5: pre-fix code lacked decodeCdpResponseBody and computeDecodedSha256FromCdp
+  assert.equal(
+    preFixSource.includes("decodeCdpResponseBody"),
+    false,
+    "pre-fix code lacked decodeCdpResponseBody",
+  );
+  assert.equal(
+    preFixSource.includes("computeDecodedSha256FromCdp"),
+    false,
+    "pre-fix code lacked computeDecodedSha256FromCdp",
+  );
+  assert.equal(
+    preFixSource.includes("getDecodedResourceFromCdp"),
+    false,
+    "pre-fix code lacked getDecodedResourceFromCdp",
+  );
+});
+
+test("(9) runner aborts promptly on target setup/Network.enable failure without resuming paused worker (F1)", async () => {
+  const harness = createMockHarness({
+    onWorkerNetworkEnable: async (sid) => {
+      throw new Error(`Simulated Network.enable rejection on ${sid}`);
+    },
+  });
+
+  const customOpenPage = async (cdp, url) => {
+    const page = await harness.mockOpenPage(cdp, url);
+    cdp.emit({
+      method: "Target.attachedToTarget",
+      params: {
+        sessionId: "worker-s1",
+        targetInfo: { type: "worker", url: "worker.js" },
+        waitingForDebugger: true,
+      },
+    });
+    return page;
+  };
+
+  const testRoutes = [
+    {
+      slug: "bert-base-turkish-cased-ner",
+      route: "models/bert-base-turkish-cased-ner/multi-model/",
+      control: null,
+      expect: "test",
+    },
+  ];
+
+  let runError = null;
+  try {
+    await run({
+      routes: testRoutes,
+      env: { ROUTE_ONLY: "bert-base-turkish-cased-ner", VIEWPORT_ONLY: "desktop" },
+      startServerFn: harness.mockStartServer,
+      launchChromeFn: harness.mockLaunchChrome,
+      cdpFactory: harness.mockCdpFactory,
+      openPageFn: customOpenPage,
+      closePageFn: harness.mockClosePage,
+      setViewportFn: harness.mockSetViewport,
+      sleepFn: async () => {},
+    });
+  } catch (err) {
+    runError = err;
+  }
+
+  // 1. Run must have failed promptly with the attach/network error
+  assert.ok(runError, "run() must reject when target setup / Network.enable fails");
+  assert.match(runError.message, /Network\.enable rejection on worker-s1/);
+
+  // 2. Worker target MUST NOT have been resumed
+  const resumedWorker = harness.cdpCallLog.some(
+    (c) => c.method === "Runtime.runIfWaitingForDebugger" && c.sessionId === "worker-s1",
+  );
+  assert.equal(resumedWorker, false, "paused worker must NEVER be resumed after failed Network.enable");
+
+  // 3. Chrome must have been torn down
+  const launched = harness.launchedInstances[0];
+  assert.ok(launched, "Chrome instance should have been created");
+  assert.equal(launched.killed, true, "Chrome instance must be killed to ensure no hung target remains");
+
+  // 4. Profile must be cleaned up
+  assert.equal(existsSync(launched.opts.userDataDir), false, "profile directory must be removed on error path");
+});
+
+test("(10) runner fails closed when an observed jsDelivr URL has missing or failed decoded SHA-256 (F2)", async () => {
+  const fakeJsDelivrUrl = "https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.1/dist/transformers.min.js";
+  const harness = createMockHarness({
+    requests: [
+      { id: "req-1", url: fakeJsDelivrUrl, status: 200, bytes: 586230 },
+    ],
+    // Both CDP getResponseBody and fetchFn fail to provide a hash
+    onGetResponseBody: async () => {
+      throw new Error("CDP getResponseBody unavailable");
+    },
+    fetchFn: async () => ({ ok: false, status: 404, statusText: "Not Found" }),
+  });
+
+  const testRoutes = [
+    {
+      slug: "bert-base-turkish-cased-ner",
+      route: "models/bert-base-turkish-cased-ner/multi-model/",
+      control: null,
+      expect: "test",
+    },
+  ];
+
+  await assert.rejects(
+    async () => {
+      await run({
+        routes: testRoutes,
+        env: { ROUTE_ONLY: "bert-base-turkish-cased-ner", VIEWPORT_ONLY: "desktop" },
+        startServerFn: harness.mockStartServer,
+        launchChromeFn: harness.mockLaunchChrome,
+        cdpFactory: harness.mockCdpFactory,
+        openPageFn: harness.mockOpenPage,
+        closePageFn: harness.mockClosePage,
+        setViewportFn: harness.mockSetViewport,
+        fetchFn: harness.fetchFn,
+        sleepFn: async () => {},
+      });
+    },
+    (err) => {
+      assert.match(err.message, /Measurement run failed verification/);
+      assert.match(err.message, /failed to resolve decoded SHA-256 for observed jsDelivr URL/);
+      assert.ok(err.message.includes(fakeJsDelivrUrl));
+      return true;
+    },
+  );
+});
+
+test("(11) existing routes preserve --disable-gpu launch option (webgpu: false) and only embeddinggemma-2/basics/ receives webgpu: true (F3)", async () => {
+  // Unit assertions
+  assert.equal(routeRequiresWebGPU("models/bert-base-turkish-cased-ner/multi-model/"), false);
+  assert.equal(routeRequiresWebGPU("models/bert-base-turkish-cased-ner/"), false);
+  assert.equal(routeRequiresWebGPU("models/model2vec-static-embeddings/multi-model/"), false);
+  assert.equal(routeRequiresWebGPU("models/model2vec-static-embeddings/"), false);
+  assert.equal(routeRequiresWebGPU("models/yolo-world/multi-model/"), false);
+  assert.equal(routeRequiresWebGPU("models/yolo-world/"), false);
+  assert.equal(routeRequiresWebGPU("models/embeddinggemma-2/"), false);
+  assert.equal(routeRequiresWebGPU("models/embeddinggemma-2/basics/"), true);
+
+  assert.equal(getLaunchOptionsForRoute("models/bert-base-turkish-cased-ner/multi-model/").webgpu, false);
+  assert.equal(getLaunchOptionsForRoute("models/embeddinggemma-2/basics/").webgpu, true);
+  assert.equal(getLaunchOptionsForRoute("models/embeddinggemma-2/").webgpu, false);
+
+  // Runner-level assertion: run under default unset scoping
+  const harness = createMockHarness({
+    requests: [{ id: "req-1", url: "http://127.0.0.1/app.js", status: 200, bytes: 100 }],
+  });
+
+  await run({
+    env: { VIEWPORT_ONLY: "desktop" },
+    startServerFn: harness.mockStartServer,
+    launchChromeFn: harness.mockLaunchChrome,
+    cdpFactory: harness.mockCdpFactory,
+    openPageFn: harness.mockOpenPage,
+    closePageFn: harness.mockClosePage,
+    setViewportFn: harness.mockSetViewport,
+    sleepFn: async () => {},
+  });
+
+  // Verify launch configurations:
+  // First launch for existing routes 1, 2, 3: webgpu: false
+  assert.equal(harness.launchedInstances[0].opts.webgpu, false, "existing routes must launch with webgpu: false");
+  // Second launch for embeddinggemma-2/basics/: webgpu: true
+  assert.equal(harness.launchedInstances[1].opts.webgpu, true, "embeddinggemma-2/basics/ must launch with webgpu: true");
+  // Third launch for overview controls: webgpu: false
+  assert.equal(harness.launchedInstances[2].opts.webgpu, false, "overview controls must launch with webgpu: false");
+});
+
+test("(12) decoded-byte hashing handles base64 WASM and UTF-8 JS correctly, rejecting naive string decode (F5)", async () => {
+  // 1. WASM binary payload:
+  // Binary header: \0asm\1\0\0\0 + custom bytes (12 bytes)
+  const wasmBinary = Buffer.from([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0xef, 0xbe, 0xad, 0xde]);
+  const base64Wasm = wasmBinary.toString("base64");
+  assert.equal(wasmBinary.byteLength, 12);
+  assert.equal(base64Wasm.length, 16);
+
+  const decodedWasm = decodeCdpResponseBody(base64Wasm, true);
+  assert.deepEqual(decodedWasm, wasmBinary);
+
+  const wasmResult = computeDecodedSha256FromCdp(base64Wasm, true);
+  const expectedWasmSha256 = createHash("sha256").update(wasmBinary).digest("hex");
+  const wrongNaiveSha256 = createHash("sha256").update(Buffer.from(base64Wasm, "utf8")).digest("hex");
+
+  assert.equal(wasmResult.decodedBytes, 12, "decodedBytes must match true binary byte length (12)");
+  assert.notEqual(wasmResult.decodedBytes, base64Wasm.length, "decodedBytes must not be base64 string length");
+  assert.equal(wasmResult.sha256, expectedWasmSha256, "sha256 must match true binary bytes hash");
+  assert.notEqual(wasmResult.sha256, wrongNaiveSha256, "sha256 must NOT match naive string decode");
+
+  // 2. UTF-8 JS payload (with multi-byte unicode characters where char length != byte length)
+  const jsPayload = "/* runtime */ const msg = 'dual-runtime \u2714 \u00a9';";
+  const expectedJsBytes = Buffer.byteLength(jsPayload, "utf8");
+  assert.notEqual(expectedJsBytes, jsPayload.length, "multi-byte string has byteLength != length");
+
+  const decodedJs = decodeCdpResponseBody(jsPayload, false);
+  assert.equal(decodedJs.byteLength, expectedJsBytes);
+
+  const jsResult = computeDecodedSha256FromCdp(jsPayload, false);
+  const expectedJsSha256 = createHash("sha256").update(Buffer.from(jsPayload, "utf8")).digest("hex");
+
+  assert.equal(jsResult.decodedBytes, expectedJsBytes);
+  assert.equal(jsResult.sha256, expectedJsSha256);
+
+  // 3. CDP getDecodedResourceFromCdp helper
+  const mockCdp = {
+    send: async (method, params) => {
+      if (params.requestId === "wasm-req") {
+        return { body: base64Wasm, base64Encoded: true };
+      }
+      if (params.requestId === "js-req") {
+        return { body: jsPayload, base64Encoded: false };
+      }
+      throw new Error("unexpected request");
+    },
+  };
+
+  const wasmCdp = await getDecodedResourceFromCdp(mockCdp, "wasm-req");
+  assert.equal(wasmCdp.decodedBytes, 12);
+  assert.equal(wasmCdp.sha256, expectedWasmSha256);
+  assert.equal(wasmCdp.base64Encoded, true);
+
+  const jsCdp = await getDecodedResourceFromCdp(mockCdp, "js-req");
+  assert.equal(jsCdp.decodedBytes, expectedJsBytes);
+  assert.equal(jsCdp.sha256, expectedJsSha256);
+  assert.equal(jsCdp.base64Encoded, false);
 });

@@ -32,6 +32,7 @@ import { fileURLToPath } from "node:url";
 import {
   CDP,
   closePage,
+  createIsolatedProfileDir,
   DESKTOP,
   launchChrome,
   MOBILE,
@@ -71,18 +72,42 @@ export const ROUTES = [
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// B2: Unique isolated profile per run.
-// Rationale: A unique isolated profile per run ensures a cold cache visit every time.
-// A warm profile can satisfy runtime requests from HTTP cache and make the captured set
-// UNDERSTATE a cold visit. Removing it on both normal and timeout/failure paths (finally)
-// ensures no disk leaks or cross-run cache pollution remain behind.
+// B2 / F4: Unique isolated profile per run matching the harness stale-profile prune pattern.
+// Prefix "dualruntime" without hyphens ensures name.match(/webai-chrome-profile-[^-]+-(\d+)-/)
+// captures this process's PID for stale profile cleanup by pruneStaleAcceptanceProfiles.
 export function createUniqueProfilePath() {
-  return join(
-    tmpdir(),
-    `webai-dual-runtime-profile-${process.pid}-${Date.now()}-${
-      Math.random().toString(36).slice(2, 7)
-    }`,
-  );
+  return createIsolatedProfileDir("dualruntime");
+}
+
+// Profile and Process Lifecycle under Signals and Termination (F4 / Coordinator Requirement):
+// - Normal exit and handled errors: Cleaned up in the finally block (Chrome killed, profile unlinked, server closed).
+// - SIGINT / SIGTERM / SIGHUP / exit: Handled by the harness's registerGlobalExitHooks path (scripts/browser.mjs:346,
+//   invoked when launchChrome is called), which invokes cleanupAllChromeInstances() to terminate Chrome and unlink profiles.
+//
+// KNOWN LIMITATION / RESIDUAL (SIGKILL - Addition A):
+// Under SIGKILL (kill -9), no userspace signal handler, exit hook, or JavaScript finally block can execute at all.
+// Therefore, cleanup CANNOT be guaranteed by in-process JavaScript if this process or Chrome is killed with SIGKILL.
+// SIGKILL leaves the profile directory behind.
+// The mitigations for this residual are:
+//   (i) External hard runtime bounds: The runner is hard-bounded externally so it cannot be SIGKILLed for runaway duration.
+//   (ii) Independent post-run audit: The caller/orchestrator performs an independent post-run check of lingering
+//        Chrome processes and profile directories rather than relying on the terminated process.
+//   (iii) Stale profile pruning: On the NEXT run, the existing stale-profile prune mechanism
+//        (pruneStaleAcceptanceProfiles in scripts/browser.mjs) inspects tmpdir for webai-chrome-profile-* directories,
+//        verifies dead PIDs, and automatically prunes unreferenced profiles.
+
+// F3: Apply WebGPU launch option ONLY for the route that requires it (models/embeddinggemma-2/basics/),
+// and preserve the previous launch behaviour (webgpu: false -> --disable-gpu) exactly for every other route
+// and all overview controls.
+export function routeRequiresWebGPU(routePath) {
+  return routePath === "models/embeddinggemma-2/basics/";
+}
+
+export function getLaunchOptionsForRoute(routePath, baseOptions = {}) {
+  return {
+    ...baseOptions,
+    webgpu: routeRequiresWebGPU(routePath),
+  };
 }
 
 // B4: Scoping env-var filter applied to BOTH loops.
@@ -184,14 +209,46 @@ export async function checkWebGPUAvailable(evaluateFn) {
   return result || { ok: false, reason: "evaluation returned empty" };
 }
 
-// B3: Decoded-byte SHA-256 calculation for exact observed successful cdn.jsdelivr.net URLs.
-// The manifest policy hashes decoded bytes and the difference is material (e.g. 4.3.1 entrypoint
-// is 167590 bytes wire vs 586230 decoded).
+// B3 / F5: Decoded-byte extraction and SHA-256 computation for CDP resource bodies and HTTP responses.
+// JavaScript/text arrives via CDP as UTF-8 text (base64Encoded: false), while WASM arrives as
+// base64-encoded binary (base64Encoded: true). A naive string decode would hash the base64 characters
+// rather than the true binary bytes. We decode the true bytes in both cases and never the encoded length.
+export function decodeCdpResponseBody(body, base64Encoded) {
+  if (base64Encoded) {
+    return Buffer.from(body, "base64");
+  }
+  return Buffer.from(body, "utf8");
+}
+
 export function computeDecodedSha256(bufferOrUint8) {
   const buf = Buffer.isBuffer(bufferOrUint8) ? bufferOrUint8 : Buffer.from(bufferOrUint8);
   return {
     sha256: createHash("sha256").update(buf).digest("hex"),
     decodedBytes: buf.byteLength,
+  };
+}
+
+export function computeDecodedSha256FromCdp(body, base64Encoded) {
+  const buf = decodeCdpResponseBody(body, base64Encoded);
+  return {
+    sha256: createHash("sha256").update(buf).digest("hex"),
+    decodedBytes: buf.byteLength,
+  };
+}
+
+export async function getDecodedResourceFromCdp(cdp, requestId, sessionId = null) {
+  const res = await cdp.send("Network.getResponseBody", { requestId }, sessionId);
+  if (!res || typeof res.body !== "string") {
+    throw new Error(`CDP Network.getResponseBody returned invalid body for request ${requestId}`);
+  }
+  const { sha256, decodedBytes } = computeDecodedSha256FromCdp(
+    res.body,
+    Boolean(res.base64Encoded),
+  );
+  return {
+    sha256,
+    decodedBytes,
+    base64Encoded: Boolean(res.base64Encoded),
   };
 }
 
@@ -211,13 +268,24 @@ export async function fetchDecodedSha256(url, fetchFn = globalThis.fetch) {
 
 export async function resolveJsDelivrIntegrity(
   observedUrls,
-  { fetchFn = globalThis.fetch, requestStatusMap = new Map() } = {},
+  { fetchFn = globalThis.fetch, requestStatusMap = new Map(), cdpBodiesMap = new Map() } = {},
 ) {
   const entries = {};
   const urls = [...new Set(observedUrls)].filter((u) => u && u.includes("cdn.jsdelivr.net"));
   for (const url of urls) {
     const statusMeta = requestStatusMap.get(url);
     if (statusMeta && statusMeta.status && (statusMeta.status < 200 || statusMeta.status >= 400)) {
+      continue;
+    }
+    if (cdpBodiesMap && cdpBodiesMap.has(url)) {
+      const cdpEntry = cdpBodiesMap.get(url);
+      entries[url] = {
+        url,
+        sha256: cdpEntry.sha256,
+        decodedBytes: cdpEntry.decodedBytes,
+        base64Encoded: cdpEntry.base64Encoded,
+        status: 200,
+      };
       continue;
     }
     try {
@@ -238,8 +306,8 @@ export async function resolveJsDelivrIntegrity(
   return entries;
 }
 
-// Critical behavioural rule: an unexercised route or zero-request result must be treated
-// as FAILURE/INCONCLUSIVE, never as a pass.
+// Critical behavioural rule: an unexercised route, zero-request result, or missing/failed
+// jsDelivr decoded SHA-256 must be treated as FAILURE/INCONCLUSIVE, never as a pass.
 export function verifyRunResults(rows) {
   const failures = [];
   if (!rows || rows.length === 0) {
@@ -253,6 +321,41 @@ export function verifyRunResults(rows) {
       failures.push(
         `${row.route} [${row.viewport}]: zero network requests recorded (unexercised route / inconclusive)`,
       );
+    }
+    // F2: Require a successful decoded SHA-256 for EVERY observed successful jsDelivr URL
+    const observedJsDelivrUrls = row.observedJsDelivrUrls || (
+      row.jsDelivrEntries ? Object.keys(row.jsDelivrEntries) : []
+    );
+    for (const url of observedJsDelivrUrls) {
+      const entry = row.jsDelivrEntries?.[url];
+      if (!entry) {
+        failures.push(
+          `${row.route} [${row.viewport}]: missing decoded SHA-256 entry for observed jsDelivr URL: ${url}`,
+        );
+      } else if (entry.error) {
+        failures.push(
+          `${row.route} [${row.viewport}]: failed to resolve decoded SHA-256 for observed jsDelivr URL ${url}: ${entry.error}`,
+        );
+      } else if (!entry.sha256 || typeof entry.sha256 !== "string" || entry.sha256.length !== 64) {
+        failures.push(
+          `${row.route} [${row.viewport}]: invalid decoded SHA-256 for observed jsDelivr URL ${url}: ${entry.sha256}`,
+        );
+      }
+    }
+    if (row.jsDelivrEntries) {
+      for (const [url, entry] of Object.entries(row.jsDelivrEntries)) {
+        if (!observedJsDelivrUrls.includes(url)) {
+          if (entry.error) {
+            failures.push(
+              `${row.route} [${row.viewport}]: failed to resolve decoded SHA-256 for jsDelivr URL ${url}: ${entry.error}`,
+            );
+          } else if (!entry.sha256 || entry.sha256.length !== 64) {
+            failures.push(
+              `${row.route} [${row.viewport}]: invalid decoded SHA-256 for jsDelivr URL ${url}: ${entry.sha256}`,
+            );
+          }
+        }
+      }
     }
   }
   return {
@@ -286,10 +389,18 @@ export async function loaderStates(cdp, sid) {
 // state (its local model check exceeded its deadline) instead of waiting forever.
 // B1 retracted: existing regex matches "Download model (~175 MB)".
 // B0 fail-closed: abort immediately if loader enters 'unsupported' state.
-export async function loadAllEngines(cdp, sid, label, budgetMs = 30 * 60_000) {
+// F1 fail-closed: abort immediately if any target setup or Network.enable fails.
+export async function loadAllEngines(
+  cdp,
+  sid,
+  label,
+  budgetMs = 30 * 60_000,
+  { abortPromise = null, getAttachError = null, sleepFn = sleep } = {},
+) {
   const started = Date.now();
   let lastLog = "";
   while (Date.now() - started < budgetMs) {
+    if (getAttachError && getAttachError()) throw getAttachError();
     const states = (await loaderStates(cdp, sid)) ?? [];
     const encoded = JSON.stringify(states);
     if (encoded !== lastLog) {
@@ -308,14 +419,26 @@ export async function loadAllEngines(cdp, sid, label, budgetMs = 30 * 60_000) {
       sid,
       `(()=>{let n=0;for(const b of document.querySelectorAll('.model-loader button')){if(/Download|Retry|Re-download|Continue|Retry local check/i.test(b.textContent)&&!b.disabled){b.click();n++}}return n})()`,
     ).catch(() => null);
-    await sleep(2000);
+
+    if (getAttachError && getAttachError()) throw getAttachError();
+
+    if (abortPromise) {
+      await Promise.race([
+        sleepFn(2000),
+        abortPromise.then(() => {
+          throw getAttachError?.() || new Error("Target attachment/setup aborted loadAllEngines");
+        }),
+      ]);
+    } else {
+      await sleepFn(2000);
+    }
   }
   return false;
 }
 
 export async function summarize(
   routeEvents,
-  { fetchFn = globalThis.fetch, requestStatusMap = new Map() } = {},
+  { fetchFn = globalThis.fetch, requestStatusMap = new Map(), cdpBodiesMap = new Map() } = {},
 ) {
   const byId = new Map();
   for (const e of routeEvents) {
@@ -346,7 +469,7 @@ export async function summarize(
   }
   const consoleErrors = routeEvents.filter((e) => e.kind === "console-error").map((e) => e.text);
 
-  // B3: obtain and record DECODED-byte SHA-256 for exact observed successful cdn.jsdelivr.net URLs
+  // B3 / F2: obtain and record DECODED-byte SHA-256 for exact observed successful cdn.jsdelivr.net URLs
   const successfulJsDelivrUrls = [];
   for (const row of byId.values()) {
     if (row.url && row.url.includes("cdn.jsdelivr.net")) {
@@ -355,12 +478,20 @@ export async function summarize(
       }
     }
   }
-  const jsDelivrEntries = await resolveJsDelivrIntegrity(successfulJsDelivrUrls, {
+  const uniqueJsDelivrUrls = [...new Set(successfulJsDelivrUrls)];
+  const jsDelivrEntries = await resolveJsDelivrIntegrity(uniqueJsDelivrUrls, {
     fetchFn,
     requestStatusMap,
+    cdpBodiesMap,
   });
 
-  return { groups, total, consoleErrors, jsDelivrEntries };
+  return {
+    groups,
+    total,
+    consoleErrors,
+    jsDelivrEntries,
+    observedJsDelivrUrls: uniqueJsDelivrUrls,
+  };
 }
 
 export async function run(options = {}) {
@@ -369,8 +500,16 @@ export async function run(options = {}) {
   const jsonOut = options.jsonOut ?? args.includes("--json");
   const env = options.env || process.env;
   const fetchFn = options.fetchFn || globalThis.fetch;
+  const launchChromeFn = options.launchChromeFn || launchChrome;
+  const startServerFn = options.startServerFn || startServer;
+  const openPageFn = options.openPageFn || openPage;
+  const closePageFn = options.closePageFn || closePage;
+  const setViewportFn = options.setViewportFn || setViewport;
+  const sleepFn = options.sleepFn || sleep;
+  const cdpFactory = options.cdpFactory || ((ws) => new CDP(ws));
+  const routesToUse = options.routes || ROUTES;
 
-  // B2: unique profile per run with finally removal
+  // B2 / F4: unique profile per run with finally removal
   const profile = env.CHROME_PROFILE_DIR || createUniqueProfilePath();
   if (fresh) {
     try {
@@ -379,7 +518,7 @@ export async function run(options = {}) {
   }
   mkdirSync(profile, { recursive: true });
 
-  const filteredRoutes = getFilteredRoutes(ROUTES, env);
+  const filteredRoutes = getFilteredRoutes(routesToUse, env);
   const filteredViewports = getFilteredViewports(env);
 
   console.log(
@@ -388,40 +527,71 @@ export async function run(options = {}) {
   console.log(`Viewports to test (${filteredViewports.length}): ${filteredViewports.join(", ")}`);
 
   let server = null;
-  let chrome = null;
+  let currentChrome = null;
+  let currentCdp = null;
+  let currentWebgpu = null;
 
-  try {
-    const srv = await startServer();
-    server = srv.server;
-    const port = srv.port;
-    const base = `http://127.0.0.1:${port}/web-ai-showcase/`;
+  // F1: Target setup error tracking and prompt abort mechanism
+  let targetSetupError = null;
+  let abortRun = null;
+  const abortPromise = new Promise((_, reject) => {
+    abortRun = reject;
+  });
+  abortPromise.catch(() => {});
 
-    // B0: Launch Chrome with webgpu: true
-    chrome = await launchChrome({
+  const tracked = new Set();
+  let events = [];
+  const requestUrl = new Map();
+  const requestSession = new Map();
+  const requestStatus = new Map();
+  const inFlightAttaches = new Set();
+
+  async function closeCurrentChrome() {
+    if (currentChrome) {
+      const c = currentChrome;
+      currentChrome = null;
+      currentCdp = null;
+      currentWebgpu = null;
+      await c.kill({ removeProfile: false }).catch(() => {});
+    }
+  }
+
+  async function ensureChromeForRoute(routePath) {
+    if (targetSetupError) throw targetSetupError;
+    const neededWebGpu = routeRequiresWebGPU(routePath);
+    if (currentChrome && currentWebgpu === neededWebGpu) {
+      return { chrome: currentChrome, cdp: currentCdp };
+    }
+    await closeCurrentChrome();
+
+    currentWebgpu = neededWebGpu;
+    currentChrome = await launchChromeFn({
       userDataDir: profile,
-      resetProfile: true,
+      resetProfile: false,
       removeProfileOnKill: true,
-      webgpu: true,
+      webgpu: neededWebGpu,
     });
-    const cdp = new CDP(chrome.ws);
+    currentCdp = cdpFactory(currentChrome.ws);
 
-    const tracked = new Set();
-    let events = [];
-    const requestUrl = new Map();
-    const requestStatus = new Map();
-
-    cdp.on((msg) => {
+    currentCdp.on((msg) => {
       if (msg.method === "Target.attachedToTarget") {
-        void handleTargetAttached(cdp, msg.params, { tracked }).catch((err) => {
+        const attachPromise = handleTargetAttached(currentCdp, msg.params, { tracked }).catch((err) => {
+          targetSetupError = err;
           console.error(
             `[attach-error] Failed to handle attached target ${msg.params?.sessionId}:`,
             err,
           );
+          if (abortRun) {
+            abortRun(err);
+          }
         });
+        inFlightAttaches.add(attachPromise);
+        attachPromise.finally(() => inFlightAttaches.delete(attachPromise));
         return;
       }
       if (msg.method === "Network.requestWillBeSent") {
         requestUrl.set(msg.params.requestId, msg.params.request.url);
+        requestSession.set(msg.params.requestId, msg.sessionId || null);
         events.push({ kind: "request", id: msg.params.requestId, url: msg.params.request.url });
       } else if (msg.method === "Network.loadingFinished") {
         events.push({
@@ -447,21 +617,38 @@ export async function run(options = {}) {
       }
     });
 
-    await cdp.send("Target.setDiscoverTargets", { discover: true });
+    await currentCdp.send("Target.setDiscoverTargets", { discover: true });
     // B5: Attach with waitForDebuggerOnStart: true
-    await setupTargetAutoAttach(cdp);
+    await setupTargetAutoAttach(currentCdp);
+
+    return { chrome: currentChrome, cdp: currentCdp };
+  }
+
+  try {
+    const srv = await startServerFn();
+    server = srv.server;
+    const port = srv.port;
+    const base = `http://127.0.0.1:${port}/web-ai-showcase/`;
 
     async function measure(route, vpName, routeConfig = null) {
+      if (targetSetupError) throw targetSetupError;
       events = [];
       requestUrl.clear();
+      requestSession.clear();
       requestStatus.clear();
-      const page = await openPage(cdp, base + route);
+      inFlightAttaches.clear();
+
+      const { cdp } = await ensureChromeForRoute(route);
+      const page = await openPageFn(cdp, base + route);
       try {
         await cdp.send("Network.enable", {}, page.sessionId);
-        await setupTargetAutoAttach(cdp, page.sessionId).catch(() => {});
-        await sleep(200);
-        await setViewport(cdp, page.sessionId, vpName === "desktop" ? DESKTOP : MOBILE);
-        await sleep(800);
+        // F1: Never discard page-session auto-attach failure
+        await setupTargetAutoAttach(cdp, page.sessionId);
+        await sleepFn(200);
+        await setViewportFn(cdp, page.sessionId, vpName === "desktop" ? DESKTOP : MOBILE);
+        await sleepFn(800);
+
+        if (targetSetupError) throw targetSetupError;
 
         // B0: Fail closed if route requires WebGPU and WebGPU is unavailable
         if (routeConfig?.requiresWebGPU) {
@@ -480,6 +667,8 @@ export async function run(options = {}) {
           cdp,
           page.sessionId,
           `${route.split("/").slice(-2, -1)[0]} ${vpName}`,
+          undefined,
+          { abortPromise, getAttachError: () => targetSetupError, sleepFn },
         );
         if (!ready) {
           const states = (await loaderStates(cdp, page.sessionId)) ?? [];
@@ -491,7 +680,34 @@ export async function run(options = {}) {
           }
         }
 
-        const snap = await summarize(events, { fetchFn, requestStatusMap: requestStatus });
+        if (inFlightAttaches.size > 0) {
+          await Promise.all([...inFlightAttaches]);
+        }
+        if (targetSetupError) throw targetSetupError;
+
+        // F5: Fetch actual decoded resource bytes via CDP for observed jsDelivr URLs if available
+        const cdpBodiesMap = new Map();
+        for (const [reqId, u] of requestUrl.entries()) {
+          if (u && u.includes("cdn.jsdelivr.net")) {
+            const statusMeta = requestStatus.get(reqId);
+            if (!statusMeta || (statusMeta.status >= 200 && statusMeta.status < 400)) {
+              try {
+                const sid = requestSession.get(reqId) || page.sessionId;
+                const cdpRes = await getDecodedResourceFromCdp(cdp, reqId, sid);
+                cdpBodiesMap.set(u, cdpRes);
+              } catch {
+                // If CDP getResponseBody is unavailable, resolveJsDelivrIntegrity will fetch via fetchFn
+              }
+            }
+          }
+        }
+
+        const snap = await summarize(events, {
+          fetchFn,
+          requestStatusMap: requestStatus,
+          cdpBodiesMap,
+        });
+
         return {
           route,
           viewport: vpName,
@@ -499,11 +715,12 @@ export async function run(options = {}) {
           totalBytes: snap.total,
           groups: snap.groups,
           jsDelivrEntries: snap.jsDelivrEntries,
+          observedJsDelivrUrls: snap.observedJsDelivrUrls,
           consoleErrors: snap.consoleErrors.slice(0, 3),
           pageErrors: page.errors.slice(0, 3),
         };
       } finally {
-        await closePage(cdp, page.targetId);
+        await closePageFn(cdp, page.targetId).catch(() => {});
       }
     }
 
@@ -534,7 +751,7 @@ export async function run(options = {}) {
       for (const f of verification.failures) {
         console.error(`  - ${f}`);
       }
-      process.exitCode = 1;
+      if (isMain) process.exitCode = 1;
       throw new Error(`Measurement run failed verification:\n${verification.failures.join("\n")}`);
     }
 
@@ -561,7 +778,7 @@ export async function run(options = {}) {
           console.log(`  cdn.jsdelivr.net integrity pins (decoded-byte sha256):`);
           for (const [url, entry] of Object.entries(row.jsDelivrEntries)) {
             if (entry.error) {
-              console.log(`    ${url} — ERROR: ${entry.error}`);
+              console.log(`    ${url} — FAILED: ${entry.error}`);
             } else {
               console.log(`    ${url}`);
               console.log(`      decoded: ${entry.decodedBytes} bytes | sha256: ${entry.sha256}`);
@@ -578,8 +795,9 @@ export async function run(options = {}) {
 
     return rows;
   } finally {
-    if (chrome) {
-      await chrome.kill({ removeProfile: true }).catch(() => {});
+    if (currentChrome) {
+      await currentChrome.kill({ removeProfile: true }).catch(() => {});
+      currentChrome = null;
     }
     if (server) {
       try {
