@@ -1,10 +1,26 @@
 # 63s — Guardian process containment (design, PHASE 1)
 
-Status: **AWAITING COORDINATOR APPROVAL.** No code written. No browser launched. No process signalled.
+Status: **SCOPE FIXED — AWAITING DESIGN APPROVAL.** No code written. No browser launched. No process signalled.
 
 Read-only oracle verdict: pipe-only guardian **can** meet the scoped best-effort target, but
 implementation of the originally-proposed design is **BLOCKED** until the lifecycle contract below is
 approved, because the proposal as written contains two behaviours the acceptance bar prohibits.
+
+## Scope decision (coordinator, binding)
+
+- **OPTION A, PIPE-ONLY**, for scoped PHASE 1. The inherited write-FD holder is an explicit
+  **EXPECTED-NEGATIVE residual** and must **never** be counted among contained cases nor folded into any
+  all-cases-pass summary.
+- **No pidfd in this bead.** Any pidfd extension requires its own design and bead *after* this is proven.
+- **Implementation requirement:** the parent pipe write-end must be made **non-inheritable (CLOEXEC) for
+  spawned descendants wherever possible**.
+- **Fixture requirement:** the fixture must **deliberately override inheritance** in the isolated
+  negative case, so the residual is *demonstrated* rather than merely asserted in prose.
+- **Guard against early EOF while the parent is healthy** — this remains a hard gate.
+- In-scope passes (parent SIGKILL, normal exit, handshake failure, late exit) must be reported
+  **separately** from residual negatives, and the **foreign sentinel must survive** in every case.
+- Scope is fixed by this decision only; **design approval of the lifecycle contract below is still
+  outstanding** and no implementation may begin until it is granted.
 
 ## Problem (measured, not inferred)
 
@@ -83,10 +99,13 @@ guardian exit):
 **not** kill A/B. Any attainable premature closure of the designated writer during a valid lifecycle is a
 **blocker**, not a residual.
 
-**Expected-negative, isolated:** deliberately retain the parent pipe writer in a holder, then SIGKILL the
-parent. Assert and prominently report **NOT-CONTAINED** — EOF does not fire and A/B remain pending
-independent sandbox cleanup. **Never** included in any containment pass count. Guardian-death and
-PGID-escape injections likewise demonstrate residuals only, in disposable isolation.
+**Expected-negative, isolated:** deliberately **override inheritance** in the fixture so a holder retains
+the parent pipe writer, then SIGKILL the parent. This is the deliberate, isolated defeat of the
+non-inheritable write-end required in the implementation, and it exists precisely to *demonstrate* the
+residual rather than assert it in prose. Assert and prominently report **NOT-CONTAINED** — EOF does not
+fire and A/B remain pending independent sandbox cleanup. **Never** included in any containment pass count,
+and never presented in an all-cases-pass summary. Guardian-death and PGID-escape injections likewise
+demonstrate residuals only, in disposable isolation.
 
 Positive containment counts and expected-negative residuals are reported **separately**. Tests that only
 prove a guardian exited, or that clean up their own leaked children before checking, do not discriminate
@@ -96,13 +115,14 @@ the failure being addressed.
 and an independent test supervisor. An external timeout killing the fixture parent is neither containment
 nor safe cleanup.
 
-## Options for stronger containment (NOT authorized)
+## Options for stronger containment (NOT authorized, NOT in this bead)
 
-- **pidfd.** Could independently report parent death despite a leaked writer, without PID-reuse ambiguity.
-  The parent must open a pidfd for **itself while alive** and transfer the kernel handle to the guardian;
-  opening by a remembered numeric PID after parent death reintroduces the `c3h` race. Acquisition/transfer
-  failure must prevent Chrome launch if mandated. Scope increase, **not a prerequisite** for the
-  residual-bearing pipe-only target.
+- **pidfd — OUT OF SCOPE FOR 63s.** A possible future extension requiring its own design and bead after
+  the pipe-only design is proven. It could independently report parent death despite a leaked writer,
+  without PID-reuse ambiguity: the parent must open a pidfd for **itself while alive** and transfer the
+  kernel handle to the guardian, since opening by a remembered numeric PID after parent death
+  reintroduces the `c3h` race. Acquisition/transfer failure would have to prevent Chrome launch if ever
+  mandated. Do **not** build it here.
 - **Delegated cgroup v2 with `cgroup.kill`.** Would include descendants that change PGID. This VM's
   process runs in `/system.slice/fleet-sdk-host.service`; `cgroup.procs`, `cgroup.subtree_control` and
   `cgroup.kill` are root-owned and `cgroup.kill` is root-writable only. Requires Paul + fleet-ops approval;
