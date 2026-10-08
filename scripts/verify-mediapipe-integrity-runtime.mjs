@@ -110,7 +110,13 @@ try {
         return { scope: reg.scope, controller: Boolean(navigator.serviceWorker.controller) };
       })()`,
     );
-    record(registration?.scope === "/web-ai-showcase/", "service worker registered for the site scope", registration?.scope ?? String(registration));
+    // Compare by SUFFIX: the browser returns an absolute scope URL, so requiring the relative path
+    // exactly was my own false negative in the first run (it failed while the registration was correct).
+    record(
+      String(registration?.scope || "").endsWith("/web-ai-showcase/"),
+      "service worker registered for the site scope",
+      registration?.scope ?? String(registration),
+    );
     await evaluate(page.sessionId, "location.reload()").catch(() => {});
     await new Promise((resolve) => setTimeout(resolve, 3000));
     const controlled = await evaluate(page.sessionId, "Boolean(navigator.serviceWorker.controller)");
