@@ -209,7 +209,7 @@ test("the manifest embedded in sw.js matches runtime-integrity.json", () => {
 // This is the test that would have caught the string-versus-object defect: sw.js reads
 // `entry.sha256`, so a manifest of plain strings is not merely untidy, it makes every comparison false
 // and 502s every pinned runtime. Schema, not values, is what is pinned here.
-test("every manifest entry is an object with a string sha256 and a numeric byte count", () => {
+test("every manifest entry is an object with a string sha256, a byte count and an explicit policy", () => {
   const urls = Object.keys(MANIFEST.urls);
   assert.ok(urls.length > 0, "the manifest must not be empty");
   for (const url of urls) {
@@ -218,6 +218,14 @@ test("every manifest entry is an object with a string sha256 and a numeric byte 
     assert.equal(typeof entry.sha256, "string", `${url}.sha256 must be a string`);
     assert.match(entry.sha256, /^[0-9a-f]{64}$/, `${url}.sha256 must be a lowercase sha256 hex digest`);
     assert.equal(typeof entry.bytes, "number", `${url}.bytes must be a number`);
+    // Policy is per URL so the cache decision is reviewable per asset rather than implied by the code
+    // path. Membership is the policy: anything absent is pass-through and never persisted.
+    assert.equal(entry.policy, "verify-then-cache", `${url}.policy must state the caching decision`);
+    // Pinned URLs must be immutable and query-free: a query string or a mutable URL means the bytes can
+    // change under the hash, which would fail closed rather than protect anything.
+    assert.equal(url.includes("?"), false, `${url} must not carry a query string`);
+    assert.equal(url.startsWith("https://cdn.jsdelivr.net/npm/"), true, `${url} must be a pinned cdn URL`);
+    assert.match(url, /@[0-9]+\.[0-9]+\.[0-9]+/, `${url} must be version-pinned`);
   }
 });
 

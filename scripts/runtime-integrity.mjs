@@ -54,11 +54,37 @@ const ORT_ASSETS = [
   "onnxruntime-web@1.22.0/dist/ort-wasm-simd-threaded.jsep.wasm",
   "onnxruntime-web@1.22.0/dist/ort.webgpu.min.mjs",
 ];
+// Exact versioned URLs used by BUILT routes that do not come from either bundle above. Every entry here
+// was measured before being added: status 200, no redirect, no query string, and
+// `cache-control: ... immutable`. A URL that failed any of those is NOT listed, because a mutable or
+// redirecting URL cannot be pinned - the hash would change or apply to the wrong response - and per the
+// decision on the bead such a URL must not enter the trusted shell cache.
+//
+// mediapipe: 7 built routes; the wasm directory contains EXACTLY these four files, so the set is
+// complete rather than a guess. FilesetResolver picks the simd or nosimd pair at runtime, so both are
+// needed or one backend loses offline.
+// outetts: 1 built route. Its ESM bundle statically pulls one further pinned transformers version.
+// It also references /npm/fs/+esm, which is a 404 and unversioned - a phantom, not a served asset - so
+// it is deliberately absent and is served pass-through without ever being persisted.
+const PINNED_EXACT = [
+  "@mediapipe/tasks-vision@0.10.18",
+  "@mediapipe/tasks-vision@0.10.18/wasm/vision_wasm_internal.js",
+  "@mediapipe/tasks-vision@0.10.18/wasm/vision_wasm_internal.wasm",
+  "@mediapipe/tasks-vision@0.10.18/wasm/vision_wasm_nosimd_internal.js",
+  "@mediapipe/tasks-vision@0.10.18/wasm/vision_wasm_nosimd_internal.wasm",
+  "outetts@0.2.0/+esm",
+  "@huggingface/transformers@3.1.2/+esm",
+];
+// Every listed URL is verified on serve and then cached. Membership IS the policy: a URL absent from
+// this manifest is pass-through, served from the network and never persisted, so it cannot inherit
+// trust it was never granted. The field is recorded per URL so the decision is reviewable per asset
+// rather than implied by the code path, and a test pins its value.
+const POLICY = "verify-then-cache";
 const NOT_COVERED = [
   "onnxruntime-web@*/dist/** not listed above (other variants of the pinned versions)",
   "onnxruntime-web/dist/* (unversioned - none referenced today, but unpinnable if ever introduced)",
-  "@mediapipe/tasks-vision@*/**",
-  "outetts/+esm",
+  "@mediapipe/tasks-vision@*/** other than the four wasm files listed",
+  "cdn.jsdelivr.net/npm/fs/+esm (referenced by outetts, returns 404, unversioned)",
 ];
 const PACKAGE = "@huggingface/transformers";
 const manifestPath = new URL("../runtime-integrity.json", import.meta.url);
@@ -80,7 +106,7 @@ for (const version of VERSIONS) {
     continue;
   }
   const bytes = new Uint8Array(await res.arrayBuffer());
-  manifest[entry] = { sha256: await sha256(bytes), bytes: bytes.length };
+  manifest[entry] = { sha256: await sha256(bytes), bytes: bytes.length, policy: POLICY };
 
   // The bundle resolves its own runtime assets through its public path, so those literals enumerate
   // the sibling files it can request. Anything else it might fetch cannot be enumerated statically,
@@ -97,7 +123,7 @@ for (const version of VERSIONS) {
         continue;
       }
       const assetBytes = new Uint8Array(await assetRes.arrayBuffer());
-      manifest[url] = { sha256: await sha256(assetBytes), bytes: assetBytes.length };
+      manifest[url] = { sha256: await sha256(assetBytes), bytes: assetBytes.length, policy: POLICY };
     } catch (error) {
       skipped.push(`${url} (${error.message})`);
     }
@@ -116,7 +142,7 @@ for (const asset of ORT_ASSETS) {
       continue;
     }
     const assetBytes = new Uint8Array(await assetRes.arrayBuffer());
-    manifest[url] = { sha256: await sha256(assetBytes), bytes: assetBytes.length };
+    manifest[url] = { sha256: await sha256(assetBytes), bytes: assetBytes.length, policy: POLICY };
   } catch (error) {
     // A pinned asset that disappeared is a real signal, not noise: it means a worker's pinned URL no
     // longer resolves, so it is reported rather than swallowed.
@@ -124,10 +150,35 @@ for (const asset of ORT_ASSETS) {
   }
 }
 
+// Exact versioned URLs used by built routes outside both bundles above, each already measured.
+for (const asset of PINNED_EXACT) {
+  const url = `https://cdn.jsdelivr.net/npm/${asset}`;
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(60000) });
+    if (!res.ok) {
+      skipped.push(`${url} (status ${res.status})`);
+      continue;
+    }
+    const cacheControl = res.headers.get("cache-control") ?? "";
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    manifest[url] = { sha256: await sha256(bytes), bytes: bytes.length, policy: POLICY };
+    // Pinning a non-immutable URL would be worse than not pinning it: the hash would silently stop
+    // matching and the asset would fail closed. Report it loudly instead.
+    if (!/immutable/.test(cacheControl)) {
+      console.error(`WARNING not immutable, revisit before trusting: ${url} (${cacheControl || "no cache-control"})`);
+    }
+    if (res.url !== url) {
+      console.error(`WARNING redirected, pin the destination instead: ${url} -> ${res.url}`);
+    }
+  } catch (error) {
+    skipped.push(`${url} (${error.message})`);
+  }
+}
+
 const ordered = Object.fromEntries(Object.entries(manifest).sort());
 const doc = {
   "//": "Generated by scripts/runtime-integrity.mjs. Do not hand-edit. sha256 is over DECODED bytes.",
-  generatedFor: `${PACKAGE} versions ${VERSIONS.join(", ")} plus pinned onnxruntime-web assets`,
+  generatedFor: `${PACKAGE} versions ${VERSIONS.join(", ")}, pinned onnxruntime-web assets, and exact URLs used by built mediapipe/outetts routes`,
   limitation:
     "Covers the @huggingface/transformers entry bundles, the asset filenames they emit via their public path, and an explicit list of pinned onnxruntime-web assets taken from worker references and a recorded runtime report. A runtime asset fetched through any other code path is not covered and is therefore never persisted as a trusted shell asset by sw.js. Not covered either: the first uncontrolled dynamic import before the SW is controlling, and any browser HTTP-cache poisoning, which happens below the SW.",
   notCovered: NOT_COVERED,
