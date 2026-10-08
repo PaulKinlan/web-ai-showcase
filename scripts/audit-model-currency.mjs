@@ -22,7 +22,8 @@
 
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { execSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { classifyTaskPair } from "./model-task-vocabulary.mjs";
@@ -59,15 +60,24 @@ export const PIN_SCAN_TARGETS =
 //   `3.7.5?x=1`      -> captured in full, rejected (query-suffixed specifiers are UNREVIEWED)
 //   `3.7.5#x`        -> captured in full, rejected (hash-suffixed specifiers are UNREVIEWED)
 //   `3.7.5%2Fdist`   -> captured in full, rejected (a percent-encoded separator is part of the candidate)
+//   `3.7.5^evil`     -> captured in full, rejected (likewise ~ | ! @ ; : , & \ $ ${...} suffixes)
 //   `1.24.0-dev.20251116-b39e144322` -> full dev token (authorised only via measuredVersions)
-// A `/` immediately after the version is a REAL URL path separator and terminates the candidate, so an
-// exact authorised version followed by `/dist/...` is GREEN; whitespace, quotes, `)`, `,`, and end of
-// line also terminate the candidate. `+` and `_` are not npm semver characters but MUST be captured so
-// the full offending string is judged instead of its allowed numeric prefix. The required X.Y.Z prefix
-// keeps a bare prose shorthand like `1.21` (not a pin) from being reported as a phantom version. The
-// string is valid both as POSIX ERE (for grep -E) and as a JavaScript RegExp, which is how the grep
-// scans and the in-process extraction share one definition.
-export const VERSION_TOKEN = "[0-9]+\\.[0-9]+\\.[0-9]+[0-9A-Za-z._+?%#=-]*";
+// The candidate is terminated ONLY by `/` (a real URL path separator), a space or TAB byte, a quote,
+// a backtick, `<`, `>`, or end of line. Every other byte — including `)`, `,`, `\`, `$`, and `${` — is
+// part of the candidate, so a numeric pin carrying ANY of those suffixes is judged whole and rejected
+// (closing the pre-cdt truncation seam in comments, JSON prose, regexes, and bare specifiers). The
+// required X.Y.Z prefix keeps a bare prose shorthand like `1.21` (not a pin) from being reported as a
+// phantom version. The string is valid both as POSIX ERE (for grep -E) and as a JavaScript RegExp —
+// it deliberately uses literal SPACE and TAB bytes, not `[:space:]` (unsupported by RegExp) or `\s`
+// (POSIX grep would read the two-character source as literal characters), which is how the grep scans
+// and the in-process extraction share one definition.
+export const VERSION_TOKEN = "[0-9]+\\.[0-9]+\\.[0-9]+[^/ \t\"'<>`]*";
+// Engine-divergence guard: the ERE and RegExp paths only agree if the token carries a literal TAB byte.
+// If an editor or formatter ever degrades the `\t` escape, fail closed at module load instead of
+// silently opening a truncation hole in the grep path.
+if (!VERSION_TOKEN.includes("\t")) {
+  throw new Error("VERSION_TOKEN must contain a literal TAB byte (\\t) in its break class");
+}
 export const ORT_PIN_PATTERN = `onnxruntime-web@${VERSION_TOKEN}`;
 export const TJS_PIN_PATTERN = `@huggingface/transformers@${VERSION_TOKEN}`;
 // In-process full-version captures for the two text scans. The scans read each matching LINE (not
@@ -284,25 +294,87 @@ const DTYPE_TOKENS = {
   q4f16: [/_q4f16\.onnx$/],
 };
 
+// Run grep with an ARGV array (execFileSync, no shell): the pin patterns contain single quotes and
+// backticks, and interpolating them into a shell string either breaks /bin/sh parsing outright or,
+// worse, degrades silently. Exit status 1 means "no matches" (empty result); any other failure
+// (bad pattern, unreadable file, spawn error, buffer overflow) propagates as a scan failure — the
+// gate must never treat a failed scan as a clean one.
+export function grepScan(args, cwd = ROOT) {
+  try {
+    return execFileSync("grep", args, { cwd, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
+  } catch (e) {
+    if (e.status === 1 && e.signal == null) return "";
+    throw e;
+  }
+}
+const SCAN_TARGET_ARGS = PIN_SCAN_TARGETS.trim().split(/\s+/);
+
+// --- Reviewed prose fingerprints (cdt) -------------------------------------------------
+// A small reviewed set of KNOWN prose lines whose numeric pin carries trailing prose punctuation
+// (`,`, `)`, `:`, or a JSON escape artifact). A fingerprinted line is suppressed ONLY when the full
+// source line's SHA-256 matches exactly and the number of occurrences matches the reviewed count:
+// editing the line, duplicating it, or adding a new prose line with the same shape all turn RED.
+// Fingerprints never suppress the golden-ledger drift net and never apply to binary-classified files.
+function loadProseFingerprints(root) {
+  const path = join(root, "inventory/runtime-pin-prose-fingerprints.json");
+  const data = JSON.parse(readFileSync(path, "utf8"));
+  const entries = data.fingerprints || [];
+  const used = new Map(); // index -> occurrence count actually suppressed
+  const match = (file, lineContent, candidate) => {
+    const sha = createHash("sha256").update(lineContent, "utf8").digest("hex");
+    for (let i = 0; i < entries.length; i++) {
+      const e = entries[i];
+      if (e.path !== file || e.lineSha256 !== sha || e.candidate !== candidate) continue;
+      const n = (used.get(i) || 0) + 1;
+      if (n > e.occurrences) return false; // duplicated line: extra occurrence is NOT suppressed
+      used.set(i, n);
+      return true;
+    }
+    return false;
+  };
+  const driftErrors = () => {
+    const errs = [];
+    for (let i = 0; i < entries.length; i++) {
+      const e = entries[i];
+      const n = used.get(i) || 0;
+      if (n !== e.occurrences) {
+        errs.push(
+          `prose fingerprint drift in ${e.path}: reviewed line for candidate "${e.candidate}" expected ${e.occurrences} occurrence(s), matched ${n} — re-review inventory/runtime-pin-prose-fingerprints.json`,
+        );
+      }
+    }
+    return errs;
+  };
+  return { match, driftErrors, count: entries.length };
+}
+
 // --- transformers.js pins ---------------------------------------------------------------
 async function transformerPins() {
-  const references = {};
-  const raw = execSync(
-    `grep -I -rhoE '${TJS_PIN_PATTERN}' ${PIN_SCAN_TARGETS} 2>/dev/null || true`,
-    { cwd: ROOT, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
+  const allowlist = JSON.parse(
+    readFileSync(ROOT + "scripts/runtime-pin-allowlist.json", "utf8"),
   );
+  const references = {};
+  const raw = grepScan(["-I", "-rhoE", TJS_PIN_PATTERN, ...SCAN_TARGET_ARGS]);
+  // Report only JUDGED versions (allowlisted or measured): with the widened cdt VERSION_TOKEN, prose
+  // punctuation and escape artifacts ride along in the raw capture (`3.7.5,`, `3.7.5\`); those are
+  // judged (or fingerprint-suppressed) by checkRuntimePins, and reporting them as versions would
+  // mislabel prose as a local override in the currency report.
+  const reportable = new Set([
+    allowlist.transformers?.shared,
+    ...(allowlist.transformers?.allowedLocalOverrides || []).map((o) => o.version),
+    ...Object.values(allowlist.derivedInventory?.measuredVersions || {}).flat(),
+  ]);
   for (const line of raw.split("\n")) {
     const v = line.split("@").pop();
-    if (v) references[v] = (references[v] || 0) + 1;
+    if (v && reportable.has(v)) references[v] = (references[v] || 0) + 1;
   }
   const localOverrides = {};
-  const files = execSync(
-    `grep -I -rlE '${TJS_PIN_PATTERN}' models/ 2>/dev/null || true`,
-    { cwd: ROOT, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
-  ).trim().split("\n").filter(Boolean);
+  const files = grepScan(["-I", "-rlE", TJS_PIN_PATTERN, "models/"])
+    .trim().split("\n").filter(Boolean);
   for (const rel of files) {
     const text = await readFile(ROOT + rel, "utf8");
     for (const m of text.matchAll(TJS_FULL_VERSION_RE)) {
+      if (!reportable.has(m[1])) continue;
       localOverrides[m[1]] ||= new Set();
       localOverrides[m[1]].add(rel.split("/")[1]);
     }
@@ -341,23 +413,20 @@ export function findPinsInBinaryFiles() {
   const found = new Map();
   for (const { label, grep } of PIN_PATTERNS) {
     const filesMatching = (flag) => {
-      const raw = execSync(
-        `grep -rl${flag}E '${grep}' ${PIN_SCAN_TARGETS} 2>/dev/null || true`,
-        { cwd: ROOT, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
-      );
+      const raw = grepScan([`-rl${flag}E`, grep, ...SCAN_TARGET_ARGS]);
       return new Set(raw.split("\n").filter(Boolean));
     };
     const textFiles = filesMatching("I"); // exactly what the text scans can attribute
     for (const file of filesMatching("")) {
       if (textFiles.has(file)) continue;
-      const quoted = `'${file.replaceAll("'", "'\\''")}'`;
-      const raw = execSync(
-        `grep -aoE '${grep}' -- ${quoted} 2>/dev/null || true`,
-        { cwd: ROOT, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
-      );
+      const raw = grepScan(["-aoE", grep, "--", file]);
       const versions = new Set();
       for (const line of raw.split("\n")) {
-        const v = line.split("@").pop()?.trim();
+        // Diagnostic only: every hit in a binary-classified file is unconditionally RED, so the
+        // reported string never decides pass/fail. Cut at the first control byte (e.g. the NUL that
+        // made grep -I skip the file): the shared VERSION_TOKEN deliberately cannot exclude NUL (an
+        // argv byte cannot contain it), so it rides along in the raw capture.
+        const v = line.split("@").pop()?.replace(/[\x00-\x1f\x7f-\x9f].*$/, "").trim();
         if (v) versions.add(v);
       }
       const entry = found.get(file) ?? { file, hits: [] };
@@ -600,15 +669,14 @@ export function checkRuntimePins() {
     return Array.isArray(allowed) && allowed.includes(version);
   };
 
+  const proseFingerprints = loadProseFingerprints(ROOT);
+
   // 1. Check onnxruntime-web versions (using grep -I)
   const allowedOrt = new Set(
     (allowlist.onnxruntimeWeb?.allowedVersions || []).map((v) => v.version),
   );
   try {
-    const raw = execSync(
-      `grep -I -rnE '${ORT_PIN_PATTERN}' ${PIN_SCAN_TARGETS} 2>/dev/null || true`,
-      { cwd: ROOT, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
-    );
+    const raw = grepScan(["-I", "-rnE", ORT_PIN_PATTERN, ...SCAN_TARGET_ARGS]);
     const foundOrt = new Set();
     for (const line of raw.split("\n")) {
       if (!line.trim()) continue;
@@ -625,7 +693,9 @@ export function checkRuntimePins() {
         if (!rawVersion) continue;
         // STRICT RAW: the whole captured candidate is judged exactly as captured (no trailing-dot
         // stripping, no query/hash/percent decoding). The derived-inventory exemption also receives this
-        // same unmodified raw candidate.
+        // same unmodified raw candidate. Reviewed prose fingerprints (cdt) are matched per occurrence
+        // BEFORE the version dedup below, so a duplicated fingerprinted line cannot hide a new pin.
+        if (proseFingerprints.match(file, content, rawVersion)) continue;
         if (isDerivedInventoryHit(file, lineNo, "onnxruntime-web", rawVersion)) continue;
         foundOrt.add(rawVersion);
       }
@@ -649,13 +719,10 @@ export function checkRuntimePins() {
   }
 
   try {
-    const raw = execSync(
-      // Full-line capture (no -o). grep emits each matching line once; matchAll below re-reads the
-      // content and enumerates EVERY match, so a second, unapproved pin on the same line is still judged
-      // independently.
-      `grep -I -rnE '${TJS_PIN_PATTERN}' ${PIN_SCAN_TARGETS} 2>/dev/null || true`,
-      { cwd: ROOT, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
-    );
+    // Full-line capture (no -o). grep emits each matching line once; matchAll below re-reads the
+    // content and enumerates EVERY match, so a second, unapproved pin on the same line is still judged
+    // independently.
+    const raw = grepScan(["-I", "-rnE", TJS_PIN_PATTERN, ...SCAN_TARGET_ARGS]);
     for (const line of raw.split("\n")) {
       if (!line.trim()) continue;
       const tjsHit = line.match(/^(.*?):(\d+):(.*)$/);
@@ -671,6 +738,9 @@ export function checkRuntimePins() {
       for (const m of matches) {
         scannedCounts.transformers++;
         const rawVersion = m[1];
+        // Reviewed prose fingerprints (cdt) suppress ONLY the exact reviewed line + candidate +
+        // occurrence count; anything else falls through to the strict-raw judgment below.
+        if (proseFingerprints.match(file, content, rawVersion)) continue;
         if (isDerivedInventoryHit(file, lineNo, "@huggingface/transformers", rawVersion)) continue;
         // STRICT RAW: judged exactly as captured (see VERSION_TOKEN).
         const v = rawVersion;
@@ -736,6 +806,10 @@ export function checkRuntimePins() {
   } catch (e) {
     errors.push(`failed to scan binary-classified files for runtime pins: ${e.message}`);
   }
+
+  // Prose fingerprint reconciliation (cdt): every reviewed fingerprint must have matched exactly its
+  // reviewed occurrence count — a missing (edited/removed) or extra (duplicated) occurrence is drift.
+  errors.push(...proseFingerprints.driftErrors());
 
   // 4. Additive whole-raw LITERAL pass (web-ai-showcase-j9z): every executable
   //    string/template/script-src literal bearing a package marker is judged on

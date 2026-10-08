@@ -16,7 +16,7 @@
 
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync, execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -100,15 +100,18 @@ function expectExecutableUrlVerdict(url, { status, needle }, message) {
   assert.equal(readFileSync(p, "utf8"), orig, "models/animegan-cartoonization/worker.js must be restored byte-exactly");
 }
 
-/** Run the same grep the scanner runs (single-sourced pattern + targets) over the isolated copy. */
+/** Run the same grep the scanner runs (single-sourced pattern + targets) over the isolated copy.
+ *  execFileSync argv (no shell) — mirrors the gate's grepScan; exit 1 = no matches. */
 function grepScan(pattern) {
   try {
-    return execSync(
-      `grep -I -rnE '${pattern}' ${audit.PIN_SCAN_TARGETS} 2>/dev/null || true`,
+    return execFileSync(
+      "grep",
+      ["-I", "-rnE", pattern, ...audit.PIN_SCAN_TARGETS.trim().split(/\s+/)],
       { cwd: COPY_ROOT, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
     );
-  } catch {
-    return "";
+  } catch (e) {
+    if (e.status === 1 && e.signal == null) return "";
+    throw e;
   }
 }
 
@@ -769,4 +772,131 @@ test("operator manuals (AGENTS.md, CLAUDE.md, SKILL.md) reference transformers-v
       `${f} must not contain absolute freeze phrasing without "without full staging"`,
     );
   }
+});
+
+// --- numeric-suffix seam closure (bead web-ai-showcase-cdt) ------------------------------
+// VERSION_TOKEN's break set is now ONLY `/`, a literal space/TAB byte, quotes, backtick, `<`, `>`.
+// Every other byte after a numeric pin — ^ ~ | ! @ ; : , & \ $ ${ } — is part of the judged
+// candidate, in EVERY context the legacy scans see (comments, JSON prose, regexes, bare specifiers),
+// not just executable literals. Reviewed prose lines are grandfathered by exact line-SHA fingerprints
+// (inventory/runtime-pin-prose-fingerprints.json) with occurrence reconciliation.
+// Gate runs are ~6s each, so mutations that assert independent errors are BATCHED into one run.
+
+/** Apply several mutations at once, run the gate once, assert it fails naming EVERY needle, restore. */
+function expectBatchedFailures(mutations, needles, message) {
+  const originals = mutations.map(({ path: rel }) => [rel, readFileSync(join(COPY_ROOT, rel), "utf8")]);
+  try {
+    for (const { path: rel, mutate } of mutations) {
+      writeFileSync(join(COPY_ROOT, rel), mutate(readFileSync(join(COPY_ROOT, rel), "utf8")));
+    }
+    const result = runGate();
+    assert.equal(result.status, 1, message);
+    for (const needle of needles) {
+      assert.ok(result.stderr.includes(needle), `gate error must name ${needle}: ${result.stderr}`);
+    }
+  } finally {
+    for (const [rel, text] of originals) writeFileSync(join(COPY_ROOT, rel), text, "utf8");
+  }
+  for (const [rel, text] of originals) {
+    assert.equal(readFileSync(join(COPY_ROOT, rel), "utf8"), text, `${rel} must be restored byte-exactly`);
+  }
+}
+
+test("cdt: numeric pin + non-semver suffix in comments/JSON/regex/prose fails naming the whole candidate", () => {
+  const suffixes = ["^evil", "~", "|2.0.0", "!x", ";evil", ":evil", "&evil", "\\evil", "$evil", "${x}"];
+  const commentBlock = suffixes
+    .map((s) => `// review note: pinned to onnxruntime-web@1.21.0${s} here`)
+    .join("\n");
+  expectBatchedFailures(
+    [
+      {
+        path: "models/animegan-cartoonization/worker.js",
+        mutate: (c) =>
+          `${c}\n${commentBlock}\n// new prose: uses @huggingface/transformers@3.7.5, per notes\nconst __probe_re = /onnxruntime-web@1.21.0;rx/;\n`,
+      },
+      {
+        path: "models/animegan-cartoonization/_questions.json",
+        mutate: (c) =>
+          c.replace(`"schemaVersion": 1`, `"schemaVersion": 1, "probe": "uses @huggingface/transformers@3.7.5|4.0.0 range"`),
+      },
+    ],
+    [
+      ...suffixes.map((s) => `1.21.0${s}`),
+      "3.7.5,", // new prose line: mtu false-red policy still applies outside the fingerprint set
+      "1.21.0;rx", // regex literal
+      "3.7.5|4.0.0", // JSON evidence prose
+    ],
+    "every suffixed numeric pin must be judged whole and rejected, in every context",
+  );
+});
+
+test("cdt: exact pin followed by a TAB byte stays green through the real GREP path", () => {
+  const p = join(COPY_ROOT, "models/animegan-cartoonization/worker.js");
+  const orig = readFileSync(p, "utf8");
+  writeFileSync(p, `${orig}\n// pin: onnxruntime-web@1.21.0\t(tab-separated exact pin)\n`, "utf8");
+  try {
+    const result = runGate();
+    assert.equal(result.status, 0, `an exact pin followed by a TAB must stay green: ${result.stderr}`);
+  } finally {
+    writeFileSync(p, orig, "utf8");
+  }
+  // And the engines agree: the runtime token (imported from the gate) breaks on TAB in JS too.
+  const m = "onnxruntime-web@1.21.0\tnext".match(new RegExp(`onnxruntime-web@(${audit.VERSION_TOKEN})`));
+  assert.equal(m?.[1], "1.21.0", "TAB must terminate the candidate in the JS engine as well");
+});
+
+test("cdt: VERSION_TOKEN carries a literal TAB byte and no engine-divergent constructs", () => {
+  assert.ok(audit.VERSION_TOKEN.includes("\t"), "runtime token must contain a literal TAB byte");
+  assert.ok(!audit.VERSION_TOKEN.includes("[:space:]"), "[:space:] is not valid in a JS RegExp");
+  assert.ok(!audit.VERSION_TOKEN.includes("\\s"), "\\s is literal characters to POSIX grep");
+  const breakClass = audit.VERSION_TOKEN.slice(audit.VERSION_TOKEN.indexOf("[^"));
+  assert.ok(!breakClass.includes("\\"),
+    "the break class must NOT exclude backslash (1.21.0\\evil must stay whole)");
+  assert.ok(!breakClass.includes("$"),
+    "the break class must NOT exclude $ (1.21.0$evil and 1.21.0${x} must stay whole)");
+});
+
+test("cdt: clean tree fingerprints reconcile exactly (gate green, 19 reviewed entries)", () => {
+  const fps = JSON.parse(readFileSync(join(COPY_ROOT, "inventory/runtime-pin-prose-fingerprints.json"), "utf8"));
+  assert.equal(fps.fingerprints.length, 19, "the reviewed set is exactly the 19 known prose lines");
+  const result = runGate();
+  assert.equal(result.status, 0, `clean tree must pass with fingerprints: ${result.stderr}`);
+});
+
+test("cdt: fingerprint tampering fails closed (edit / duplicate / remove / ledger independence)", () => {
+  // Editing a fingerprinted line breaks its SHA.
+  expectVersionFailure(
+    "models/yolo11-detection/worker.js",
+    (c) => c.replace("onnxruntime-web@1.21.0),", "onnxruntime-web@1.21.0) ;"),
+    "prose fingerprint drift",
+    "editing a fingerprinted line must break the SHA and trip drift reconciliation",
+  );
+  // Duplicating it exceeds the reviewed occurrence count: the extra occurrence is NOT suppressed
+  // (only the first match consumes the fingerprint), so it surfaces as an unauthorized candidate.
+  expectVersionFailure(
+    "models/yolov10-detection/worker.js",
+    (c) => `${c}${c.split("\n").find((l) => l.includes("onnxruntime-web@1.21.0),"))}\n`,
+    `unauthorized onnxruntime-web version "1.21.0),"`,
+    "a duplicated fingerprinted line must fail on the extra occurrence",
+  );
+  // Removing the fingerprinted candidate leaves the entry unmatched.
+  expectVersionFailure(
+    "models/surface-normals/_questions.json",
+    (c) => c.replace("onnxruntime-web@1.21.0)", "onnxruntime-web@1.21.0 "),
+    "prose fingerprint drift",
+    "removing a fingerprinted candidate must trip drift reconciliation",
+  );
+  // Fingerprint suppression never masks the golden-ledger drift net.
+  expectVersionFailure(
+    "inventory/runtime-pin-marker-ledger.json",
+    (c) => c.replace(`"sha256"`, `"sha256x"`, 1),
+    "runtime marker golden ledger drift",
+    "ledger drift must still fail while prose fingerprints suppress their own lines",
+  );
+});
+
+test("cdt: the gate's grep scans use execFileSync argv (no shell interpolation)", () => {
+  const src = readFileSync(join(COPY_ROOT, "scripts/audit-model-currency.mjs"), "utf8");
+  assert.ok(src.includes('execFileSync("grep"'), "the gate must invoke grep via argv");
+  assert.ok(!/execSync\(\s*`grep/.test(src), "no shell-interpolated grep call may remain in the gate");
 });

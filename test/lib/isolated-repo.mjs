@@ -56,7 +56,9 @@ export function materializeIsolatedRepo() {
     "scripts/audit-model-currency.mjs",
     "scripts/runtime-pin-literals.mjs",
     "scripts/runtime-pin-parser.mjs",
+    "scripts/generate-prose-fingerprints.mjs",
     "inventory/runtime-pin-marker-ledger.json",
+    "inventory/runtime-pin-prose-fingerprints.json",
     "package.json",
   ];
   for (const f of OVERLAY_FILES) {
