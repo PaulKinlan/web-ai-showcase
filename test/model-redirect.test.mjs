@@ -20,17 +20,30 @@ test("accepts direct HF and observed Xet/LFS CDN final origins; rejects lookalik
     "https://cdn-lfs.huggingface.co/a",
     "https://cdn-lfs-us-1.huggingface.co/a",
   ];
-  for (const url of accepted) assert.doesNotThrow(() => assertTrustedHFResponse(requested, { url }));
-  for (const url of [
-    "https://huggingface.co.evil.example/a", "http://huggingface.co/a",
-    "https://evil.hf.co/a", "https://us.aws.cdn.hf.co.evil.example/a",
-    "https://us.aws.cdn.hf.co:8443/a", "data:text/plain,fake", "",
-  ]) {
+  for (const url of accepted) {
+    assert.doesNotThrow(() => assertTrustedHFResponse(requested, { url }));
+  }
+  for (
+    const url of [
+      "https://huggingface.co.evil.example/a",
+      "http://huggingface.co/a",
+      "https://evil.hf.co/a",
+      "https://us.aws.cdn.hf.co.evil.example/a",
+      "https://us.aws.cdn.hf.co:8443/a",
+      "data:text/plain,fake",
+      "",
+    ]
+  ) {
     assert.throws(() => assertTrustedHFResponse(requested, { url }), /Untrusted/);
   }
-  assert.throws(() => assertTrustedHFResponse(requested, { url: requested, type: "opaque" }), /Untrusted/);
+  assert.throws(
+    () => assertTrustedHFResponse(requested, { url: requested, type: "opaque" }),
+    /Untrusted/,
+  );
   // The existing localhost browser resume fixture is deliberately out of this HF-only policy's scope.
-  assert.doesNotThrow(() => assertTrustedHFResponse("http://127.0.0.1:1234/model", { url: "http://127.0.0.1:1234/model" }));
+  assert.doesNotThrow(() =>
+    assertTrustedHFResponse("http://127.0.0.1:1234/model", { url: "http://127.0.0.1:1234/model" })
+  );
 });
 
 async function listen(server) {
@@ -59,7 +72,11 @@ test("a foreign final origin is rejected before a non-LFS config reaches Cache S
         files: [file],
         deps: {
           resolveInfo: async () => [{ file, url: requested, size: 2, oid: null }],
-          cacheOpen: async () => ({ put: async () => { cacheWrites++; } }),
+          cacheOpen: async () => ({
+            put: async () => {
+              cacheWrites++;
+            },
+          }),
           existsInCache: async () => false,
           simpleFetch: async () => {
             const response = await fetch(`${sourceOrigin}/resolve/main/${file}`);

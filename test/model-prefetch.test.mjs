@@ -146,6 +146,31 @@ test("emitted events drive the tracker to a correct byte-weighted snapshot", asy
   assert.equal(tracker.snapshot().phase, "ready");
 });
 
+test("small non-LFS file with known mismatched metadata size is not cached", async () => {
+  const cache = fakeCache();
+  await assert.rejects(
+    prefetchModel({
+      modelId: PALI,
+      files: ["config.json"],
+      deps: {
+        resolveInfo: async () => [{
+          file: "config.json",
+          url: assetUrl(PALI, "main", "config.json"),
+          size: 10,
+        }],
+        cacheOpen: async () => cache,
+        simpleFetch: async () => ({
+          url: assetUrl(PALI, "main", "config.json"),
+          ok: true,
+          blob: async () => new Blob(["{}"]),
+        }),
+      },
+    }),
+    /Unexpected size/,
+  );
+  assert.equal(cache.store.size, 0);
+});
+
 test("download error propagates + surfaces as a file error event", async () => {
   const cache = fakeCache();
   const events = [];
