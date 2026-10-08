@@ -414,14 +414,33 @@ function classifyJsFile(file, source, hits, errors, judgeCandidate, ledgerOrLega
           if (boundSpec !== null) {
             const cand = extractBoundCandidate(boundSpec, cookedMarkerOffset(tl.node, constBindings, hit.offset), hit.marker);
             if (cand !== null) {
-              const b = (constBindings ??= resolveTopLevelStringConstants(parsed.ast));
-              const firstName = tl.node.expressions.find((e) => e.type === "Identifier" && b.has(e.name))?.name;
-              const bInfo = firstName ? b.get(firstName) : null;
+              // Attribute the origin to the expression whose cooked value actually covers the
+              // candidate position (NOT merely the first resolvable identifier — a template like
+              // `${a}https://…/pkg@${b}/…` must name b).
+              const candStart = cookedMarkerOffset(tl.node, constBindings, hit.offset) + hit.marker.length;
+              const candEnd = candStart + cand.length;
+              const viaNames = [];
+              {
+                // Name EVERY expression whose cooked value range overlaps the candidate range
+                // (a candidate can start in raw quasi text and extend into a `${}` value).
+                let pos = 0;
+                for (let i = 0; i < tl.node.quasis.length; i++) {
+                  pos += tl.node.quasis[i].value.cooked.length;
+                  if (i < tl.node.expressions.length) {
+                    const e = tl.node.expressions[i];
+                    const vLen = constBindings.get(e.name).value.length;
+                    if (pos < candEnd && candStart < pos + vLen) viaNames.push(e.name);
+                    pos += vLen;
+                  }
+                }
+              }
+              const bInfo = viaNames.length ? constBindings.get(viaNames[0]) : null;
               const bLine = bInfo ? source.slice(0, bInfo.nameStart).split("\n").length : null;
+              const viaName = viaNames.length ? viaNames.join("+") : null;
               const { line: hitLine } = lineInfo(source, hit.offset);
               bound = {
                 candidate: cand,
-                via: ` (bound from const ${firstName ?? "?"}${bLine ? ` at ${file}:${bLine}` : ""}; URL site ${file}:${hitLine})`,
+                via: ` (bound from const ${viaName ?? "?"}${bLine ? ` at ${file}:${bLine}` : ""}; URL site ${file}:${hitLine})`,
               };
             }
           }
