@@ -32,7 +32,11 @@ const SNAPSHOT = ROOT + "inventory/model-currency.json";
 const REPORT_JSON = ROOT + "reports/model-currency.json";
 const REPORT_MD = ROOT + "reports/model-currency.md";
 export const ALLOWLIST_PATH = ROOT + "scripts/runtime-pin-allowlist.json";
-export const PIN_SCAN_TARGETS = "models/ lib/ public/ scripts/ search/ models.json sw.js";
+// runtime-integrity.json is included so its contents are deliberately monitored: the reviewer of the
+// derived-inventory exemption showed that listing a file as exempt while never scanning it makes the
+// entry dead. Now an unauthorised version written into it is caught like anywhere else.
+export const PIN_SCAN_TARGETS =
+  "models/ lib/ public/ scripts/ search/ models.json sw.js runtime-integrity.json";
 // Single-sourced pin patterns: the text scans and the fail-closed binary pass both use them, so
 // detection cannot drift between the passes.
 export const ORT_PIN_PATTERN = "onnxruntime-web@[0-9]+\\.[0-9]+\\.[0-9]+";
@@ -375,8 +379,37 @@ export function checkRuntimePins() {
     }
   }
 
-  if (allowlist.derivedInventory && !Array.isArray(allowlist.derivedInventory.files)) {
-    return ["scripts/runtime-pin-allowlist.json: derivedInventory.files must be an array"];
+  if (allowlist.derivedInventory) {
+    const di = allowlist.derivedInventory;
+    const EXEMPTABLE = ["sw.js", "runtime-integrity.json", "scripts/runtime-integrity.mjs"];
+    if (!Array.isArray(di.files)) {
+      return ["scripts/runtime-pin-allowlist.json: derivedInventory.files must be an array"];
+    }
+    // Restrict to exactly the generated inventory. Without this, adding any model worker here would
+    // silently exempt it forever - a reviewer demonstrated exactly that against the previous revision.
+    const badPath = di.files.find((f) => typeof f !== "string" || !EXEMPTABLE.includes(f));
+    if (badPath) {
+      return [
+        `scripts/runtime-pin-allowlist.json: derivedInventory.files may only name the generated inventory (${EXEMPTABLE.join(", ")}), not "${badPath}"`,
+      ];
+    }
+    if (typeof di.reason !== "string" || di.reason.length <= 10) {
+      return ["scripts/runtime-pin-allowlist.json: derivedInventory.reason is required (> 10 chars)"];
+    }
+    if (!REVIEWED_ON_DATE_RE.test(String(di.reviewedOn))) {
+      return ["scripts/runtime-pin-allowlist.json: derivedInventory.reviewedOn must be YYYY-MM-DD"];
+    }
+    if (!Array.isArray(di.gatedBy) || di.gatedBy.length === 0) {
+      return ["scripts/runtime-pin-allowlist.json: derivedInventory.gatedBy must be a non-empty array"];
+    }
+    if (!di.measuredVersions || typeof di.measuredVersions !== "object" || Array.isArray(di.measuredVersions)) {
+      return ["scripts/runtime-pin-allowlist.json: derivedInventory.measuredVersions must be an object"];
+    }
+    for (const [lib, versions] of Object.entries(di.measuredVersions)) {
+      if (!Array.isArray(versions) || versions.length === 0) {
+        return [`scripts/runtime-pin-allowlist.json: derivedInventory.measuredVersions["${lib}"] must be a non-empty array`];
+      }
+    }
   }
   if (
     !Array.isArray(allowlist.onnxruntimeWeb?.allowedVersions) ||
@@ -444,17 +477,28 @@ export function checkRuntimePins() {
   // sw.js emits those URLs inside a delimited generated block; the rest of sw.js is still scanned, so a
   // runtime URL hardcoded elsewhere in the worker still fails. See the allowlist for what gates it instead.
   const derivedInventoryFiles = new Set(allowlist.derivedInventory?.files || []);
+  const derivedMeasured = allowlist.derivedInventory?.measuredVersions || {};
   let swGeneratedRange = null;
   try {
     const swLines = readFileSync(ROOT + "sw.js", "utf8").split("\n");
     const start = swLines.findIndex((l) => l.includes(">>> runtime-integrity (generated"));
     const end = swLines.findIndex((l) => l.includes("<<< runtime-integrity"));
-    if (start >= 0 && end > start) swGeneratedRange = [start + 1, end + 1];
+    // [start + 2, end] is the generated block WITHOUT either marker line, so a pin written on a marker
+    // line is never exempt. Note this range can never be made airtight by arithmetic alone: a line
+    // inserted just above the closing marker always lands inside it. That is why the exemption is
+    // version-scoped below - the range only says WHERE an exempt line may be, never WHAT may appear there.
+    if (start >= 0 && end > start) swGeneratedRange = [start + 2, end];
   } catch {
     // sw.js absent: nothing to exempt, every hit is scanned normally.
   }
-  const isDerivedInventoryHit = (file, lineNo) => {
+  const isDerivedInventoryHit = (file, lineNo, lib, version) => {
     if (!file || !derivedInventoryFiles.has(file)) return false;
+    // VERSION-SCOPED: the file alone earns nothing. The version must also be one the generated inventory
+    // actually measured, so an unauthorised runtime version appearing in any of these files is STILL an
+    // error - which is the whole point of the gate. A reviewer defeated an earlier file-scoped version of
+    // this by adding an unauthorised pin inside the generated block and in the generator's arrays.
+    const allowed = derivedMeasured[lib];
+    if (!Array.isArray(allowed) || !allowed.includes(version)) return false;
     if (file !== "sw.js") return true;
     if (!swGeneratedRange) return false;
     const n = Number(lineNo);
@@ -474,10 +518,11 @@ export function checkRuntimePins() {
     for (const line of raw.split("\n")) {
       if (!line.trim()) continue;
       const hit = line.match(/^(.*?):(\d+):(.+)$/);
-      if (hit && isDerivedInventoryHit(hit[1], hit[2])) continue;
       const payload = hit ? hit[3] : line;
       const v = payload.split("@").pop()?.trim();
-      if (v) foundOrt.add(v);
+      if (!v) continue;
+      if (hit && isDerivedInventoryHit(hit[1], hit[2], "onnxruntime-web", v)) continue;
+      foundOrt.add(v);
     }
     for (const v of foundOrt) {
       if (!allowedOrt.has(v)) {
@@ -507,10 +552,10 @@ export function checkRuntimePins() {
       const tjsHit = line.match(/^(.*?):(\d+):(.*)$/);
       const colonIdx = line.indexOf(":");
       const file = tjsHit ? tjsHit[1] : colonIdx >= 0 ? line.slice(0, colonIdx) : line;
-      if (isDerivedInventoryHit(file, tjsHit ? tjsHit[2] : null)) continue;
       const match = line.match(/@huggingface\/transformers@([0-9.]+)/);
       if (!match) continue;
       const v = match[1];
+      if (isDerivedInventoryHit(file, tjsHit ? tjsHit[2] : null, "@huggingface/transformers", v)) continue;
       if (v === allowedTjsShared) continue;
 
       const allowedSlugs = tjsOverrideMap.get(v);

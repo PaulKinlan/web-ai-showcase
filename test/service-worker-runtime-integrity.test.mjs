@@ -267,6 +267,19 @@ test("the manifest embedded in sw.js matches runtime-integrity.json", () => {
   const block = SW_SOURCE.slice(start, end);
   const json = block.slice(block.indexOf("{"), block.lastIndexOf("}") + 1);
   assert.deepEqual(JSON.parse(json), MANIFEST.urls, "regenerate with scripts/runtime-integrity.mjs");
+
+  // A reviewer defeated an earlier revision by placing an executable line inside the generated block:
+  // the range-based exemption skipped it and the JSON compare above ignored it. The block must therefore
+  // contain the generated manifest and NOTHING else.
+  // `block` spans the markers, so the ONLY lines that may lie outside the manifest JSON are the two
+  // marker comments themselves. Anything else is executable code smuggled into the generated block.
+  const trimLines = (s) => s.split("\n").map((l) => l.trim()).filter(Boolean);
+  const beforeJson = trimLines(block.slice(0, block.indexOf("const RUNTIME_INTEGRITY")));
+  assert.equal(beforeJson.length, 1, "only the start marker may precede the manifest inside the block");
+  assert.match(beforeJson[0], /^\/\/ >>> runtime-integrity/, "the line before the manifest must be the start marker");
+  const afterJson = trimLines(block.slice(block.lastIndexOf("};") + 2));
+  const strayAfter = afterJson.filter((l) => !/^\/\/ <<< runtime-integrity/.test(l));
+  assert.deepEqual(strayAfter, [], "only the end marker may follow the manifest inside the block");
 });
 
 // This is the test that would have caught the string-versus-object defect: sw.js reads
