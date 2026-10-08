@@ -230,6 +230,11 @@ self.addEventListener("fetch", (e) => {
     // plain strings; they now use the production shape, and a schema test pins it.
     const entry = RUNTIME_INTEGRITY[runtimeIntegrityKey(req.url)];
     if (!entry) {
+      // NOT VERIFIED. Say this precisely, because it is easy to overstate: a URL that is not in the
+      // manifest is fetched and handed to the page with NO integrity check at all. The only thing
+      // pass-through buys is that unverified bytes are never persisted and so cannot be REUSED from
+      // our cache later. That is not integrity protection, and the bytes are exactly as unprotected as
+      // they were before this worker existed.
       e.respondWith(fetch(req));
       return;
     }
