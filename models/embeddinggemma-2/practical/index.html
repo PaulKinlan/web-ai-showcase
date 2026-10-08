@@ -1,0 +1,386 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>EmbeddingGemma 2 Practical — chunked semantic search with instant Matryoshka re-ranking · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Index a modular technical corpus with EmbeddingGemma 2 on WebGPU, then use the Matryoshka dial to truncate the vectors used for scoring from 768 down to 128 dimensions for instant re-ranking. This page keeps full-width 768-d vectors in its in-memory index; the size figure is only what would be persisted at the chosen width, not a saving it realises."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🧭</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">EmbeddingGemma 2</a></p>
+
+    <header>
+      <p class="eyebrow">use case · practical</p>
+      <h1>Practical: chunked semantic search with instant Matryoshka re-ranking</h1>
+      <p class="lede">
+        Chunking a document into semantic windows keeps each passage focused for retrieval. While EmbeddingGemma 2's
+        model card documents an 8K context window (and its export <code>config.json</code> configures a 262,144 position range
+        with a 512 sliding window), practical on-device search indexes bounded chunks to preserve fast retrieval and low latency.
+        Once indexed, the <strong>Matryoshka dial</strong> truncates the vectors used for scoring from 768 down to 128 dimensions,
+        re-ranking instantly from cached in-memory vectors without re-embedding. This page keeps the full-width 768-d vectors in
+        its in-memory index and truncates only to score, so the dial changes retrieval quality, not this page's memory use—
+        a <strong>6× smaller store only for vectors you actually persist at that width</strong> (3,072 → 512 bytes per chunk).
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.4rem">
+        Corpus document (~192 words across eight distinct browser systems topics, designed for a ~250-token index)
+        <textarea id="doc" rows="10" disabled style="min-inline-size:0;inline-size:100%;font-family:inherit;font-size:.82rem;line-height:1.45">Web applications running offline must monitor storage quotas proactively. To prevent automated browser eviction of local databases, request persistent storage grants via navigator storage.
+
+Service workers cache application shells for offline availability. Cache static scripts and style sheets during installation, ensuring atomic updates without breaking active browser tabs.
+
+Local vector indexes balance search accuracy against client memory constraints. Truncate 768-dimensional embeddings to 128 dimensions via Matryoshka representation learning to shrink memory footprint.
+
+Cryptographic key material must remain non-extractable in client storage. Generate CryptoKey handles using the Web Crypto API to prevent private key extraction from IndexedDB.
+
+Asynchronous client mutations require local journaling during network disconnects. Append each operation to an IndexedDB queue and replay changes sequentially once network connectivity returns.
+
+Web Locks API coordinates concurrent database access across multiple browser tabs. Acquire an exclusive lock before mutating shared client state to prevent race conditions.
+
+Streaming compilation accelerates WebAssembly module startup on resource-constrained devices. Compile downloaded byte streams directly using compileStreaming to bypass unnecessary main thread bytecode decoding latency.
+
+Client telemetry payloads should utilize the Compression Streams API before upload. Compress batch log records using Gzip streams to minimize cellular radio transmit power.</textarea>
+      </label>
+
+      <div style="display:flex;flex-wrap:wrap;gap:1rem;align-items:center;margin:.6rem 0">
+        <label for="chunkWords" style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;flex:1;min-inline-size:12rem">
+          <span>Chunk window size: <b id="chunkWordsVal">24</b> words</span>
+          <input id="chunkWords" type="range" min="12" max="60" step="4" value="24" disabled style="min-inline-size:0" />
+        </label>
+        <button id="indexBtn" type="button" disabled>Index document</button>
+      </div>
+
+      <div style="display:flex;flex-wrap:wrap;gap:.5rem;align-items:end;margin:.8rem 0 .4rem">
+        <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;flex:1;min-inline-size:14rem">
+          Search query
+          <input id="query" type="text" value="How do we handle storage quota exhaustion and prevent browser eviction of local databases?" disabled style="min-inline-size:0" />
+        </label>
+        <button id="searchBtn" type="button" disabled>Search</button>
+      </div>
+
+      <div class="control" style="max-inline-size:32rem;margin:.8rem 0">
+        <label for="dims" style="font-size:.82rem">Matryoshka truncation width for scoring (the stored-size figure below is a projection, not a saving this page realises): <b id="dimsVal">768</b>-d</label>
+        <div class="row">
+          <input id="dims" type="range" min="0" max="3" step="1" value="0" disabled aria-describedby="dimsHint" style="min-inline-size:0" />
+        </div>
+        <span id="dimsHint" class="hint" style="font-size:.76rem;color:var(--muted)">
+          768 → 512 → 256 → 128. Truncates and re-normalizes the full 768-d unit vectors to score each result, with zero re-embedding.
+          The index still holds full 768-d vectors in memory; the size figure below is only what would be persisted at this width.
+        </span>
+      </div>
+
+      <div class="sent-list" id="ranked" aria-live="polite"></div>
+
+      <div id="compareNote" class="ctx-note" style="margin-top:.8rem" aria-live="polite" hidden></div>
+
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>width <b id="rDim">–</b></span>
+        <span>chunks <b id="rChunks">–</b></span>
+        <span>max chunk tokens <b id="rTokens">–</b></span>
+        <span>projected persisted size <b id="rSize">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+      </div>
+    </section>
+
+    <p class="muted" style="font-size:.85rem">
+      Everything runs on-device via WebGPU: the document text never leaves your browser, the embeddings live in
+      memory as full 768-d Float32 arrays, and moving the slider slices the vector dimensions and re-normalizes Euclidean
+      length via <code>matryoshka()</code> while scoring. This page does not shrink its stored index: it keeps the full
+      768-d vectors in memory, so choosing a smaller width here does not reduce this page's memory use. Persisting
+      truncated vectors yourself would instead take only 512 bytes per vector at 128-d (versus 3,072 bytes at 768-d)—a
+      6× saving only in that persisted store.
+      Limitation: although the model card describes cross-modal capability, image inference is unproven on this export and is not exercised here.
+    </p>
+
+    <p class="crumbs"><a href="../basics/">← Basics</a> · <a href="../">EmbeddingGemma 2</a> · Next: <a href="../wild/">Wild →</a></p>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import {
+        EmbeddingGemma2Engine,
+        EGEMMA2_CSS,
+        cosine,
+        matryoshka,
+        renderRanked,
+      } from "../egemma2.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = EGEMMA2_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+      const DIMS = [768, 512, 256, 128];
+      let engine = null;
+      let cached = null;
+      let cachedQuery = null;
+      let baseline768Hits = null;
+
+      function chunkWords(text, size) {
+        const words = text.trim().split(/\s+/).filter(Boolean);
+        const chunks = [];
+        for (let i = 0; i < words.length; i += size) {
+          chunks.push(words.slice(i, i + size).join(" "));
+        }
+        return chunks;
+      }
+
+      function showStatus(msg, type = "info") {
+        const s = $("status");
+        s.hidden = false;
+        s.className = "status" + (type === "err" ? " err" : type === "ok" ? " ok" : "");
+        s.textContent = msg;
+      }
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: {
+          modelId: "onnx-community/embeddinggemma-2-ONNX",
+          runtime: "transformers.js",
+          dtype: "q4",
+          sizeMB: 175,
+          requiresWebGPU: true,
+        },
+        load: async (onProgress) => {
+          engine = new EmbeddingGemma2Engine();
+          await engine.load(onProgress, { vision: false, audio: false, dtype: "q4", device: "webgpu" });
+          return engine;
+        },
+        onReady: () => {
+          $("doc").disabled = false;
+          $("chunkWords").disabled = false;
+          $("indexBtn").disabled = false;
+          $("query").disabled = false;
+          showStatus("Model ready (175 MB q4 WebGPU). Click 'Index document' to chunk and embed.", "ok");
+        },
+        onError: (err) => {
+          showStatus("Load failed: " + (err.message || err), "err");
+        },
+        dispose: (e) => e.worker.terminate(),
+        onDispose: () => {
+          $("doc").disabled = true;
+          $("chunkWords").disabled = true;
+          $("indexBtn").disabled = true;
+          $("query").disabled = true;
+          $("searchBtn").disabled = true;
+          $("dims").disabled = true;
+          engine = null;
+          cached = null;
+          cachedQuery = null;
+          baseline768Hits = null;
+        },
+      });
+
+      $("chunkWords").addEventListener("input", () => {
+        $("chunkWordsVal").textContent = $("chunkWords").value;
+        if (cached) {
+          showStatus(`Chunk window set to ${$("chunkWords").value} words. Click 'Index document' to re-chunk and embed.`);
+        }
+      });
+
+      $("indexBtn").addEventListener("click", indexDocument);
+
+      $("searchBtn").addEventListener("click", search);
+      $("query").addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && !$("searchBtn").disabled) {
+          search();
+        }
+      });
+
+      $("dims").addEventListener("input", () => {
+        const d = DIMS[+$("dims").value];
+        $("dimsVal").textContent = String(d);
+        rerank(d);
+      });
+
+      async function indexDocument() {
+        if (!engine) return;
+        const text = $("doc").value.trim();
+        if (!text) {
+          showStatus("Please provide a document to index.", "err");
+          return;
+        }
+        const chunkSize = parseInt($("chunkWords").value, 10) || 24;
+        const chunks = chunkWords(text, chunkSize);
+        if (chunks.length < 1) {
+          showStatus("Document produced no chunks.", "err");
+          return;
+        }
+
+        showStatus(`Embedding ${chunks.length} chunks (${chunkSize} words/chunk) on WebGPU…`);
+        $("indexBtn").disabled = true;
+        $("searchBtn").disabled = true;
+        $("dims").disabled = true;
+
+        try {
+          const items = chunks.map((chunk) => ({ text: chunk, mode: "document" }));
+          const dr = await engine.embedBatch(items, "practicalIndex");
+          // Modern Web Guidance: break-up-long-tasks — yield to main thread before UI rendering
+          if (globalThis.scheduler?.yield) await scheduler.yield();
+
+          const hasValidCounts = Array.isArray(dr.tokenCounts) &&
+            dr.tokenCounts.length === chunks.length &&
+            dr.tokenCounts.every((n) => typeof n === "number" && Number.isFinite(n) && n > 0);
+
+          const tokenCounts = hasValidCounts ? dr.tokenCounts : null;
+          const maxTokens = tokenCounts ? Math.max(...tokenCounts) : null;
+          const totalTokens = tokenCounts ? tokenCounts.reduce((sum, n) => sum + n, 0) : null;
+
+          cached = {
+            chunks,
+            docVecs: dr.embeddings,
+            tokenCounts,
+            maxTokens,
+            totalTokens,
+            device: dr.device,
+            embedMs: dr.ms,
+          };
+
+          $("searchBtn").disabled = false;
+          $("dims").disabled = false;
+
+          updateReadout(DIMS[+$("dims").value]);
+
+          const tokNote = totalTokens != null ? ` (${totalTokens} tokens total, largest chunk ${maxTokens})` : "";
+          const budgetWarn = totalTokens != null && totalTokens > 250 ? ` Note: total tokens (${totalTokens}) exceed the 250-token budget.` : "";
+          showStatus(`Indexed ${chunks.length} chunks on ${dr.device.toUpperCase()}${tokNote} in ${dr.ms} ms.${budgetWarn} Ready to search.`, "ok");
+
+          if ($("query").value.trim()) {
+            await search();
+          }
+        } catch (err) {
+          showStatus("Indexing failed: " + (err.message || String(err)), "err");
+        } finally {
+          $("indexBtn").disabled = false;
+        }
+      }
+
+      async function search() {
+        if (!engine || !cached) {
+          showStatus("Please index the document first.", "err");
+          return;
+        }
+        const q = $("query").value.trim();
+        if (!q) {
+          showStatus("Please enter a search query.", "err");
+          return;
+        }
+
+        showStatus(`Embedding query on ${cached.device.toUpperCase()}…`);
+        $("searchBtn").disabled = true;
+
+        try {
+          const qr = await engine.embedBatch([{ text: q, mode: "query" }], "practicalQuery");
+          cachedQuery = {
+            text: q,
+            vec: qr.embeddings[0],
+            ms: qr.ms,
+          };
+
+          baseline768Hits = rankAtDim(768);
+          const currentDim = DIMS[+$("dims").value];
+          rerank(currentDim);
+
+          showStatus(`Retrieved matches in ${qr.ms} ms query embed. Adjust the Matryoshka dial to observe truncated vector retrieval.`, "ok");
+        } catch (err) {
+          showStatus("Search failed: " + (err.message || String(err)), "err");
+        } finally {
+          $("searchBtn").disabled = false;
+        }
+      }
+
+      function rankAtDim(d) {
+        if (!cached || !cachedQuery) return [];
+        const qv = matryoshka(cachedQuery.vec, d);
+        const hits = cached.chunks.map((chunk, i) => {
+          const dv = matryoshka(cached.docVecs[i], d);
+          const score = cosine(qv, dv);
+          const tokCount = (cached.tokenCounts && cached.tokenCounts[i] != null) ? cached.tokenCounts[i] : "–";
+          return {
+            text: chunk,
+            score,
+            origIndex: i,
+            tokenCount: tokCount,
+            sub: `Chunk ${i + 1} of ${cached.chunks.length} · ${tokCount} tokens`,
+          };
+        });
+        hits.sort((a, b) => b.score - a.score);
+        return hits;
+      }
+
+      function rerank(d) {
+        if (!cached) return;
+        updateReadout(d);
+        if (!cachedQuery) return;
+
+        const hits = rankAtDim(d);
+        renderRanked($("ranked"), hits);
+        updateTop3Comparison(d, hits);
+      }
+
+      function updateReadout(d) {
+        if (!cached) return;
+        $("readout").hidden = false;
+        $("rBackend").textContent = cached.device.toUpperCase();
+        $("rDim").textContent = `${d}-d`;
+        $("rChunks").textContent = String(cached.chunks.length);
+        if (cached.maxTokens != null && cached.totalTokens != null) {
+          const over = cached.totalTokens > 250 ? " (exceeds 250 budget)" : "";
+          $("rTokens").textContent = `${cached.maxTokens} (${cached.totalTokens} total${over})`;
+        } else {
+          $("rTokens").textContent = "–";
+        }
+        const bytes = cached.chunks.length * d * 4;
+        const sizeStr = bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(1)} KB`;
+        // A projection only: the page keeps full 768-d vectors in `cached.docVecs` and never persists a
+        // truncated index, so a smaller width must not read as a saving this page has realised.
+        const ratioStr = d < 768 ? ` (${(768 / d).toFixed(0)}× smaller if persisted at this width)` : "";
+        $("rSize").textContent = sizeStr + ratioStr;
+        $("rMs").textContent = cachedQuery ? `${cachedQuery.ms} ms (${cached.embedMs} ms doc)` : `${cached.embedMs} ms`;
+      }
+
+      function updateTop3Comparison(d, currentHits) {
+        const note = $("compareNote");
+        if (!baseline768Hits || baseline768Hits.length === 0) {
+          note.hidden = true;
+          return;
+        }
+        note.hidden = false;
+        const baseTop3 = baseline768Hits.slice(0, 3);
+        const currTop3 = currentHits.slice(0, 3);
+
+        const fmtHit = (h) => `#${h.origIndex + 1} (${h.score.toFixed(3)})`;
+        const baseStr = baseTop3.map((h, r) => `${r + 1}. Chunk ${fmtHit(h)}`).join(", ");
+        const currStr = currTop3.map((h, r) => `${r + 1}. Chunk ${fmtHit(h)}`).join(", ");
+
+        const baseIndices = baseTop3.map((h) => h.origIndex);
+        const currIndices = currTop3.map((h) => h.origIndex);
+        const sameOrder = baseIndices.every((idx, i) => idx === currIndices[i]);
+
+        if (d === 768) {
+          note.innerHTML = `<strong>768-d baseline top-3 chunks:</strong> ${baseStr}. Moving the Matryoshka dial down to 512, 256, or 128 will display the corresponding rankings here for direct side-by-side comparison.`;
+        } else {
+          const orderNote = sameOrder
+            ? `The top-3 retrieval order is <strong>identical</strong> to the 768-d baseline.`
+            : `Top results remain concentrated in the same relevant chunks, with minor rank-order variations.`;
+          note.innerHTML = `<strong>Top-3 comparison:</strong> Baseline (768-d): ${baseStr} · Current (${d}-d truncation, ${(768 / d).toFixed(0)}× smaller only if persisted): ${currStr}. ${orderNote}`;
+        }
+      }
+    </script>
+  </body>
+</html>

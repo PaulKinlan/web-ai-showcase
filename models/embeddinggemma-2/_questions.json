@@ -1,0 +1,196 @@
+{
+  "schemaVersion": 1,
+  "id": "embeddinggemma-2",
+  "revision": 1,
+  "reviewedAt": "2026-10-07",
+  "reviewer": "web-ai-showcase-embedding2 (implementer lane) — independent review pending",
+  "frontend": true,
+  "summary": "EmbeddingGemma 2 on-device text embeddings. The demo's honest shape is narrower than the model card suggests and the pages say so: this export only runs on WebGPU. Quantized q4/q8 ONNX exports cannot create an ORT-Web WASM session at all (ERROR_CODE 9, GatherBlockQuantized on /model/embed_tokens/Gather_Quant, because the embedding table is block-quantized and the WASM EP has no kernel for it), and the unquantized fp32 export that does load on WASM is 1085 MB of text weights alone. fp16 is refused outright by this adapter ('The device (webgpu) does not support fp16'), which matches the model card's own warning that fp16 is unsafe for these weights. So the family is published as WebGPU-only, at q4 (175 MB text), and the reason is stated on every page rather than hidden behind a spinner.",
+  "rubric": [
+    {
+      "dimension": "real-inference",
+      "score": 4,
+      "severity": "info",
+      "evidence": "Headless Chrome, real HF downloads, transformers.js 4.3.1, onnx-community/embeddinggemma-2-ONNX q4 on WebGPU: output graph 'sentence_embedding', dims [5,768], all L2 norms exactly 1.0, zero non-finite values, Mars ranked #1 at 768-d (0.8542) and still #1 at Matryoshka 256-d (0.8706). Scores track the ONNX card's own published example (card 0.854/0.783/0.752/0.684; measured 0.8542/0.7833/0.7517/0.6845). Overview route driven end-to-end at 1280x800 and 360x740 with 18/18 checks: real 175 MB download, 768-d output, 128 populated vector cells, 6x6 cosine matrix, PCA circles, semantic search top hit 0.820, Matryoshka bars 0.795/0.807/0.808/0.853.",
+      "notes": "Score is 4 not 5 because runs operate on a software WebGPU rasterizer (SwiftShader) without hardware acceleration. Limitation: image inference is unproven on this VM and is not loaded or exercised."
+    },
+    {
+      "dimension": "io-shape",
+      "score": 5,
+      "severity": "info",
+      "evidence": "Inputs are plain text plus the model's documented task prefixes. The pooling and the 512->768 projection happen INSIDE the ONNX graph, so the pages read the graph's 'sentence_embedding' output directly and re-normalise after Matryoshka slicing, unlike v1 where pooling had to be requested from the pipeline. embedBatch returns one padded tensor for many inputs and reports each item's true token count from the file's own attention mask, padding excluded and counted after the prefix.",
+      "notes": "Verified that the identical call shape produces [N,768] for N inputs in one batch; prefixes are prepended as text, which is why they cost tokens and change the vector."
+    },
+    {
+      "dimension": "runtime-config",
+      "score": 4,
+      "severity": "major",
+      "evidence": "WebGPU + q4 webgpu+q4 text: session created, load 8.2-22.7s. webgpu+q8: also correct (Mars #1 at 0.8535). webgpu+fp16: refused by the adapter. wasm+q4 and wasm+q8: ERROR_CODE 9 GatherBlockQuantized /model/embed_tokens/Gather_Quant. wasm+fp32: works but 1085 MB. The 4.3.1 pin is registered in scripts/runtime-pin-allowlist.json with in-browser evidence that EmbeddingGemma2Model is exported only by 4.3.1 and absent from 4.3.0 and the shared 3.7.5.",
+      "notes": "The runtime decision is forced by fact, not preference: the shared 3.7.5 pin cannot even construct this architecture."
+    },
+    {
+      "dimension": "cache-init",
+      "score": 5,
+      "severity": "info",
+      "evidence": "The worker downloads the 175 MB q4 text model once; 'Release from memory' then 'Load model into memory' re-initialises the session without re-downloading, because assets remain in the browser cache. On the Multi-model route, EmbeddingGemma 2 (q4 WebGPU) and EmbeddingGemma v1 (q8 WASM) run in separate worker instances with independent lifecycles and sequential unload controls.",
+      "notes": "Model lifecycle and sequential unloading are verified to keep client memory bounded when comparing multiple models."
+    },
+    {
+      "dimension": "states",
+      "score": 4,
+      "severity": "info",
+      "evidence": "Loader states observed in a real browser: fresh download panel, initialising, ready, released, error. describeLoadError() maps the three measured failures (GatherBlockQuantized, out-of-memory, no WebGPU adapter) to plain-language messages. Verified that a cold-but-cached visit auto-initialises and presents no Download button, while a fresh profile does present one.",
+      "notes": "The WebGPU-unsupported state is load-bearing here, since the entire family depends on that capability."
+    },
+    {
+      "dimension": "controls",
+      "score": 4,
+      "severity": "info",
+      "evidence": "Every experiment is a real control: task-prefix radios (Basics), chunk-size and Matryoshka-dimension sliders with query search (Practical), one-click language query chips and cross-lingual search across eight languages (Wild), and independent index/rank and sequential unload controls for two distinct text models — v2 q4 WebGPU and v1 q8 WASM — with a top-k shortlist selector (Multi-model). The Matryoshka re-rank runs from cached in-memory vectors with no second worker call.",
+      "notes": "Sliders are the INP risk: they are wired to re-rank from memory rather than re-embed, which keeps the interaction inside the frame budget."
+    },
+    {
+      "dimension": "no-fake-output",
+      "score": 5,
+      "severity": "info",
+      "evidence": "No placeholder, mock or seeded vectors anywhere: every number on screen comes from a worker result, and where a capability is unavailable the page shows the real error text. On Wild, the verdict honestly reports when the top-1 hit does not match the target language. The measured-facts note states the WASM block and the fp16 refusal as measured facts with their actual error strings.",
+      "notes": "This is the dimension the whole two-phase catalogue landing exists to protect: the seed was admitted as a typed 'unverified' pending candidate before it was allowed to become 'built'."
+    },
+    {
+      "dimension": "accessibility",
+      "score": 4,
+      "severity": "info",
+      "evidence": "Status regions use role=status with aria-live=polite; progress is announced through the loader's live region rather than by an animated bar alone; the similarity matrix and every ranked list are real tables/lists with text labels, not colour or canvas only, and the ranked rows carry a numeric score as text. Radios are grouped in fieldsets with legends.",
+      "notes": "Score is 4 rather than 5 pending the accessibility station, which has not been run against this family."
+    },
+    {
+      "dimension": "responsive",
+      "score": 4,
+      "severity": "info",
+      "evidence": "The overview route was driven at 360x740 as well as 1280x800 with zero horizontal overflow, and the acceptance validator asserts scrollWidth <= innerWidth + 1 on all five routes at both viewports, with the similarity matrix scrolling inside its own container instead of widening the page.",
+      "notes": "Score is 4 until all five routes have reported at both viewports from the acceptance run rather than the overview alone."
+    },
+    {
+      "dimension": "performance",
+      "score": 3,
+      "severity": "major",
+      "evidence": "Measured first inference on this VM: 156,299 ms for the overview's six-passage run and 156s-class stages throughout, on a SwiftShader SOFTWARE WebGPU adapter ('vendor: google, architecture: swiftshader') on a shared 2-CPU box; load 8.2-22.7s for q4 text. Where 8-33s of that is shader and pipeline compilation is not separable from honest measurement here.",
+      "notes": "Explicitly not a hardware-GPU figure: this box has no GPU, so these latencies prove the kernels ran and must never be read as real-device performance. The pages carry the software-adapter caveat and token counts across routes are bounded (~250 tokens on Practical, ~202 tokens on Wild, ~201 tokens on Multi-model) because of it."
+    }
+  ],
+  "guidanceConsulted": [
+    {
+      "id": "cpp-on-the-web",
+      "query": "run WebAssembly in a worker rather than the main thread",
+      "recommendation": "If a call into WebAssembly is likely to take a significant amount of time (i.e. more than a few milliseconds) it should not be called on the main browser thread.",
+      "appliedOrException": "Applied — and it is structural, not advisory: 100% of ONNX Runtime WebGPU/WASM execution happens inside models/embeddinggemma-2/worker.js. The page thread only posts messages and renders returned numbers, so an inference that takes 150s on a software adapter still cannot block a slider drag or the status region.",
+      "evidence": "models/embeddinggemma-2/worker.js is the only file that calls from_pretrained or model(); grep for from_pretrained under models/embeddinggemma-2/*.html returns nothing."
+    },
+    {
+      "id": "performance",
+      "query": "keep interaction responsive when work exceeds a frame",
+      "recommendation": "The 50ms Rule for INP: < 50ms: Execute synchronously. 50ms - 250ms: Slice tasks and yield with scheduler.yield(). > 250ms: Offload to a Web Worker.",
+      "appliedOrException": "Applied with a documented exception. The >250ms branch is honoured (all inference is a worker). The 50-250ms branch is the exception: the Matryoshka re-rank and the cosine-matrix build are synchronous and do NOT yield, because they operate on already-computed cached vectors — 6x768 floats on the overview and 10x768 on Practical — which measure far under 50ms, so yielding would add latency without protecting the frame.",
+      "evidence": "The overview and Practical re-rank from cached vectors with no second worker call, and the measured re-rank and ranking totals are reported in #rMs rather than assumed."
+    },
+    {
+      "id": "break-up-long-tasks",
+      "query": "yield periodically during heavy loops",
+      "recommendation": "Heavy computations or long loops can block the main thread, causing the page to become unresponsive. To prevent this, you should yield control back to the browser periodically.",
+      "appliedOrException": "Applied where loop or rendering work is heavy: the Practical route awaits scheduler.yield() before UI rendering, the Wild route yields after batch inference before DOM updates, and the Multi-model route yields before dispatching each model's batch inference.",
+      "evidence": "scheduler.yield() call sites in models/embeddinggemma-2/practical/index.html, models/embeddinggemma-2/wild/index.html, models/embeddinggemma-2/multi-model/index.html, and models/embeddinggemma-2/basics/index.html around inference and post-inference render steps."
+    },
+    {
+      "id": "spinner",
+      "query": "communicate unmeasured work without layout shift",
+      "recommendation": "Using the native <progress> element as the semantic foundation. By omitting the value attribute, the browser treats it as an indeterminate progress bar, ensuring correct announcement by assistive technologies.",
+      "appliedOrException": "Applied — the shared loader uses an indeterminate native <progress> during the unmeasured shader-compilation and session-creation phase after model weights are loaded into memory, ensuring correct announcement without inventing a fake percentage.",
+      "evidence": "Native progress region rendered through lib/model-loader.js during session initialization across routes."
+    },
+    {
+      "id": "progress-ring",
+      "query": "accessible determinate progress for multi-file downloads",
+      "recommendation": "Using the native <progress> element as the semantic foundation to ensure the component is accessible to screen readers and keyboard users out-of-the-box.",
+      "appliedOrException": "Applied through the shared loader rather than reinvented: the multi-file q4 download (model_q4.onnx, model_q4.onnx_data, and tokenizer files) reports real byte progress to createModelLoader's native progress element, including the by-file breakdown, so the download is determinate and announced.",
+      "evidence": "The progress marks captured during loading report the files: onnx/model_q4.onnx, onnx/model_q4.onnx_data, tokenizer.json, tokenizer_config.json."
+    },
+    {
+      "id": "optimize-image-priority",
+      "query": "image priority and lazy loading so samples do not compete with model download",
+      "recommendation": "Using fetchpriority on an <img> element allows you to explicitly signal an image's importance to the browser, ensuring critical images load faster while non-essential ones don't compete for bandwidth.",
+      "appliedOrException": "Exception, deliberately. All routes in this family evaluate text and code embeddings only; image inference is unproven on this adapter and is not loaded or exercised, so there are no sample images or <img> elements to prioritize or compete for network bandwidth during model downloads.",
+      "evidence": "Grep for <img across models/embeddinggemma-2/*.html returns no content images; all models and examples are text-only."
+    },
+    {
+      "id": "responsive-table",
+      "query": "responsive data tables",
+      "recommendation": "Use @container queries instead of @media queries. This allows the table to adapt based on its own width.",
+      "appliedOrException": "Applied partially, with a deliberate exception. Container-relative sizing is used via intrinsic sizing and flexible tracks, and the 6x6 similarity matrix scrolls inside its own overflow container so the page never widens. The exception is the guide's mobile card-stacking pattern: a similarity heatmap cannot stack on mobile because its meaning is the 2-D alignment of rows and columns, so the matrix scrolls horizontally instead of reflowing into cards.",
+      "evidence": "The overview reports zero horizontal overflow at 360x740 while still rendering all 36 matrix cells."
+    },
+    {
+      "id": "accessibility",
+      "query": "landmarks, focus visibility, live region politeness",
+      "recommendation": "Use assertive only for critical, time-sensitive updates that require immediate attention or prevent safe continuation (e.g. data loss, session timeouts, or network drops).",
+      "appliedOrException": "Applied: every status region in the family is aria-live=polite, including the load failures, because a 175-284 MB download that failed is disappointing but nothing is lost and the visitor is not mid-irreversible-action. No assertive region is used anywhere in the family.",
+      "evidence": "role=status / aria-live=polite on #status across the five routes; the WebGPU-unsupported message is delivered through the same polite region."
+    },
+    {
+      "id": "css-layout",
+      "query": "prevent horizontal overflow at narrow viewports",
+      "recommendation": "Reach for intrinsic sizing (min-content, max-content, fit-content()) and flexible tracks (fr, minmax()) before fixed width/height — fewer media queries, more resilient layouts.",
+      "appliedOrException": "Applied: the responsive behaviour comes from auto-fit/minmax grids and intrinsic sizing rather than a ladder of fixed breakpoints, which is why the whole family needs no page-specific media queries to hold 360px.",
+      "evidence": "Asserted in acceptance as documentElement.scrollWidth <= innerWidth + 1 on all five routes at both viewports."
+    },
+    {
+      "id": "defer-rendering-heavy-content",
+      "query": "skip rendering work for off-screen content",
+      "recommendation": "You MUST pair content-visibility: auto with contain-intrinsic-size. Failure to do so forces the browser to collapse the element to a 0px height when off-screen, causing severe layout shifting and scrollbar jumping as the user scrolls.",
+      "appliedOrException": "Exception, deliberately. The heavy regions here (vector strip, cosine matrix, ranked lists) are all above or adjacent to the fold and are the content the visitor came for, so deferring their rendering would delay the one thing on the page that proves the model works, and pairing contain-intrinsic-size with a height that is genuinely unknown before inference would risk exactly the layout shift the guidance warns about.",
+      "evidence": "The routes render one focused result set rather than a long feed, and total scroll height is small on both viewports."
+    },
+    {
+      "id": "cross-document-transitions",
+      "query": "animate navigation between the five rung pages",
+      "recommendation": "Both the source and destination pages must opt-in to view transitions for the browser to trigger them on navigation.",
+      "appliedOrException": "Exception, deliberately. The rung pages are an escalating ladder rather than a flow: a visitor arrives from the catalogue, tests one idea and leaves, and the pages carry long-lived downloads whose teardown would be disrupted by a cross-document transition. The family keeps the catalogue's existing navigation convention so it matches the other 400+ family pages instead of becoming the one family that animates differently.",
+      "evidence": "Rung exit links use the shared catalogue link pattern; check-ladder-links reports 0 failures for the family."
+    },
+    {
+      "id": "efficient-background-processing",
+      "query": "pause off-screen animation work",
+      "recommendation": "By listening to this event, you can pause expensive operations like <canvas> animations, WebGL rendering, or high-frequency WebSocket data polling when they are not needed, and resume them just-in-time",
+      "appliedOrException": "Applied in spirit by not creating the problem: this family has no animation loop, no polling and no canvas render loop. The only continuous work is the loader's progress reporting during a download, which is driven by the fetch itself and stops when the fetch stops, so there is nothing left running to pause.",
+      "evidence": "No requestAnimationFrame loop or setInterval in models/embeddinggemma-2/."
+    },
+    {
+      "id": "schedule-tasks-by-priority",
+      "query": "prioritised task scheduling for UI responsiveness",
+      "recommendation": "The Prioritized Task Scheduling API allows you to schedule work with specific priorities, ensuring the browser remains responsive to user input.",
+      "appliedOrException": "Exception, deliberately. There is no queue of independent tasks to prioritise: each route has exactly one long task (a model call) which already runs in a worker, and the rendering that follows it is a single sub-50ms synchronous step. Adding a priority queue would add a scheduling layer without a candidate to schedule.",
+      "evidence": "One worker call per user action on every route; embedBatch exists precisely so a multi-part experiment is one call rather than a schedule of several."
+    }
+  ],
+  "openQuestions": [
+    "How does cross-lingual retrieval accuracy scale across languages beyond the 8 demonstrated on the Wild route?",
+    "How much retrieval quality does Matryoshka 128-d truncation preserve across specialized technical corpora compared to full 768-d embeddings?",
+    "What is the latency difference on a hardware WebGPU adapter versus the software SwiftShader adapter measured here?"
+  ],
+  "followUpGoals": [
+    {
+      "goal": "Run the accessibility station against the family once all routes have acceptance evidence, and raise the accessibility rubric score if it clears.",
+      "kind": "targeted-fix",
+      "priority": "medium"
+    },
+    {
+      "goal": "Benchmark Matryoshka recall@k across all 4 dimensions (768, 512, 256, 128) on a standard retrieval dataset to quantify the storage-vs-accuracy trade-off.",
+      "kind": "additive-demo",
+      "priority": "low"
+    },
+    {
+      "goal": "Measure hardware WebGPU latency on real client GPUs to compare against the software SwiftShader baseline.",
+      "kind": "targeted-fix",
+      "priority": "low"
+    }
+  ]
+}

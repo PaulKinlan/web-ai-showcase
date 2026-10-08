@@ -1,14 +1,14 @@
 # Model + runtime currency audit
 
-Generated 2026-09-24T16:37:49.664Z by `scripts/audit-model-currency.mjs`.
+Generated 2026-10-08T03:11:34.964Z by `scripts/audit-model-currency.mjs`.
 
-- Built routes: **327** · scanned: **327** · unique HF repos health-checked: **340**
-  (324 cited · 309 weight-serving · 35 config/tokenizer-only)
-- transformers.js shared pin: **3.7.5** · latest published: **4.3.0** (recent stable: 3.8.1, 4.0.0, 4.0.1, 4.1.0, 4.2.0, 4.3.0)
-- Local version overrides: `4.2.0` on 7 route(s)
-- Checkpoint/pin findings: **5**
+- Built routes: **328** · scanned: **328** · unique HF repos health-checked: **342**
+  (325 cited · 310 weight-serving · 39 config/tokenizer-only)
+- transformers.js shared pin: **3.7.5** · latest published: **4.3.1** (recent stable: 4.0.0, 4.0.1, 4.1.0, 4.2.0, 4.3.0, 4.3.1)
+- Local version overrides: `4.2.0` on 7 route(s), `4.3.1` on 1 route(s), `4.3.0` on 1 route(s)
+- Checkpoint/pin findings: **52**
 
-### Recorded vocabulary equivalences (34 routes)
+### Recorded vocabulary equivalences (33 routes)
 
 The transformers.js task a demo drives and the Hub `pipeline_tag` on the card are two vocabularies for the same work. These pairs are recorded in `scripts/model-task-vocabulary.mjs` as equivalent, with the reason, so they are reported as neither drift nor a defect — and an unrecorded mismatch is still reported:
 
@@ -17,7 +17,6 @@ The transformers.js task a demo drives and the Hub `pipeline_tag` on the card ar
 - `feature-extraction -> sentence-similarity` × 4 — same behaviour — demo drives the TJS feature-extraction pipeline; the card advertises retrieval
 - `audio-feature-extraction -> feature-extraction` × 2 — same behaviour — TJS audio task name vs card tag
 - `sentence-similarity -> feature-extraction` × 2 — same behaviour — TJS pipeline name vs card tag; the embedding is the retrieval model
-- `fill-mask -> text-generation` × 1 — spell-correction checkpoint driven as fill-mask over masked spans
 - `image-text-to-text -> text-generation` × 1 — card tag is a poor fit for this VLM; demo uses image-text-to-text
 - `image-to-image -> image-to-text` × 1 — card tag is a poor fit for this unwarping model; demo uses image-to-image
 - `image-to-image -> text-to-image` × 1 — card tag is a poor fit for this restoration model; demo uses image-to-image
@@ -29,7 +28,9 @@ The transformers.js task a demo drives and the Hub `pipeline_tag` on the card ar
 
 ## Findings by kind
 
+- deferred: 42
 - gatedInformational: 5
+- upstreamMoved: 5
 
 ## Findings
 
@@ -38,6 +39,53 @@ The transformers.js task a demo drives and the Hub `pipeline_tag` on the card ar
 - `google/gemma-3-1b-it` — {"gatedInformational":"gated=manual — cited only; weights arrive via a CDN build"}
 - `meta-llama/Llama-3.2-1B-Instruct` — {"gatedInformational":"gated=manual — cited only; weights arrive via a CDN build"}
 - `meta-llama/Llama-3.2-3B-Instruct` — {"gatedInformational":"gated=manual — cited only; weights arrive via a CDN build"}
+- `onnx-community/LFM2-350M-ONNX` — {"upstreamMoved":{"from":"1888d14314","to":"ecc51d35a7","fromDate":"2026-03-30T17:58:09.000Z","toDate":"2026-10-07T16:03:48.000Z"}}
+- `onnx-community/Qwen2.5-0.5B-Instruct` — {"upstreamMoved":{"from":"cc5cc01a65","to":"22942cb7d7","fromDate":"2024-10-08T13:29:33.000Z","toDate":"2026-10-07T16:05:01.000Z"}}
+- `onnx-community/Qwen3-0.6B-ONNX` — {"upstreamMoved":{"from":"da1453100c","to":"1e0a4a196e","fromDate":"2026-04-20T14:04:21.000Z","toDate":"2026-10-07T16:18:17.000Z"}}
+- `onnx-community/SMOGY-Ai-images-detector-ONNX` — {"deferred":"not re-checked this run (request budget 300) — cached evidence 2026-09-24T15:25:40.961Z"}
+- `onnx-community/granite-3.0-2b-instruct` — {"upstreamMoved":{"from":"220cda8f00","to":"39154f076d","fromDate":"2025-03-06T17:20:13.000Z","toDate":"2026-10-07T16:37:49.000Z"}}
+- `onnx-community/granite-4.0-350m-ONNX-web` — {"upstreamMoved":{"from":"25ed491901","to":"62fc8f345c","fromDate":"2025-10-28T15:13:40.000Z","toDate":"2026-10-07T16:06:13.000Z"}}
+- `onnx-community/silero-vad` — {"deferred":"not re-checked this run (request budget 300) — cached evidence 2026-09-24T15:25:40.961Z"}
+- `onnx-community/stanford-deidentifier-base-ONNX` — {"deferred":"not re-checked this run (request budget 300) — cached evidence 2026-09-24T15:25:40.961Z"}
+- `onnx-community/swin-finetuned-food101-ONNX` — {"deferred":"not re-checked this run (request budget 300) — cached evidence 2026-09-24T15:25:40.961Z"}
+- `onnx-community/tanaos-spam-detection-v1-ONNX` — {"deferred":"not re-checked this run (request budget 300) — cached evidence 2026-09-24T15:25:40.961Z"}
+- `onnx-community/tiny_starcoder_py-ONNX` — {"deferred":"not re-checked this run (request budget 300) — cached evidence 2026-09-24T15:25:40.961Z"}
+- `onnx-community/twitter-roberta-large-hate-latest-ONNX` — {"deferred":"not re-checked this run (request budget 300) — cached evidence 2026-09-24T15:25:40.961Z"}
+- `onnx-community/twitter-xlm-roberta-base-sentiment-ONNX` — {"deferred":"not re-checked this run (request budget 300) — cached evidence 2026-09-24T15:25:40.961Z"}
+- `onnx-community/vitpose-base-simple` — {"deferred":"not re-checked this run (request budget 300) — cached evidence 2026-09-24T15:25:40.961Z"}
+- `onnx-community/wav2vec2-base-10k-voxpopuli-ft-pl-ONNX` — {"deferred":"not re-checked this run (request budget 300) — cached evidence 2026-09-24T15:25:40.961Z"}
+- `onnx-community/wav2vec2-base-Speech_Emotion_Recognition-ONNX` — {"deferred":"not re-checked this run (request budget 300) — cached evidence 2026-09-24T15:25:40.961Z"}
+- `onnx-community/wav2vec2-large-xlsr-53-chinese-zh-cn-ONNX` — {"deferred":"not re-checked this run (request budget 300) — cached evidence 2026-09-24T15:25:40.961Z"}
+- `onnx-community/wav2vec2-large-xlsr-53-russian-ONNX` — {"deferred":"not re-checked this run (request budget 300) — cached evidence 2026-09-24T15:25:40.961Z"}
+- `onnx-community/whisper-base_timestamped` — {"deferred":"not re-checked this run (request budget 300) — cached evidence 2026-09-24T15:25:40.961Z"}
+- `onnx-community/whisper-large-v3-turbo` — {"deferred":"not re-checked this run (request budget 300) — cached evidence 2026-09-24T15:25:40.961Z"}
+- `onnx-community/xlm-roberta-base-finetuned-squad2-ONNX` — {"deferred":"not re-checked this run (request budget 300) — cached evidence 2026-09-24T15:25:40.961Z"}
+- `onnx-community/xlm-roberta-base-language-detection-ONNX` — {"deferred":"not re-checked this run (request budget 300) — cached evidence 2026-09-24T15:25:40.961Z"}
+- `onnx-community/yolos-base-signature-detection-ONNX` — {"deferred":"not re-checked this run (request budget 300) — cached evidence 2026-09-24T15:25:40.961Z"}
+- `onnx-community/yolov10n` — {"deferred":"not re-checked this run (request budget 300) — cached evidence 2026-09-24T15:25:40.961Z"}
+- `onnxmodelzoo/candy-9` — {"deferred":"not re-checked this run (request budget 300) — cached evidence 2026-09-24T15:25:40.962Z"}
+- `opencv/deblurring_nafnet` — {"deferred":"not re-checked this run (request budget 300) — cached evidence 2026-09-24T15:25:40.962Z"}
+- `opencv/face_image_quality_assessment_ediffiqa` — {"deferred":"not re-checked this run (request budget 300) — cached evidence 2026-09-24T15:25:40.962Z"}
+- `opencv/optical_flow_estimation_raft` — {"deferred":"not re-checked this run (request budget 300) — cached evidence 2026-09-24T15:25:40.962Z"}
+- `opencv/person_reid_youtureid` — {"deferred":"not re-checked this run (request budget 300) — cached evidence 2026-09-24T15:25:40.962Z"}
+- `patrickjohncyh/fashion-clip` — {"deferred":"not re-checked this run (request budget 300) — cached evidence 2026-09-24T15:25:40.962Z"}
+- `phatvo/deberta_finetuned_pii-ONNX` — {"deferred":"not re-checked this run (request budget 300) — cached evidence 2026-09-24T15:25:40.962Z"}
+- `prithivida/Splade_PP_en_v1` — {"deferred":"not re-checked this run (request budget 300) — cached evidence 2026-09-24T15:25:40.962Z"}
+- `protectai/deberta-v3-base-prompt-injection-v2` — {"deferred":"not re-checked this run (request budget 300) — cached evidence 2026-09-24T15:25:40.962Z"}
+- `rocca/informative-drawings-line-art-onnx` — {"deferred":"not re-checked this run (request budget 300) — cached evidence 2026-09-24T15:25:40.962Z"}
+- `sentence-transformers/all-distilroberta-v1` — {"deferred":"not re-checked this run (request budget 300) — cached evidence 2026-09-24T15:25:40.962Z"}
+- `shethjenil/Audio2Midi_Models` — {"deferred":"not re-checked this run (request budget 300) — cached evidence 2026-09-24T15:25:40.962Z"}
+- `shibing624/macbert4csc-base-chinese` — {"deferred":"not re-checked this run (request budget 300) — cached evidence 2026-09-24T15:25:40.962Z"}
+- `spotify/basic-pitch` — {"deferred":"not re-checked this run (request budget 300) — cached evidence 2026-09-24T15:25:40.962Z"}
+- `stabilityai/stablelm-2-zephyr-1_6b` — {"deferred":"not re-checked this run (request budget 300) — cached evidence 2026-09-24T15:25:40.962Z"}
+- `tarekziade/topic_classification` — {"deferred":"not re-checked this run (request budget 300) — cached evidence 2026-09-24T15:25:40.962Z"}
+- `timm/mobilenetv3_small_100.lamb_in1k` — {"deferred":"not re-checked this run (request budget 300) — cached evidence 2026-09-24T15:25:40.962Z"}
+- `timm/mobilenetv4_conv_small.e2400_r224_in1k` — {"deferred":"not re-checked this run (request budget 300) — cached evidence 2026-09-24T15:25:40.962Z"}
+- `tjruesch/xlm-roberta-base-ner-hrl-onnx` — {"deferred":"not re-checked this run (request budget 300) — cached evidence 2026-09-24T15:25:40.962Z"}
+- `vumichien/AnimeGANv2_Hayao` — {"deferred":"not re-checked this run (request budget 300) — cached evidence 2026-09-24T15:25:40.962Z"}
+- `webnn/yolo11n` — {"deferred":"not re-checked this run (request budget 300) — cached evidence 2026-09-24T15:25:40.962Z"}
+- `welcomyou/convtasnet-libri2mix-16k-onnx` — {"deferred":"not re-checked this run (request budget 300) — cached evidence 2026-09-24T15:25:40.962Z"}
+- `yzd-v/DWPose` — {"deferred":"not re-checked this run (request budget 300) — cached evidence 2026-09-24T15:25:40.962Z"}
 
 ## Catalogue dtype vs worker dtype (8)
 
@@ -108,7 +156,7 @@ The transformers.js task a demo drives and the Hub `pipeline_tag` on the card ar
 - `mobilenetv3-small-100-lamb-in1k` (transformers.js, fp32): `onnx-community/mobilenetv3_small_100.lamb_in1k`
 - `multilingual-e5-small` (transformers.js, q8): `Xenova/multilingual-e5-small`
 - `nomic-embeddings` (transformers.js, q8): `Xenova/nomic-embed-text-v1`
-- `gpt2-text-generation` (transformers.js, int8): `Xenova/gpt2`
+- `gpt2-text-generation` (transformers.js, int8): `Xenova/gpt2` · config-only: `Xenova/gpt2`
 - `roberta-fill-mask` (transformers.js, q8): `Xenova/roberta-base` · config-only: `Xenova/roberta-base`
 - `qwen3-embedding-0-6b` (transformers.js, q8): `onnx-community/Qwen3-Embedding-0.6B-ONNX`
 - `distilbert-base-uncased` (transformers.js, q8): `Xenova/distilbert-base-uncased` · config-only: `Xenova/distilbert-base-uncased`
@@ -134,13 +182,13 @@ The transformers.js task a demo drives and the Hub `pipeline_tag` on the card ar
 - `tinyllama-chat` (transformers.js, q4f16): `Xenova/TinyLlama-1.1B-Chat-v1.0`
 - `nllb-200-translation` (transformers.js, q8): `Xenova/nllb-200-distilled-600M`
 - `all-distilroberta-v1` (transformers.js, fp32): `sentence-transformers/all-distilroberta-v1`
-- `moondream2-vlm` (transformers.js, q4f16): `Xenova/moondream2`
-- `fastvlm-vlm` (transformers.js, q4): `onnx-community/FastVLM-0.5B-ONNX`
+- `moondream2-vlm` (transformers.js, q4f16): `Xenova/moondream2` · config-only: `Xenova/moondream2`
+- `fastvlm-vlm` (transformers.js, q4): `onnx-community/FastVLM-0.5B-ONNX` · config-only: `onnx-community/FastVLM-0.5B-ONNX`
 - `qwen2-vl` (transformers.js, q4f16): `onnx-community/Qwen2-VL-2B-Instruct`
 - `phi-3.5-vision` (transformers.js, q4f16): `onnx-community/Phi-3.5-vision-instruct`
 - `janus-pro` (transformers.js, q4f16): `onnx-community/Janus-Pro-1B-ONNX`
 - `paligemma` (transformers.js, q4f16): `onnx-community/paligemma2-3b-pt-224`
-- `nanollava-vlm` (transformers.js, q4f16): `Xenova/nanoLLaVA`
+- `nanollava-vlm` (transformers.js, q4f16): `Xenova/nanoLLaVA` · config-only: `Xenova/nanoLLaVA`
 - `moonshine-asr` (transformers.js, q8): `onnx-community/moonshine-base-ONNX`
 - `musicgen-text-to-audio` (transformers.js, q8): `Xenova/musicgen-small`
 - `bert-ner` (transformers.js, q8): `Xenova/bert-base-NER`
@@ -288,6 +336,7 @@ The transformers.js task a demo drives and the Hub `pipeline_tag` on the card ar
 - `xlmr-multilingual-ner` (transformers.js, q8): `tjruesch/xlm-roberta-base-ner-hrl-onnx`
 - `gte-modernbert-embeddings` (transformers.js, q8): `Alibaba-NLP/gte-modernbert-base`
 - `embeddinggemma` (transformers.js, q8): `onnx-community/embeddinggemma-300m-ONNX`
+- `embeddinggemma-2` (transformers.js, q4): `onnx-community/embeddinggemma-2-ONNX`
 - `speech-commands` (transformers.js, q8): `Xenova/ast-finetuned-speech-commands-v2`
 - `yolo11-detection` (raw-ort, fp32): `webnn/yolo11n`
 - `spam-detection` (transformers.js, q8): `onnx-community/tanaos-spam-detection-v1-ONNX`

@@ -1,0 +1,475 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>EmbeddingGemma 2 Wild — cross-lingual retrieval: one query, many languages · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="EmbeddingGemma 2 maps 100+ languages into a single 768-d embedding space. Search a multilingual corpus with a query in a completely different language without machine translation — running locally on WebGPU."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🧭</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">EmbeddingGemma 2</a></p>
+
+    <header>
+      <p class="eyebrow">use case · wild</p>
+      <h1>Wild: cross-lingual retrieval without translation</h1>
+      <p class="lede">
+        Because EmbeddingGemma 2 is multilingual across 100+ languages, it maps meaning into a single shared
+        768-dimensional vector space regardless of the input language. A search query written in one language
+        can retrieve passages written in another by semantic meaning alone—with no machine translation step and
+        no per-language indices. Search the mixed-language corpus below to measure cross-lingual cosine alignment
+        directly on WebGPU.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div id="model-loader"></div>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.4rem">
+        Multilingual corpus (8 short passages across 8 distinct languages and subjects; [XX] indicates language tag)
+        <textarea id="corpus" rows="9" disabled style="min-inline-size:0;inline-size:100%;font-family:inherit;font-size:.82rem;line-height:1.45">[FR] Une éclipse solaire totale survient lorsque la Lune passe directement entre la Terre et le Soleil.
+[DE] Hochgeschwindigkeitszüge verbinden Großstädte mit Geschwindigkeiten von über dreihundert Kilometern pro Stunde.
+[ES] La fotosíntesis transforma luz solar, agua y dióxido de carbono en glucosa y oxígeno en los cloroplastos.
+[JA] 味噌汁は出汁に味噌を溶かして豆腐やワカメを煮込む日本の伝統的な家庭料理です。
+[IT] La cupola di Santa Maria del Fiore a Firenze fu eretta da Brunelleschi senza centine di legno.
+[PT] A Fossa das Marianas representa o ponto mais profundo dos oceanos na Terra, no Oceano Pacífico.
+[AR] تُزرع أشجار نخيل التمر في الواحات الصحراوية وتعتمد على ينابيع المياه الجوفية.
+[HI] माउंट एवरेस्ट हिमालय की सबसे ऊंची पर्वत चोटी है, जो टेक्टोनिक प्लेटों के दबाव से उभरी है।</textarea>
+      </label>
+
+      <div style="margin:.6rem 0">
+        <span class="muted" style="font-size:.78rem">One-click cross-lingual query examples:</span>
+        <div class="chip-row" id="examples" role="group" aria-label="Example cross-lingual queries" style="margin-top:.3rem"></div>
+      </div>
+
+      <div style="display:flex;flex-wrap:wrap;gap:.5rem;align-items:end;margin:.6rem 0">
+        <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;flex:1;min-inline-size:14rem">
+          <span>Query (<span class="muted">detected / supplied language:</span> <b id="queryLang">English [EN]</b>)</span>
+          <input id="query" type="text" value="What happens during a total solar eclipse?" disabled style="min-inline-size:0;inline-size:100%" />
+        </label>
+        <button id="run" type="button" disabled>Search across languages</button>
+      </div>
+
+      <p id="verdict" class="ctx-note" style="margin-top:.8rem" aria-live="polite"></p>
+
+      <div class="sent-list" id="ranked" aria-live="polite" style="margin-top:.8rem"></div>
+
+      <div class="readout" id="readout" hidden>
+        <span>backend <b id="rBackend">–</b></span>
+        <span>tokens <b id="rTokens">–</b></span>
+        <span>latency <b id="rMs">–</b></span>
+        <span>dims <b id="rDim">–</b></span>
+      </div>
+
+      <!-- responsive-table: matrix-scroll handles horizontal overflow on mobile viewports -->
+      <div id="langTable" class="matrix-scroll" style="margin-top:1.2rem"></div>
+    </section>
+
+    <p class="muted ctx-note" style="margin-top:1rem;line-height:1.5">
+      Task instruction prefixes: Embedding the same text under different task instruction prefixes (query, document, classification, clustering) is separately demonstrated on the Basics page; this page uses the standard retrieval pair (query prefix for the query, document prefix for each passage) and does not re-demonstrate prefix variations.
+    </p>
+
+    <p class="muted ctx-note" style="margin-top:.4rem;line-height:1.5">
+      Context provenance: The EmbeddingGemma 2 model card documents an 8K-token context window (1024-token sliding window), while the exported ONNX configuration specifies a maximum position range of 262,144 tokens. This page demonstrates bounded short passages (~20–30 tokens each) to measure cross-lingual retrieval within a bounded token budget, and does not claim to exercise long-context capacity.
+    </p>
+
+    <p class="muted ctx-note" style="margin-top:.4rem;line-height:1.5">
+      Limitation: Upstream repository exports include separate vision and audio graph checkpoints; unproven image inference is not loaded or exercised here.
+    </p>
+
+    <p class="crumbs"><a href="../practical/">← Practical</a> · <a href="../">EmbeddingGemma 2</a> · Next: <a href="../multi-model/">Multi-model →</a></p>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>.
+      Runs locally via <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import {
+        EmbeddingGemma2Engine,
+        EGEMMA2_CSS,
+        cosine,
+        parseLines,
+        renderRanked,
+      } from "../egemma2.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = EGEMMA2_CSS;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+
+      const LANG_NAMES = {
+        FR: "French",
+        DE: "German",
+        ES: "Spanish",
+        JA: "Japanese",
+        IT: "Italian",
+        PT: "Portuguese",
+        AR: "Arabic",
+        HI: "Hindi",
+        EN: "English",
+      };
+
+      const EXAMPLES = [
+        {
+          label: "English query → French passage (Eclipse)",
+          query: "What happens during a total solar eclipse?",
+          langCode: "EN",
+          langName: "English",
+          targetCode: "FR",
+          targetTopic: "Solar eclipse",
+        },
+        {
+          label: "Spanish query → German passage (High-speed rail)",
+          query: "¿Cómo viajan los trenes de alta velocidad?",
+          langCode: "ES",
+          langName: "Spanish",
+          targetCode: "DE",
+          targetTopic: "High-speed rail",
+        },
+        {
+          label: "French query → Spanish passage (Photosynthesis)",
+          query: "Comment les plantes fabriquent-elles du glucose avec la lumière ?",
+          langCode: "FR",
+          langName: "French",
+          targetCode: "ES",
+          targetTopic: "Photosynthesis",
+        },
+        {
+          label: "German query → Portuguese passage (Mariana trench)",
+          query: "Wie tief ist der Marianengraben im Pazifischen Ozean?",
+          langCode: "DE",
+          langName: "German",
+          targetCode: "PT",
+          targetTopic: "Mariana trench",
+        },
+      ];
+
+      // Track evaluation results for the per-language summary table
+      const evaluatedQueries = new Map();
+
+      let engine = null;
+      let activeQueryLang = { code: "EN", name: "English" };
+
+      function parseCorpus(rawText) {
+        const lines = parseLines(rawText);
+        return lines.map((line, idx) => {
+          const match = line.match(/^\[([A-Z]{2})\]\s*(.*)$/);
+          if (match) {
+            const code = match[1];
+            const text = match[2];
+            return {
+              raw: line,
+              code,
+              lang: LANG_NAMES[code] || code,
+              text,
+              index: idx,
+            };
+          }
+          return {
+            raw: line,
+            code: "??",
+            lang: "Unknown",
+            text: line,
+            index: idx,
+          };
+        });
+      }
+
+      function renderLangTable() {
+        const table = document.createElement("table");
+        table.className = "inside-table";
+
+        const caption = document.createElement("caption");
+        caption.style.cssText = "text-align:start;font-size:.82rem;color:var(--muted);padding-bottom:.4rem;font-weight:600";
+        caption.textContent = "Summary: query language → top hit language (evaluated queries inside token budget)";
+        table.append(caption);
+
+        const thead = document.createElement("thead");
+        const hr = document.createElement("tr");
+        for (const h of ["Query language", "Query text", "Target topic", "Top hit language", "Cosine", "Margin (vs rank 2)", "Evaluation"]) {
+          const th = document.createElement("th");
+          th.scope = "col";
+          th.textContent = h;
+          hr.append(th);
+        }
+        thead.append(hr);
+        table.append(thead);
+
+        const tbody = document.createElement("tbody");
+        for (const ex of EXAMPLES) {
+          const tr = document.createElement("tr");
+          const ev = evaluatedQueries.get(ex.query);
+
+          const thLang = document.createElement("th");
+          thLang.scope = "row";
+          thLang.textContent = `${ex.langName} [${ex.langCode}]`;
+
+          const tdQuery = document.createElement("td");
+          tdQuery.textContent = ex.query;
+          tdQuery.style.fontSize = ".8rem";
+
+          const tdTarget = document.createElement("td");
+          tdTarget.textContent = `${LANG_NAMES[ex.targetCode]} [${ex.targetCode}] (${ex.targetTopic})`;
+          tdTarget.style.fontSize = ".8rem";
+
+          const tdTopLang = document.createElement("td");
+          tdTopLang.style.fontWeight = "600";
+          tdTopLang.textContent = ev ? `${ev.topHitLang} [${ev.topHitCode}]` : "–";
+
+          const tdCos = document.createElement("td");
+          tdCos.style.fontFamily = "var(--font-mono)";
+          tdCos.textContent = ev ? ev.topHitScore.toFixed(3) : "–";
+
+          const tdMargin = document.createElement("td");
+          tdMargin.style.fontFamily = "var(--font-mono)";
+          if (ev) {
+            tdMargin.textContent = ev.margin >= 0 ? `+${ev.margin.toFixed(3)}` : ev.margin.toFixed(3);
+            tdMargin.style.color = ev.margin > 0.05 ? "var(--good)" : "var(--color)";
+          } else {
+            tdMargin.textContent = "–";
+          }
+
+          const tdStatus = document.createElement("td");
+          if (ev) {
+            if (ev.isTop1CrossLingual) {
+              tdStatus.textContent = "Top-1 cross-lingual match";
+              tdStatus.style.color = "var(--good)";
+            } else if (ev.topHitCode === ex.langCode) {
+              tdStatus.textContent = "Monolingual top-1 (same language)";
+              tdStatus.style.color = "var(--warn)";
+            } else {
+              tdStatus.textContent = `Top-1: [${ev.topHitCode}] (target: [${ex.targetCode}])`;
+              tdStatus.style.color = "var(--warn)";
+            }
+          } else {
+            tdStatus.textContent = "Not run yet";
+            tdStatus.style.color = "var(--muted)";
+          }
+
+          tr.append(thLang, tdQuery, tdTarget, tdTopLang, tdCos, tdMargin, tdStatus);
+          tbody.append(tr);
+        }
+        table.append(tbody);
+        $("langTable").replaceChildren(table);
+      }
+
+      function setControlsDisabled(disabled) {
+        $("corpus").disabled = disabled;
+        $("query").disabled = disabled;
+        $("run").disabled = disabled;
+        for (const b of $("examples").querySelectorAll("button")) {
+          b.disabled = disabled;
+        }
+      }
+
+      // Populate example query chips
+      for (const ex of EXAMPLES) {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "secondary";
+        btn.textContent = ex.label;
+        btn.style.cssText = "font-size:.78rem;min-block-size:2.2rem";
+        btn.disabled = true;
+        btn.addEventListener("click", () => {
+          $("query").value = ex.query;
+          activeQueryLang = { code: ex.langCode, name: ex.langName };
+          $("queryLang").textContent = `${ex.langName} [${ex.langCode}]`;
+          if (engine) run();
+        });
+        $("examples").append(btn);
+      }
+
+      $("query").addEventListener("input", () => {
+        const val = $("query").value.trim();
+        const matched = EXAMPLES.find((e) => e.query.toLowerCase() === val.toLowerCase());
+        if (matched) {
+          activeQueryLang = { code: matched.langCode, name: matched.langName };
+          $("queryLang").textContent = `${matched.langName} [${matched.langCode}]`;
+        } else {
+          activeQueryLang = { code: "custom", name: "Custom input" };
+          $("queryLang").textContent = "Custom query (language not verified)";
+        }
+      });
+
+      $("query").addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && !$("run").disabled) {
+          run();
+        }
+      });
+
+      renderLangTable();
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: {
+          modelId: "onnx-community/embeddinggemma-2-ONNX",
+          runtime: "transformers.js",
+          dtype: "q4",
+          sizeMB: 175,
+          requiresWebGPU: true,
+        },
+        load: async (onProgress) => {
+          engine = new EmbeddingGemma2Engine();
+          await engine.load(onProgress, { vision: false, audio: false, dtype: "q4", device: "webgpu" });
+          return engine;
+        },
+        onReady: () => {
+          setControlsDisabled(false);
+        },
+        onError: (err) => {
+          $("status").hidden = false;
+          $("status").classList.add("err");
+          $("status").textContent = "Model load failed: " + (err.message || String(err));
+        },
+        dispose: (e) => e.worker.terminate(),
+        onDispose: () => {
+          setControlsDisabled(true);
+          engine = null;
+        },
+      });
+
+      $("run").addEventListener("click", run);
+
+      async function run() {
+        const corpusText = $("corpus").value.trim();
+        const queryText = $("query").value.trim();
+
+        if (!corpusText || !queryText) {
+          $("status").hidden = false;
+          $("status").classList.add("err");
+          $("status").textContent = "Please enter both corpus passages and a search query.";
+          return;
+        }
+
+        const passages = parseCorpus(corpusText);
+        if (passages.length < 2) {
+          $("status").hidden = false;
+          $("status").classList.add("err");
+          $("status").textContent = "Corpus must contain at least 2 passages.";
+          return;
+        }
+
+        if (!engine) {
+          $("status").hidden = false;
+          $("status").classList.add("err");
+          $("status").textContent = "Model is not loaded yet.";
+          return;
+        }
+
+        $("status").hidden = false;
+        $("status").classList.remove("err");
+        $("status").textContent = "Embedding passages and query in a single WebGPU batch…";
+        setControlsDisabled(true);
+
+        try {
+          // #run embeds the 8 passages as documents and the query as a query in ONE embedBatch call, then ranks
+          const items = [
+            ...passages.map((p) => ({ text: p.text, mode: "document" })),
+            { text: queryText, mode: "query" },
+          ];
+
+          const batch = await engine.embedBatch(items, "cross-lingual-search");
+
+          // break-up-long-tasks: yield to main thread if scheduler.yield is available before DOM updates
+          if (globalThis.scheduler?.yield) {
+            // TODO(baseline/api.Scheduler.yield): Use scheduler.yield directly without fallback once Baseline Widely Available.
+            await scheduler.yield();
+          }
+
+          const queryVec = batch.embeddings[passages.length];
+
+          const hits = passages.map((p, idx) => {
+            const docVec = batch.embeddings[idx];
+            const score = cosine(queryVec, docVec);
+            const tokenCount = batch.tokenCounts && batch.tokenCounts[idx] != null ? batch.tokenCounts[idx] : null;
+            return {
+              ...p,
+              score,
+              tokenCount,
+            };
+          });
+
+          hits.sort((a, b) => b.score - a.score);
+
+          // Render hits into #ranked
+          renderRanked(
+            $("ranked"),
+            hits.map((h) => ({
+              text: `[${h.code}] ${h.text}`,
+              score: h.score,
+              sub: `Language: ${h.lang} [${h.code}] · Passage tokens: ${h.tokenCount != null ? h.tokenCount : "–"}`,
+            })),
+          );
+
+          // Measured outcome in #verdict
+          const topHit = hits[0];
+          const runnerUp = hits[1];
+          const margin = runnerUp ? topHit.score - runnerUp.score : 0;
+          const marginStr = margin >= 0 ? `+${margin.toFixed(3)}` : margin.toFixed(3);
+
+          const matchedEx = EXAMPLES.find((e) => e.query.toLowerCase() === queryText.toLowerCase());
+          const isCrossLingual = activeQueryLang.code !== "custom" && topHit.code !== activeQueryLang.code;
+          const isTargetMatch = matchedEx ? topHit.code === matchedEx.targetCode : isCrossLingual;
+
+          let verdictMsg = "";
+          if (isCrossLingual) {
+            if (isTargetMatch) {
+              verdictMsg = `Cross-lingual retrieval succeeded: The query in ${activeQueryLang.name} [${activeQueryLang.code}] retrieved the ${topHit.lang} [${topHit.code}] passage as top-1 with cosine ${topHit.score.toFixed(3)} (margin of ${marginStr} over rank 2).`;
+            } else {
+              verdictMsg = `Cross-lingual retrieval: Top-1 hit is in ${topHit.lang} [${topHit.code}] with cosine ${topHit.score.toFixed(3)} (margin: ${marginStr}). Note: Expected target was [${matchedEx ? matchedEx.targetCode : "different"}], which ranked #${hits.findIndex((h) => h.code === (matchedEx ? matchedEx.targetCode : "")) + 1}.`;
+            }
+          } else if (activeQueryLang.code === topHit.code) {
+            verdictMsg = `Monolingual top-1 hit: Query in ${activeQueryLang.name} [${activeQueryLang.code}] retrieved a passage in the same language ([${topHit.code}]) with cosine ${topHit.score.toFixed(3)} (margin: ${marginStr} over rank 2).`;
+          } else {
+            verdictMsg = `Top hit: [${topHit.code}] (${topHit.lang}) with cosine ${topHit.score.toFixed(3)} (margin: ${marginStr} over rank 2).`;
+          }
+          $("verdict").textContent = verdictMsg;
+
+          // Record in evaluatedQueries and update #langTable
+          evaluatedQueries.set(queryText, {
+            query: queryText,
+            queryLangCode: activeQueryLang.code,
+            queryLangName: activeQueryLang.name,
+            topHitCode: topHit.code,
+            topHitLang: topHit.lang,
+            topHitScore: topHit.score,
+            margin,
+            isTop1CrossLingual: isCrossLingual,
+          });
+          renderLangTable();
+
+          // Readout
+          $("readout").hidden = false;
+          $("rBackend").textContent = (batch.device || engine.device || "webgpu").toUpperCase();
+          $("rMs").textContent = `${batch.ms} ms`;
+          $("rDim").textContent = String(batch.dim || 768);
+
+          // Token count comes ONLY from worker tokenCounts
+          if (batch.tokenCounts && Array.isArray(batch.tokenCounts)) {
+            const sumTokens = batch.tokenCounts.reduce((acc, c) => acc + (typeof c === "number" ? c : 0), 0);
+            $("rTokens").textContent = sumTokens > 0 ? String(sumTokens) : "–";
+          } else {
+            $("rTokens").textContent = "–";
+          }
+
+          $("status").hidden = true;
+        } catch (err) {
+          $("status").hidden = false;
+          $("status").classList.add("err");
+          $("status").textContent = "Inference failed: " + (err.message || String(err));
+        } finally {
+          setControlsDisabled(false);
+        }
+      }
+    </script>
+  </body>
+</html>

@@ -1,0 +1,550 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>EmbeddingGemma 2 Multi-model — two generations, one corpus · Web AI Showcase</title>
+    <meta
+      name="description"
+      content="Compare two generations of EmbeddingGemma on the exact same text corpus: EmbeddingGemma 2 (q4, WebGPU) and EmbeddingGemma v1 (q8, WASM). Observe real ranking overlap (only when both runs scored the same inputs), latency, and combined download footprint, with honest sequential unload."
+    />
+    <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🧭</text></svg>" />
+  </head>
+  <body>
+    <p class="crumbs"><a href="/web-ai-showcase/">← All models</a> · <a href="../">EmbeddingGemma 2</a></p>
+
+    <header>
+      <p class="eyebrow">use case · multi-model</p>
+      <h1>Multi-model: two generations, one corpus</h1>
+      <p class="lede">
+        Run two distinct model generations — EmbeddingGemma 2 (270M backbone, q4 WebGPU) and the original
+        EmbeddingGemma 300M (v1, q8 WASM) — over the exact same text corpus and query. Each model runs in its
+        own dedicated worker runtime. When both runs used the same inputs, the page reports the measured ranking
+        agreement, alongside per-model latency and the combined download footprint. The first model is disposed
+        before the second is loaded: its worker is terminated, which releases its WebGPU session. How much memory
+        the browser reclaims after that is browser-managed and not measured by this page.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div class="model-cols">
+        <div>
+          <h3 style="margin-bottom:.4rem;font-size:.95rem">1 · Model 2: EmbeddingGemma 2 (q4 · WebGPU)</h3>
+          <div id="model-loader"></div>
+        </div>
+        <div>
+          <h3 style="margin-bottom:.4rem;font-size:.95rem">2 · Model 1: EmbeddingGemma v1 (q8 · WASM)</h3>
+          <div id="model-loader-v1"></div>
+        </div>
+      </div>
+
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+
+      <label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-top:.6rem">
+        Corpus (one passage per line)
+        <textarea id="corpus" rows="6" disabled style="min-inline-size:0;inline-size:100%;font-family:inherit;font-size:.82rem;line-height:1.45">Narrow cobblestone alleyways, medieval masonry arches, and historic whitewashed facades winding through an ancient European town quarter.
+High-resolution orbital radar scans of Martian volcanic calderas, impact craters, and dry river networks etched across the planetary crust.
+Bioluminescent siphonophores and pelagic organisms pulsating through dark abyssal ocean waters surrounded by deep-sea coral reef ecosystems.
+Crusty sourdough artisan bread loaves cooling on a wooden baker rack immediately after removal from a wood-fired stone deck oven.
+A restored nineteenth-century steam locomotive pulling passenger carriages along iron railway tracks across a high timber trestle bridge.
+Distributed key-value storage nodes replicating transaction logs across independent fault domains using asynchronous quorum consensus protocols.</textarea>
+      </label>
+
+      <div style="display:flex;flex-wrap:wrap;gap:.5rem;align-items:end;margin:.6rem 0">
+        <label style="display:flex;flex-direction:column;gap:.2rem;font-size:.82rem;flex:1;min-inline-size:14rem">
+          Query
+          <input id="query" type="text" value="historic European stone pedestrian streets and arches" disabled style="min-inline-size:0" />
+        </label>
+        <label style="display:flex;flex-direction:column;gap:.2rem;font-size:.82rem">
+          Shortlist (top-k)
+          <input id="topk" type="number" min="2" max="6" value="3" style="inline-size:5rem;min-inline-size:0" disabled />
+        </label>
+      </div>
+
+      <div class="actions-row">
+        <div class="model-action-group">
+          <span style="font-weight:600;font-size:.82rem">Model 2 (v2 · q4):</span>
+          <button id="runV2" type="button" disabled>Index &amp; rank (v2)</button>
+          <button id="unloadV2" type="button" class="secondary" disabled>Unload v2</button>
+        </div>
+        <div class="model-action-group">
+          <span style="font-weight:600;font-size:.82rem">Model 1 (v1 · q8):</span>
+          <button id="runV1" type="button" disabled>Index &amp; rank (v1)</button>
+          <button id="unloadV1" type="button" class="secondary" disabled>Unload v1</button>
+        </div>
+      </div>
+
+      <div class="grid-2" style="margin-top:1.2rem">
+        <div>
+          <h3 style="margin-top:.4rem">Model 2 (EmbeddingGemma 2 · q4) ranking</h3>
+          <div class="sent-list" id="rankedV2" aria-live="polite"></div>
+        </div>
+        <div>
+          <h3 style="margin-top:.4rem">Model 1 (EmbeddingGemma v1 · q8) ranking</h3>
+          <div class="sent-list" id="rankedV1" aria-live="polite"></div>
+        </div>
+      </div>
+
+      <div style="margin-top:1.2rem;padding:.8rem;background:var(--bg-secondary);border-radius:8px">
+        <h4 style="margin:0 0 .4rem;font-size:.9rem">Measured ranking agreement</h4>
+        <p id="overlap" style="font-weight:600;font-size:1.05rem;margin:0 0 .3rem">–</p>
+        <p id="verdict" class="muted" style="margin:0;font-size:.85rem">Run both models on the corpus to compare ranking overlap.</p>
+      </div>
+
+      <div class="readout" id="readout" hidden style="margin-top:1.2rem">
+        <span>v2 download <b id="rV2Size">175 MB</b></span>
+        <span>v1 download <b id="rV1Size">314 MB</b></span>
+        <span>total download <b id="totalSize">489 MB</b></span>
+        <span>v2 tokens <b id="rV2Tokens">–</b></span>
+        <span>v1 tokens <b id="rV1Tokens" title="Not reported by this model worker" aria-label="Not reported by this model worker">–</b></span>
+        <span>v2 latency <b id="rV2Ms">–</b></span>
+        <span>v1 latency <b id="rV1Ms">–</b></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="why-h">
+      <h3 id="why-h">Why two runtimes and sequential memory release matter</h3>
+      <p class="muted" style="font-size:.85rem">
+        Comparing two model generations honestly on-device requires two completely separate runtime environments.
+        EmbeddingGemma v1 uses the shared Transformers.js 3.7.5 pipeline with the ONNX Runtime Web WASM execution provider,
+        while EmbeddingGemma 2 requires Transformers.js 4.3.1 running on WebGPU. Isolating each model in its own dedicated
+        Web Worker prevents conflicting module scopes and colliding ONNX Runtime sessions.
+      </p>
+      <p class="muted" style="font-size:.85rem">
+        Holding both models in browser memory simultaneously is the expensive case: downloading and maintaining both
+        (v1 at ~314 MB q8 and v2 at ~175 MB q4) means ~489 MB of transfer, and both sets of weights resident at once.
+        On mobile or constrained devices, that concurrent residency risks out-of-memory crashes. Sequential unloading —
+        terminating the active model's worker, and with it its GPU/WASM session, before loading the other — keeps only
+        one model's weights resident at a time, which is what makes multi-model evaluation survivable on consumer
+        hardware. How much memory the browser actually reclaims is browser-managed and not measured here.
+      </p>
+    </section>
+
+    <p class="crumbs"><a href="../wild/">← Wild</a> · <a href="../">Back to EmbeddingGemma 2</a></p>
+
+    <footer class="byline">
+      Made by <a href="https://paul.kinlan.me/" target="_blank" rel="noopener">Paul Kinlan</a>. Runs locally via
+      <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">🤗 Transformers.js</a>.
+      <a href="/web-ai-showcase/">Back to the showcase →</a>
+    </footer>
+
+    <script type="module">
+      import { EmbedClient2, EGEMMA2_CSS, cosine, parseLines, renderRanked } from "../egemma2.js";
+      import { EmbedClient } from "../../embeddinggemma/egemma.js";
+      import { createModelLoader } from "/web-ai-showcase/lib/model-loader.js";
+
+      const style = document.createElement("style");
+      style.textContent = `${EGEMMA2_CSS}
+.model-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem; margin-bottom: 1rem; }
+.actions-row { display: flex; flex-wrap: wrap; gap: .6rem; align-items: center; margin: .8rem 0; }
+.model-action-group { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; padding: .4rem .6rem; background: var(--bg-secondary); border-radius: 8px; }
+#overlap.mismatch { color: var(--warn, #b8860b); }
+#verdict.mismatch { color: var(--warn, #b8860b); }
+`;
+      document.head.append(style);
+
+      const $ = (id) => document.getElementById(id);
+
+      let client2 = null;
+      let client1 = null;
+      let v2AllScored = null;
+      let v1AllScored = null;
+      let v2Shortlist = null;
+      let v1Shortlist = null;
+      let isUnloadingV2 = false;
+      let isUnloadingV1 = false;
+      // The exact inputs each run scored, so two runs can be compared only when they are like-for-like.
+      let v2Signature = null; // { texts: string[], query: string, k: number } | null
+      let v1Signature = null;
+
+      function showStatus(msg, isErr = false) {
+        const el = $("status");
+        el.hidden = false;
+        el.textContent = msg;
+        if (isErr) {
+          el.classList.add("err");
+        } else {
+          el.classList.remove("err");
+        }
+      }
+
+      // Stable description of what a run consumed. Two runs may only be compared when their signatures are
+      // equal; otherwise a "ranking agreement" figure would be computed across different text and shown as
+      // though both models saw one corpus. `k` is recorded too, and the top-k handler below keeps it in sync
+      // because that control re-slices each model's already-computed, k-independent full ranking identically.
+      function makeSignature(texts, query, k) {
+        return { texts: [...texts], query, k };
+      }
+
+      function signaturesMatch() {
+        return v2Signature !== null && v1Signature !== null &&
+          JSON.stringify(v2Signature) === JSON.stringify(v1Signature);
+      }
+
+      function setOverlap(text, mismatch = false) {
+        $("overlap").textContent = text;
+        $("overlap").classList.toggle("mismatch", mismatch);
+        $("verdict").classList.toggle("mismatch", mismatch);
+      }
+
+      function updateInputsState() {
+        const anyReady = Boolean(client2 || client1);
+        $("corpus").disabled = !anyReady;
+        $("query").disabled = !anyReady;
+        $("topk").disabled = !anyReady;
+        $("runV2").disabled = !client2;
+        $("unloadV2").disabled = !client2;
+        $("runV1").disabled = !client1;
+        $("unloadV1").disabled = !client1;
+      }
+
+      async function unloadV2() {
+        if (isUnloadingV2) return;
+        isUnloadingV2 = true;
+        try {
+          if (client2) {
+            try {
+              if (client2.worker) {
+                client2.worker.postMessage({ type: "unload" });
+                client2.worker.terminate();
+              }
+            } catch { /* ignore */ }
+            client2 = null;
+          }
+          const releaseBtn = Array.from($("model-loader").querySelectorAll("button")).find(
+            (b) => b.textContent.includes("Release")
+          );
+          if (releaseBtn) {
+            releaseBtn.click();
+          }
+          updateInputsState();
+          showStatus("Model 2 (EmbeddingGemma 2 q4) unloaded: worker terminated (which releases its WebGPU session). Whether the browser reclaims its ~175 MB download is browser-managed and not measured here.", false);
+        } finally {
+          isUnloadingV2 = false;
+        }
+      }
+
+      async function unloadV1() {
+        if (isUnloadingV1) return;
+        isUnloadingV1 = true;
+        try {
+          if (client1) {
+            try {
+              if (client1.worker) {
+                client1.worker.terminate();
+              }
+            } catch { /* ignore */ }
+            client1 = null;
+          }
+          const releaseBtn = Array.from($("model-loader-v1").querySelectorAll("button")).find(
+            (b) => b.textContent.includes("Release")
+          );
+          if (releaseBtn) {
+            releaseBtn.click();
+          }
+          updateInputsState();
+          showStatus("Model 1 (EmbeddingGemma v1 q8) unloaded: worker terminated (which releases its WASM session). Whether the browser reclaims its ~314 MB download is browser-managed and not measured here.", false);
+        } finally {
+          isUnloadingV1 = false;
+        }
+      }
+
+      function updateComparison(k) {
+        if (!v2Shortlist && !v1Shortlist) {
+          setOverlap("–");
+          $("verdict").textContent = "Run both models on the corpus to compare ranking overlap.";
+          return;
+        }
+        if (!v2Shortlist) {
+          setOverlap("–");
+          $("verdict").textContent = "Model 2 results not available. Both models must complete inference to compare agreement.";
+          return;
+        }
+        if (!v1Shortlist) {
+          setOverlap("–");
+          $("verdict").textContent = "Model 1 results not available. Both models must complete inference to compare agreement.";
+          return;
+        }
+
+        // Both runs produced a ranking — but only report an agreement figure when they scored the SAME inputs.
+        // Editing the corpus, query, or top-k between the two runs would otherwise be presented as a same-input
+        // comparison; instead, say plainly that no agreement is claimed.
+        if (!signaturesMatch()) {
+          setOverlap("Inputs changed between runs — no agreement claimed", true);
+          $("verdict").textContent =
+            "The corpus, query, or top-k differed between the Model 2 and Model 1 runs, so the two rankings were computed over different inputs and are not like-for-like. No agreement is claimed. Re-run both models on the same inputs to compare ranking overlap.";
+          return;
+        }
+
+        const v2Texts = v2Shortlist.map((item) => item.text);
+        const v1Texts = v1Shortlist.map((item) => item.text);
+        const v1Set = new Set(v1Texts);
+        const sharedCount = v2Texts.filter((t) => v1Set.has(t)).length;
+        const top1Match = v2Texts[0] === v1Texts[0];
+
+        const pct = Math.round((sharedCount / k) * 100);
+        setOverlap(`${sharedCount} of ${k} (${pct}%) shared in top-${k} · Top-1 ${top1Match ? "matches" : "differs"}`);
+
+        if (top1Match) {
+          $("verdict").textContent = sharedCount === k
+            ? `Both models produced identical candidate membership across the top-${k}, and agreed on the exact top-1 match.`
+            : `Both models agreed on the top-1 retrieval, sharing ${sharedCount} of ${k} candidate passages in their top-${k} shortlist.`;
+        } else {
+          $("verdict").textContent = `The models selected different top-1 passages, sharing ${sharedCount} of ${k} candidates in their top-${k} shortlist.`;
+        }
+      }
+
+      async function runV2() {
+        const texts = parseLines($("corpus").value);
+        const q = $("query").value.trim();
+        const k = Math.max(2, Math.min(6, +$("topk").value || 3));
+        if (texts.length < 2 || !q) {
+          showStatus("Need a query and at least two corpus passages.", true);
+          return;
+        }
+        if (!client2) {
+          showStatus("Model 2 is not loaded. Click 'Load model into memory' in the loader above.", true);
+          return;
+        }
+        // Record exactly what this run scores, before the async inference, so the later comparison can tell
+        // whether Model 1 saw the same inputs.
+        v2Signature = makeSignature(texts, q, k);
+        $("runV2").disabled = true;
+        showStatus("Running Model 2 (EmbeddingGemma 2 q4 WebGPU) inference…", false);
+        try {
+          if (globalThis.scheduler?.yield) await scheduler.yield();
+          const items = [{ text: q, mode: "query" }, ...texts.map((text) => ({ text, mode: "document" }))];
+          const res = await client2.embedBatch(items);
+          const qv = res.embeddings[0];
+          v2AllScored = texts.map((text, i) => ({
+            text,
+            score: cosine(qv, res.embeddings[i + 1]),
+          })).sort((a, b) => b.score - a.score);
+          v2Shortlist = v2AllScored.slice(0, k);
+          renderRanked($("rankedV2"), v2Shortlist);
+
+          const totalTokens = Array.isArray(res.tokenCounts) && res.tokenCounts.length === items.length && res.tokenCounts.every((n) => typeof n === "number")
+            ? res.tokenCounts.reduce((sum, n) => sum + n, 0)
+            : null;
+          const totalMs = typeof res.ms === "number" ? res.ms : null;
+
+          $("rV2Tokens").textContent = totalTokens != null ? `${totalTokens}` : "–";
+          $("rV2Ms").textContent = totalMs != null ? `${totalMs} ms` : "–";
+          $("readout").hidden = false;
+          showStatus(`Model 2 complete: indexed ${texts.length} passages in ${totalMs ?? "–"} ms.`, false);
+          updateComparison(k);
+        } catch (err) {
+          const errMsg = String(err?.message || err);
+          showStatus(`BLOCKED: Model 2 (v2) inference failed: ${errMsg}`, true);
+          v2AllScored = null;
+          v2Shortlist = null;
+          v2Signature = null;
+          $("rankedV2").replaceChildren();
+          $("rV2Tokens").textContent = "–";
+          $("rV2Ms").textContent = "–";
+          updateComparison(k);
+        } finally {
+          if (client2) $("runV2").disabled = false;
+        }
+      }
+
+      async function runV1() {
+        const texts = parseLines($("corpus").value);
+        const q = $("query").value.trim();
+        const k = Math.max(2, Math.min(6, +$("topk").value || 3));
+        if (texts.length < 2 || !q) {
+          showStatus("Need a query and at least two corpus passages.", true);
+          return;
+        }
+        if (!client1) {
+          showStatus("Model 1 is not loaded. Click 'Load model into memory' in the loader above.", true);
+          return;
+        }
+        // Record exactly what this run scores, before the async inference, so the comparison can tell whether
+        // Model 2 saw the same inputs. The v2 ranking below survives unloadV2(), so a genuine same-input
+        // comparison is still possible.
+        v1Signature = makeSignature(texts, q, k);
+        if (client2) {
+          await unloadV2();
+        }
+        $("runV1").disabled = true;
+        showStatus("Running Model 1 (EmbeddingGemma v1 q8 WASM) inference…", false);
+        try {
+          if (globalThis.scheduler?.yield) await scheduler.yield();
+          const [dr, qr] = await Promise.all([
+            client1.embed(texts, "document"),
+            client1.embed([q], "query"),
+          ]);
+          const qv = qr.embeddings[0];
+          v1AllScored = dr.texts.map((text, i) => ({
+            text,
+            score: cosine(qv, dr.embeddings[i]),
+          })).sort((a, b) => b.score - a.score);
+          v1Shortlist = v1AllScored.slice(0, k);
+          renderRanked($("rankedV1"), v1Shortlist);
+
+          let totalTokens = null;
+          if (
+            Array.isArray(dr.tokenCounts) &&
+            dr.tokenCounts.length === texts.length &&
+            dr.tokenCounts.every((n) => typeof n === "number") &&
+            Array.isArray(qr.tokenCounts) &&
+            typeof qr.tokenCounts[0] === "number"
+          ) {
+            totalTokens = dr.tokenCounts.reduce((sum, n) => sum + n, 0) + qr.tokenCounts[0];
+          }
+          const totalMs = (typeof dr.ms === "number" ? dr.ms : 0) + (typeof qr.ms === "number" ? qr.ms : 0);
+
+          $("rV1Tokens").textContent = totalTokens != null ? `${totalTokens}` : "–";
+          // v1's worker does not report tokenCounts. The dash means NOT REPORTED, never zero and never an
+          // estimate, so it carries an accessible label saying exactly that rather than relying on a
+          // sighted reader inferring it from a dash.
+          $("rV1Tokens").setAttribute("title", totalTokens != null ? "tokens reported by the v1 worker" : "Not reported by this model worker");
+          $("rV1Tokens").setAttribute("aria-label", totalTokens != null ? `${totalTokens} tokens reported by the v1 worker` : "Not reported by this model worker");
+          $("rV1Ms").textContent = totalMs > 0 ? `${totalMs} ms` : "–";
+          $("readout").hidden = false;
+          showStatus(`Model 1 complete: indexed ${texts.length} passages in ${totalMs} ms.`, false);
+          updateComparison(k);
+        } catch (err) {
+          const errMsg = String(err?.message || err);
+          showStatus(`BLOCKED: Model 1 (v1) inference failed: ${errMsg}`, true);
+          v1AllScored = null;
+          v1Shortlist = null;
+          v1Signature = null;
+          $("rankedV1").replaceChildren();
+          $("rV1Tokens").textContent = "–";
+          $("rV1Tokens").setAttribute("title", "Not reported by this model worker");
+          $("rV1Tokens").setAttribute("aria-label", "Not reported by this model worker");
+          $("rV1Ms").textContent = "–";
+          updateComparison(k);
+        } finally {
+          if (client1) $("runV1").disabled = false;
+        }
+      }
+
+      $("runV2").addEventListener("click", runV2);
+      $("runV1").addEventListener("click", runV1);
+      $("unloadV2").addEventListener("click", unloadV2);
+      $("unloadV1").addEventListener("click", unloadV1);
+
+      $("topk").addEventListener("input", () => {
+        const k = Math.max(2, Math.min(6, +$("topk").value || 3));
+        // top-k only slices each model's already-computed, k-independent full ranking, and it is applied to
+        // both identically — so move both run signatures to the new k instead of treating it as a change of
+        // scoring input that would void an otherwise valid comparison.
+        if (v2Signature) v2Signature = { ...v2Signature, k };
+        if (v1Signature) v1Signature = { ...v1Signature, k };
+        if (v2AllScored) {
+          v2Shortlist = v2AllScored.slice(0, k);
+          renderRanked($("rankedV2"), v2Shortlist);
+        }
+        if (v1AllScored) {
+          v1Shortlist = v1AllScored.slice(0, k);
+          renderRanked($("rankedV1"), v1Shortlist);
+        }
+        updateComparison(k);
+      });
+
+      createModelLoader({
+        mount: $("model-loader"),
+        model: {
+          modelId: "onnx-community/embeddinggemma-2-ONNX",
+          runtime: "transformers.js",
+          dtype: "q4",
+          sizeMB: 175,
+          requiresWebGPU: true,
+        },
+        load: async (onProgress) => {
+          client2 = new EmbedClient2("/web-ai-showcase/models/embeddinggemma-2/worker.js");
+          await client2.load(onProgress, { dtype: "q4", device: "webgpu" });
+          return client2;
+        },
+        onReady: () => {
+          $("readout").hidden = false;
+          updateInputsState();
+        },
+        onError: (err) => {
+          const errMsg = String(err?.message || err);
+          showStatus(`BLOCKED: Model 2 (EmbeddingGemma 2) failed to load: ${errMsg}`, true);
+          v2AllScored = null;
+          v2Shortlist = null;
+          v2Signature = null;
+          $("rankedV2").replaceChildren();
+          $("rV2Tokens").textContent = "–";
+          $("rV2Ms").textContent = "–";
+          updateInputsState();
+          updateComparison(+$("topk").value || 3);
+        },
+        dispose: async () => {
+          if (client2) {
+            try {
+              if (client2.worker) {
+                client2.worker.postMessage({ type: "unload" });
+                client2.worker.terminate();
+              }
+            } catch { /* ignore */ }
+            client2 = null;
+          }
+        },
+        onDispose: () => {
+          client2 = null;
+          updateInputsState();
+          showStatus("Model 2 (EmbeddingGemma 2 q4): worker terminated and WebGPU session released. Reclaiming its ~175 MB download is browser-managed and not measured here.", false);
+        },
+      });
+
+      createModelLoader({
+        mount: $("model-loader-v1"),
+        model: {
+          modelId: "onnx-community/embeddinggemma-300m-ONNX",
+          runtime: "transformers.js",
+          dtype: "q8",
+          sizeMB: 314,
+          requiresWebGPU: false,
+        },
+        load: async (onProgress) => {
+          if (client2) {
+            await unloadV2();
+          }
+          client1 = new EmbedClient("/web-ai-showcase/models/embeddinggemma/worker.js");
+          await client1.load(onProgress);
+          return client1;
+        },
+        onReady: () => {
+          $("readout").hidden = false;
+          updateInputsState();
+        },
+        onError: (err) => {
+          const errMsg = String(err?.message || err);
+          showStatus(`BLOCKED: Model 1 (v1) failed to load: ${errMsg}`, true);
+          v1AllScored = null;
+          v1Shortlist = null;
+          v1Signature = null;
+          $("rankedV1").replaceChildren();
+          $("rV1Tokens").textContent = "–";
+          $("rV1Tokens").setAttribute("title", "Not reported by this model worker");
+          $("rV1Tokens").setAttribute("aria-label", "Not reported by this model worker");
+          $("rV1Ms").textContent = "–";
+          updateInputsState();
+          updateComparison(+$("topk").value || 3);
+        },
+        dispose: async () => {
+          if (client1) {
+            try {
+              if (client1.worker) {
+                client1.worker.terminate();
+              }
+            } catch { /* ignore */ }
+            client1 = null;
+          }
+        },
+        onDispose: () => {
+          client1 = null;
+          updateInputsState();
+          showStatus("Model 1 (EmbeddingGemma v1 q8): worker terminated and WASM session released. Reclaiming its ~314 MB download is browser-managed and not measured here.", false);
+        },
+      });
+    </script>
+  </body>
+</html>

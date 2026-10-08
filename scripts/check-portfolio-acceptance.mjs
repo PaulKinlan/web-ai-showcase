@@ -98,6 +98,9 @@ const familyAcceptanceDependencies = {
     "scripts/interactive-segmenter-capture-summary.mjs",
     "scripts/register-interactive-segmenter-screenshot-provenance.mjs",
   ],
+  "embeddinggemma-2": [
+    "scripts/embeddinggemma-2-half-merge.mjs",
+  ],
 };
 const familyPaths = (slug, validator) =>
   [
