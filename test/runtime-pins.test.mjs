@@ -9,19 +9,18 @@
 // two tests can never diverge again).
 //
 // The audit script itself is the file under test, so the working-tree copy is overlaid onto the
-// isolated copy before it is imported/run. In CI, where the test and the script land in the same
-// commit, that overlay is a no-op; during local development it makes the mutations below be judged by
-// the CURRENT source rather than the last committed snapshot.
+// isolated copy by the shared helper test/lib/isolated-repo.mjs before it is imported/run. In CI,
+// where the test and the script land in the same commit, that overlay is a no-op; during local
+// development it makes the mutations below be judged by the CURRENT source rather than the last
+// committed snapshot.
 
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { copyFileSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { materializeIsolatedRepo } from "./lib/isolated-repo.mjs";
-
-const LIVE_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 // The isolated copy the mutations are applied to. Materialised once in `before`, removed in `after`.
 let COPY_ROOT = null;
@@ -29,21 +28,21 @@ let COPY_ROOT = null;
 // their own ROOT against the isolated copy (never the live checkout).
 let audit = null;
 
-// Measured on the clean tree: checkRuntimePins() scans 559 pin occurrences (407 transformers.js +
-// 152 onnxruntime-web) across models/, lib/, public/, scripts/, search/, models.json, sw.js and
-// runtime-integrity.json. This floor is the non-vacuity guard: a pattern that matches nothing would
-// return [] and pass vacuously, so the test asserts the scan saw a healthy positive number of pins.
-// 300 is well above the "matches nothing" failure mode and leaves headroom for normal route
-// growth/shrinkage (a drop below 300 would mean roughly half the catalogue's pins vanished).
-const PIN_SCAN_FLOOR = 300;
+// Measured on the clean tree (fleet/mtu): checkRuntimePins() scans 407 @huggingface/transformers pins
+// and 152 onnxruntime-web pins (559 total) across models/, lib/, public/, scripts/, search/,
+// models.json, sw.js and runtime-integrity.json. Each floor is the non-vacuity guard for ITS OWN
+// pattern: a pattern that matches nothing would return 0 and pass vacuously, so the test asserts each
+// scan saw a healthy positive number of pins. Per-pattern floors are required because a single total
+// floor of 300 sat BELOW the transformers-only count of 407 — a fully-broken onnxruntime-web scan (0)
+// plus a healthy transformers scan (407) still cleared 300, so the break was invisible. The chosen
+// floors sit well above 0 ("matches nothing") while leaving headroom for normal route growth/shrinkage.
+const TJS_SCAN_FLOOR = 350; // measured 407 transformers.js pins
+const ORT_SCAN_FLOOR = 120; // measured 152 onnxruntime-web pins
 
 before(async () => {
   COPY_ROOT = materializeIsolatedRepo();
-  // Overlay the working-tree audit script (the file under test) onto the committed snapshot.
-  copyFileSync(
-    join(LIVE_ROOT, "scripts/audit-model-currency.mjs"),
-    join(COPY_ROOT, "scripts/audit-model-currency.mjs"),
-  );
+  // The working-tree audit script (the file under test) is overlaid onto the committed snapshot by the
+  // shared helper test/lib/isolated-repo.mjs, so this import resolves to the CURRENT source.
   audit = await import(pathToFileURL(join(COPY_ROOT, "scripts/audit-model-currency.mjs")).href);
 });
 
@@ -170,10 +169,18 @@ test("every runtime pin in the repository is authorized (single-sourced via chec
     `checkRuntimePins must report no unauthorized runtime pins: ${JSON.stringify([...result])}`,
   );
   // NON-VACUITY (P1): a pattern that matched nothing would return [] and pass the line above silently.
-  // scannedCount is the number of pin occurrences the text scans actually examined.
+  // scannedCounts carries the per-pattern breakdown; assert each pattern saw a healthy count so a
+  // broken scan for ONE runtime cannot hide behind the other runtime's healthy total (a single total
+  // floor of 300 was below the transformers-only count of 407, so a broken onnxruntime-web scan passed).
   assert.ok(
-    Number.isInteger(result.scannedCount) && result.scannedCount >= PIN_SCAN_FLOOR,
-    `checkRuntimePins must scan a healthy number of pins (got ${result.scannedCount}, need >= ${PIN_SCAN_FLOOR}); zero matches would mean the scan is broken, not clean`,
+    Number.isInteger(result.scannedCounts?.transformers) &&
+      result.scannedCounts.transformers >= TJS_SCAN_FLOOR,
+    `checkRuntimePins must scan a healthy number of @huggingface/transformers pins (got ${result.scannedCounts?.transformers}, need >= ${TJS_SCAN_FLOOR}); zero matches would mean the transformers scan is broken, not clean`,
+  );
+  assert.ok(
+    Number.isInteger(result.scannedCounts?.onnxruntimeWeb) &&
+      result.scannedCounts.onnxruntimeWeb >= ORT_SCAN_FLOOR,
+    `checkRuntimePins must scan a healthy number of onnxruntime-web pins (got ${result.scannedCounts?.onnxruntimeWeb}, need >= ${ORT_SCAN_FLOOR}); zero matches would mean the onnxruntime-web scan is broken, not clean`,
   );
 });
 
@@ -389,6 +396,38 @@ for (const suffix of ORT_SUFFIXES) {
       full,
       `expected --check to fail and name the full offending onnxruntime-web string for suffix "${suffix}"`,
     );
+  });
+}
+
+// --- P2: trailing full stop is prose, not a version suffix (web-ai-showcase-mtu) -----------------
+// A legitimate pin followed by a sentence-ending period must NOT be read as an unauthorised suffix.
+// `3.7.5.` / `3.7.5..` / `3.7.5...` all normalise to `3.7.5` (ALL trailing dots are stripped); a
+// trailing '-', '+', '_' or a real suffix (`.evil`, `+build1`, `evil`) is NOT stripped and still
+// fails (covered by the suffix loops above). The same normalisation is applied to the ORT scan.
+const TRAILING_DOT_PINS = [
+  ["@huggingface/transformers@3.7.5.", "transformers, one trailing full stop"],
+  ["@huggingface/transformers@3.7.5..", "transformers, two trailing full stops"],
+  ["@huggingface/transformers@3.7.5...", "transformers, three trailing full stops"],
+  ["onnxruntime-web@1.21.0.", "onnxruntime-web, one trailing full stop"],
+  ["onnxruntime-web@1.21.0..", "onnxruntime-web, two trailing full stops"],
+  ["onnxruntime-web@1.21.0...", "onnxruntime-web, three trailing full stops"],
+];
+
+for (const [pin, label] of TRAILING_DOT_PINS) {
+  test(`false-red regression: "${pin}" (${label}) must not be rejected`, () => {
+    const p = join(COPY_ROOT, "models/animegan-cartoonization/worker.js");
+    const orig = readFileSync(p, "utf8");
+    writeFileSync(p, `${orig}\n// prose: ${pin}\n`, "utf8");
+    try {
+      const result = runGate();
+      assert.equal(
+        result.status,
+        0,
+        `expected --check to pass for the prose pin "${pin}": ${result.stderr}`,
+      );
+    } finally {
+      writeFileSync(p, orig, "utf8");
+    }
   });
 }
 

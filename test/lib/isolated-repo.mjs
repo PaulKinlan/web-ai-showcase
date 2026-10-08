@@ -9,9 +9,19 @@
 // so two mutating tests can never capture one another's half-written files. Running `--check` from
 // the copy exercises the audit's `import.meta.url`-relative root resolution (everything resolves
 // against the copy, not this checkout).
+//
+// OVERLAY — the file under test is the WORKING-TREE copy of the audit script, not the committed one:
+//   scripts/audit-model-currency.mjs
+// It is overlaid onto the isolated copy here, in this helper, so the two mutating isolation tests
+// (test/runtime-pins.test.mjs and test/runtime-integrity-exemption.test.mjs) can NEVER diverge in what
+// they exercise. Before this overlay moved into the helper, runtime-pins overlaid the working tree
+// while runtime-integrity-exemption silently ran the COMMITTED HEAD script, so an uncommitted edit to
+// the audit was judged as if it were absent by one of the two tests. In CI, where the test and the
+// script land in the same commit, the overlay is a no-op; during local development it makes every
+// mutation be judged by the CURRENT source rather than the last committed snapshot.
 import assert from "node:assert/strict";
 import { execSync } from "node:child_process";
-import { existsSync, mkdtempSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -35,6 +45,12 @@ export function materializeIsolatedRepo() {
   assert.ok(
     existsSync(join(dir, "scripts/audit-model-currency.mjs")),
     "the isolated copy must contain the audit script",
+  );
+  // Overlay the working-tree audit script (the file under test) onto the committed snapshot. See the
+  // OVERLAY note above for why this lives in the helper rather than in the individual tests.
+  copyFileSync(
+    join(ROOT, "scripts/audit-model-currency.mjs"),
+    join(dir, "scripts/audit-model-currency.mjs"),
   );
   return dir;
 }

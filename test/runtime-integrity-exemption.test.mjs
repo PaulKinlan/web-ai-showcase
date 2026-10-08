@@ -15,6 +15,11 @@
 // from `git archive HEAD`, never in the live checkout: `node --test` runs test FILES in parallel, and a
 // test that rewrote sw.js / the allowlist / models/* in place raced with the other pin tests and, on a
 // SIGKILL or timeout, left those tracked files corrupted forever (the finally never ran).
+//
+// The audit script is the file under test: the working-tree copy of scripts/audit-model-currency.mjs
+// is overlaid onto the isolated copy by the shared helper test/lib/isolated-repo.mjs (the SAME overlay
+// test/runtime-pins.test.mjs relies on), so an uncommitted edit to the audit is judged by its CURRENT
+// source — never silently against the committed HEAD.
 
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
@@ -304,3 +309,90 @@ test("same-line bypass (c): two pins on one line inside the sw.js generated bloc
     "a second, unapproved pin inside the generated block must not be exempt",
   );
 });
+
+// --- P2 (web-ai-showcase-mtu): trailing-dot normalisation must NOT widen the exemption --------------
+// A lone trailing full stop is prose punctuation ONLY in non-derived files. The machine-produced
+// derived-inventory files (sw.js's generated block, runtime-integrity.json, scripts/runtime-integrity.mjs)
+// contain no prose, so a trailing-dot version there is an anomaly and must keep failing — never
+// normalised into the measured/allowed base. Each case below injects a trailing-dot pin INTO a derived
+// file (by mutating an existing measured URL so the pin stays on the exempt line) and asserts the gate
+// still fails naming the full string. If the normalisation were ever applied to derived files, these
+// would become exempt/allowed and the gate would pass, so these tests fail.
+const DERIVED_TRAILING_DOT_CASES = [
+  {
+    name: "sw.js generated block (onnxruntime-web)",
+    path: "sw.js",
+    mutate: (source) => source.replace(
+      "onnxruntime-web@1.21.0/dist/ort.min.mjs",
+      "onnxruntime-web@1.21.0./dist/ort.min.mjs",
+    ),
+    pattern: /1\.21\.0\./,
+  },
+  {
+    name: "sw.js generated block (@huggingface/transformers)",
+    path: "sw.js",
+    mutate: (source) => source.replace(
+      '@huggingface/transformers@3.7.5"',
+      '@huggingface/transformers@3.7.5."',
+    ),
+    pattern: /3\.7\.5\./,
+  },
+  {
+    name: "runtime-integrity.json (onnxruntime-web)",
+    path: "runtime-integrity.json",
+    mutate: (source) => {
+      const data = JSON.parse(source);
+      data.urls["https://cdn.jsdelivr.net/npm/onnxruntime-web@1.21.0./dist/ort.wasm.min.mjs"] = {
+        sha256: "0".repeat(64),
+        bytes: 1,
+        policy: "verify-then-cache",
+      };
+      return `${JSON.stringify(data, null, 2)}\n`;
+    },
+    pattern: /1\.21\.0\./,
+  },
+  {
+    name: "runtime-integrity.json (@huggingface/transformers)",
+    path: "runtime-integrity.json",
+    mutate: (source) => {
+      const data = JSON.parse(source);
+      data.urls["https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.5."] = {
+        sha256: "0".repeat(64),
+        bytes: 1,
+        policy: "verify-then-cache",
+      };
+      return `${JSON.stringify(data, null, 2)}\n`;
+    },
+    pattern: /3\.7\.5\./,
+  },
+  {
+    name: "scripts/runtime-integrity.mjs (onnxruntime-web)",
+    path: "scripts/runtime-integrity.mjs",
+    mutate: (source) => source.replace(
+      "const ORT_ASSETS = [",
+      'const ORT_ASSETS = [\n  "onnxruntime-web@1.21.0./dist/ort.wasm.min.mjs",',
+    ),
+    pattern: /1\.21\.0\./,
+  },
+  {
+    name: "scripts/runtime-integrity.mjs (@huggingface/transformers)",
+    path: "scripts/runtime-integrity.mjs",
+    mutate: (source) => source.replace(
+      '"@huggingface/transformers@3.1.2/+esm"',
+      '"@huggingface/transformers@3.1.2/+esm",\n  "@huggingface/transformers@3.7.5."',
+    ),
+    pattern: /3\.7\.5\./,
+  },
+];
+
+for (const c of DERIVED_TRAILING_DOT_CASES) {
+  test(`trailing-dot pin in ${c.name} still fails`, () => {
+    expectVersionFailure(
+      c.path,
+      c.mutate,
+      c.pattern,
+      `a trailing-dot pin in ${c.name} must not be normalised into an exempt/allowed base`,
+    );
+  });
+}
+

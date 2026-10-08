@@ -79,6 +79,21 @@ export const MIN_EVIDENCE_LENGTH = 5;
 export const REVIEWED_ON_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 export const SEMVER_VERSION_RE = /^[0-9]+\.[0-9]+\.[0-9]+$/;
 
+// Trailing-full-stop normalisation for captured version tokens (web-ai-showcase-mtu). VERSION_TOKEN's
+// greedy tail `[0-9A-Za-z._+-]*` includes '.', so a legitimate pin followed by a sentence-ending period
+// — e.g. `@huggingface/transformers@3.7.5.` in prose — is captured as `3.7.5.` and would fail the
+// allowlist as an unauthorised suffix (a false red). A lone trailing full stop is prose punctuation,
+// never part of a version, so we strip ALL trailing '.' characters off the captured token before
+// validating. Trailing '-', '+', '_', interior dots, and real suffixes (`.evil`, `+build1`, `evil`)
+// are NOT stripped: those are version characters that must still be judged in full, so a genuinely
+// suffixed pin still fails. `3.7.5..` and `3.7.5...` normalise to `3.7.5` the same way.
+//
+// SCOPE: this is prose normalisation, so the CALL SITES apply it ONLY to hits OUTSIDE the
+// derived-inventory files (sw.js's generated block, runtime-integrity.json, scripts/runtime-integrity.mjs).
+// Those files are machine-produced JSON/JS with no prose; a trailing dot there is an anomaly, not
+// punctuation, so their captured tokens are validated RAW and must keep failing.
+export const stripTrailingDots = (version) => version.replace(/\.+$/, "");
+
 const args = process.argv.slice(2);
 const CHECK_ONLY = args.includes("--check");
 const flag = (name) => {
@@ -510,10 +525,13 @@ export function checkRuntimePins() {
   }
 
   const errors = [];
-  // Number of pin occurrences the text scans below actually examined. This is the non-vacuity
-  // signal: a pattern that matched nothing returns scannedCount 0 and the test fails loudly rather
-  // than passing on an empty (trivially clean) result.
-  let scannedCount = 0;
+  // Number of pin occurrences the text scans below actually examined, per pattern. This is the
+  // non-vacuity signal: a pattern that matched nothing returns 0 for its own scan and the test fails
+  // loudly rather than passing on an empty (trivially clean) result. Tracking each pattern separately
+  // means a broken scan for ONE runtime cannot be masked by the other runtime's healthy count
+  // (web-ai-showcase-mtu: the single total previously let a fully-broken onnxruntime-web scan pass
+  // because the transformers count alone already cleared the floor).
+  const scannedCounts = { onnxruntimeWeb: 0, transformers: 0 };
 
   // The generated integrity inventory is EXEMPT from route-scoped pin checking, and the exemption is
   // recorded as data in scripts/runtime-pin-allowlist.json (derivedInventory) rather than being a
@@ -550,18 +568,27 @@ export function checkRuntimePins() {
   } catch {
     // sw.js absent: nothing to exempt, every hit is scanned normally.
   }
-  const isDerivedInventoryHit = (file, lineNo, lib, version) => {
+  // A pin is in the DERIVED region when it lives in one of the generated-inventory files, or inside the
+  // sw.js generated block. (The block is the only part of sw.js that is exempt; the rest of sw.js is
+  // scanned as normal prose.) This is the file/line half of the exemption — the version half is checked
+  // separately in isDerivedInventoryHit — and it ALSO scopes the trailing-dot normalisation
+  // (web-ai-showcase-mtu): a trailing full stop is prose punctuation only OUTSIDE these machine-produced
+  // JSON/JS files, so the normalisation is applied only to non-derived hits.
+  const isDerivedRegion = (file, lineNo) => {
     if (!file || !derivedInventoryFiles.has(file)) return false;
+    if (file !== "sw.js") return true; // runtime-integrity.json / scripts/runtime-integrity.mjs are wholly derived
+    if (!swGeneratedRange) return false; // markers broken → exemption disabled → nothing derived in sw.js
+    const n = Number(lineNo);
+    return Number.isFinite(n) && n >= swGeneratedRange[0] && n <= swGeneratedRange[1];
+  };
+  const isDerivedInventoryHit = (file, lineNo, lib, version) => {
+    if (!isDerivedRegion(file, lineNo)) return false;
     // VERSION-SCOPED: the file alone earns nothing. The version must also be one the generated inventory
     // actually measured, so an unauthorised runtime version appearing in any of these files is STILL an
     // error - which is the whole point of the gate. A reviewer defeated an earlier file-scoped version of
     // this by adding an unauthorised pin inside the generated block and in the generator's arrays.
     const allowed = derivedMeasured[lib];
-    if (!Array.isArray(allowed) || !allowed.includes(version)) return false;
-    if (file !== "sw.js") return true;
-    if (!swGeneratedRange) return false;
-    const n = Number(lineNo);
-    return Number.isFinite(n) && n >= swGeneratedRange[0] && n <= swGeneratedRange[1];
+    return Array.isArray(allowed) && allowed.includes(version);
   };
 
   // 1. Check onnxruntime-web versions (using grep -I)
@@ -576,12 +603,21 @@ export function checkRuntimePins() {
     const foundOrt = new Set();
     for (const line of raw.split("\n")) {
       if (!line.trim()) continue;
-      scannedCount++;
+      scannedCounts.onnxruntimeWeb++;
       const hit = line.match(/^(.*?):(\d+):(.+)$/);
       const payload = hit ? hit[3] : line;
-      const v = payload.split("@").pop()?.trim();
-      if (!v) continue;
-      if (hit && isDerivedInventoryHit(hit[1], hit[2], "onnxruntime-web", v)) continue;
+      const rawVersion = (payload.split("@").pop() ?? "").trim();
+      if (!rawVersion) continue;
+      const file = hit ? hit[1] : null;
+      const lineNo = hit ? hit[2] : null;
+      // A lone trailing full stop is prose punctuation ONLY outside the derived-inventory files. The
+      // derived files (sw.js generated block, runtime-integrity.json, scripts/runtime-integrity.mjs) are
+      // machine-produced JSON/JS with no prose, so a trailing dot there is an anomaly and is validated
+      // RAW (it must keep failing rather than normalising to an allowed base). The exemption check also
+      // receives the RAW token, so a trailing-dot version is never read as a measured one.
+      const derived = isDerivedRegion(file, lineNo);
+      const v = derived ? rawVersion : stripTrailingDots(rawVersion);
+      if (isDerivedInventoryHit(file, lineNo, "onnxruntime-web", rawVersion)) continue;
       foundOrt.add(v);
     }
     for (const v of foundOrt) {
@@ -613,17 +649,23 @@ export function checkRuntimePins() {
     );
     for (const line of raw.split("\n")) {
       if (!line.trim()) continue;
-      scannedCount++;
+      scannedCounts.transformers++;
       const tjsHit = line.match(/^(.*?):(\d+):(.*)$/);
       const colonIdx = line.indexOf(":");
       const file = tjsHit ? tjsHit[1] : colonIdx >= 0 ? line.slice(0, colonIdx) : line;
+      const lineNo = tjsHit ? tjsHit[2] : null;
       // Enumerate EVERY match on the record, not just the first. `grep -o` already splits them, and this
       // loop means a multi-match record still cannot hide its later versions. The capture uses the full
       // version token (including any -prerelease suffix) so `3.7.5-evil.1` is never truncated to `3.7.5`.
-      const versions = [...line.matchAll(TJS_FULL_VERSION_RE)].map((m) => m[1]);
-      if (versions.length === 0) continue;
-      for (const v of versions) {
-        if (isDerivedInventoryHit(file, tjsHit ? tjsHit[2] : null, "@huggingface/transformers", v)) continue;
+      // A lone trailing full stop is stripped ONLY outside the derived-inventory files (see the ORT scan
+      // above): the derived files are machine-produced JSON/JS with no prose, so a trailing dot there is
+      // validated RAW and must keep failing. The exemption check receives the RAW token for the same reason.
+      const rawVersions = [...line.matchAll(TJS_FULL_VERSION_RE)].map((m) => m[1]);
+      if (rawVersions.length === 0) continue;
+      const derived = isDerivedRegion(file, lineNo);
+      for (const rawVersion of rawVersions) {
+        if (isDerivedInventoryHit(file, lineNo, "@huggingface/transformers", rawVersion)) continue;
+        const v = derived ? rawVersion : stripTrailingDots(rawVersion);
         if (v === allowedTjsShared) continue;
 
         const allowedSlugs = tjsOverrideMap.get(v);
@@ -690,8 +732,11 @@ export function checkRuntimePins() {
   // Non-vacuity signal: how many pin occurrences the text scans actually examined. Attached to the
   // errors array as a named property (not an indexed element) so existing callers that read .length or
   // iterate the array keep working, while the test can assert the scan saw a healthy positive number of
-  // pins instead of silently returning [] because the pattern matched nothing.
-  errors.scannedCount = scannedCount;
+  // pins instead of silently returning [] because the pattern matched nothing. `scannedCount` is the
+  // total (kept for compatibility); `scannedCounts` carries the per-pattern breakdown so a broken scan
+  // for ONE runtime cannot hide behind the other runtime's count.
+  errors.scannedCount = scannedCounts.onnxruntimeWeb + scannedCounts.transformers;
+  errors.scannedCounts = { ...scannedCounts };
   return errors;
 }
 
