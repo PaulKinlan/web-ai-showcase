@@ -179,13 +179,22 @@ async function drive(rung,viewport){
         r.rows.length===r.words&&r.buttons===r.words&&
         r.rows.every(x=>x.length===3&&!!x[0]?.trim()&&x[1]!==x[2]),
         JSON.stringify({words:r.words,first:r.rows.slice(0,3)}));
-      const seek=await evaluate(sid,`(() => {
+      const target=await evaluate(sid,`(() => {
         const buttons=[...document.querySelectorAll('#words button.align-word')];
-        const row=Math.min(4,buttons.length-1);
-        const start=Number.parseFloat(document.querySelector('#rows tr:nth-child('+(row+1)+') td:nth-child(2)')?.textContent);
+        const row=Math.min(4,buttons.length-1),button=buttons[row];
+        const raw=document.querySelector('#rows tr:nth-child('+(row+1)+') td:nth-child(2)')?.textContent||'';
+        const [minutes,seconds]=raw.split(':');
+        const start=seconds!=null?Number(minutes)*60+Number(seconds):Number.parseFloat(raw);
         const player=document.querySelector('#player');player.pause();player.currentTime=0;
-        buttons[row].click();return {start,now:player.currentTime,word:buttons[row].textContent};})()`);
-      mark("clicking a JFK word seeks the real audio to its measured start",
+        button.scrollIntoView({block:'center'});
+        const rect=button.getBoundingClientRect();
+        return {start,x:rect.x+rect.width/2,y:rect.y+rect.height/2,word:button.textContent};})()`);
+      await cdp.send('Input.dispatchMouseEvent',
+        {type:'mousePressed',x:target.x,y:target.y,button:'left',clickCount:1},sid);
+      await cdp.send('Input.dispatchMouseEvent',
+        {type:'mouseReleased',x:target.x,y:target.y,button:'left',clickCount:1},sid);
+      const seek={...target,now:await evaluate(sid,`document.querySelector('#player')?.currentTime`)};
+      mark("trusted click on JFK word seeks real audio to measured start",
         seek.start>0.1&&Math.abs(seek.now-seek.start)<0.25,JSON.stringify(seek));
     }else{
       await waitFor(sid,`!document.querySelector('#readout')?.hidden&&
