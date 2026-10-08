@@ -188,6 +188,17 @@ test("htmlScriptContexts: <template> content is walked (parse5 node.content)", (
   assert.ok(kinds.includes("script-inline"), "template inline script must be visible");
 });
 
+test("htmlScriptContexts: SVG script xlink:href (prefixed) is a src context", () => {
+  // parse5 exposes name="href", prefix="xlink" and keys attr locations by the
+  // qualified name — both lookup forms must resolve, not fail closed spuriously.
+  const html =
+    '<svg><script xlink:href="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.21.0/dist/ort.min.js"></script></svg>';
+  const { document } = parseHtmlDocument(html, "fixture.html");
+  const srcs = htmlScriptContexts(document).filter((c) => c.kind === "script-src");
+  assert.equal(srcs.length, 1);
+  assert.match(srcs[0].src, /onnxruntime-web@1\.21\.0/);
+});
+
 test("htmlScriptContexts: SVG script href is a src context", () => {
   const html =
     '<svg><script href="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.21.0/dist/ort.min.js"></script></svg>';

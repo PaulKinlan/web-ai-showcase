@@ -123,8 +123,11 @@ template of the exact three workers (`models/silero-vad/worker.js`,
 `resolveTopLevelStringConstants` INVALIDATES a binding (→ unresolved sink → fail closed) on:
 reassignment, `++`/`--`, and ANY nested re-binding of the name — block `let/const`, nested function
 declarations, function params (identifier, object and array destructuring patterns), catch params,
-for-in/for-of bindings, import bindings, class ids — and on any reference that is not the bare
-`${NAME}` shape (member reads, call arguments, `${NAME + "x"}`, shorthand properties). Both
+for-in/for-of bindings, import bindings, class ids — and on any reference that could carry the value
+somewhere the sink check does not see (member reads, call arguments, `${NAME + "x"}`, shorthand
+properties). Three read-only shapes — `export { NAME }`, tagged templates (`` tag`…${NAME}…` ``),
+computed class-field keys — do NOT invalidate today: they cannot change the resolved string, so
+the sinks still see the same value; if a future sink design reads them, amend this budget first. Both
 synthesized raw specifiers (import URL AND wasmPaths) are checked against the ORT allowlist
 independently. Verified on this branch by `test/runtime-pin-parser.test.mjs`: the three workers
 resolve (`1.20.1`, `1.20.1`, `1.21.0`); fourteen shadow/reassign/update/nonliteral/concat/call

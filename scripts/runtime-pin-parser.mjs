@@ -359,11 +359,26 @@ export function resolveTopLevelStringConstants(ast) {
 // HTML
 // ---------------------------------------------------------------------------
 
+// Full JavaScript MIME essence list per the HTML spec (plus "module" and the
+// empty classic default). Anything else is non-executable and fails closed on
+// a marker rather than being misread as runnable JS.
 const EXECUTABLE_SCRIPT_TYPES = new Set([
   "", // classic script
   "module",
   "text/javascript",
   "application/javascript",
+  "text/ecmascript",
+  "application/ecmascript",
+  "text/jscript",
+  "text/livescript",
+  "text/x-javascript",
+  "application/x-javascript",
+  "text/javascript1.0",
+  "text/javascript1.1",
+  "text/javascript1.2",
+  "text/javascript1.3",
+  "text/javascript1.4",
+  "text/javascript1.5",
 ]);
 
 // Browsers execute a script when the MIME ESSENCE is a JavaScript type;
@@ -390,12 +405,12 @@ export function parseHtmlDocument(source, filePath) {
 /**
  * Extract every script-bearing context from a parsed HTML document.
  * Returns an array of entries:
- *  { kind: "script-src",      src, startOffset, endOffset }   quoted src only
+ *  { kind: "script-src",      src, attrName, startOffset, endOffset }  // src / SVG href / xlink:href, quoted or unquoted
  *  { kind: "script-inline",   text, startOffset, endOffset, scriptType }
- *  { kind: "script-nonexec",  scriptType, startOffset, endOffset } importmap/json/etc
+ *  { kind: "script-nonexec",  scriptType, text, startOffset, endOffset } // importmap/json/etc
  *  { kind: "unsupported-event-handler", attrName, startOffset, endOffset }
  *  { kind: "unsupported-javascript-url", attrName, startOffset, endOffset }
- *  { kind: "unsupported-unquoted-src", startOffset, endOffset }
+ *  { kind: "unsupported-unlocated-src", attrName, startOffset, endOffset }
  * Unsupported kinds are returned, NOT silently ignored — the gate fails closed.
  */
 export function htmlScriptContexts(document) {
@@ -407,15 +422,16 @@ export function htmlScriptContexts(document) {
         (node.attrs || []).map((a) => [a.name.toLowerCase(), a.value]),
       );
       const srcAttr = (node.attrs || []).find(
-        (a) => a.name.toLowerCase() === "src" || a.name.toLowerCase() === "href" || a.name.toLowerCase() === "xlink:href",
+        (a) => a.name.toLowerCase() === "src" || a.name.toLowerCase() === "href",
       );
       if (srcAttr) {
-        const attrLoc = loc.attrs && loc.attrs[srcAttr.name.toLowerCase()];
+        const qualified = srcAttr.prefix ? `${srcAttr.prefix}:${srcAttr.name.toLowerCase()}` : srcAttr.name.toLowerCase();
+        const attrLoc = loc.attrs && (loc.attrs[qualified] || loc.attrs[srcAttr.name.toLowerCase()]);
         if (attrLoc && attrLoc.startOffset !== undefined) {
           contexts.push({
             kind: "script-src",
             src: srcAttr.value,
-            attrName: srcAttr.name.toLowerCase(),
+            attrName: qualified,
             startOffset: attrLoc.startOffset,
             endOffset: attrLoc.endOffset,
           });
@@ -425,7 +441,7 @@ export function htmlScriptContexts(document) {
           // classified — fail closed.
           contexts.push({
             kind: "unsupported-unlocated-src",
-            attrName: srcAttr.name.toLowerCase(),
+            attrName: qualified,
             startOffset: loc.startOffset,
             endOffset: loc.endOffset,
           });
