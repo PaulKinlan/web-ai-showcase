@@ -26,6 +26,7 @@ import { execSync } from "node:child_process";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { classifyTaskPair } from "./model-task-vocabulary.mjs";
+import { inspectLiteralRuntimePins } from "./runtime-pin-literals.mjs";
 
 const ROOT = new URL("..", import.meta.url).pathname;
 const SNAPSHOT = ROOT + "inventory/model-currency.json";
@@ -733,6 +734,17 @@ export function checkRuntimePins() {
     }
   } catch (e) {
     errors.push(`failed to scan binary-classified files for runtime pins: ${e.message}`);
+  }
+
+  // The reviewed, source-context-aware literal URL pass is additive: keep all numeric, derived,
+  // binary and comment contracts above unchanged while rejecting floating CDN specifiers.
+  try {
+    const literal = inspectLiteralRuntimePins(ROOT, allowlist, isDerivedInventoryHit);
+    errors.push(...literal.errors);
+    scannedCounts.literalTransformers = literal.counts.transformers;
+    scannedCounts.literalOnnxruntimeWeb = literal.counts.onnxruntimeWeb;
+  } catch (e) {
+    errors.push(`failed to scan literal runtime URLs: ${e.message}`);
   }
 
   // Non-vacuity signal: how many pin occurrences the text scans actually examined. Attached to the
