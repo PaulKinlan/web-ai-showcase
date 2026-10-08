@@ -570,7 +570,11 @@ export function checkRuntimePins() {
 
   try {
     const raw = execSync(
-      `grep -I -rnE '${TJS_PIN_PATTERN}' ${PIN_SCAN_TARGETS} 2>/dev/null || true`,
+      // -o is essential: without it grep emits the whole LINE, and the per-line match() below would see
+      // only the FIRST pin on that line. A second, unapproved pin on the same line was therefore never
+      // examined at all - and if the first one was exempt, the whole line was skipped. -o makes every
+      // match its own record so each version is judged independently.
+      `grep -I -rnoE '${TJS_PIN_PATTERN}' ${PIN_SCAN_TARGETS} 2>/dev/null || true`,
       { cwd: ROOT, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
     );
     for (const line of raw.split("\n")) {
@@ -578,29 +582,32 @@ export function checkRuntimePins() {
       const tjsHit = line.match(/^(.*?):(\d+):(.*)$/);
       const colonIdx = line.indexOf(":");
       const file = tjsHit ? tjsHit[1] : colonIdx >= 0 ? line.slice(0, colonIdx) : line;
-      const match = line.match(/@huggingface\/transformers@([0-9.]+)/);
-      if (!match) continue;
-      const v = match[1];
-      if (isDerivedInventoryHit(file, tjsHit ? tjsHit[2] : null, "@huggingface/transformers", v)) continue;
-      if (v === allowedTjsShared) continue;
+      // Enumerate EVERY match on the record, not just the first. `grep -o` already splits them, and this
+      // loop means a multi-match record still cannot hide its later versions.
+      const versions = [...line.matchAll(/@huggingface\/transformers@([0-9.]+)/g)].map((m) => m[1]);
+      if (versions.length === 0) continue;
+      for (const v of versions) {
+        if (isDerivedInventoryHit(file, tjsHit ? tjsHit[2] : null, "@huggingface/transformers", v)) continue;
+        if (v === allowedTjsShared) continue;
 
-      const allowedSlugs = tjsOverrideMap.get(v);
-      if (!allowedSlugs) {
-        errors.push(
-          `unauthorized @huggingface/transformers version "${v}" in ${file} — not in scripts/runtime-pin-allowlist.json`,
-        );
-        continue;
-      }
+        const allowedSlugs = tjsOverrideMap.get(v);
+        if (!allowedSlugs) {
+          errors.push(
+            `unauthorized @huggingface/transformers version "${v}" in ${file} — not in scripts/runtime-pin-allowlist.json`,
+          );
+          continue;
+        }
 
-      // If version is an allowed override, assert that the file belongs to an authorized slug
-      const slugMatch = file.match(/^models\/([^/]+)\//);
-      const slug = slugMatch ? slugMatch[1] : null;
-      if (!slug || !allowedSlugs.has(slug)) {
-        errors.push(
-          `unauthorized @huggingface/transformers override "${v}" in ${file} — route "${
-            slug || file
-          }" is not authorized in scripts/runtime-pin-allowlist.json`,
-        );
+        // If version is an allowed override, assert that the file belongs to an authorized slug
+        const slugMatch = file.match(/^models\/([^/]+)\//);
+        const slug = slugMatch ? slugMatch[1] : null;
+        if (!slug || !allowedSlugs.has(slug)) {
+          errors.push(
+            `unauthorized @huggingface/transformers override "${v}" in ${file} — route "${
+              slug || file
+            }" is not authorized in scripts/runtime-pin-allowlist.json`,
+          );
+        }
       }
     }
   } catch (e) {

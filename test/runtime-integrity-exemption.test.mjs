@@ -151,18 +151,18 @@ test("adding an arbitrary file to derivedInventory.files is rejected", () => {
 test("COORD'S EXACT BYPASS: adding a route file to derivedInventory.files AND injecting a pin into it", () => {
   // The precise mutation to close: exempt a route file via the data, then hide a forbidden pin inside it.
   // If the exempt set is only "currently exact", this succeeds and the audit PASSES. It must not.
-  const routeRel = "models/example-route/index.html";
+  // A UNIQUE directory, so the test can never collide with - or delete - anything that already exists.
+  // An earlier revision assumed it had created models/example-route and removed it recursively, which
+  // would have destroyed unrelated pre-existing contents.
+  const uniqueName = `__exemption-test-${process.pid}-${Date.now()}`;
+  const routeRel = `models/${uniqueName}/index.html`;
   const routeAbs = join(ROOT, routeRel);
+  const routeDir = join(ROOT, "models", uniqueName);
   const allowPath = join(ROOT, "scripts/runtime-pin-allowlist.json");
   const allowOriginal = readFileSync(allowPath, "utf8");
-  let createdDir = false;
+  assert.equal(existsSync(routeDir), false, "the unique temp directory must not already exist");
   try {
-    try {
-      mkdirSync(join(ROOT, "models/example-route"), { recursive: true });
-      createdDir = true;
-    } catch {
-      // directory may already exist
-    }
+    mkdirSync(routeDir, { recursive: true });
     writeFileSync(routeAbs, `<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@9.9.9/dist/ort.min.js"></script>\n`);
     const data = JSON.parse(allowOriginal);
     data.derivedInventory.files.push(routeRel);
@@ -171,8 +171,8 @@ test("COORD'S EXACT BYPASS: adding a route file to derivedInventory.files AND in
   } finally {
     writeFileSync(allowPath, allowOriginal);
     try {
-      rmSync(routeAbs, { force: true });
-      if (createdDir) rmSync(join(ROOT, "models/example-route"), { recursive: true, force: true });
+      // Remove ONLY the directory this test created, by its unique name.
+      rmSync(routeDir, { recursive: true, force: true });
     } catch {
       // best effort cleanup
     }
@@ -206,5 +206,19 @@ test("an INVERTED marker pair fails loudly", () => {
       return lines.join("\n");
     },
     () => assert.equal(runGate(), 1, "an inverted marker pair must disable the exemption and error"),
+  );
+});
+
+test("the same-line bypass: a SECOND pin on an already-exempt line is still examined", () => {
+  // The transformers scan used to read only the FIRST pin per line, so an unapproved version appended to
+  // a line that already carried an exempt one was never examined at all and the gate passed.
+  withMutation(
+    "scripts/runtime-integrity.mjs",
+    (source) =>
+      source.replace(
+        '"@huggingface/transformers@3.1.2/+esm"',
+        '"@huggingface/transformers@3.1.2/+esm", "@huggingface/transformers@9.9.9/+esm"',
+      ),
+    () => assert.equal(runGate(), 1, "a second, unapproved pin on the same line must not ride along"),
   );
 });
