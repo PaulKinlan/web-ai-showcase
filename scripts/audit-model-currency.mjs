@@ -375,6 +375,9 @@ export function checkRuntimePins() {
     }
   }
 
+  if (allowlist.derivedInventory && !Array.isArray(allowlist.derivedInventory.files)) {
+    return ["scripts/runtime-pin-allowlist.json: derivedInventory.files must be an array"];
+  }
   if (
     !Array.isArray(allowlist.onnxruntimeWeb?.allowedVersions) ||
     allowlist.onnxruntimeWeb.allowedVersions.length === 0
@@ -435,18 +438,45 @@ export function checkRuntimePins() {
 
   const errors = [];
 
+  // The generated integrity inventory is EXEMPT from route-scoped pin checking, and the exemption is
+  // recorded as data in scripts/runtime-pin-allowlist.json (derivedInventory) rather than being a
+  // silent skip in this file, so a reviewer can see and challenge exactly what is exempt.
+  // sw.js emits those URLs inside a delimited generated block; the rest of sw.js is still scanned, so a
+  // runtime URL hardcoded elsewhere in the worker still fails. See the allowlist for what gates it instead.
+  const derivedInventoryFiles = new Set(allowlist.derivedInventory?.files || []);
+  let swGeneratedRange = null;
+  try {
+    const swLines = readFileSync(ROOT + "sw.js", "utf8").split("\n");
+    const start = swLines.findIndex((l) => l.includes(">>> runtime-integrity (generated"));
+    const end = swLines.findIndex((l) => l.includes("<<< runtime-integrity"));
+    if (start >= 0 && end > start) swGeneratedRange = [start + 1, end + 1];
+  } catch {
+    // sw.js absent: nothing to exempt, every hit is scanned normally.
+  }
+  const isDerivedInventoryHit = (file, lineNo) => {
+    if (!file || !derivedInventoryFiles.has(file)) return false;
+    if (file !== "sw.js") return true;
+    if (!swGeneratedRange) return false;
+    const n = Number(lineNo);
+    return Number.isFinite(n) && n >= swGeneratedRange[0] && n <= swGeneratedRange[1];
+  };
+
   // 1. Check onnxruntime-web versions (using grep -I)
   const allowedOrt = new Set(
     (allowlist.onnxruntimeWeb?.allowedVersions || []).map((v) => v.version),
   );
   try {
     const raw = execSync(
-      `grep -I -rhoE '${ORT_PIN_PATTERN}' ${PIN_SCAN_TARGETS} 2>/dev/null || true`,
+      `grep -I -rnoE '${ORT_PIN_PATTERN}' ${PIN_SCAN_TARGETS} 2>/dev/null || true`,
       { cwd: ROOT, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
     );
     const foundOrt = new Set();
     for (const line of raw.split("\n")) {
-      const v = line.split("@").pop()?.trim();
+      if (!line.trim()) continue;
+      const hit = line.match(/^(.*?):(\d+):(.+)$/);
+      if (hit && isDerivedInventoryHit(hit[1], hit[2])) continue;
+      const payload = hit ? hit[3] : line;
+      const v = payload.split("@").pop()?.trim();
       if (v) foundOrt.add(v);
     }
     for (const v of foundOrt) {
@@ -474,8 +504,10 @@ export function checkRuntimePins() {
     );
     for (const line of raw.split("\n")) {
       if (!line.trim()) continue;
+      const tjsHit = line.match(/^(.*?):(\d+):(.*)$/);
       const colonIdx = line.indexOf(":");
-      const file = colonIdx >= 0 ? line.slice(0, colonIdx) : line;
+      const file = tjsHit ? tjsHit[1] : colonIdx >= 0 ? line.slice(0, colonIdx) : line;
+      if (isDerivedInventoryHit(file, tjsHit ? tjsHit[2] : null)) continue;
       const match = line.match(/@huggingface\/transformers@([0-9.]+)/);
       if (!match) continue;
       const v = match[1];
