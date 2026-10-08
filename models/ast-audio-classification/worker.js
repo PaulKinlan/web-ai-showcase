@@ -9,7 +9,6 @@
 
 import { loadPipeline } from "/web-ai-showcase/lib/webai.js";
 
-const MODEL = "Xenova/ast-finetuned-audioset-10-10-0.4593";
 const TASK = "audio-classification";
 const SR = 16000;
 
@@ -35,7 +34,7 @@ async function ensureLoaded(preferred) {
   try {
     const loaded = await loadPipeline({
       task: TASK,
-      model: MODEL,
+      model: "Xenova/ast-finetuned-audioset-10-10-0.4593",
       backend: want,
       dtype: "q8",
       onProgress: (p) => post({ type: "progress", p }),
@@ -47,7 +46,7 @@ async function ensureLoaded(preferred) {
       post({ type: "progress", p: { status: "initiate", file: "retrying on WASM…" } });
       const loaded = await loadPipeline({
         task: TASK,
-        model: MODEL,
+        model: "Xenova/ast-finetuned-audioset-10-10-0.4593",
         backend: "wasm",
         dtype: "q8",
         onProgress: (p) => post({ type: "progress", p }),
