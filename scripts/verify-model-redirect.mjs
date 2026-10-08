@@ -71,13 +71,14 @@ try {
       let error = null;
       try { await downloadModelFile({url}); } catch (e) { error = String(e); }
       const state = await resumeState(url);
-      return {error, persistedBytes: state?.receivedBytes || 0};
+      return {error, persistedBytes: state?.receivedBytes || 0, hasPartialRecord: state !== null};
     } finally { globalThis.fetch = actualFetch; await clearPartial(url); }
   })()`,
     20000,
   );
   if (
-    !result?.error?.includes("Untrusted model download redirect") || result.persistedBytes !== 0
+    !result?.error?.includes("Untrusted model download redirect") ||
+    result.persistedBytes !== 0 || result.hasPartialRecord
   ) {
     throw new Error(`Foreign final origin was accepted/persisted: ${JSON.stringify(result)}`);
   }
