@@ -129,6 +129,16 @@ const RUNTIME_INTEGRITY = {
     "bytes": 357582,
     "policy": "verify-then-cache"
   },
+  "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.31.0-dev.20260914-8d85527a0/dist/ort-wasm-simd-threaded.asyncify.mjs": {
+    "sha256": "0966b6105cd936744498aa60df7a22cbd47af3374dbc64a9ab561c08a71e3611",
+    "bytes": 53057,
+    "policy": "verify-then-cache"
+  },
+  "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.31.0-dev.20260914-8d85527a0/dist/ort-wasm-simd-threaded.asyncify.wasm": {
+    "sha256": "49871f5a4409519797e127440868a6d1923339d9185907f301a5b2a1d90af082",
+    "bytes": 26861777,
+    "policy": "verify-then-cache"
+  },
   "https://cdn.jsdelivr.net/npm/outetts@0.2.0/+esm": {
     "sha256": "3527316a28c71a577923a8f683aae68f2ec7ed0520bb64d5bbee806b51e60279",
     "bytes": 106273,

@@ -193,6 +193,13 @@ for (const entry of report) {
   } else {
     console.log("  COMPLETE: every jsDelivr URL this route fetched is pinned in the manifest");
   }
+  // COMPLETE means "everything this route fetched is pinned", which is NOT the same as "this route's
+  // runtime was exercised". A route that only got as far as downloading a large model fetches the entry
+  // bundle and never starts a runtime, so its runtime-asset coverage is unproven. Say so rather than
+  // letting a one-URL COMPLETE read as a clean bill of health for that family.
+  if (entry.urls.length > 0 && !entry.urls.some((u) => u.url.includes(".wasm"))) {
+    console.log("  NOTE: no runtime binary was exercised on this route, so its runtime-asset coverage is unproven");
+  }
 }
 console.log(`\nRESULT routes=${report.length} uncoveredUrls=${gaps} inconclusive=${inconclusive}`);
 process.exit(gaps > 0 || inconclusive > 0 ? 1 : 0);

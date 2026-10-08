@@ -53,6 +53,14 @@ const ORT_ASSETS = [
   "onnxruntime-web@1.22.0/dist/ort-wasm-simd-threaded.jsep.mjs",
   "onnxruntime-web@1.22.0/dist/ort-wasm-simd-threaded.jsep.wasm",
   "onnxruntime-web@1.22.0/dist/ort.webgpu.min.mjs",
+  // Found by the browser audit: the transformers 4.3.0 route (all-distilroberta-v1) pulls a DATE-STAMPED
+  // PRERELEASE ort build, chosen inside 4.3.0 rather than by any worker here. It is still an exact
+  // immutable artifact - measured no redirect, cache-control immutable, and byte-identical across two
+  // fetches - so it is pinnable. Worth knowing when reviewing the 4.3.0 rollout that a built route
+  // depends on a -dev. build; if 4.3.0 ever changes which ort it selects, that version falls out of this
+  // manifest and silently drops to pass-through (served unverified, never persisted).
+  "onnxruntime-web@1.31.0-dev.20260914-8d85527a0/dist/ort-wasm-simd-threaded.asyncify.mjs",
+  "onnxruntime-web@1.31.0-dev.20260914-8d85527a0/dist/ort-wasm-simd-threaded.asyncify.wasm",
 ];
 // Exact versioned URLs used by BUILT routes that do not come from either bundle above. Every entry here
 // was measured before being added: status 200, no redirect, no query string, and
