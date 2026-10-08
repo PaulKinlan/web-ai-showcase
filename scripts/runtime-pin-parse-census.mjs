@@ -15,7 +15,8 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { PIN_SCAN_TARGETS } from "./audit-model-currency.mjs";
 import {
   RAW_MARKERS,
-  ESCAPED_MARKER_VARIANTS,
+  markerOffsets,
+  isBinarySource,
   parseJavaScript,
   jsSyntaxSpans,
   classifyJsOffset,
@@ -30,53 +31,27 @@ const outArg = process.argv.indexOf("--out");
 const OUT = outArg > -1 ? process.argv[outArg + 1] : "inventory/runtime-pin-parse-census.json";
 
 function listFiles() {
-  // git ls-files keeps the census exactly on tracked files under scan targets.
-  const out = execFileSync("git", ["ls-files", ...PIN_SCAN_TARGETS.split(" ").filter(Boolean)], {
-    cwd: ROOT,
-    encoding: "utf8",
-  });
-  return out.split("\n").filter(Boolean);
-}
-
-function markerOffsets(source) {
-  const hits = [];
-  const variants = [
-    ...RAW_MARKERS.map((m) => ({ needle: m, escaped: false })),
-    ...ESCAPED_MARKER_VARIANTS.map((m) => ({ needle: m, escaped: true })),
-  ];
-  for (const { needle, escaped } of variants) {
-    let idx = source.indexOf(needle);
-    while (idx !== -1) {
-      hits.push({ offset: idx, marker: needle, escaped });
-      idx = source.indexOf(needle, idx + 1);
-    }
-  }
-  // Cooked-escape discovery: the raw bytes of the package name with an escaped
-  // "@", e.g. `onnxruntime-web\x40` or `onnxruntime-web%40`. These never form
-  // a contiguous raw marker, so they must be counted separately (Gemini review
-  // requirement: TOTAL marker accounting incl. escaped forms).
-  for (const base of ["onnxruntime-web", "@huggingface/transformers", "@huggingface\\/transformers"]) {
-    for (const esc of ["\\x40", "\\u0040", "%40"]) {
-      const needle = base + esc;
-      let idx = source.indexOf(needle);
-      while (idx !== -1) {
-        hits.push({ offset: idx, marker: needle, escaped: true, cookedEscape: true });
-        idx = source.indexOf(needle, idx + 1);
-      }
-    }
-  }
-  hits.sort((a, b) => a.offset - b.offset);
-  return hits;
-}
-
-function isBinary(source) {
-  return source.includes("");
+  // The GATE greps the working tree (`grep -r` over PIN_SCAN_TARGETS), so the
+  // census must cover the same set: tracked files PLUS untracked/non-ignored
+  // files. A divergence (e.g. an untracked file bearing a marker) is recorded
+  // explicitly rather than silently dropped from the coverage budget.
+  const tracked = execFileSync(
+    "git",
+    ["ls-files", ...PIN_SCAN_TARGETS.split(" ").filter(Boolean)],
+    { cwd: ROOT, encoding: "utf8" },
+  ).split("\n").filter(Boolean);
+  const untracked = execFileSync(
+    "git",
+    ["ls-files", "--others", "--exclude-standard", ...PIN_SCAN_TARGETS.split(" ").filter(Boolean)],
+    { cwd: ROOT, encoding: "utf8" },
+  ).split("\n").filter(Boolean);
+  return { tracked, untracked, all: [...new Set([...tracked, ...untracked])].sort() };
 }
 
 function censusJs(relPath, source) {
   const file = { path: relPath, kind: "js", markers: [], parse: null };
   const hits = markerOffsets(source);
-  if (isBinary(source)) {
+  if (isBinarySource(source)) {
     file.binary = true; // legacy binary-NUL fail-closed pass owns this file
   }
   let parsed;
@@ -108,7 +83,35 @@ function censusHtml(relPath, source) {
   const hits = markerOffsets(source);
   const { document } = parseHtmlDocument(source, relPath);
   const contexts = htmlScriptContexts(document);
-  file.scriptContexts = contexts.map((c) => ({ kind: c.kind, scriptType: c.scriptType }));
+  file.scriptContexts = contexts.map((c) => ({
+    kind: c.kind,
+    scriptType: c.scriptType,
+    attrName: c.attrName,
+  }));
+  // Decoded-value scan: parse5 entity-decodes attribute values, so a marker
+  // hidden as an entity-encoded "@" is visible in `src` even though the raw
+  // bytes never form a contiguous marker. Count those too (TOTAL accounting).
+  const decodedHits = [];
+  for (const c of contexts) {
+    if (c.kind === "script-src" && typeof c.src === "string") {
+      for (const m of RAW_MARKERS) {
+        if (c.src.includes(m)) {
+          const rawHit = hits.some(
+            (h) => c.startOffset <= h.offset && h.offset < c.endOffset,
+          );
+          if (!rawHit) {
+            decodedHits.push({
+              offset: c.startOffset,
+              marker: m,
+              escaped: true,
+              decodedAttrValue: true,
+              context: "html-script-src(decoded)",
+            });
+          }
+        }
+      }
+    }
+  }
   file.markers = hits.map((h) => {
     // Inline executable script? Re-run the JS classifier on the script body.
     const inline = contexts.find(
@@ -129,11 +132,18 @@ function censusHtml(relPath, source) {
       (c) => c.kind === "script-src" && c.startOffset <= h.offset && h.offset < c.endOffset,
     );
     if (src) return { ...h, context: "html-script-src" };
+    // Marker inside a non-executable script body (importmap, JSON, unknown
+    // type): link it to that context instead of losing it as html-text.
+    const nonexec = contexts.find(
+      (c) => c.kind === "script-nonexec" && c.startOffset <= h.offset && h.offset < c.endOffset,
+    );
+    if (nonexec) return { ...h, context: `html-script-nonexec(${nonexec.scriptType})` };
     if (htmlOffsetInDisplayRegion(document, h.offset)) {
       return { ...h, context: "html-display(pre/code)" };
     }
     return { ...h, context: "html-text" };
   });
+  file.markers.push(...decodedHits);
   return file;
 }
 
@@ -142,12 +152,12 @@ function censusData(relPath, source) {
   return {
     path: relPath,
     kind: relPath.endsWith(".json") || relPath.endsWith(".ndjson") ? "json" : "other",
-    binary: isBinary(source) || undefined,
+    binary: isBinarySource(source) || undefined,
     markers: hits.map((h) => ({ ...h, context: "non-executable-data" })),
   };
 }
 
-const files = listFiles();
+const { tracked, untracked, all: files } = listFiles();
 const results = { js: [], html: [], data: [] };
 let parsedJs = 0;
 let failedJs = [];
@@ -195,6 +205,9 @@ const census = {
   scanTargets: PIN_SCAN_TARGETS,
   totals: {
     filesScanned: files.length,
+    trackedFiles: tracked.length,
+    untrackedFiles: untracked.length,
+    untrackedFileList: untracked,
     jsFiles: results.js.length,
     jsParsedOk: parsedJs,
     jsParseFailures: failedJs.length,

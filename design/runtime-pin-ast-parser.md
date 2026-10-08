@@ -5,7 +5,10 @@ and `web-ai-showcase-vs2` (ORT constant-built CDN URL false greens).
 Dependency approval: Paul, 2026-10-08 10:30Z — "Re: dep - yes, take parser dependency" (option (a)),
 with the five hub conditions recorded on the bead. Prior design record: independent Gemini review
 `2b4370e9` (BLOCK → dependency decision), frozen zero-dep lexer design `web-ai-showcase-kvt`,
-rejected lexer candidate `ea72200` (nested backtick false green).
+rejected lexer candidate `ea72200` (nested backtick false green). v2 of this design incorporates
+the independent DeepSeek review of v1 (14 findings; the class-body span gap, incomplete shadowing
+invalidation, stale census, NUL-check, marker-accounting and CI/Deno packaging findings are fixed
+in the commit that carries this file).
 
 This document is the **coverage budget** — the first deliverable required by the approval. The
 scanner integration itself lands in `j9z`/`vs2`; this design plus the measured census
@@ -22,80 +25,110 @@ scanner integration itself lands in `j9z`/`vs2`; this design plus the measured c
 | entities (transitive, parse5) | 8.1.0 | BSD-2-Clause | sha512-kxL7msIffSuh9aaFAMD7rxAIuTRMAHMeBtgHW2yUdWw732ZNh4MehkF2gdjvtdmikkaIP9bFDDJOPlsvm7avrA== |
 
 - Manifest: `package.json` (new; `private`, no `type` field so `.js` module semantics are
-  unchanged, no scripts, no other deps) + `package-lock.json` (exact, frozen by `npm ci`).
-- Install path: `fleet-deps` (per-lockfile store, hard-linked `node_modules`); `node_modules/`
-  is gitignored. The gate is invoked by Node (`node scripts/audit-model-currency.mjs --check`
-  inside `deno task gate`), so the parser is an npm/Node dependency, not a Deno `npm:` specifier —
-  Deno's frozen `deno.lock` is untouched.
-- Bumping any pin is a reviewed change to this file's table AND the lockfile in the same commit.
+  unchanged, no scripts, no other deps) + `package-lock.json` (exact, installed with `npm ci`).
+- **Deno interaction (reviewed finding, fixed):** a root `package.json` makes Deno require a
+  `workspace.packageJson` entry in the frozen `deno.lock`; that lockfile diff (34 lines: the three
+  `npm:` pins) IS committed in the same change, so `deno check server.ts` / `deno task test:server`
+  stay green under `lock.frozen=true`. Any future pin bump must regenerate BOTH lockfiles.
+- **CI (reviewed finding, fixed):** `.github/workflows/gate.yml` runs `npm ci --ignore-scripts`
+  before `node --test "test/**/*.test.mjs"`; `test/runtime-pin-parser.test.mjs` is the suite's
+  only dependency-bearing file. The gate scripts themselves remain dependency-free.
+- Install path locally: `fleet-deps` (per-lockfile store, hard-linked `node_modules`);
+  `node_modules/` is gitignored. The gate is invoked by Node
+  (`node scripts/audit-model-currency.mjs --check` inside `deno task gate`), so the parser is an
+  npm/Node dependency, not a Deno `npm:` specifier in source.
 - No transitive-parser reliance: only these three packages may parse JS/HTML for the gate.
 
 ## 2. One parser, one entry point
 
 `scripts/runtime-pin-parser.mjs` is the ONLY module containing JS/HTML syntax knowledge for the
-currency gate. `audit-model-currency.mjs` (and any future gate code) imports it; no second lexer,
-regex-tokenizer, or inline `acorn`/`parse5` import anywhere else in the tree. It exports:
-`parseJavaScript`, `jsSyntaxSpans`, `classifyJsOffset`, `resolveTopLevelStringConstants`,
-`parseHtmlDocument`, `htmlScriptContexts`, `htmlOffsetInDisplayRegion`, `RuntimePinParseError`,
-and the marker vocabulary (`RAW_MARKERS`, `ESCAPED_MARKER_VARIANTS`). Raw candidates come only
-from `source.slice(node.start, node.end)` (UTF-16 offsets) — never decoded, never
-prefix-truncated. The rejected lexer's failure mode (breaking a template span at an inner `${`
-backtick) is structurally impossible here: acorn builds the full nested `TemplateLiteral` tree.
+currency gate (verified by review: no other `acorn`/`parse5` import anywhere in the tree).
+`audit-model-currency.mjs` (and any future gate code) imports it; no second lexer,
+regex-tokenizer, or inline parser import elsewhere. It exports: `parseJavaScript`,
+`jsSyntaxSpans`, `classifyJsOffset`, `resolveTopLevelStringConstants`, `parseHtmlDocument`,
+`htmlScriptContexts`, `htmlOffsetInDisplayRegion`, `markerOffsets`, `isBinarySource`,
+`RuntimePinParseError`, and the marker vocabulary (`RAW_MARKERS`, `ESCAPED_MARKER_VARIANTS`).
+Raw candidates come only from `source.slice(node.start, node.end)` (UTF-16 offsets) — never
+decoded, never prefix-truncated. The rejected lexer's failure mode (breaking a template span at an
+inner `${` backtick) is structurally impossible here: acorn builds the full nested
+`TemplateLiteral` tree. The acorn-walk base is extended (`WALK_BASE`) to visit Literal
+property/member **keys** AND **values** (the default base skips non-computed keys; a naive override
+drops method bodies and class fields — both directions are regression-tested).
 
 ## 3. Coverage budget — measured, not estimated
 
-Census of `PIN_SCAN_TARGETS` (3807 tracked files), this branch, 2026-10-08:
+Census of `PIN_SCAN_TARGETS` (3809 tracked files + 0 untracked — the census enumerates BOTH
+`git ls-files` and `--others --exclude-standard`, matching the gate's working-tree grep scope),
+this branch, 2026-10-08:
 
-- **JS parse coverage: 966/966 `.js`/`.mjs` files parse cleanly with acorn 8.19.0
+- **JS parse coverage: 968/968 `.js`/`.mjs` files parse cleanly with acorn 8.19.0
   (module-then-script fallback, hashbang/return/await tolerated). Zero parse failures.**
+  Independent review verified the permissive options hide nothing in this corpus: 0 files parse
+  only because of `allowReturnOutsideFunction`/`allowAwaitOutsideFunction` or the script fallback;
+  decorators/JSX/TS syntax throw `RuntimePinParseError` (fail closed).
 - HTML: 1534 files parse with parse5 8.0.1 (`sourceCodeLocationInfo`). **0** executable
   `<script src="https?://…">` CDN pins exist in the corpus; the 2 marker-bearing HTML files carry
-  markers only inside `<pre><code>` display regions (classified `html-display(pre/code)`).
-- **583 total marker occurrences in 103 files**, every one classified into an exact context:
+  markers only inside `<pre><code>` display regions. The walker recurses `<template>` content
+  (`node.content`), treats SVG `<script href>`/`xlink:href` as src contexts, and matches script
+  types by MIME essence (parameters like `; charset=utf-8` do not change executability).
+- **585 total marker occurrences in 104 files**, every one classified into an exact context:
 
   | context | count | disposition |
   |---|---|---|
   | `non-executable-data` (JSON/NDJSON/lockfiles) | 403 | data files; runtime-affecting JSON stays under ledger/exemption rules |
-  | `string` | 151 | literal URLs incl. the sw.js derived-manifest object keys (24) — those stay governed by the existing derived measured-version exemption |
+  | `string` | 153 | literal URLs incl. the sw.js derived-manifest object keys (24) — those stay governed by the existing derived measured-version exemption; also the new tooling sources (this module's marker vocabulary arrays) |
   | `template-quasi` | 16 | 6 = the three vs2 workers (ORT_VERSION/ORT_VER import+wasmPaths templates); 10 = tooling sources (`audit-model-currency.mjs` pattern builders, `_gliner_*`, `probe-tjs-compat-matrix`) |
   | `comment-line` | 7 | inert, but counted (total accounting) |
   | `regex` + `regex|escaped` | 2 + 2 | tooling patterns incl. the `@huggingface\/transformers@` escaped variant — census/unsupported classification only, never decoded |
   | `html-display(pre/code)` | 2 | display-only, inert |
-  | cooked-escape (`\x40`/`\u0040`/`%40` forms) | 0 | none in corpus today; any future hit is a distinct counted context, fail-closed |
-  | `code` / `unparsed` / `html-text` | 0 | **must stay 0** — any marker here is an error |
+  | cooked/entity escapes (`\x40`, `\u0040`, `\u{40}`, `\100`, `%40`, `&#64;`, `&#x40;`, `&commat;`) | 0 | none in corpus today; any future hit is a distinct counted context, fail-closed |
+  | `code` / `unparsed` / `html-text` / `html-inline-js:unparsed` | 0 | **must stay 0** — any marker here is an error |
 
+- TOTAL marker accounting (raw + regex-escaped + cooked/entity + decoded attribute values) is
+  produced by `markerOffsets` plus the census's decoded-`src` scan, so a numeric-looking marker in
+  an unknown executable context cannot bypass via prefix truncation, and an entity-encoded
+  `<script src>` pin is visible even though its raw bytes never form a contiguous marker
+  (regression-tested). Residual forms explicitly NOT enumerated (double-encoded percent, named
+  entities beyond `&commat;`, base64/data: URLs): if any ever reaches an executable sink it is an
+  unsupported context and fails closed — it is never silently a pass.
 - Reconciliation with the reviewed 21-row nonnumeric ledger
   (`inventory/runtime-pin-marker-ledger.json`, branch `fleet/j9z`) + the `runtime-integrity.mjs`
   split pair remains strict-equality on `(path, full-line SHA-256, marker, context, ordinalOnLine,
-  expectedCountOnLine)`; discovery NEVER auto-approves. The AST pass must additionally produce
-  **total marker accounting** (raw + escaped + cooked) so a numeric-looking marker in an unknown
-  executable context cannot bypass via prefix truncation (Gemini review requirement 1–2).
+  expectedCountOnLine)`; discovery NEVER auto-approves. The two new tooling files
+  (`scripts/runtime-pin-parser.mjs`, `scripts/runtime-pin-parse-census.mjs`) add tooling-context
+  marker rows that the j9z ledger migration must absorb by reviewed amendment, same as any other
+  discovery.
 
 ### Explicitly NOT covered (named, not silently ignored)
 
-- HTML: unquoted/entity-bearing `src`, event-handler attributes (`on*`), `javascript:` URLs,
-  importmaps, non-JS script types — each is surfaced by `htmlScriptContexts` as an
-  `unsupported-*`/`script-nonexec` entry and fails closed if it bears a marker.
+- HTML: entity-bearing `src` that escapes BOTH the raw-marker and the decoded-value scan,
+  event-handler attributes (`on*`), `javascript:` URLs (including TAB/LF-obfuscated forms, which
+  the URL parser strips — detected and surfaced), importmaps and other non-JS script types —
+  each is surfaced by `htmlScriptContexts` as an `unsupported-*`/`script-nonexec` entry with its
+  own context label, and fails closed if it bears a marker.
 - JS: `eval`/runtime-constructed strings, arbitrary dataflow, concatenated or encoded markers,
   split-marker assembly (the vs2 residual), non-literal dynamic imports.
 - Constant binding beyond §4's exact pattern.
 - Parse failure in any scanned `.js`/`.mjs`/executable-HTML file **with marker or runtime-sink
   evidence** (`import(`, `wasmPaths`, `from "https?://`) is a gate ERROR (`RuntimePinParseError`),
-  never "inert". Parse failure in a file with neither is recorded in the census and still fails
-  if it is a marker-file target.
+  never "inert". Parse failure in a file with neither is recorded in the census.
 
 ## 4. Bounded constant binding (vs2 scope, nothing broader)
 
 Lexical-scope binding ONLY, exactly: a **top-level `const` Identifier** initialized with a
-**primitive string Literal**, referenced as a **bare Identifier** inside the `ORT_URL`
-dynamic-import template and the `wasmPaths` template of the exact three workers
-(`models/silero-vad/worker.js`, `models/pitch-detection/worker.js`,
-`models/model2vec-static-embeddings/worker.js`). `resolveTopLevelStringConstants` INVALIDATES a
-binding on any reassignment, update, function-parameter shadowing, or nested redeclaration — the
-sink then fails closed as unresolved. Both synthesized raw specifiers (import URL AND wasmPaths)
-are checked against the ORT allowlist independently. Verified on this branch: the three workers
-resolve (`1.20.1`, `1.20.1`, `1.21.0`); shadow and reassignment mutants return UNRESOLVED
-(fail-closed); a `9.9.9` mutation resolves to `9.9.9` and therefore rejects against
+**primitive string Literal**, referenced ONLY as a **bare Identifier that is the whole template
+expression** (`${NAME}`) — as in the `ORT_URL` dynamic-import template and the `wasmPaths`
+template of the exact three workers (`models/silero-vad/worker.js`,
+`models/pitch-detection/worker.js`, `models/model2vec-static-embeddings/worker.js`).
+`resolveTopLevelStringConstants` INVALIDATES a binding (→ unresolved sink → fail closed) on:
+reassignment, `++`/`--`, and ANY nested re-binding of the name — block `let/const`, nested function
+declarations, function params (identifier, object and array destructuring patterns), catch params,
+for-in/for-of bindings, import bindings, class ids — and on any reference that is not the bare
+`${NAME}` shape (member reads, call arguments, `${NAME + "x"}`, shorthand properties). Both
+synthesized raw specifiers (import URL AND wasmPaths) are checked against the ORT allowlist
+independently. Verified on this branch by `test/runtime-pin-parser.test.mjs`: the three workers
+resolve (`1.20.1`, `1.20.1`, `1.21.0`); fourteen shadow/reassign/update/nonliteral/concat/call
+mutants all return UNRESOLVED; a `9.9.9` mutation resolves to `9.9.9` and therefore rejects against
 `onnxruntime-web@1.20.1/1.21.0`. No eval, no concatenation, no encoded markers — those remain
 explicit vs2 residuals, not approved pins.
 
@@ -103,21 +136,24 @@ explicit vs2 residuals, not approved pins.
 
 - Legacy numeric grep scan, strict whole-raw suffix tests, route-scoped Transformers overrides,
   ORT global version set, derived `sw.js`-region measured-version exemption, binary-NUL
-  fail-closed pass, and the independent floors (TJS ≥350, ORT ≥120 scannedCount non-vacuity) all
-  stay. New literal/constant counters are ADDITIVE and cannot mask legacy counts.
+  fail-closed pass, and the independent scan floors (`TJS_SCAN_FLOOR = 350`,
+  `ORT_SCAN_FLOOR = 120` in `test/runtime-pins.test.mjs:39-40`; measured 410/152) all stay. New
+  literal/constant counters are ADDITIVE and cannot mask legacy counts.
 - The existing caveat on the gate stays until the three 9.9.9 constant mutants and the nested
   malformed template demonstrably go RED — removed on the strength of failing mutants, not on the
   strength of an implementation existing.
 
 ## 6. RED gates the implementation beads must satisfy
 
-- j9z: nested complete `1.21.0~` URL inside `${{nested:`…`}.nested}` (fixture from `ea72200`);
-  all 9 floating specifiers (`latest`,`next`,`3`,`3.7`,`^3.7.5`,`v3.7.5`,`3.x`, ORT `latest`,
-  `1`); suffix/query/encoded/multi-line boundary mutants; HTML script-src/inline vs
-  comment/display contexts; ledger add/edit/delete; binary NUL; derived measured/rogue.
-- vs2: three isolated `9.9.9` constant mutants (one per worker — currently gate rc0, floors
-  ORT152/TJS410 unchanged); shadow, rename and reassign mutants; BOTH import+wasmPaths sinks;
-  split/fully-encoded markers stay an explicit rejected residual.
+- j9z: nested complete `1.21.0~` URL inside `` `${ { nested: `…` }.nested}` `` (fixture from
+  `ea72200`); all 9 floating specifiers (`latest`,`next`,`3`,`3.7`,`^3.7.5`,`v3.7.5`,`3.x`, ORT
+  `latest`, `1`); suffix/query/encoded/multi-line boundary mutants; HTML script-src/inline vs
+  comment/display contexts; ledger add/edit/delete; binary NUL; derived measured/rogue; and a
+  **malformed nested template** (unbalanced backticks/`${`) in a marker-bearing file must fail the
+  gate with `RuntimePinParseError`, not pass and not silently skip.
+- vs2: three isolated `9.9.9` constant mutants (one per worker — currently gate rc0 with scan
+  counts unchanged at the measured 152/410); shadow, rename and reassign mutants; BOTH
+  import+wasmPaths sinks; split/fully-encoded markers stay an explicit rejected residual.
 - Positive non-vacuity: >0 literal and constant discovery counters per runtime alongside the
   unchanged legacy floors.
 
@@ -125,6 +161,8 @@ explicit vs2 residuals, not approved pins.
 
 - Any marker-bearing file fails to parse, and no reviewed exact exception exists → STOP, fail
   closed, do not add a heuristic.
-- A new systemic context appears (new HTML executable surface, new sink shape, cooked-escape
-  corpus hit) → STOP; extend this budget by reviewed amendment, not by local patching.
-- acorn/parse5 cannot cover the corpus (census regression) → STOP; j9z/vs2 stay BLOCKED.
+- A new systemic context appears (new HTML executable surface, new sink shape, cooked/entity
+  corpus hit, untracked marker file) → STOP; extend this budget by reviewed amendment, not by
+  local patching.
+- acorn/parse5 cannot cover the corpus (census regression below 100% parse coverage, or any
+  `code`/`unparsed`/`html-text` marker context) → STOP; j9z/vs2 stay BLOCKED.

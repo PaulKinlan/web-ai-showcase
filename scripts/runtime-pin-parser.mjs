@@ -24,8 +24,52 @@ export const RAW_MARKERS = ["onnxruntime-web@", "@huggingface/transformers@"];
 // Regex-literal escaped variant seen in tooling sources ( census/unsupported
 // classification only — never decoded into a URL candidate).
 export const ESCAPED_MARKER_VARIANTS = ["@huggingface\\/transformers@"];
-// Cooked-escape marker forms (e.g. `onnxruntime-web\x40` / `\x40huggingface`)
-// are discovered by the cooked-literal census pass, not by raw byte search.
+// Cooked-escape marker forms (package name followed by an escaped at-sign,
+// e.g. the JS escape \x40 or the HTML entity &#64;) are discovered by the
+// cooked-literal census pass, not by raw byte search.
+
+/** A file is binary (fail-closed binary-NUL pass) iff it contains a NUL byte. */
+export function isBinarySource(source) {
+  return source.includes("\u0000");
+}
+
+/**
+ * TOTAL marker discovery: every raw contiguous marker, the regex-literal
+ * escaped variant, and cooked/entity/percent escape forms, with exact UTF-16
+ * offsets. JS escapes covered: \x40 \u0040 \u{40} and octal \100 (non-strict
+ * strings); HTML entities: &#64; &#x40; &commat;; URL percent: %40.
+ * Discovery NEVER approves: hits are classified and reconciled, and residual
+ * unenumerated forms fail closed via the decoded-value scan + unsupported
+ * rules in design/runtime-pin-ast-parser.md §3.
+ */
+export function markerOffsets(source) {
+  const hits = [];
+  const variants = [
+    ...RAW_MARKERS.map((m) => ({ needle: m, escaped: false })),
+    ...ESCAPED_MARKER_VARIANTS.map((m) => ({ needle: m, escaped: true })),
+  ];
+  for (const { needle, escaped } of variants) {
+    let idx = source.indexOf(needle);
+    while (idx !== -1) {
+      hits.push({ offset: idx, marker: needle, escaped });
+      idx = source.indexOf(needle, idx + 1);
+    }
+  }
+  const bases = ["onnxruntime-web", "@huggingface/transformers", "@huggingface\\/transformers"];
+  const escapes = ["\\x40", "\\u0040", "\\u{40}", "\\100", "%40", "&#64;", "&#x40;", "&commat;"];
+  for (const base of bases) {
+    for (const esc of escapes) {
+      const needle = base + esc;
+      let idx = source.indexOf(needle);
+      while (idx !== -1) {
+        hits.push({ offset: idx, marker: needle, escaped: true, cookedEscape: true });
+        idx = source.indexOf(needle, idx + 1);
+      }
+    }
+  }
+  hits.sort((a, b) => a.offset - b.offset);
+  return hits;
+}
 
 export class RuntimePinParseError extends Error {
   constructor(filePath, kind, detail, pos = undefined) {
@@ -86,15 +130,18 @@ export function parseJavaScript(source, filePath) {
 // acorn-walk's default base skips NON-computed property/member keys (they are
 // usually Identifiers). Object keys in this corpus include full string URLs
 // (e.g. the generated sw.js runtime-integrity manifest), so visit Literal keys
-// explicitly or their markers would misclassify as bare "code".
+// explicitly AND still visit node.value (the default behaviour for all three
+// node kinds) — otherwise method bodies, getters and class-field initializers
+// would silently drop out of the span table and their markers would
+// misclassify as bare "code".
 const WALK_BASE = { ...acornWalk.base };
-const withLiteralKey = (kind) => (node, state, c) => {
+const withLiteralKey = () => (node, state, c) => {
   if (node.computed || node.key.type === "Literal") c(node.key, state, "Expression");
-  if (kind === "Property") c(node.value, state, "Expression");
+  if (node.value) c(node.value, state, "Expression");
 };
-WALK_BASE.Property = withLiteralKey("Property");
-WALK_BASE.PropertyDefinition = withLiteralKey("PropertyDefinition");
-WALK_BASE.MethodDefinition = withLiteralKey("MethodDefinition");
+WALK_BASE.Property = withLiteralKey();
+WALK_BASE.PropertyDefinition = withLiteralKey();
+WALK_BASE.MethodDefinition = withLiteralKey();
 
 export function jsSyntaxSpans(source, parsed) {
   const { ast, comments, tokens } = parsed;
@@ -157,16 +204,23 @@ export function classifyJsOffset(spans, offset) {
 /**
  * Bounded lexical-scope constant binding (vs2 scope). Resolves EXACTLY the
  * pattern used by the three ORT workers:
- *   const NAME = "<primitive string>";
+ *   const NAME = "<primitive string>";   // top level
  *   ... import(`…${NAME}…`) / wasmPaths = `…${NAME}…`
  * Returns a Map name → { raw, value, declaratorStart, declaratorEnd } for
- * top-level `const` bindings whose value is a plain string Literal and whose
- * Identifier is never reassigned, never shadowed in a nested scope, and never
- * referenced through anything but a bare Identifier read. Anything else is
- * NOT returned (the caller must fail closed on the unresolved sink).
+ * top-level `const` bindings whose value is a plain string Literal. A name is
+ * INVALIDATED (absent from the result → the caller must fail closed on the
+ * unresolved sink) when ANY of these holds anywhere in the file:
+ *  - the name is reassigned (AssignmentExpression) or updated (++/--);
+ *  - the name is re-bound in ANY nested scope: block `let/const/function`,
+ *    function params (any pattern incl. destructuring), catch param,
+ *    for-in/of loop bindings, named function/class expressions, imports;
+ *  - the name is referenced through anything but a bare Identifier that IS the
+ *    whole template expression (`${NAME}`) — member reads, call args,
+ *    concatenation (`${NAME + "x"}`), shorthand properties etc. all invalidate.
  */
 export function resolveTopLevelStringConstants(ast) {
   const bindings = new Map();
+  const declaratorIds = new Set(); // Identifier nodes that ARE the top-level declarator
   for (const stmt of ast.body) {
     if (stmt.type !== "VariableDeclaration" || stmt.kind !== "const") continue;
     for (const decl of stmt.declarations) {
@@ -185,35 +239,119 @@ export function resolveTopLevelStringConstants(ast) {
           nameStart: decl.id.start,
           nameEnd: decl.id.end,
         });
+        declaratorIds.add(decl.id);
       }
     }
   }
-  // Invalidate on any reassignment, update, or shadowing declaration.
-  acornWalk.fullAncestor(ast, (node, ancestors) => {
-    const invalidate = (name) => bindings.delete(name);
-    if (node.type === "AssignmentExpression" && node.left.type === "Identifier") {
-      invalidate(node.left.name);
-    } else if (node.type === "UpdateExpression" && node.argument.type === "Identifier") {
-      invalidate(node.argument.name);
-    } else if (
-      (node.type === "FunctionDeclaration" ||
-        node.type === "FunctionExpression" ||
-        node.type === "ArrowFunctionExpression") &&
-      ancestors.length > 1
-    ) {
-      // Shadowing: a param or inner declaration reusing the name.
-      for (const param of node.params || []) {
-        if (param.type === "Identifier") invalidate(param.name);
-      }
-      acornWalk.simple(node.body ?? node, {
-        VariableDeclaration(inner) {
-          for (const d of inner.declarations) {
-            if (d.id.type === "Identifier") invalidate(d.id.name);
-          }
-        },
-      });
+  if (bindings.size === 0) return bindings;
+
+  // Collect every Identifier bound by a binding pattern (params, declarator
+  // ids, catch params, import locals …) at ANY depth.
+  const patternIds = (pattern, out) => {
+    if (!pattern) return;
+    switch (pattern.type) {
+      case "Identifier":
+        out.push(pattern);
+        break;
+      case "ObjectPattern":
+        for (const p of pattern.properties) {
+          patternIds(p.type === "RestElement" ? p.argument : p.value, out);
+        }
+        break;
+      case "ArrayPattern":
+        for (const el of pattern.elements) patternIds(el, out);
+        break;
+      case "RestElement":
+        patternIds(pattern.argument, out);
+        break;
+      case "AssignmentPattern":
+        patternIds(pattern.left, out);
+        break;
     }
-  });
+  };
+
+  const invalidate = (name) => bindings.delete(name);
+
+  acornWalk.fullAncestor(
+    ast,
+    // acorn-walk callback signature: (node, state, ancestors, type).
+    (node, _state, ancestors) => {
+      // 1. Writes.
+      if (node.type === "AssignmentExpression") {
+        const ids = [];
+        patternIds(node.left, ids);
+        for (const id of ids) invalidate(id.name);
+        return;
+      }
+      if (node.type === "UpdateExpression" && node.argument.type === "Identifier") {
+        invalidate(node.argument.name);
+        return;
+      }
+      // 2. Re-bindings in any scope (skip the top-level declarator itself).
+      if (node.type === "VariableDeclarator" && !declaratorIds.has(node.id)) {
+        const ids = [];
+        patternIds(node.id, ids);
+        for (const id of ids) if (!declaratorIds.has(id)) invalidate(id.name);
+        return;
+      }
+      if (
+        node.type === "FunctionDeclaration" ||
+        node.type === "FunctionExpression" ||
+        node.type === "ArrowFunctionExpression"
+      ) {
+        // Any function id (named expression, or a nested/top-level declaration
+        // sharing the name) re-binds or conflicts with the const — invalidate.
+        if (node.id) invalidate(node.id.name);
+        for (const param of node.params || []) {
+          const ids = [];
+          patternIds(param, ids);
+          for (const id of ids) invalidate(id.name);
+        }
+        return;
+      }
+      if (node.type === "CatchClause" && node.param) {
+        const ids = [];
+        patternIds(node.param, ids);
+        for (const id of ids) invalidate(id.name);
+        return;
+      }
+      if (
+        node.type === "ImportSpecifier" ||
+        node.type === "ImportDefaultSpecifier" ||
+        node.type === "ImportNamespaceSpecifier"
+      ) {
+        invalidate(node.local.name);
+        return;
+      }
+      if (node.type === "ClassDeclaration" || node.type === "ClassExpression") {
+        if (node.id) invalidate(node.id.name);
+        return;
+      }
+      // 3. Bare-read rule: every remaining Identifier reference to a bound
+      //    name must BE an entire template expression (`${NAME}`), nothing
+      //    else. Identifier roles that are not reads (member properties,
+      //    property keys, labels) are ignored; everything else invalidates.
+      if (node.type === "Identifier" && bindings.has(node.name) && !declaratorIds.has(node)) {
+        const parent = ancestors.length >= 2 ? ancestors[ancestors.length - 2] : null;
+        if (!parent) return;
+        if (
+          (parent.type === "MemberExpression" && parent.property === node && !parent.computed) ||
+          (parent.type === "Property" && parent.key === node && !parent.computed) ||
+          parent.type === "LabeledStatement" ||
+          parent.type === "BreakStatement" ||
+          parent.type === "ContinueStatement" ||
+          parent.type === "PropertyDefinition" ||
+          parent.type === "MethodDefinition"
+        ) {
+          return; // not a binding read
+        }
+        const isBareTemplateRead =
+          parent.type === "TemplateLiteral" && parent.expressions.includes(node);
+        if (!isBareTemplateRead) invalidate(node.name);
+      }
+    },
+    WALK_BASE,
+  );
   return bindings;
 }
 
@@ -227,6 +365,12 @@ const EXECUTABLE_SCRIPT_TYPES = new Set([
   "text/javascript",
   "application/javascript",
 ]);
+
+// Browsers execute a script when the MIME ESSENCE is a JavaScript type;
+// parameters (`; charset=utf-8`) do not change that.
+function scriptTypeEssence(typeAttr) {
+  return (typeAttr || "").split(";")[0].trim().toLowerCase();
+}
 
 /**
  * Parse an HTML document with parse5 (sourceCodeLocationInfo on). Returns
@@ -262,25 +406,32 @@ export function htmlScriptContexts(document) {
       const attrs = Object.fromEntries(
         (node.attrs || []).map((a) => [a.name.toLowerCase(), a.value]),
       );
-      const srcAttr = (node.attrs || []).find((a) => a.name.toLowerCase() === "src");
+      const srcAttr = (node.attrs || []).find(
+        (a) => a.name.toLowerCase() === "src" || a.name.toLowerCase() === "href" || a.name.toLowerCase() === "xlink:href",
+      );
       if (srcAttr) {
         const attrLoc = loc.attrs && loc.attrs[srcAttr.name.toLowerCase()];
         if (attrLoc && attrLoc.startOffset !== undefined) {
           contexts.push({
             kind: "script-src",
             src: srcAttr.value,
+            attrName: srcAttr.name.toLowerCase(),
             startOffset: attrLoc.startOffset,
             endOffset: attrLoc.endOffset,
           });
         } else {
+          // parse5 always supplies attr locations for quoted AND unquoted
+          // attrs; a missing location means a construct this design has not
+          // classified — fail closed.
           contexts.push({
-            kind: "unsupported-unquoted-src",
+            kind: "unsupported-unlocated-src",
+            attrName: srcAttr.name.toLowerCase(),
             startOffset: loc.startOffset,
             endOffset: loc.endOffset,
           });
         }
       } else {
-        const scriptType = (attrs.type || "").toLowerCase();
+        const scriptType = scriptTypeEssence(attrs.type);
         const textNode = (node.childNodes || []).find((c) => c.nodeName === "#text");
         if (EXECUTABLE_SCRIPT_TYPES.has(scriptType)) {
           contexts.push({
@@ -297,14 +448,21 @@ export function htmlScriptContexts(document) {
         } else {
           contexts.push({
             kind: "script-nonexec",
-            scriptType: scriptType || "unknown",
-            startOffset: loc.startOffset,
-            endOffset: loc.endOffset,
+            scriptType: (attrs.type || "").toLowerCase() || "unknown",
+            text: textNode ? textNode.value : "",
+            startOffset: textNode && textNode.sourceCodeLocation
+              ? textNode.sourceCodeLocation.startOffset
+              : loc.startOffset,
+            endOffset: textNode && textNode.sourceCodeLocation
+              ? textNode.sourceCodeLocation.endOffset
+              : loc.endOffset,
           });
         }
       }
     }
     // Event handlers and javascript: URLs on ANY element: unsupported contexts.
+    // The URL parser strips ASCII TAB/LF/CR before scheme matching, so the
+    // javascript: test must do the same ("java\nscript:" is a real URL).
     if (node.attrs) {
       const loc = node.sourceCodeLocation;
       for (const a of node.attrs) {
@@ -315,10 +473,18 @@ export function htmlScriptContexts(document) {
           : { startOffset: loc ? loc.startOffset : 0, endOffset: loc ? loc.endOffset : 0 };
         if (name.startsWith("on")) {
           contexts.push({ kind: "unsupported-event-handler", attrName: name, ...offsets });
-        } else if (typeof a.value === "string" && /^\s*javascript:/i.test(a.value)) {
+        } else if (
+          typeof a.value === "string" &&
+          /^\s*javascript:/i.test(a.value.replace(/[\t\n\r]/g, ""))
+        ) {
           contexts.push({ kind: "unsupported-javascript-url", attrName: name, ...offsets });
         }
       }
+    }
+    // <template> content lives under node.content in parse5 — without this the
+    // walker is blind to an entire executable subtree.
+    if (node.content && node.content.childNodes) {
+      for (const child of node.content.childNodes) walk(child, [...ancestors, node]);
     }
     for (const child of node.childNodes || []) walk(child, [...ancestors, node]);
   };
@@ -340,6 +506,9 @@ export function htmlOffsetInDisplayRegion(document, offset) {
       (node.tagName === "pre" || node.tagName === "code")
     ) {
       inDisplay = true;
+    }
+    if (node.content && node.content.childNodes) {
+      for (const child of node.content.childNodes) walk(child, display);
     }
     for (const child of node.childNodes || []) walk(child, display);
   };
