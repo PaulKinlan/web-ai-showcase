@@ -79,6 +79,7 @@ test("full prefetch: seeds denominator, downloads large resumably, caches small,
       },
       // small-file fetch
       simpleFetch: async (url) => ({
+        url,
         ok: true,
         headers: { get: () => "application/json" },
         blob: async () => ({ size: sizes["config.json"] }),
@@ -127,6 +128,7 @@ test("emitted events drive the tracker to a correct byte-weighted snapshot", asy
         return { blob: { size: 1_999_000 }, total: 1_999_000 };
       },
       simpleFetch: async () => ({
+        url: assetUrl(PALI, "main", "config.json"),
         ok: true,
         headers: { get: () => "application/json" },
         blob: async () => ({ size: 1000 }),
@@ -142,6 +144,57 @@ test("emitted events drive the tracker to a correct byte-weighted snapshot", asy
   // now the app posts ready → terminal
   tracker.ingest({ status: "ready" });
   assert.equal(tracker.snapshot().phase, "ready");
+});
+
+test("unknown-size weight uses streaming downloader, not unbounded small-file blob fetch", async () => {
+  const cache = fakeCache();
+  let streamed = 0;
+  await prefetchModel({
+    modelId: PALI,
+    files: ["onnx/model.onnx"],
+    deps: {
+      resolveInfo: async () => [{
+        file: "onnx/model.onnx",
+        url: assetUrl(PALI, "main", "onnx/model.onnx"),
+        size: null,
+      }],
+      cacheOpen: async () => cache,
+      download: async () => {
+        streamed++;
+        return { blob: new Blob(["ok"]), total: 2 };
+      },
+      simpleFetch: async () => {
+        throw new Error("Unknown weight size must not buffer with blob()");
+      },
+    },
+  });
+  assert.equal(streamed, 1);
+  assert.equal(cache.store.size, 1);
+});
+
+test("small non-LFS file with known mismatched metadata size is not cached", async () => {
+  const cache = fakeCache();
+  await assert.rejects(
+    prefetchModel({
+      modelId: PALI,
+      files: ["config.json"],
+      deps: {
+        resolveInfo: async () => [{
+          file: "config.json",
+          url: assetUrl(PALI, "main", "config.json"),
+          size: 10,
+        }],
+        cacheOpen: async () => cache,
+        simpleFetch: async () => ({
+          url: assetUrl(PALI, "main", "config.json"),
+          ok: true,
+          blob: async () => new Blob(["{}"]),
+        }),
+      },
+    }),
+    /Unexpected size/,
+  );
+  assert.equal(cache.store.size, 0);
 });
 
 test("download error propagates + surfaces as a file error event", async () => {
