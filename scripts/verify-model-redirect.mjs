@@ -83,6 +83,44 @@ try {
     throw new Error(`Foreign final origin was accepted/persisted: ${JSON.stringify(result)}`);
   }
   console.log("PASS browser: foreign 302 rejected before IndexedDB body persistence", result);
+
+  // A foreign paths-info response must not be treated as offline metadata (sha256:null). It must
+  // abort before issuing the weight request or creating a resumable record.
+  const metadata = await evalValue(
+    cdp,
+    page.sessionId,
+    `(async () => {
+    const {downloadModelFile, resumeState, clearPartial} = await import('/web-ai-showcase/lib/model-download.js');
+    const url = ${JSON.stringify(requested + "-metadata")};
+    const actualFetch = globalThis.fetch.bind(globalThis);
+    let weightFetches = 0;
+    await clearPartial(url);
+    globalThis.fetch = (input, init) => {
+      if (String(input).includes('/paths-info/')) {
+        return Promise.resolve({ok:true, url:'https://foreign.example/paths-info', json:async()=>[]});
+      }
+      if (String(input) === url) weightFetches++;
+      return actualFetch(input, init);
+    };
+    try {
+      let error = null;
+      try { await downloadModelFile({url}); } catch (e) { error = String(e); }
+      const state = await resumeState(url);
+      return {error, weightFetches, hasPartialRecord: state !== null};
+    } finally { globalThis.fetch = actualFetch; await clearPartial(url); }
+  })()`,
+    20000,
+  );
+  if (
+    !metadata?.error?.includes("Untrusted model download redirect") ||
+    metadata.weightFetches !== 0 || metadata.hasPartialRecord
+  ) {
+    throw new Error(`Foreign paths-info metadata was accepted: ${JSON.stringify(metadata)}`);
+  }
+  console.log(
+    "PASS browser: foreign paths-info rejected before SHA bypass or weight fetch",
+    metadata,
+  );
 } finally {
   if (page && cdp) await closePage(cdp, page.targetId).catch(() => {});
   chrome?.kill();
