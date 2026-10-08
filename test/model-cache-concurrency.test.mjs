@@ -71,6 +71,67 @@ test("inventory rejects on a failed match rather than returning a partial listin
   assert.ok(mock.matchesStarted <= 4, `failure must stop new work (started ${mock.matchesStarted})`);
 });
 
+async function withValidationRecord(record, fn) {
+  const oldIndexedDB = globalThis.indexedDB;
+  globalThis.indexedDB = {
+    open: () => {
+      const request = {};
+      queueMicrotask(() => {
+        request.result = {
+          transaction: () => {
+            const tx = {
+              objectStore: () => ({
+                get: () => {
+                  const getRequest = {};
+                  queueMicrotask(() => {
+                    getRequest.result = record;
+                    getRequest.onsuccess?.();
+                    queueMicrotask(() => tx.oncomplete?.());
+                  });
+                  return getRequest;
+                },
+              }),
+            };
+            return tx;
+          },
+        };
+        request.onsuccess?.();
+      });
+      return request;
+    },
+  };
+  try { return await fn(); }
+  finally {
+    if (oldIndexedDB === undefined) delete globalThis.indexedDB;
+    else globalThis.indexedDB = oldIndexedDB;
+  }
+}
+
+test("validated model retains expected URL ordering and partial state", async () => {
+  const mock = mockCaches({ cacheCount: 2, entriesPerCache: 2 });
+  const missing = "https://hf.co/owner/model/evicted";
+  const record = { files: [mock.requests[1][1].url, missing, mock.requests[0][0].url] };
+  const result = await withCacheMock(mock, () => withValidationRecord(record, () =>
+    inspectModel({ key: "cached-model", timeoutMs: 75 })
+  ));
+  assert.equal(result.state, "partial");
+  assert.deepEqual(result.missing, [missing]);
+  assert.equal(result.cachedFiles, 2);
+});
+
+test("750 ms local cache timeout contract stays optimistic without increasing fan-out", async () => {
+  const mock = mockCaches({ cacheCount: 3, entriesPerCache: 2 });
+  mock.caches.open = async () => { await delay(80); throw new Error("late storage error"); };
+  const record = { files: [mock.requests[0][0].url] };
+  const start = performance.now();
+  const result = await withCacheMock(mock, () => withValidationRecord(record, () =>
+    inspectModel({ key: "cached-model", timeoutMs: 15 })
+  ));
+  assert.equal(result.state, "current");
+  assert.equal(result.cachedFiles, 0);
+  assert.ok(performance.now() - start < 65, "whole cache check must settle within its deadline, not per cache");
+});
+
 test("cache-file scan remains cache-major and local inspect timeout stays optimistic", async () => {
   const mock = mockCaches({ cacheCount: 3, entriesPerCache: 3 });
   const urls = await withCacheMock(mock, () => scanCachedFiles("owner/model"));
