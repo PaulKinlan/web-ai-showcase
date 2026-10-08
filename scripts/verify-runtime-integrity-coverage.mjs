@@ -35,7 +35,7 @@ const pinned = new Set(Object.keys(MANIFEST.urls).map(keyOf));
 // exists to replace with a measurement.
 const ROUTES = [
   { family: "transformers.js 3.7.5", route: "models/embeddinggemma/basics/" },
-  { family: "transformers.js 4.2.0 override", route: "models/gemma-3-270m/basics/" },
+  { family: "transformers.js 4.2.0 override", route: "models/gemma-3-270m/basics/", waitMs: 420000 },
   { family: "transformers.js 4.3.0 override", route: "models/all-distilroberta-v1/basics/" },
   { family: "raw onnxruntime-web", route: "models/animegan-cartoonization/basics/" },
   { family: "mediapipe tasks-vision", route: "models/gesture-recognizer/basics/" },
@@ -99,7 +99,7 @@ try {
       .then((r) => r.result?.value)
       .catch((error) => ({ __error: String(error?.message || error) }));
 
-  for (const { family, route } of ROUTES) {
+  for (const { family, route, waitMs } of ROUTES) {
     requestUrls = new Map();
     jsdelivr = new Map();
     let page;
@@ -130,19 +130,27 @@ try {
         node.click();
         return (node.id ? "#" + node.id + " " : "") + (node.textContent || "").trim().slice(0, 32);
       }`;
+      const sawRuntimeBinary = () => [...jsdelivr.keys()].some((u) => u.includes(".wasm"));
+      const budget = waitMs ?? 25000;
       for (const selector of [
         ".model-loader button",
         ".model-loader [role=button]",
         "button#run, button[id^=run-]",
         "button[id^=run]",
       ]) {
+        if (sawRuntimeBinary()) break;
         const clicked = await evaluate(page.sessionId, `(${clickControl})(${JSON.stringify(selector)})`);
         if (typeof clicked !== "string") continue;
         entry.triggers++;
         entry.triggered.push(clicked);
-        // The runtime is imported when the worker starts, which happens well before a large model finishes
-        // downloading, so this waits for the import rather than for the model to be ready.
-        await new Promise((resolve) => setTimeout(resolve, 25000));
+        // Wait in slices until a runtime binary actually appears, or this route's budget runs out. Waiting a
+        // FIXED short time and then calling the route unexercised was measuring my own patience: the runtime
+        // is imported only after the model transfers, so a 1 GB model needs a longer budget than a 8 MB one.
+        // Stopping as soon as the binary is seen keeps the small routes fast.
+        const until = Date.now() + budget;
+        while (Date.now() < until && !sawRuntimeBinary()) {
+          await new Promise((resolve) => setTimeout(resolve, 5000));
+        }
       }
 
       entry.urls = [...jsdelivr.entries()].map(([url, meta]) => ({
