@@ -29,9 +29,14 @@ const keyOf = (url) => {
 };
 const pinned = new Set(Object.keys(MANIFEST.urls).map(keyOf));
 
-// One built route per runtime family the site actually loads from jsDelivr.
+// One built route per runtime family the site actually loads from jsDelivr. The two transformers
+// override versions are driven as well: they are separate bundles with their own runtime URLs, and
+// assuming a route is covered because a sibling version is covered is exactly the inference this audit
+// exists to replace with a measurement.
 const ROUTES = [
-  { family: "transformers.js", route: "models/embeddinggemma/basics/" },
+  { family: "transformers.js 3.7.5", route: "models/embeddinggemma/basics/" },
+  { family: "transformers.js 4.2.0 override", route: "models/gemma-3-270m/basics/" },
+  { family: "transformers.js 4.3.0 override", route: "models/all-distilroberta-v1/basics/" },
   { family: "raw onnxruntime-web", route: "models/animegan-cartoonization/basics/" },
   { family: "mediapipe tasks-vision", route: "models/gesture-recognizer/basics/" },
   { family: "outetts", route: "models/outetts/basics/" },
@@ -98,7 +103,7 @@ try {
     requestUrls = new Map();
     jsdelivr = new Map();
     let page;
-    const entry = { family, route, href: null, navigated: false, triggers: 0, urls: [], missing: [], errors: [] };
+    const entry = { family, route, href: null, navigated: false, triggers: 0, triggered: [], urls: [], missing: [], errors: [] };
     try {
       page = await openPage(cdp, base + route);
       await setViewport(cdp, page.sessionId, DESKTOP);
@@ -112,27 +117,32 @@ try {
         continue;
       }
 
-      // Trigger the runtime the page needs: the loaders are behind buttons and the runtime is fetched
-      // from inside a worker, so a page that is merely open proves nothing.
-      for (let attempt = 0; attempt < 3; attempt++) {
-        const clicked = await evaluate(
-          page.sessionId,
-          `(() => {
-            const wanted = /^(run|load|start|index|analy|detect|generate|speak|synthes|transcribe|cartoon|recogni|process)/i;
-            const buttons = [...document.querySelectorAll("button")].filter(
-              (b) => !b.disabled && wanted.test((b.textContent || "").trim()),
-            );
-            const target = buttons.find((b) => !b.dataset.eg2Triggered);
-            if (!target) return null;
-            target.dataset.eg2Triggered = "1";
-            target.click();
-            return (target.textContent || "").trim().slice(0, 40);
-          })()`,
-        );
-        if (typeof clicked !== "string") break;
+      // Trigger the runtime the page needs. Two real controls matter and neither is guessable from the
+      // button TEXT: every page mounts a `.model-loader` component that must be driven first (it is what
+      // creates the worker and imports the runtime), and the run control is identified by its ID
+      // (`#run`, `#run-h`) while carrying a free-text label like "Compare meaning", "Anime-fy" or
+      // "Recognise gesture". A text-only matcher found 0 controls on three of four routes, and the audit
+      // then correctly refused to call that coverage rather than reporting a clean zero.
+      const clickControl = `(selector) => {
+        const node = document.querySelector(selector);
+        if (!node || node.disabled || node.dataset.eg2Triggered) return null;
+        node.dataset.eg2Triggered = "1";
+        node.click();
+        return (node.id ? "#" + node.id + " " : "") + (node.textContent || "").trim().slice(0, 32);
+      }`;
+      for (const selector of [
+        ".model-loader button",
+        ".model-loader [role=button]",
+        "button#run, button[id^=run-]",
+        "button[id^=run]",
+      ]) {
+        const clicked = await evaluate(page.sessionId, `(${clickControl})(${JSON.stringify(selector)})`);
+        if (typeof clicked !== "string") continue;
         entry.triggers++;
-        // Bounded wait for the runtime to be requested and downloaded, then look for the next trigger.
-        await new Promise((resolve) => setTimeout(resolve, 20000));
+        entry.triggered.push(clicked);
+        // The runtime is imported when the worker starts, which happens well before a large model finishes
+        // downloading, so this waits for the import rather than for the model to be ready.
+        await new Promise((resolve) => setTimeout(resolve, 25000));
       }
 
       entry.urls = [...jsdelivr.entries()].map(([url, meta]) => ({
@@ -170,7 +180,7 @@ for (const entry of report) {
     continue;
   }
   console.log(`  navigated to ${entry.href}`);
-  console.log(`  triggered ${entry.triggers} control(s); ${entry.urls.length} cdn.jsdelivr.net request(s)`);
+  console.log(`  triggered ${entry.triggers} control(s)${entry.triggered.length ? ": " + entry.triggered.join(" -> ") : ""}; ${entry.urls.length} cdn.jsdelivr.net request(s)`);
   for (const u of entry.urls) {
     console.log(`    ${u.pinned ? "COVERED   " : "UNCOVERED "} status=${u.status ?? "?"} ${keyOf(u.url).replace("https://cdn.jsdelivr.net/npm/", "")}`);
   }

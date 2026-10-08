@@ -74,6 +74,11 @@ const PINNED_EXACT = [
   "@mediapipe/tasks-vision@0.10.18/wasm/vision_wasm_nosimd_internal.wasm",
   "outetts@0.2.0/+esm",
   "@huggingface/transformers@3.1.2/+esm",
+  // Found by the browser completeness audit, not by reading source: the outetts route's 3.1.2 bundle
+  // fetches its own ort binary, which the emitted-name scan cannot see because 3.1.2 constructs the URL
+  // at runtime. Its jsep .mjs glue returns 404 for this version (the glue is inlined), so only the .wasm
+  // is pinned - pinning a 404 would be pinning nothing.
+  "@huggingface/transformers@3.1.2/dist/ort-wasm-simd-threaded.jsep.wasm",
 ];
 // Every listed URL is verified on serve and then cached. Membership IS the policy: a URL absent from
 // this manifest is pass-through, served from the network unverified and never persisted. That is NOT

@@ -19,6 +19,11 @@ const RUNTIME_INTEGRITY = {
     "bytes": 835445,
     "policy": "verify-then-cache"
   },
+  "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.1.2/dist/ort-wasm-simd-threaded.jsep.wasm": {
+    "sha256": "a22f8354b697c58d85fe11d831e727182a90875029cc294f96dddf14c50ff764",
+    "bytes": 22040209,
+    "policy": "verify-then-cache"
+  },
   "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.5": {
     "sha256": "770f4cfc9857958f8db9c783b406b1c7f3beb3ce0c9b72776ca1e973dae9e145",
     "bytes": 873307,
