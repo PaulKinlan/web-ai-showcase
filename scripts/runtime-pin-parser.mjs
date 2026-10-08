@@ -37,7 +37,7 @@ export function isBinarySource(source) {
  * TOTAL marker discovery: every raw contiguous marker, the regex-literal
  * escaped variant, and cooked/entity/percent escape forms, with exact UTF-16
  * offsets. JS escapes covered: \x40 \u0040 \u{40} and octal \100 (non-strict
- * strings); HTML entities: &#64; &#x40; &commat;; URL percent: %40.
+ * strings); HTML entities: &#64; &#x40; &#X40; &commat;; URL percent: %40.
  * Discovery NEVER approves: hits are classified and reconciled, and residual
  * unenumerated forms fail closed via the decoded-value scan + unsupported
  * rules in design/runtime-pin-ast-parser.md §3.
@@ -56,7 +56,7 @@ export function markerOffsets(source) {
     }
   }
   const bases = ["onnxruntime-web", "@huggingface/transformers", "@huggingface\\/transformers"];
-  const escapes = ["\\x40", "\\u0040", "\\u{40}", "\\100", "%40", "&#64;", "&#x40;", "&commat;"];
+  const escapes = ["\\x40", "\\u0040", "\\u{40}", "\\100", "%40", "&#64;", "&#x40;", "&#X40;", "&commat;"];
   for (const base of bases) {
     for (const esc of escapes) {
       const needle = base + esc;

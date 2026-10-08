@@ -57,9 +57,9 @@ drops method bodies and class fields — both directions are regression-tested).
 
 ## 3. Coverage budget — measured, not estimated
 
-Census of `PIN_SCAN_TARGETS` (3809 tracked files + 0 untracked — the census enumerates BOTH
-`git ls-files` and `--others --exclude-standard`, matching the gate's working-tree grep scope),
-this branch, 2026-10-08:
+Census of `PIN_SCAN_TARGETS` (3809 files via raw filesystem walk — exactly the set the gate's
+`grep -r` reads; gitignored and untracked files INCLUDED, git status recorded as informational
+only; today: 0 gitignored, 0 untracked in scope), this branch, 2026-10-08:
 
 - **JS parse coverage: 968/968 `.js`/`.mjs` files parse cleanly with acorn 8.19.0
   (module-then-script fallback, hashbang/return/await tolerated). Zero parse failures.**
