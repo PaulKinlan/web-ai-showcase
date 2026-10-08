@@ -79,6 +79,7 @@ test("full prefetch: seeds denominator, downloads large resumably, caches small,
       },
       // small-file fetch
       simpleFetch: async (url) => ({
+        url,
         ok: true,
         headers: { get: () => "application/json" },
         blob: async () => ({ size: sizes["config.json"] }),
@@ -127,6 +128,7 @@ test("emitted events drive the tracker to a correct byte-weighted snapshot", asy
         return { blob: { size: 1_999_000 }, total: 1_999_000 };
       },
       simpleFetch: async () => ({
+        url: assetUrl(PALI, "main", "config.json"),
         ok: true,
         headers: { get: () => "application/json" },
         blob: async () => ({ size: 1000 }),
