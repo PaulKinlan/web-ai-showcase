@@ -40,6 +40,8 @@ import {
   parseJavaScript,
   jsSyntaxSpans,
   classifyJsOffset,
+  templateLiteralAt,
+  resolveTopLevelStringConstants,
   parseHtmlDocument,
   htmlScriptContexts,
   htmlOffsetInDisplayRegion,
@@ -120,6 +122,59 @@ export function extractRawCandidate(source, markerOffset, marker, boundaryEnd) {
 
 const NUMERIC_PREFIX_RE = /^[0-9]+\.[0-9]+\.[0-9]+/;
 
+// --- vs2: constant-bound dynamic CDN URL templates --------------------------
+// Reconstruct the cooked specifier of an untagged template ONLY when every ${} expression is a
+// bare Identifier resolving (with full shadow invalidation) to a top-level const string literal.
+// Escape-bearing quasis fail closed to the ledger path: binding judges only templates whose cooked
+// text equals the raw text, so offsets stay exact and no escape decoding is ever trusted.
+// (This is the one deliberate exception to the parser module's RAW-only rule: the cooked value IS
+// the runtime value the CDN fetch uses.)
+function bindTemplate(node, source, bindings) {
+  const parts = [];
+  for (let i = 0; i < node.quasis.length; i++) {
+    const q = node.quasis[i];
+    if (q.value.cooked == null || q.value.cooked !== q.value.raw) return null;
+    parts.push(q.value.cooked);
+    if (i < node.expressions.length) {
+      const e = node.expressions[i];
+      if (e.type !== "Identifier") return null;
+      const b = bindings.get(e.name);
+      if (!b) return null;
+      parts.push(b.value);
+    }
+  }
+  return parts.join("");
+}
+
+// Cooked offset of a hit inside an escape-free template: sum of cooked parts before the marker's
+// quasi, plus the marker's raw offset within that quasi (cooked === raw per bindTemplate's guard).
+function cookedMarkerOffset(node, bindings, markerOffset) {
+  let pos = 0;
+  for (let i = 0; i < node.quasis.length; i++) {
+    const q = node.quasis[i];
+    if (q.start <= markerOffset && markerOffset < q.end) return pos + (markerOffset - q.start);
+    pos += q.value.cooked.length;
+    if (i < node.expressions.length) pos += bindings.get(node.expressions[i].name).value.length;
+  }
+  return -1;
+}
+
+// The candidate rule on a reconstructed specifier is IDENTICAL to extractRawCandidate's break set
+// (slash, whitespace, quotes, backtick, angle brackets) — documented residual: this is a raw
+// segment rule, not URL normalization (design/runtime-pin-literal-scanner.md §boundary).
+function extractBoundCandidate(spec, markerAt, marker) {
+  if (markerAt < 0) return null;
+  let i = markerAt + marker.length;
+  let end = i;
+  while (end < spec.length) {
+    const ch = spec[end];
+    if (ch === "/" || /[\s"'`<>]/.test(ch)) break;
+    end++;
+  }
+  if (end === i) return null; // empty candidate: fail closed to the ledger path
+  return spec.slice(i, end);
+}
+
 // Map the parser's mechanical contexts onto the amended ledger vocabulary.
 function ledgerContext(cls, hit) {
   if (hit.cookedEscape) return "cooked-escape";
@@ -144,7 +199,14 @@ function ledgerContext(cls, hit) {
  */
 export function checkLiteralRuntimePins(rootDir, scanTargets, allowlist, isDerivedInventoryHit) {
   const errors = [];
-  const counters = { literalUrlChecked: { onnxruntimeWeb: 0, transformers: 0 }, ledgeredMarkers: 0 };
+  const counters = {
+    literalUrlChecked: { onnxruntimeWeb: 0, transformers: 0 },
+    ledgeredMarkers: 0,
+    // Additive count of dynamic CDN URL templates whose every ${} expression resolved to a
+    // top-level string constant and whose reconstructed specifier was judged whole (bead vs2).
+    // Asserted as a FLOOR in the tests — never masks the legacy or literal counts.
+    constantBound: 0,
+  };
 
   // --- load the reviewed golden ledger ---------------------------------------
   let ledger;
@@ -167,13 +229,13 @@ export function checkLiteralRuntimePins(rootDir, scanTargets, allowlist, isDeriv
   const libOf = (marker) =>
     marker.startsWith("onnxruntime-web") ? "onnxruntime-web" : "@huggingface/transformers";
 
-  const judgeCandidate = (file, lineNo, lib, candidate) => {
+  const judgeCandidate = (file, lineNo, lib, candidate, via = "") => {
     if (isDerivedInventoryHit(file, String(lineNo), lib, candidate)) return;
     if (lib === "onnxruntime-web") {
       counters.literalUrlChecked.onnxruntimeWeb++;
       if (!allowedOrt.has(candidate)) {
         errors.push(
-          `unauthorized onnxruntime-web version "${candidate}" — not in scripts/runtime-pin-allowlist.json`,
+          `unauthorized onnxruntime-web version "${candidate}"${via} — not in scripts/runtime-pin-allowlist.json`,
         );
       }
     } else {
@@ -182,7 +244,7 @@ export function checkLiteralRuntimePins(rootDir, scanTargets, allowlist, isDeriv
       const allowedSlugs = tjsOverrideMap.get(candidate);
       if (!allowedSlugs) {
         errors.push(
-          `unauthorized @huggingface/transformers version "${candidate}" in ${file} — not in scripts/runtime-pin-allowlist.json`,
+          `unauthorized @huggingface/transformers version "${candidate}" in ${file}${via} — not in scripts/runtime-pin-allowlist.json`,
         );
         return;
       }
@@ -190,7 +252,7 @@ export function checkLiteralRuntimePins(rootDir, scanTargets, allowlist, isDeriv
       const slug = slugMatch ? slugMatch[1] : null;
       if (!slug || !allowedSlugs.has(slug)) {
         errors.push(
-          `unauthorized @huggingface/transformers override "${candidate}" in ${file} — route "${slug || file}" is not authorized in scripts/runtime-pin-allowlist.json`,
+          `unauthorized @huggingface/transformers override "${candidate}" in ${file}${via} — route "${slug || file}" is not authorized in scripts/runtime-pin-allowlist.json`,
         );
       }
     }
@@ -241,7 +303,7 @@ export function checkLiteralRuntimePins(rootDir, scanTargets, allowlist, isDeriv
       );
       continue;
     }
-    if (isJs) classifyJsFile(file, source, hits, errors, judgeCandidate, ledgerOrLegacy, libOf);
+    if (isJs) classifyJsFile(file, source, hits, errors, judgeCandidate, ledgerOrLegacy, libOf, counters);
     else if (isHtml) classifyHtmlFile(file, source, hits, errors, judgeCandidate, ledgerOrLegacy, libOf);
     else for (const hit of hits) ledgerOrLegacy(file, source, hit, "non-executable-data");
   }
@@ -320,7 +382,7 @@ function proveParseable(file, source, isHtml, errors) {
   }
 }
 
-function classifyJsFile(file, source, hits, errors, judgeCandidate, ledgerOrLegacy, libOf) {
+function classifyJsFile(file, source, hits, errors, judgeCandidate, ledgerOrLegacy, libOf, counters) {
   let parsed;
   try {
     parsed = parseJavaScript(source, file);
@@ -330,10 +392,67 @@ function classifyJsFile(file, source, hits, errors, judgeCandidate, ledgerOrLega
     return;
   }
   const spans = jsSyntaxSpans(source, parsed);
+  // vs2: top-level string constants, resolved once per file with full shadow/rename
+  // invalidation (j6i). Used ONLY for untagged, escape-free CDN URL templates.
+  let constBindings = null;
   for (const hit of hits) {
     const cls = classifyJsOffset(spans, hit.offset);
-    ledgerOrLegacy(file, source, hit, cls.kind); // net 2 first: ledger sees everything nonnumeric
-    if (cls.kind === "string" || cls.kind === "template-quasi") {
+    // vs2 constant binding: a marker in a template-quasi whose candidate is dynamic (`${`
+    // follows) is judged on the RECONSTRUCTED cooked specifier when every expression is a bare
+    // Identifier resolving to a top-level string const. A bound hit LEAVES net 2 exactly as a
+    // numeric hit does (suppressed from ledgerCandidates) — that coupling is the fail-closure:
+    // with the 6 worker ledger rows removed, an unbound worker site is an unreviewed marker → RED.
+    let bound = null;
+    if (cls.kind === "template-quasi") {
+      const boundaryEnd =
+        cls.span.quasis.find((q) => q.start <= hit.offset && hit.offset < q.end)?.end ?? cls.span.end;
+      const ex = extractRawCandidate(source, hit.offset, hit.marker, boundaryEnd);
+      if (ex.kind === "dynamic") {
+        const tl = templateLiteralAt(parsed, hit.offset);
+        if (tl && !tl.tagged) {
+          const boundSpec = bindTemplate(tl.node, source, (constBindings ??= resolveTopLevelStringConstants(parsed.ast)));
+          if (boundSpec !== null) {
+            const cand = extractBoundCandidate(boundSpec, cookedMarkerOffset(tl.node, constBindings, hit.offset), hit.marker);
+            if (cand !== null) {
+              // Attribute the origin to the expression whose cooked value actually covers the
+              // candidate position (NOT merely the first resolvable identifier — a template like
+              // `${a}https://…/pkg@${b}/…` must name b).
+              const candStart = cookedMarkerOffset(tl.node, constBindings, hit.offset) + hit.marker.length;
+              const candEnd = candStart + cand.length;
+              const viaNames = [];
+              {
+                // Name EVERY expression whose cooked value range overlaps the candidate range
+                // (a candidate can start in raw quasi text and extend into a `${}` value).
+                let pos = 0;
+                for (let i = 0; i < tl.node.quasis.length; i++) {
+                  pos += tl.node.quasis[i].value.cooked.length;
+                  if (i < tl.node.expressions.length) {
+                    const e = tl.node.expressions[i];
+                    const vLen = constBindings.get(e.name).value.length;
+                    if (pos < candEnd && candStart < pos + vLen) viaNames.push(e.name);
+                    pos += vLen;
+                  }
+                }
+              }
+              const bInfo = viaNames.length ? constBindings.get(viaNames[0]) : null;
+              const bLine = bInfo ? source.slice(0, bInfo.nameStart).split("\n").length : null;
+              const viaName = viaNames.length ? viaNames.join("+") : null;
+              const { line: hitLine } = lineInfo(source, hit.offset);
+              bound = {
+                candidate: cand,
+                via: ` (bound from const ${viaName ?? "?"}${bLine ? ` at ${file}:${bLine}` : ""}; URL site ${file}:${hitLine})`,
+              };
+            }
+          }
+        }
+      }
+    }
+    if (!bound) ledgerOrLegacy(file, source, hit, cls.kind); // net 2: ledger sees everything not otherwise judged
+    if (bound) {
+      const { line } = lineInfo(source, hit.offset);
+      counters.constantBound++;
+      judgeCandidate(file, line, libOf(hit.marker), bound.candidate, bound.via);
+    } else if (cls.kind === "string" || cls.kind === "template-quasi") {
       const boundaryEnd =
         cls.kind === "template-quasi"
           ? cls.span.quasis.find((q) => q.start <= hit.offset && hit.offset < q.end)?.end ?? cls.span.end

@@ -595,11 +595,17 @@ test("LITERAL LEDGER: floating marker added to JSON evidence fails census", () =
 });
 
 test("LITERAL LEDGER: a changed reviewed dynamic expression invalidates its exact fingerprint", () => {
+  // web-ai-showcase-vs2: the 6 worker rows were REMOVED (constant binding now judges those
+  // specifiers whole). The remaining dynamic-expression row is the parameter-bound probe template;
+  // changing its text must still invalidate its exact fingerprint.
   expectVersionFailure(
-    "models/silero-vad/worker.js",
-    (source) => source.replace("onnxruntime-web@${ORT_VERSION}/dist/ort.wasm.min.mjs", "onnxruntime-web@${ORT_VERSION}/dist/ort.min.mjs"),
+    "scripts/probe-tjs-compat-matrix.mjs",
+    (source) => source.replace(
+      "@huggingface/transformers@${version}",
+      "@huggingface/transformers@${version}/dist/transformers.min.js",
+    ),
     "runtime marker golden ledger drift",
-    "a changed vs2 exception requires independent ledger review",
+    "a changed reviewed dynamic expression requires independent ledger review",
   );
 });
 
@@ -918,4 +924,87 @@ test("cdt: committed prose fingerprints are in sync with a fresh regeneration (-
     }
   })();
   assert.equal(result.status, 0, `fingerprint freshness check must pass: ${result.stderr}`);
+});
+
+// --- constant-bound dynamic CDN URL templates (bead web-ai-showcase-vs2) -------------------
+// The three raw-ORT workers pin the runtime via a top-level const (ORT_VERSION / ORT_VER) and a
+// template URL (`…/onnxruntime-web@${NAME}/dist/…`, twice per worker: import + wasmPaths). Before
+// vs2 the gate saw only the ledgered template TEXT — mutating the constant to 9.9.9 passed. Now
+// untagged, escape-free templates whose ${} expressions all resolve to top-level string constants
+// are judged on the reconstructed specifier, and the 6 worker ledger rows are removed, so an
+// unbound site is an unreviewed marker → RED.
+
+test("vs2: the original false-green is closed — each worker constant mutated to 9.9.9 fails naming the bound value", () => {
+  const workers = [
+    ["models/silero-vad/worker.js", "ORT_VERSION"],
+    ["models/pitch-detection/worker.js", "ORT_VERSION"],
+    ["models/model2vec-static-embeddings/worker.js", "ORT_VER"],
+  ];
+  for (const [rel, name] of workers) {
+    expectVersionFailure(
+      rel,
+      (c) => c.replace(new RegExp(`const ${name} = "[^"]+"`), `const ${name} = "9.9.9"`),
+      `unauthorized onnxruntime-web version "9.9.9" (bound from const ${name} at ${rel}:`,
+      `mutating ${name} to 9.9.9 in ${rel} must fail naming the bound value and its origin`,
+    );
+  }
+});
+
+test("vs2: clean tree — exactly 6 bound sites (floor), ledger reconciles, probe-tjs parameter row stays green", async () => {
+  const result = runGate();
+  assert.equal(result.status, 0, `clean tree must pass: ${result.stderr}`);
+  // constantBound is an additive floor, never a mask for the legacy/literal counts.
+  const allowlist = JSON.parse(readFileSync(join(COPY_ROOT, "scripts/runtime-pin-allowlist.json"), "utf8"));
+  const { checkLiteralRuntimePins } = await import(pathToFileURL(join(COPY_ROOT, "scripts/runtime-pin-literals.mjs")).href);
+  const derived = () => false; // floor probe only: we count, we do not exempt
+  const r = checkLiteralRuntimePins(COPY_ROOT + "/", "models/silero-vad/ models/pitch-detection/ models/model2vec-static-embeddings/", allowlist, derived);
+  assert.ok(r.counters.constantBound >= 6, `constantBound floor: expected >= 6, got ${r.counters.constantBound}`);
+});
+
+test("vs2: binding failures fail closed (rename / shadow / let / computed / tagged)", () => {
+  // Rename the constant's DECLARATION only: the template's ${ORT_VERSION} no longer resolves.
+  expectVersionFailure(
+    "models/silero-vad/worker.js",
+    (c) => c.replace(`const ORT_VERSION = "1.20.1"`, `const ORT_V2 = "1.20.1"`),
+    "runtime marker golden ledger drift",
+    "an unresolvable ${} must leave the marker unjudged → ledger drift RED",
+  );
+  // Shadow the constant inside a function scope around usage.
+  expectVersionFailure(
+    "models/pitch-detection/worker.js",
+    (c) => c.replace(`const ORT_VERSION = "1.20.1";`, `let ORT_VERSION = "1.20.1";`),
+    "runtime marker golden ledger drift",
+    "a let binding must not resolve (only const string literals bind)",
+  );
+  // Computed expression is not a bare Identifier.
+  expectVersionFailure(
+    "models/model2vec-static-embeddings/worker.js",
+    (c) => c.replace("onnxruntime-web@${ORT_VER}/dist/ort.wasm.min.mjs", 'onnxruntime-web@${ORT_VER + ""}/dist/ort.wasm.min.mjs'),
+    "runtime marker golden ledger drift",
+    "a computed ${} expression must fail closed to the ledger",
+  );
+  // Tagged template: the cooked quasi text is not necessarily the runtime string.
+  expectVersionFailure(
+    "models/silero-vad/worker.js",
+    (c) => `const __tag = (s, v) => s.raw[0] + "9.9.9" + s.raw[1];\n${c}`.replace(
+      "const ORT_URL = `https://cdn.jsdelivr.net/npm/onnxruntime-web@${ORT_VERSION}/dist/ort.wasm.min.mjs`;",
+      "const ORT_URL = __tag`https://cdn.jsdelivr.net/npm/onnxruntime-web@${ORT_VERSION}/dist/ort.wasm.min.mjs`;",
+    ),
+    "runtime marker golden ledger drift",
+    "a tagged template must be unresolvable → ledger RED (the tag could rewrite the version)",
+  );
+});
+
+test("vs2: binding does not over-reach — tooling regex templates and parameter templates stay ledgered", () => {
+  // Mutate the probe-tjs matrix template's usage so its parameter template would resolve IF the
+  // mechanism wrongly bound parameters: it must remain ledger-visible (row intact) and the gate
+  // stays green because the row still matches.
+  const result = runGate();
+  assert.equal(result.status, 0, `probe-tjs parameter template must stay ledgered: ${result.stderr}`);
+  const ledger = JSON.parse(readFileSync(join(COPY_ROOT, "inventory/runtime-pin-marker-ledger.json"), "utf8"));
+  assert.equal(ledger.entries.length, 21, "ledger holds 21 rows after the 6 worker rows were removed");
+  const probe = ledger.entries.find((e) => e.path === "scripts/probe-tjs-compat-matrix.mjs");
+  assert.ok(probe && probe.disposition === "vs2-dynamic", "the parameter-bound probe row must remain");
+  const workerRows = ledger.entries.filter((e) => e.path?.startsWith("models/silero-vad/") || e.path?.startsWith("models/pitch-detection/") || e.path?.startsWith("models/model2vec-static-embeddings/"));
+  assert.equal(workerRows.length, 0, "no worker template rows remain in the ledger");
 });

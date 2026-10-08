@@ -355,6 +355,34 @@ export function resolveTopLevelStringConstants(ast) {
   return bindings;
 }
 
+/**
+ * Return the innermost TemplateLiteral containing `offset`, or null.
+ * `{ node, tagged }` — `tagged` is true when the template is the quasi of a
+ * TaggedTemplateExpression; a tagged template's cooked text is NOT necessarily
+ * the runtime string (the tag function may build anything from the raw parts),
+ * so callers doing constant binding MUST treat tagged templates as
+ * unresolvable (fail closed) rather than judge the cooked text (bead vs2,
+ * design review P2-3).
+ */
+export function templateLiteralAt(parsed, offset) {
+  let found = null;
+  acornWalk.fullAncestor(
+    parsed.ast,
+    (node, _state, ancestors) => {
+      if (node.type !== "TemplateLiteral") return;
+      if (!(node.start <= offset && offset < node.end)) return;
+      if (found && node.end - node.start >= found.node.end - found.node.start) return;
+      const parent = ancestors[ancestors.length - 2];
+      found = {
+        node,
+        tagged: parent?.type === "TaggedTemplateExpression" && parent.quasi === node,
+      };
+    },
+    WALK_BASE,
+  );
+  return found;
+}
+
 // ---------------------------------------------------------------------------
 // HTML
 // ---------------------------------------------------------------------------
