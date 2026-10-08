@@ -254,3 +254,118 @@ Deno.test("returns an isolated 502 when GitHub Pages is unavailable", async () =
   assertEquals(response.status, 502);
   assertIsolated(response);
 });
+
+// A redirect chain is the one place where the proxy stops choosing its own destination: the
+// target is chosen by whatever the upstream responds with. These tests pin the rule that a hop may
+// never leave UPSTREAM_ORIGIN, and — the part that actually matters — that the foreign origin is
+// never CONTACTED, not merely that its bytes are discarded afterwards.
+function redirectUpstream(location: string, status = 301) {
+  const seen: string[] = [];
+  const handleRedirect = createHandler((input) => {
+    const request = input instanceof Request ? input : new Request(input);
+    seen.push(request.url);
+    return Promise.resolve(
+      new Response(null, { status, headers: { location } }),
+    );
+  });
+  return { handleRedirect, seen };
+}
+
+Deno.test("refuses an upstream redirect to another origin and never contacts it", async () => {
+  const { handleRedirect, seen } = redirectUpstream("https://evil.example/steal.html");
+  const response = await handleRedirect(new Request(`${CANONICAL_ORIGIN}/`));
+  assertEquals(response.status, 502);
+  assertIsolated(response);
+  // The load-bearing assertion: the proxy asked upstream and stopped there. If this ever fails while
+  // the status is still 502, the fix has degraded to discarding bytes it already fetched.
+  assertEquals(seen.length, 1);
+  assertMatch(seen[0], new RegExp(`^${UPSTREAM_ORIGIN}/`));
+  assertNotMatch(seen.join(" "), /evil\.example/);
+});
+
+Deno.test("refuses a protocol-relative upstream redirect rather than resolving it off-origin", async () => {
+  // Location "//evil.example/x" is a network-path reference: resolved against the upstream it
+  // becomes https://evil.example/x, so the raw string must never be trusted as a path.
+  const { handleRedirect, seen } = redirectUpstream("//evil.example/steal.html");
+  const response = await handleRedirect(new Request(`${CANONICAL_ORIGIN}/`));
+  assertEquals(response.status, 502);
+  assertIsolated(response);
+  assertEquals(seen.length, 1);
+  assertNotMatch(seen.join(" "), /evil\.example/);
+});
+
+Deno.test("follows a same-origin upstream redirect so legitimate canonicalisation still works", async () => {
+  const seen: string[] = [];
+  const handleRedirect = createHandler((input) => {
+    const request = input instanceof Request ? input : new Request(input);
+    seen.push(request.url);
+    const path = new URL(request.url).pathname;
+    if (path === `${SITE_PREFIX}/models/demo`) {
+      return Promise.resolve(
+        new Response(null, { status: 301, headers: { location: `${SITE_PREFIX}/models/demo/` } }),
+      );
+    }
+    return Promise.resolve(
+      new Response("<!doctype html><html><head></head><body>Demo</body></html>", {
+        headers: { "content-type": "text/html" },
+      }),
+    );
+  });
+  const response = await handleRedirect(new Request(`${CANONICAL_ORIGIN}/models/demo`));
+  // Guard against the fix over-reaching into refusing all redirects: this one must still be followed.
+  assertEquals(response.status, 200);
+  assertEquals(seen.length, 2);
+  assertMatch(seen[1], new RegExp(`^${UPSTREAM_ORIGIN}${SITE_PREFIX}/models/demo/$`));
+  assertIsolated(response);
+});
+
+Deno.test("bounds a same-origin redirect cycle instead of looping forever", async () => {
+  const seen: string[] = [];
+  const handleLoop = createHandler((input) => {
+    const request = input instanceof Request ? input : new Request(input);
+    seen.push(request.url);
+    return Promise.resolve(
+      new Response(null, { status: 302, headers: { location: `${SITE_PREFIX}/models/loop` } }),
+    );
+  });
+  // /models/… is inside the public allowlist; a bare /loop would 404 before upstream is ever called.
+  const response = await handleLoop(new Request(`${CANONICAL_ORIGIN}/models/loop`));
+  assertEquals(response.status, 502);
+  assertIsolated(response);
+  assertEquals(seen.length, 6);
+});
+
+Deno.test("rejects a redirect chain that leaves the upstream origin on a later hop", async () => {
+  // First hop is a legitimate same-origin redirect; the escape is only visible on the second.
+  const seen: string[] = [];
+  const handleChain = createHandler((input) => {
+    const request = input instanceof Request ? input : new Request(input);
+    seen.push(request.url);
+    const path = new URL(request.url).pathname;
+    const location = path.endsWith("/models/hop1")
+      ? "https://evil.example/steal.html"
+      : `${SITE_PREFIX}/models/hop1`;
+    return Promise.resolve(new Response(null, { status: 301, headers: { location } }));
+  });
+  const response = await handleChain(new Request(`${CANONICAL_ORIGIN}/models/start`));
+  assertEquals(response.status, 502);
+  assertIsolated(response);
+  assertEquals(seen.length, 2);
+  assertMatch(seen[1], new RegExp(`^${UPSTREAM_ORIGIN}${SITE_PREFIX}/models/hop1$`));
+  assertNotMatch(seen.join(" "), /evil\.example/);
+});
+
+Deno.test("a redirect status with no Location is returned as-is rather than guessed at", async () => {
+  const seen: string[] = [];
+  const handleNoLocation = createHandler((input) => {
+    const request = input instanceof Request ? input : new Request(input);
+    seen.push(request.url);
+    // 301 IS a redirect status, so this exercises the missing-Location branch rather than the
+    // ordinary non-redirect path a 304 would take.
+    return Promise.resolve(new Response(null, { status: 301 }));
+  });
+  const response = await handleNoLocation(new Request(`${CANONICAL_ORIGIN}/`));
+  assertEquals(response.status, 301);
+  assertEquals(seen.length, 1);
+  assertIsolated(response);
+});
