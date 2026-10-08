@@ -15,7 +15,21 @@
 //
 // Environment note carried into every claim: these runs use a SwiftShader *software* WebGPU adapter on a
 // shared CPU box, so the latencies prove the kernels ran, not how fast this is on real hardware.
-import { join } from "node:path";
+//
+// Split-run acceptance (viewport-scoped halves + mechanical merge): the full both-viewport matrix takes
+// ~2750s but the box reaps a browser at 45 min (2700s), so it does not fit in one run. Two separate runs —
+//   VIEWPORTS=desktop node scripts/acceptance-run.mjs scripts/validate-embeddinggemma-2.mjs --write-run --max-load 40
+//   VIEWPORTS=mobile  node scripts/acceptance-run.mjs scripts/validate-embeddinggemma-2.mjs --write-run --max-load 40
+// each write a HALF artifact (models/embeddinggemma-2/acceptance-runs/{desktop,mobile}-half.json), never the
+// final record. Then the merge assembles the single 10-cell record the project expects:
+//   node scripts/validate-embeddinggemma-2.mjs --merge-halves
+// See scripts/embeddinggemma-2-half-merge.mjs for the fail-closed rules (missing/failed/stale/duplicate/
+// wrong-cell-count/overlapping-routes halves all refuse to publish; atomic write; idempotent merge).
+//
+// A single-viewport run with --write-run only ever writes a half; the final
+// models/embeddinggemma-2/acceptance-run.json is produced by `--merge-halves` (or, for the legacy
+// single-run path, VIEWPORTS=both --write-run). A focused single-viewport re-drive (ROUTES=… subset) writes
+// nothing, because a partial run must never become a half or an acceptance record.
 import {
   captureHeadCommit,
   CDP,
@@ -30,10 +44,30 @@ import {
   startServer,
   writeAcceptanceRunRecord,
 } from "./browser.mjs";
+import {
+  computeValidatorBlobSha,
+  FINAL_RECORD_PATH,
+  mergeHalves,
+  writeHalfRecord,
+} from "./embeddinggemma-2-half-merge.mjs";
 
 const WRITE_RUN = process.argv.includes("--write-run");
-const RUN_RECORD = join(repoRoot, "models/embeddinggemma-2/acceptance-run.json");
+const MERGE_HALVES = process.argv.includes("--merge-halves");
+const RUN_RECORD = FINAL_RECORD_PATH;
 const startCommit = captureHeadCommit(repoRoot);
+
+if (MERGE_HALVES) {
+  const outcome = mergeHalves({
+    currentCommit: startCommit,
+    currentValidatorBlobSha: computeValidatorBlobSha(),
+  });
+  if (!outcome.ok) {
+    console.error(`\nMERGE REFUSED: ${outcome.reason}`);
+    process.exit(1);
+  }
+  console.log(`\nMERGED halves into ${FINAL_RECORD_PATH} — 10/10 cells from two viewport-scoped runs`);
+  process.exit(0);
+}
 const MODEL_ID = "onnx-community/embeddinggemma-2-ONNX";
 const UPSTREAM_ID = "google/embeddinggemma-2";
 const ROUTES = {
@@ -528,14 +562,6 @@ for (const [viewportName, viewport] of viewportsToRun) {
   }
 }
 
-if (WRITE_RUN) {
-  writeAcceptanceRunRecord({
-    runRecordPath: RUN_RECORD,
-    startCommit,
-    results,
-    exitCode: passed === total ? 0 : 1,
-  });
-}
 const ok = printAcceptanceSummary({
   passed,
   total,
@@ -543,6 +569,37 @@ const ok = printAcceptanceSummary({
   // Must follow the viewport filter, or a single-viewport run reports half its cells as missing.
   expectedCells: routesToRun.length * viewportsToRun.length,
 });
+
+if (WRITE_RUN) {
+  const isSingleViewportRun = viewportFilter === "desktop" || viewportFilter === "mobile";
+  const isFullRouteSet = routesToRun.length === Object.keys(ROUTES).length;
+  if (viewportFilter === "both") {
+    // Legacy single-run path: the whole matrix in one Chrome writes the final record directly.
+    writeAcceptanceRunRecord({
+      runRecordPath: RUN_RECORD,
+      startCommit,
+      results,
+      exitCode: passed === total ? 0 : 1,
+    });
+  } else if (isSingleViewportRun && isFullRouteSet) {
+    // Split path: one complete viewport-scoped run writes ONLY its half; the final record is assembled
+    // later by `--merge-halves`. The viewport is the one the run loop ACTUALLY drove, never a flag.
+    writeHalfRecord({
+      viewport: viewportsToRun[0][0],
+      results,
+      commit: startCommit,
+      ranAt: new Date().toISOString(),
+      exitCode: ok ? 0 : 1,
+      pass: ok,
+      validatorBlobSha: computeValidatorBlobSha(),
+    });
+  } else if (isSingleViewportRun) {
+    // A focused re-drive (ROUTES subset) is NOT a half and never becomes an acceptance record.
+    console.log(
+      `NO RECORD: single-viewport focused re-drive (ROUTES=${routeFilter || "all"}) — a partial run never becomes a half or a final acceptance record`,
+    );
+  }
+}
 const runProfileDir = chrome.userDataDir || null;
 try {
   // No removeProfile:false. That option skipped rmSync AND removed the instance from activeChromeInstances,
