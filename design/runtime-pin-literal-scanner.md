@@ -36,3 +36,31 @@ The D entries lock template source TEXT only; they do **not** validate resolved 
 ## Acceptance and stop conditions
 
 First prove RED on the existing isolated `test/runtime-pins.test.mjs` fixture: floating/partial/range CDN URLs (`latest`, `next`, `3`, `3.7`, `^3.7.5`, `v3.7.5`, `3.x`, ORT `latest` and `1`) currently return gate status 0 incorrectly. GREEN after the fix requires all nine to fail naming the entire candidate, while exact `3.7.5` and `1.21.0` URL controls remain green. Add boundary mutants for punctuation, encoded slash, real slash and bare end; two URLs on one line; JS/HTML executable versus comment/display contexts; escapes/templates/concat; marker ledger additions/edits/deletions, JSON and same-line duplicates; binary NUL; derived measured/rogue; scoped override. Require a real positive complete literal URL for **each** runtime (>0 discovery counters) alongside unchanged legacy numeric floors. Use focused tests, independent different-family exact-head review, then `fleet-check` once per committed final tree. No browser or live catalogue scan. Stop rather than add a heuristic if the bounded lexer cannot classify an executable literal or a new systemic context appears.
+
+## Amendment (2026-10-08, web-ai-showcase-vs2): constant-bound dynamic CDN URL templates
+
+The D-entry caveat above is now partially closed. Dynamic CDN URL templates — marker in a
+template-quasi, `extractRawCandidate` kind `"dynamic"` (CDN prefix present, `${` follows) — are
+judged on their RECONSTRUCTED cooked specifier when, and only when:
+
+1. the template is UNTAGGED (a tag function could build anything from the raw parts — tagged
+   templates are unresolvable by policy, review P2-3);
+2. every quasi is escape-free (cooked === raw — no escape decoding is ever trusted);
+3. EVERY `${}` expression is a bare Identifier resolving through
+   `resolveTopLevelStringConstants` (top-level const string literal, full shadow invalidation).
+
+A bound hit leaves net 2 exactly as a numeric hit does (suppressed from `ledgerCandidates`) — that
+coupling is the fail-closure: the 6 worker ledger rows (`vs2-dynamic`, 3 workers × ORT_URL +
+wasmPaths) were removed in the same amendment (27 → 21), so an unbound worker site becomes an
+unreviewed marker → RED. `scripts/probe-tjs-compat-matrix.mjs:58` stays ledgered: its `${version}`
+is a function parameter, unbindable by construction — the standing proof that binding cannot
+over-reach. Tooling/regex templates (`onnxruntime-web@${VERSION_TOKEN}`) lack the CDN prefix and
+never reach binding.
+
+The candidate rule on the reconstructed specifier is identical to `extractRawCandidate`'s break
+set. RESIDUALS (unchanged, part of the broad caveat): the version-segment rule is not URL
+normalization — dot-segment or encoded values in a bound OR static literal can normalize to a
+different origin path (WHATWG); the ORT allowlist is global with no route scoping, so renaming a
+constant to another AUTHORIZED ORT version is green; encoded/split assemblies (the
+runtime-integrity.mjs split pair above) remain unjudged. Counter `constantBound` is additive,
+asserted as a floor (>= 6), and never masks the legacy or literal counts.
