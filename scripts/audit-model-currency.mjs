@@ -393,6 +393,17 @@ export function checkRuntimePins() {
         `scripts/runtime-pin-allowlist.json: derivedInventory.files may only name the generated inventory (${EXEMPTABLE.join(", ")}), not "${badPath}"`,
       ];
     }
+    // Set EQUALITY, not merely "permitted". The exempt set must be exactly this immutable list: adding a
+    // route file is the bypass to close (isDerivedInventoryHit would return true for it), and narrowing it
+    // silently would hide which files are exempt. Equality makes both impossible without editing this
+    // validator, which is itself a reviewed file.
+    const wantSet = [...EXEMPTABLE].sort().join("|");
+    const gotSet = [...di.files].sort().join("|");
+    if (gotSet !== wantSet) {
+      return [
+        `scripts/runtime-pin-allowlist.json: derivedInventory.files must be EXACTLY [${EXEMPTABLE.join(", ")}] (got [${di.files.join(", ")}])`,
+      ];
+    }
     if (typeof di.reason !== "string" || di.reason.length <= 10) {
       return ["scripts/runtime-pin-allowlist.json: derivedInventory.reason is required (> 10 chars)"];
     }
@@ -491,6 +502,11 @@ export function checkRuntimePins() {
     if (starts.length !== 1 || ends.length !== 1) {
       errors.push(
         `sw.js must contain exactly one '>>> runtime-integrity (generated' marker and one '<<< runtime-integrity' marker (found ${starts.length} and ${ends.length}); the derived-inventory exemption is disabled so nothing is skipped`,
+      );
+    }
+    if (starts.length === 1 && ends.length === 1 && starts[0] >= ends[0]) {
+      errors.push(
+        "sw.js runtime-integrity markers must be a single ORDERED pair (opening before closing); the exemption is disabled so nothing is skipped",
       );
     }
     // [start + 2, end] is the generated block WITHOUT either marker line, so a pin written on a marker

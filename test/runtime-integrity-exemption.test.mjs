@@ -15,7 +15,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
@@ -145,5 +145,66 @@ test("adding an arbitrary file to derivedInventory.files is rejected", () => {
       return `${JSON.stringify(data, null, 2)}\n`;
     },
     () => assert.equal(runGate(), 1, "the exempt file set must be a fixed allowlist, not data anyone can extend"),
+  );
+});
+
+test("COORD'S EXACT BYPASS: adding a route file to derivedInventory.files AND injecting a pin into it", () => {
+  // The precise mutation to close: exempt a route file via the data, then hide a forbidden pin inside it.
+  // If the exempt set is only "currently exact", this succeeds and the audit PASSES. It must not.
+  const routeRel = "models/example-route/index.html";
+  const routeAbs = join(ROOT, routeRel);
+  const allowPath = join(ROOT, "scripts/runtime-pin-allowlist.json");
+  const allowOriginal = readFileSync(allowPath, "utf8");
+  let createdDir = false;
+  try {
+    try {
+      mkdirSync(join(ROOT, "models/example-route"), { recursive: true });
+      createdDir = true;
+    } catch {
+      // directory may already exist
+    }
+    writeFileSync(routeAbs, `<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@9.9.9/dist/ort.min.js"></script>\n`);
+    const data = JSON.parse(allowOriginal);
+    data.derivedInventory.files.push(routeRel);
+    writeFileSync(allowPath, `${JSON.stringify(data, null, 2)}\n`);
+    assert.equal(runGate(), 1, "exempting a route file via derivedInventory.files must be rejected outright");
+  } finally {
+    writeFileSync(allowPath, allowOriginal);
+    try {
+      rmSync(routeAbs, { force: true });
+      if (createdDir) rmSync(join(ROOT, "models/example-route"), { recursive: true, force: true });
+    } catch {
+      // best effort cleanup
+    }
+  }
+  assert.equal(readFileSync(allowPath, "utf8"), allowOriginal, "allowlist must be restored byte-exactly");
+  assert.equal(existsSync(routeAbs), false, "the temporary route file must be removed");
+});
+
+test("the exempt set cannot be silently narrowed either", () => {
+  withMutation(
+    "scripts/runtime-pin-allowlist.json",
+    (source) => {
+      const data = JSON.parse(source);
+      data.derivedInventory.files = ["sw.js"];
+      return `${JSON.stringify(data, null, 2)}\n`;
+    },
+    () => assert.equal(runGate(), 1, "the exempt set must equal the intended immutable list exactly"),
+  );
+});
+
+test("an INVERTED marker pair fails loudly", () => {
+  withMutation(
+    "sw.js",
+    (source) => {
+      const lines = source.split("\n");
+      const open = lines.findIndex((l) => l.includes(">>> runtime-integrity (generated"));
+      const close = lines.findIndex((l) => l.includes("<<< runtime-integrity"));
+      const tmp = lines[open];
+      lines[open] = lines[close];
+      lines[close] = tmp;
+      return lines.join("\n");
+    },
+    () => assert.equal(runGate(), 1, "an inverted marker pair must disable the exemption and error"),
   );
 });
