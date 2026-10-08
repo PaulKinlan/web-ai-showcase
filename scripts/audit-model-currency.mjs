@@ -39,8 +39,18 @@ export const PIN_SCAN_TARGETS =
   "models/ lib/ public/ scripts/ search/ models.json sw.js runtime-integrity.json";
 // Single-sourced pin patterns: the text scans and the fail-closed binary pass both use them, so
 // detection cannot drift between the passes.
-export const ORT_PIN_PATTERN = "onnxruntime-web@[0-9]+\\.[0-9]+\\.[0-9]+";
-export const TJS_PIN_PATTERN = "@huggingface/transformers@[0-9]+\\.[0-9]+\\.[0-9]+";
+//
+// VERSION_TOKEN captures the FULL runtime version token: MAJOR.MINOR.PATCH plus an optional
+// -prerelease/-dev suffix (e.g. -dev.20251116-b39e144322). The suffix is compared as part of one
+// string, so an unauthorised build like `3.7.5-evil.1` can never normalise down to the allowed
+// `3.7.5`. The string is valid both as POSIX ERE (for grep -E) and as a JavaScript RegExp, which is
+// how the grep scans and the in-process extraction share a single definition.
+export const VERSION_TOKEN = "[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?";
+export const ORT_PIN_PATTERN = `onnxruntime-web@${VERSION_TOKEN}`;
+export const TJS_PIN_PATTERN = `@huggingface/transformers@${VERSION_TOKEN}`;
+// In-process full-version capture for the transformers scan (grep -o already splits matches per line,
+// but this regex re-reads each record so a version cannot be truncated to its numeric prefix).
+const TJS_FULL_VERSION_RE = new RegExp(`@huggingface/transformers@(${VERSION_TOKEN})`, "g");
 export const PIN_PATTERNS = [
   { label: "onnxruntime-web", grep: ORT_PIN_PATTERN },
   { label: "@huggingface/transformers", grep: TJS_PIN_PATTERN },
@@ -583,8 +593,9 @@ export function checkRuntimePins() {
       const colonIdx = line.indexOf(":");
       const file = tjsHit ? tjsHit[1] : colonIdx >= 0 ? line.slice(0, colonIdx) : line;
       // Enumerate EVERY match on the record, not just the first. `grep -o` already splits them, and this
-      // loop means a multi-match record still cannot hide its later versions.
-      const versions = [...line.matchAll(/@huggingface\/transformers@([0-9.]+)/g)].map((m) => m[1]);
+      // loop means a multi-match record still cannot hide its later versions. The capture uses the full
+      // version token (including any -prerelease suffix) so `3.7.5-evil.1` is never truncated to `3.7.5`.
+      const versions = [...line.matchAll(TJS_FULL_VERSION_RE)].map((m) => m[1]);
       if (versions.length === 0) continue;
       for (const v of versions) {
         if (isDerivedInventoryHit(file, tjsHit ? tjsHit[2] : null, "@huggingface/transformers", v)) continue;

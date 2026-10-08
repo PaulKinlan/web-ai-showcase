@@ -9,7 +9,6 @@ import {
   findPinsInBinaryFiles,
   MIN_EVIDENCE_LENGTH,
   MIN_REASON_LENGTH,
-  PIN_SCAN_TARGETS,
   REVIEWED_ON_DATE_RE,
   SEMVER_VERSION_RE,
 } from "../scripts/audit-model-currency.mjs";
@@ -75,56 +74,16 @@ test("runtime-pin-allowlist.json exists, parses, and has required structure", ()
     );
     assert.match(v.reviewedOn, REVIEWED_ON_DATE_RE, "reviewedOn must be YYYY-MM-DD");
   }
-
-  assert.deepEqual(checkRuntimePins(), []);
 });
 
-test("all onnxruntime-web versions in the repository are in the allowlist", () => {
-  const allowlist = JSON.parse(readFileSync(ALLOWLIST_PATH, "utf8"));
-  const allowed = new Set(allowlist.onnxruntimeWeb.allowedVersions.map((x) => x.version));
-
-  const raw = execSync(
-    `grep -rhoE 'onnxruntime-web@[0-9]+\\.[0-9]+\\.[0-9]+' ${PIN_SCAN_TARGETS} 2>/dev/null || true`,
-    { cwd: ROOT, encoding: "utf8" },
-  );
-
-  const found = new Set();
-  for (const line of raw.split("\n")) {
-    const v = line.split("@").pop()?.trim();
-    if (v) found.add(v);
-  }
-
-  assert.ok(found.size > 0, "expected to find onnxruntime-web references in repo");
-  for (const v of found) {
-    assert.ok(allowed.has(v), `unauthorized onnxruntime-web version "${v}" found in repository`);
-  }
-});
-
-test("all @huggingface/transformers versions in the repository are in the allowlist", () => {
-  const allowlist = JSON.parse(readFileSync(ALLOWLIST_PATH, "utf8"));
-  const allowed = new Set([
-    allowlist.transformers.shared,
-    ...allowlist.transformers.allowedLocalOverrides.map((x) => x.version),
-  ]);
-
-  const raw = execSync(
-    `grep -rhoE '@huggingface/transformers@[0-9]+\\.[0-9]+\\.[0-9]+' ${PIN_SCAN_TARGETS} 2>/dev/null || true`,
-    { cwd: ROOT, encoding: "utf8" },
-  );
-
-  const found = new Set();
-  for (const line of raw.split("\n")) {
-    const v = line.split("@").pop()?.trim();
-    if (v) found.add(v);
-  }
-
-  assert.ok(found.size > 0, "expected to find @huggingface/transformers references in repo");
-  for (const v of found) {
-    assert.ok(
-      allowed.has(v),
-      `unauthorized @huggingface/transformers version "${v}" found in repository`,
-    );
-  }
+test("every runtime pin in the repository is authorized (single-sourced via checkRuntimePins)", () => {
+  // These used to be two independent grep scans here that duplicated the gate's own patterns and
+  // (unlike the gate) had no derived-inventory exemption, so the generated integrity inventory's
+  // onnxruntime-web 1.22.0 / dev-suffixed and transformers 3.1.2 literals read as unallowlisted route
+  // pins. The scan now lives in exactly one place — checkRuntimePins() — which honours the exemption
+  // and returns [] only when every pin (route pins AND the derived inventory) is authorised. An
+  // unauthorised version introduced anywhere, including a model route, still makes this assertion fail.
+  assert.deepEqual(checkRuntimePins(), [], "checkRuntimePins must report no unauthorized runtime pins");
 });
 
 // --- binary-classified files (bead web-ai-showcase-5s4) ---------------------------------
