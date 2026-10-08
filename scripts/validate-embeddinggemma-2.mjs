@@ -11,7 +11,8 @@
 //   • the honest failure surface — this export only runs on WebGPU, and that has to be visible to a user.
 //
 // The advertised stages are named here in full: onnx-community/embeddinggemma-2-ONNX (the browser build) of
-// google/embeddinggemma-2 (the canonical weights).
+// google/embeddinggemma-2 (the canonical weights), and onnx-community/embeddinggemma-300m-ONNX (the v1
+// EmbeddingGemma the multi-model route compares against).
 //
 // Environment note carried into every claim: these runs use a SwiftShader *software* WebGPU adapter on a
 // shared CPU box, so the latencies prove the kernels ran, not how fast this is on real hardware.

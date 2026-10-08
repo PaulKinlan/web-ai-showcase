@@ -34,7 +34,6 @@
 // cosine similarity is a plain dot product.
 
 const TRANSFORMERS_URL = "https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.1";
-const MODEL_ID = "onnx-community/embeddinggemma-2-ONNX";
 
 let lib = null;
 let model = null;
@@ -124,16 +123,17 @@ async function ensureLoaded(want = {}) {
     }
   }
 
-  const config = await AutoConfig.from_pretrained(MODEL_ID);
+  const config = await AutoConfig.from_pretrained("onnx-community/embeddinggemma-2-ONNX");
   if (!vision) config.vision_config = null;
   if (!audio) config.audio_config = null;
 
-  const perComponent = { model: nextDtype };
+  const perComponent = {};
+  perComponent.model = nextDtype;
   if (vision) perComponent.vision_encoder = nextDtype;
   if (audio) perComponent.audio_encoder = nextDtype;
 
   try {
-    model = await AutoModel.from_pretrained(MODEL_ID, {
+    model = await AutoModel.from_pretrained("onnx-community/embeddinggemma-2-ONNX", {
       config,
       device,
       dtype: perComponent,
@@ -142,7 +142,7 @@ async function ensureLoaded(want = {}) {
   } catch (err) {
     throw describeLoadError(err, device);
   }
-  if (!tokenizer) tokenizer = await AutoTokenizer.from_pretrained(MODEL_ID);
+  if (!tokenizer) tokenizer = await AutoTokenizer.from_pretrained("onnx-community/embeddinggemma-2-ONNX");
   dtype = nextDtype;
   loadedModalities = { vision, audio };
 
@@ -159,7 +159,7 @@ async function ensureLoaded(want = {}) {
 async function getProcessor() {
   if (!processor) {
     const { AutoProcessor } = await getLib();
-    processor = await AutoProcessor.from_pretrained(MODEL_ID);
+    processor = await AutoProcessor.from_pretrained("onnx-community/embeddinggemma-2-ONNX");
   }
   return processor;
 }
