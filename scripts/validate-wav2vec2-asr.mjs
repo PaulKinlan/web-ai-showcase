@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CDP, closePage, DESKTOP, launchChrome, MOBILE, openPage, repoRoot,
   screenshot, setViewport, startServer } from "./browser.mjs";
+import { evaluateCleanup } from "../models/wav2vec2-asr/multi-model/cleanup-quality.mjs";
 
 const WRITE_RUN=process.argv.includes("--write-run");
 const FAMILY="models/wav2vec2-asr";
@@ -122,7 +123,8 @@ async function drive(rung,viewport){
     if(rung==="multi"){
       await waitFor(sid,`!document.querySelector('#readout')?.hidden&&
         !document.querySelector('#run')?.disabled&&
-        ['Done.','Failed:'].some(x=>document.querySelector('#status')?.textContent?.startsWith(x))`,
+        ['Done.','Done (basic fallback; Qwen cleanup failed).','Failed:']
+          .some(x=>document.querySelector('#status')?.textContent?.startsWith(x))`,
         600_000,`${label} real CTC+Qwen 495MB chain`);
       const r=await evaluate(sid,`({raw:document.querySelector('#raw')?.textContent,
         clean:document.querySelector('#clean')?.textContent,
@@ -130,12 +132,15 @@ async function drive(rung,viewport){
         asrMs:document.querySelector('#rAsrMs')?.textContent,
         llm:document.querySelector('#rLlm')?.textContent,
         llmMs:document.querySelector('#rLlmMs')?.textContent,
+        fallback:!document.querySelector('#cleanupNote')?.hidden,
+        modelText:document.querySelector('#qwenRaw')?.textContent,
         status:document.querySelector('#status')?.textContent})`);
       mark("real wav2vec2 CTC decoded JFK text before Qwen cleanup",
         speech.test(r.raw)&&backend.test(r.asr)&&/^\d+(?:\.\d+)? s$/.test(r.asrMs),JSON.stringify(r));
-      mark("Qwen q4 400MB second stage actually generated cleaned JFK text",
+      const quality=evaluateCleanup(r.raw,r.clean);
+      mark("Qwen q4 400MB truly restores punctuation/casing WITHOUT changing CTC words",
         backend.test(r.llm)&&/^\d+(?:\.\d+)? s$/.test(r.llmMs)&&
-        speech.test(r.clean)&&r.clean!==r.raw&&r.status==='Done.',JSON.stringify(r));
+        !r.fallback&&quality.valid&&r.status==='Done.',JSON.stringify({...r,quality}));
       await evaluate(sid,`(() => {document.querySelector('#clean').scrollIntoView({block:'center'});return true;})()`);
       await screenshot(cdp,sid,join(EVIDENCE,`${viewport}-multi-clean.png`));
     }else if(rung==="wild"){
