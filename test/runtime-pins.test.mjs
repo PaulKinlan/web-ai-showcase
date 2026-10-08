@@ -535,6 +535,80 @@ for (const { pkg, version } of [
   });
 }
 
+// --- Reviewed literal URL and marker-ledger boundary proofs ----------------------------------------
+for (const suffix of ["^", "~", "|", "+", ".", "_", "%2Fdist", "?x=1", "#x", "!", "@evil", ";evil", ":evil", ",evil", "&evil"]) {
+  test(`LITERAL BOUNDARY: raw Transformers suffix ${suffix} is never truncated`, () => {
+    expectExecutableUrlVerdict(
+      `https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.5${suffix}/dist/x.js`,
+      { status: 1, needle: `3.7.5${suffix}` },
+      `the complete raw suffix ${suffix} must fail, not the authorized prefix pass`,
+    );
+  });
+}
+
+test("LITERAL BOUNDARY: two URLs on one line reject the later floating pin", () => {
+  const p = join(COPY_ROOT, "models/animegan-cartoonization/worker.js");
+  const original = readFileSync(p, "utf8");
+  try {
+    writeFileSync(p, `${original}\nconst __urls = ["https://cdn.jsdelivr.net/npm/onnxruntime-web@1.21.0/dist/x.js", "https://cdn.jsdelivr.net/npm/onnxruntime-web@latest/dist/x.js"];\n`);
+    const result = runGate();
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /onnxruntime-web version "latest"/);
+    assert.match(result.stderr, /runtime marker golden ledger drift/);
+  } finally { writeFileSync(p, original, "utf8"); }
+});
+
+test("LITERAL BOUNDARY: floating script src is rejected; exact src remains authorized", () => {
+  expectVersionFailure(
+    "models/animegan-cartoonization/index.html",
+    (source) => `${source}\n<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@latest/dist/x.js"></script>\n`,
+    'onnxruntime-web version "latest"',
+    "HTML executable quoted src must fail on the whole floating specifier",
+  );
+  const p = join(COPY_ROOT, "models/animegan-cartoonization/index.html");
+  const original = readFileSync(p, "utf8");
+  try {
+    writeFileSync(p, `${original}\n<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.21.0/dist/x.js"></script>\n`);
+    assert.equal(runGate().status, 0, "exact authorized HTML script src stays green");
+  } finally { writeFileSync(p, original, "utf8"); }
+});
+
+test("LITERAL BOUNDARY: a literal URL nested inside interpolation still rejects the full suffix", () => {
+  expectVersionFailure(
+    "models/animegan-cartoonization/worker.js",
+    (source) => source + '\nconst __nested = `x ${ { nested: `https://cdn.jsdelivr.net/npm/onnxruntime-web@1.21.0~/dist/x.js` }.nested}`;\n',
+    'onnxruntime-web version "1.21.0~"',
+    "a nested but complete runtime URL literal must not hide behind template syntax",
+  );
+});
+
+test("LITERAL LEDGER: floating marker added to JSON evidence fails census", () => {
+  expectVersionFailure(
+    "models/yolo11-detection/_questions.json",
+    (source) => `${source}\n"onnxruntime-web@latest"\n`,
+    "runtime marker golden ledger drift",
+    "non-executable JSON is still census-controlled, not blanket exempt",
+  );
+});
+
+test("LITERAL LEDGER: a changed reviewed dynamic expression invalidates its exact fingerprint", () => {
+  expectVersionFailure(
+    "models/silero-vad/worker.js",
+    (source) => source.replace("onnxruntime-web@${ORT_VERSION}/dist/ort.wasm.min.mjs", "onnxruntime-web@${ORT_VERSION}/dist/ort.min.mjs"),
+    "runtime marker golden ledger drift",
+    "a changed vs2 exception requires independent ledger review",
+  );
+});
+
+test("LITERAL LEDGER: floating pin in a NUL-bearing file fails closed", () => {
+  const p = writeBinaryProbe("scripts/__floating_binary_probe.mjs", "// probe: onnxruntime-web@latest");
+  try {
+    const result = runGate();
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /runtime pin in binary-classified file scripts\/__floating_binary_probe\.mjs/);
+  } finally { rmSync(p, { force: true }); }
+});
+
 // --- DELIBERATE prose false reds ------------------------------------------------------------------
 // Sentence punctuation is part of the candidate and FAILS. A prose comment ending a sentence right after
 // a pinned version is an ACCEPTED false red — the prose author rewords. There is deliberately no
