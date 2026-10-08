@@ -167,11 +167,12 @@ async function drive(rung,viewport){
       mark("real first 3s of JFK classified English with 126-way uncertainty",
         first.code==='eng'&&first.dur==='3.0 s'&&Number.isFinite(Number(first.entropy))&&
         /^\d+ pts$/.test(first.margin)&&/English/.test(first.status),JSON.stringify(first));
-      await evaluate(sid,`(() => {document.querySelector('#mix2').value='../sample-spa.wav';
+      await evaluate(sid,`(() => {document.querySelector('#mix2').value='../sample-rus.wav';
         document.querySelector('#mix').click();return true;})()`);
       await waitFor(sid,`document.querySelector('#mix')?.checked&&
-        performance.getEntriesByType('resource').some(x=>x.name.endsWith('/sample-spa.wav'))`,
-        30_000,`${label} non-TED JFK→Spanish splice`);
+        document.querySelector('#mix2')?.value==='../sample-rus.wav'&&
+        performance.getEntriesByType('resource').some(x=>x.name.endsWith('/sample-rus.wav'))`,
+        30_000,`${label} non-TED JFK→Russian splice`);
       await evaluate(sid,`(() => {document.querySelector('#run').click();return true;})()`);
       await waitFor(sid,`!document.querySelector('#run')?.disabled&&
         document.querySelector('#rDur')?.textContent==='6.0 s'&&
@@ -183,8 +184,8 @@ async function drive(rung,viewport){
         code:document.querySelector('#vCode')?.textContent,
         mix:document.querySelector('#mix')?.checked,
         second:document.querySelector('#mix2')?.value})`);
-      mark("real 6s JFK-English→Spanish code-switch runs distinct inference",
-        mixed.dur==='6.0 s'&&mixed.mix&&mixed.second==='../sample-spa.wav'&&
+      mark("real 6s JFK-English→Russian code-switch runs distinct inference",
+        mixed.dur==='6.0 s'&&mixed.mix&&mixed.second==='../sample-rus.wav'&&
         Number.isFinite(Number(mixed.entropy))&&/^[a-z]{3}$/.test(mixed.code)&&
         /^\d+ pts$/.test(mixed.margin),JSON.stringify(mixed));
       await evaluate(sid,`(() => {document.querySelector('#mix').click();return true;})()`);
@@ -272,7 +273,7 @@ if(WRITE_RUN&&succeeded){
     "scripts/validate-spoken-language-id.mjs",`:(exclude)${FAMILY}/acceptance.json`,
     `:(exclude)${FAMILY}/acceptance-run.json`],{cwd:repoRoot,encoding:"utf8"}).trim();
   writeFileSync(RECORD,JSON.stringify({commit,ranAt:new Date().toISOString(),exitCode:0,
-    results,notes:"Ten route×viewport real 126-way LID cells: JFK English on all five; Wild starts non-JFK Spanish by design, then selects JFK and measures a 3s JFK English slice plus 6s English→Spanish code-switch; Practical routes English to a suggested Whisper ASR/translation (not executed) plus native JFK user WAV upload reclassification; multi runs actual 974MB MMS-LID then timestamped Whisper q8 ~120MB (~1.09GB total) and checks real JFK transcript. Ten clicked visible JFK-only links reach pinned GitHub ledger hash/creator/public-domain/asset path. TED does not exist in family and is never loaded. Responsive/console/network assertions; twelve screenshots outside repo. Model may misrecognize audio; no perfect-transcript claim."},null,2)+"\n");
+    results,notes:"Ten route×viewport real 126-way LID cells: JFK English on all five; Wild starts non-JFK Spanish by design, then selects JFK and measures a 3s JFK English slice plus 6s English→Russian code-switch; Practical routes English to a suggested Whisper ASR/translation (not executed) plus native JFK user WAV upload reclassification; multi runs actual 974MB MMS-LID then timestamped Whisper q8 ~120MB (~1.09GB total) and checks real JFK transcript. Ten clicked visible JFK-only links reach pinned GitHub ledger hash/creator/public-domain/asset path. TED does not exist in family and is never loaded. Responsive/console/network assertions; twelve screenshots outside repo. Model may misrecognize audio; no perfect-transcript claim."},null,2)+"\n");
   console.log(`WROTE ${RECORD} for ${commit}`);
 }
 process.exit(succeeded?0:1);
