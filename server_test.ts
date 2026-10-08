@@ -369,3 +369,59 @@ Deno.test("a redirect status with no Location is returned as-is rather than gues
   assertEquals(seen.length, 1);
   assertIsolated(response);
 });
+
+// `Response.url` is a prototype getter and cannot be set through the constructor, so shadow it
+// per-instance to simulate a fetch implementation that returned a response from somewhere other than
+// UPSTREAM_ORIGIN. That is the only way to exercise the defence-in-depth branch.
+function responseFrom(url: string, init: ResponseInit = {}, body = ""): Response {
+  const response = new Response(body, init);
+  Object.defineProperty(response, "url", { value: url, configurable: true });
+  return response;
+}
+
+Deno.test("refuses a response whose final url is off-origin even on a non-redirect status", async () => {
+  const handleForeign = createHandler(() =>
+    Promise.resolve(
+      responseFrom(
+        "https://evil.example/steal.html",
+        { status: 200, headers: { "content-type": "text/html" } },
+        "<html>EXTERNAL</html>",
+      ),
+    )
+  );
+  const response = await handleForeign(new Request(`${CANONICAL_ORIGIN}/models/demo`));
+  assertEquals(response.status, 502);
+  assertIsolated(response);
+});
+
+Deno.test("refuses an off-origin response on a redirect status carrying no Location", async () => {
+  // The exact gap: a redirect status with no Location is handed straight back, so without the
+  // origin check running before that branch its body would be published under the canonical origin.
+  const handleNoLocationForeign = createHandler(() =>
+    Promise.resolve(
+      responseFrom("https://evil.example/steal.html", {
+        status: 301,
+        headers: { "content-type": "text/html" },
+      }),
+    )
+  );
+  const response = await handleNoLocationForeign(new Request(`${CANONICAL_ORIGIN}/models/demo`));
+  assertEquals(response.status, 502);
+  assertIsolated(response);
+});
+
+Deno.test("accepts a same-origin final url so the origin check is not rejecting every response", async () => {
+  const handleSameOrigin = createHandler(() =>
+    Promise.resolve(
+      responseFrom(
+        `${UPSTREAM_ORIGIN}${SITE_PREFIX}/models/demo/`,
+        { status: 200, headers: { "content-type": "text/html" } },
+        "<html>fine</html>",
+      ),
+    )
+  );
+  const response = await handleSameOrigin(new Request(`${CANONICAL_ORIGIN}/models/demo`));
+  assertEquals(response.status, 200);
+  assertEquals(await response.text(), "<html>fine</html>");
+  assertIsolated(response);
+});

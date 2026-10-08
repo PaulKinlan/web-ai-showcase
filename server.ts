@@ -134,23 +134,23 @@ async function fetchUpstreamSameOrigin(
   let current = upstreamRequest(request, url);
   for (let hop = 0; hop <= MAX_UPSTREAM_REDIRECTS; hop++) {
     const response = await fetchUpstream(current);
-    if (!UPSTREAM_REDIRECT_STATUSES.has(response.status)) {
-      // Defence in depth: the loop above only ever issues requests to UPSTREAM_ORIGIN, but if the
-      // fetch implementation followed a redirect on its own the final URL would show it. `response.url`
-      // is set by the fetch implementation for every network response, so a non-empty value that is
-      // off-origin is a real escape; it is empty only for a locally constructed Response, which is the
-      // test seam, where there is no network origin to verify.
-      if (response.url) {
-        let finalOrigin: string | null = null;
-        try {
-          finalOrigin = new URL(response.url).origin;
-        } catch {
-          finalOrigin = null;
-        }
-        if (finalOrigin !== UPSTREAM_ORIGIN) throw new OffOriginUpstreamRedirect();
+    // Applied to EVERY response before any body is read or republished, whatever its status. The loop
+    // above only ever issues requests to UPSTREAM_ORIGIN, but if the fetch implementation followed a
+    // redirect on its own the final URL would show it. `response.url` is set by the fetch implementation
+    // for every network response, so a non-empty value that is off-origin is a real escape; it is empty
+    // only for a locally constructed Response, which is the test seam, where there is no network origin
+    // to verify. Checking here rather than only on the non-redirect path also covers the case below where
+    // a redirect status carries no Location and is therefore handed straight back unchecked.
+    if (response.url) {
+      let finalOrigin: string | null = null;
+      try {
+        finalOrigin = new URL(response.url).origin;
+      } catch {
+        finalOrigin = null;
       }
-      return response;
+      if (finalOrigin !== UPSTREAM_ORIGIN) throw new OffOriginUpstreamRedirect();
     }
+    if (!UPSTREAM_REDIRECT_STATUSES.has(response.status)) return response;
     const location = response.headers.get("location");
     // A 3xx with no Location cannot be followed; hand it back rather than guessing at a destination.
     if (!location) return response;
