@@ -249,7 +249,6 @@ async function stopProcessTree(proc) {
 
 export const HEADLESS_CHROME_CRASH_SUPPRESSION_FLAGS = [
   "--disable-breakpad",
-  "--disable-crashpad-for-testing",
 ];
 
 export function getChromeLaunchArgs({ userDataDir, extraArgs = [], webgpu = false } = {}) {
@@ -267,8 +266,8 @@ export function getChromeLaunchArgs({ userDataDir, extraArgs = [], webgpu = fals
     // Suppress Chrome crashpad handler daemon processes (web-ai-showcase-9z1).
     // In headless test runs, chrome_crashpad_handler detaches into its own process group
     // reparented to PID 1, escaping signalProcessTree group kills and leaking background daemons.
-    // Chrome 154 recognizes --disable-breakpad and --disable-crashpad-for-testing (--disable-crash-reporter
-    // is absent/no-op on modern Chrome).
+    // Chrome 154 recognizes --disable-breakpad; --disable-crashpad-for-testing causes
+    // net::ERR_ABORTED on renderer navigations in Chrome 154 (web-ai-showcase-c3h).
     ...HEADLESS_CHROME_CRASH_SUPPRESSION_FLAGS,
     // Chrome 111+ rejects DevTools WebSocket upgrades unless the connecting origin is allow-listed.
     // Without this the CDP client's WS handshake is closed immediately ("ws error"). Harmless on older
@@ -470,7 +469,11 @@ export async function openPage(cdp, url) {
       if (msg.sessionId === sessionId && msg.method === "Page.loadEventFired") resolve();
     });
   });
-  await cdp.send("Page.navigate", { url }, sessionId);
+  const nav = await cdp.send("Page.navigate", { url }, sessionId);
+  if (nav?.errorText) {
+    await closePage(cdp, targetId);
+    throw new Error(`Page.navigate failed: ${nav.errorText} (${url})`);
+  }
   await Promise.race([loaded, new Promise((r) => setTimeout(r, 8000))]);
   await new Promise((r) => setTimeout(r, 1500)); // settle: loader auto-init resolves to absent state
   const notice = classifiedConsoleNotice({ errors, classifiedErrors, netFailures });
