@@ -431,6 +431,46 @@ for (const [pin, label] of TRAILING_DOT_PINS) {
   });
 }
 
+// --- P0 regression (web-ai-showcase-mtu): trailing dot before a URL path must stay RAW ------------
+// stripTrailingDots is prose normalisation: `3.7.5.` in a comment is punctuation and must normalise to
+// `3.7.5`. But in a REAL pinned URL the trailing dot is part of the version string — `1.21.0.` before
+// `/dist/` is a different (invalid) version than `1.21.0` — so normalising it would turn a
+// previously-failing pin into an allowed one (a FALSE GREEN, worse than the false red the normalisation
+// fixed). The gate discriminates by the character immediately after the match: `/` means a URL path, so
+// the token is validated RAW. These tests inject a URL-shaped pin (trailing dot followed by `/dist/...`)
+// into a model route and assert the gate FAILS naming the dotted token. They go RED if anyone re-widens
+// the normalisation to strip trailing dots from URL-path tokens.
+test("MUTANT PROOF: onnxruntime-web URL pin with a trailing dot before /dist/ still fails", () => {
+  expectVersionFailure(
+    "models/animegan-cartoonization/worker.js",
+    (source) => `${source}\nconst BAD = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.21.0./dist/ort.wasm.min.mjs";\n`,
+    "1.21.0.",
+    "a URL-pathed onnxruntime-web pin with a trailing dot must not be normalised to the allowed base",
+  );
+});
+
+test("MUTANT PROOF: transformers URL pin with a trailing dot before /dist/ still fails", () => {
+  expectVersionFailure(
+    "models/animegan-cartoonization/worker.js",
+    (source) => `${source}\nconst BAD = "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.5./dist/transformers.min.js";\n`,
+    "3.7.5.",
+    "a URL-pathed transformers pin with a trailing dot must not be normalised to the allowed shared base",
+  );
+});
+
+test("unit: normaliseCapturedVersion keeps a trailing dot RAW when followed by a URL path", () => {
+  // `/` immediately after the match means the token is part of a URL path, so no dot is stripped.
+  assert.equal(audit.normaliseCapturedVersion("1.21.0.", "/"), "1.21.0.");
+  assert.equal(audit.normaliseCapturedVersion("1.21.0..", "/"), "1.21.0..");
+  assert.equal(audit.normaliseCapturedVersion("3.7.5.", "/"), "3.7.5.");
+  // Any other follower is prose punctuation: strip trailing dots exactly like the plain helper.
+  assert.equal(audit.normaliseCapturedVersion("3.7.5.", " "), "3.7.5");
+  assert.equal(audit.normaliseCapturedVersion("3.7.5.", '"'), "3.7.5");
+  assert.equal(audit.normaliseCapturedVersion("3.7.5.", ","), "3.7.5");
+  assert.equal(audit.normaliseCapturedVersion("1.21.0.", ""), "1.21.0"); // end of line
+  assert.equal(audit.normaliseCapturedVersion("3.7.5.", undefined), "3.7.5");
+});
+
 test("MUTANT PROOF: a suffixed pin written into the exempt generator still fails", () => {
   // scripts/runtime-integrity.mjs is exempt only for measuredVersions; a +build suffix is not measured.
   expectVersionFailure(
