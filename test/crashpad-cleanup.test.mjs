@@ -23,13 +23,18 @@ const BRIDGE = join(HERE, "../scripts/lib/pidfd_bridge.py");
 const SELF = fileURLToPath(import.meta.url);
 
 if (process.env.ARR_FIXTURE_SUBREAPER !== "1") {
-  test("crashpad-cleanup fixtures (inner stage re-exec under subreaper wrapper)", () => {
-    const r = spawnSync("python3", [BRIDGE, "subreaper-exec", "--", "node", SELF], {
-      stdio: "inherit",
-      env: { ...process.env, ARR_FIXTURE_SUBREAPER: "1", CRASHPAD_CLEANUP_PHASE1: "1" },
-    });
-    assert.equal(r.status, 0, "fixture run under subreaper must pass (see output above)");
-  });
+  test(
+    "crashpad-cleanup fixtures (inner stage re-exec under subreaper wrapper)",
+    // Linux-only by design: /proc, pidfd syscalls, PR_SET_CHILD_SUBREAPER.
+    { skip: process.platform !== "linux" && "requires Linux /proc + pidfd" },
+    () => {
+      const r = spawnSync("python3", [BRIDGE, "subreaper-exec", "--", "node", SELF], {
+        stdio: "inherit",
+        env: { ...process.env, ARR_FIXTURE_SUBREAPER: "1", CRASHPAD_CLEANUP_PHASE1: "1" },
+      });
+      assert.equal(r.status, 0, "fixture run under subreaper must pass (see output above)");
+    },
+  );
 } else {
   const cleanup = await import("../scripts/lib/crashpad-cleanup.mjs");
   const results = [];
@@ -41,6 +46,18 @@ if (process.env.ARR_FIXTURE_SUBREAPER !== "1") {
   const tokenA = `A-${randomUUID().slice(0, 8)}`;
   const tokenB = `B-${randomUUID().slice(0, 8)}`;
   const tokenC = `C-${randomUUID().slice(0, 8)}`; // sentinel: different "launch", never cleaned
+
+  // Teardown-on-signal (review P2-6): if the fixture is interrupted, still kill exactly the
+  // fake handlers this run spawned (their 300s lifetime is the outer bound otherwise).
+  const teardownAll = () => {
+    for (const token of [tokenA, tokenB, tokenC]) {
+      for (const pid of cleanup.adoptedChildren()) {
+        if (!cleanup.cmdlineOf(pid)?.includes(token)) continue;
+        try { cleanup.pidfdSignal(pid, { expectCmdline: token, sig: "SIGKILL" }); } catch { /* gone */ }
+      }
+    }
+  };
+  process.on("SIGTERM", () => { teardownAll(); process.exit(143); });
 
   const spawnFake = (token) => {
     execFileSync("python3", [BRIDGE, "spawn-fake-handler", `--launch-token=${token}`, "--lifetime=300"]);
@@ -67,6 +84,13 @@ if (process.env.ARR_FIXTURE_SUBREAPER !== "1") {
     cPids = pidsWithMarker(tokenC);
   }
 
+  // The zombie assertion above is async now — make the check wrapper awaitable.
+  // (check() calls remain synchronous-looking because each fn is awaited through here.)
+  const checkAsync = async (name, fn) => {
+    try { await fn(); results.push(`ok - ${name}`); }
+    catch (e) { results.push(`FAIL - ${name}: ${e.message}`); }
+  };
+
   try {
     check("adoption: detached handlers adopted by the subreaper (not PID 1)", () => {
       eq(aPids.length, 2, "launch A adopted handlers");
@@ -77,14 +101,20 @@ if (process.env.ARR_FIXTURE_SUBREAPER !== "1") {
       }
     });
 
-    check("cleanup of launch A signals ONLY A's handlers; B and sentinel C survive", () => {
+    await checkAsync("cleanup of launch A signals ONLY A's handlers; B and sentinel C survive", async () => {
       const { signaled, skipped } = cleanup.cleanupAdoptedLaunch(tokenA);
       deepEq(signaled, aPids, "exactly A's handlers are signaled");
       if (skipped.length < 3) throw new Error(`expected >=3 refusals (B×2, C×1), got ${skipped.length}`);
       for (const pid of aPids) {
         // Zombie held by THIS process: proves (a) adoption, (b) Node/libuv did NOT auto-reap the
-        // adopted grandchild — while the zombie is held its PID cannot be reused.
-        if (!cleanup.isZombieOf(pid)) throw new Error(`signaled handler ${pid} must be a zombie of this process`);
+        // adopted grandchild — while the zombie is held its PID cannot be reused. Poll briefly:
+        // the signaled sleep's exit latency under load is not synchronous (review P2-4).
+        let held = false;
+        for (let i = 0; i < 20 && !held; i++) {
+          held = cleanup.isZombieOf(pid);
+          if (!held) await new Promise((r) => setTimeout(r, 50));
+        }
+        if (!held) throw new Error(`signaled handler ${pid} must be a zombie of this process`);
       }
       for (const pid of [...bPids, ...cPids]) {
         if (!alive(pid)) throw new Error(`B/C handler ${pid} must survive A's cleanup`);
@@ -118,11 +148,7 @@ if (process.env.ARR_FIXTURE_SUBREAPER !== "1") {
     });
   } finally {
     // Tear down every surviving fake handler we spawned — fixture-owned processes only.
-    for (const token of [tokenA, tokenB, tokenC]) {
-      for (const pid of pidsWithMarker(token)) {
-        try { cleanup.pidfdSignal(pid, { expectCmdline: token, sig: "SIGKILL" }); } catch { /* already gone */ }
-      }
-    }
+    teardownAll();
   }
 
   for (const line of results) console.log(line);

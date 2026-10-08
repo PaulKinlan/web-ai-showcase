@@ -44,19 +44,25 @@ def fail(msg):
 
 
 def cmd_subreaper_exec(argv):
-    if not argv or argv[0] != "--":
+    if not argv or argv[0] != "--" or len(argv) < 2:
         fail("subreaper-exec requires -- CMD [ARGS...]")
     if libc.prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) != 0:
         fail(f"prctl(PR_SET_CHILD_SUBREAPER) failed: errno {ctypes.get_errno()}")
-    os.execvp(argv[1], argv[1:])
+    try:
+        os.execvp(argv[1], argv[1:])
+    except OSError as e:
+        fail(f"exec {argv[1]!r} failed: {e}")
 
 
 def cmd_spawn_fake_handler(argv):
     opts = dict(a.split("=", 1) for a in argv if a.startswith("--") and "=" in a)
-    token = opts.get("--launch-token")
-    lifetime = int(opts.get("--lifetime", "300"))
-    if not token:
-        fail("spawn-fake-handler requires --launch-token")
+    token = opts.get("--launch-token", "")
+    if not token or not all(c.isalnum() or c in ".-_" for c in token):
+        fail("spawn-fake-handler requires --launch-token matching [A-Za-z0-9._-]+")
+    try:
+        lifetime = int(opts.get("--lifetime", "300"))
+    except ValueError:
+        fail("--lifetime must be an integer")
     # Double-fork so the intermediate parent exits immediately and the handler
     # is orphaned at once (adopted by the subreaper), mirroring how Chrome's
     # crashpad handler escapes before the browser exits.
@@ -67,8 +73,9 @@ def cmd_spawn_fake_handler(argv):
     if os.fork() > 0:
         os._exit(0)
     os.closerange(0, 3)
-    os.execlp("bash", "bash", "-c",
-              f'exec -a "crashpad-like --launch={token}" sleep {lifetime}')
+    # No shell: exec sleep with argv[0] carrying the launch marker (an argv list keeps
+    # the token out of any shell parsing — review P2-1).
+    os.execvpe("sleep", [f"crashpad-like --launch={token}", str(lifetime)], {})
 
 
 def cmd_pidfd_signal(argv):
