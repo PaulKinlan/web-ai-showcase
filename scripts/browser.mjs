@@ -8,8 +8,8 @@
 
 import { createServer } from "node:http";
 import { execFileSync, spawn } from "node:child_process";
-import { accessSync, constants, existsSync, readdirSync, readFileSync, rmSync, statfsSync, statSync, writeFileSync } from "node:fs";
-import { extname, join, resolve } from "node:path";
+import { accessSync, constants, existsSync, readdirSync, readFileSync, realpathSync, rmSync, statfsSync, statSync, writeFileSync } from "node:fs";
+import { extname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { constants as osConstants, loadavg, tmpdir } from "node:os";
 
@@ -32,14 +32,21 @@ const MIME = {
 };
 
 export function startServer() {
+  const root = realpathSync(repoRoot);
+  const insideRoot = (path) => path === root || path.startsWith(root + sep);
   const server = createServer((req, res) => {
     try {
       let p = decodeURIComponent(req.url.split("?")[0]);
+      if (p.includes("\0")) throw new Error("Invalid static path");
       if (p.startsWith(BASE)) p = p.slice(BASE.length - 1);
-      let fsPath = join(repoRoot, p.replace(/^\/+/, ""));
+      let fsPath = resolve(root, p.replace(/^\/+/, ""));
+      if (!insideRoot(fsPath)) throw new Error("Static path escapes repo");
       try {
         if (statSync(fsPath).isDirectory()) fsPath = join(fsPath, "index.html");
       } catch { /* 404 below */ }
+      // A symlink within the repo must not make the final file escape it either.
+      fsPath = realpathSync(fsPath);
+      if (!insideRoot(fsPath)) throw new Error("Static path escapes repo");
       const body = readFileSync(fsPath);
       res.writeHead(200, { "content-type": MIME[extname(fsPath)] || "application/octet-stream" });
       res.end(body);
