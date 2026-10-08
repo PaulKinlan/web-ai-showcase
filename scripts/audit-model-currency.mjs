@@ -32,11 +32,53 @@ const SNAPSHOT = ROOT + "inventory/model-currency.json";
 const REPORT_JSON = ROOT + "reports/model-currency.json";
 const REPORT_MD = ROOT + "reports/model-currency.md";
 export const ALLOWLIST_PATH = ROOT + "scripts/runtime-pin-allowlist.json";
-export const PIN_SCAN_TARGETS = "models/ lib/ public/ scripts/ search/ models.json sw.js";
+// runtime-integrity.json is included so its contents are deliberately monitored: the reviewer of the
+// derived-inventory exemption showed that listing a file as exempt while never scanning it makes the
+// entry dead. Now an unauthorised version written into it is caught like anywhere else.
+export const PIN_SCAN_TARGETS =
+  "models/ lib/ public/ scripts/ search/ models.json sw.js runtime-integrity.json";
 // Single-sourced pin patterns: the text scans and the fail-closed binary pass both use them, so
 // detection cannot drift between the passes.
-export const ORT_PIN_PATTERN = "onnxruntime-web@[0-9]+\\.[0-9]+\\.[0-9]+";
-export const TJS_PIN_PATTERN = "@huggingface/transformers@[0-9]+\\.[0-9]+\\.[0-9]+";
+//
+// VERSION_TOKEN captures the WHOLE RAW candidate after the package marker (`onnxruntime-web@` or
+// `@huggingface/transformers@`), and that exact raw string is compared against the allowlist — never
+// stripped, never normalised, never decoded, never passed through a context heuristic. It requires
+// MAJOR.MINOR.PATCH and then takes every following version character (digits, letters, '.', '-', '+',
+// '_') PLUS the unreviewed specifier suffixes '?', '#', '%', '='. Those four are captured (not treated
+// as delimiters) so a query/hash/percent-encoded suffix can never be dropped down to an allowed base.
+// (Examples below are written as bare version strings so this file does not itself trip the scans.)
+//   `3.7.5+build1`   -> captured in full, rejected ('+build1' survives)
+//   `3.7.5.evil`     -> captured in full, rejected
+//   `3.7.5_evil`     -> captured in full, rejected
+//   `3.7.5evil`      -> captured in full, rejected
+//   `3.7.5-`         -> captured in full, rejected
+//   `3.7.5.`         -> captured in full, rejected (a trailing dot is part of the candidate; a prose
+//                       sentence-ending period is now a DELIBERATE false red — the prose author rewords)
+//   `3.7.5?x=1`      -> captured in full, rejected (query-suffixed specifiers are UNREVIEWED)
+//   `3.7.5#x`        -> captured in full, rejected (hash-suffixed specifiers are UNREVIEWED)
+//   `3.7.5%2Fdist`   -> captured in full, rejected (a percent-encoded separator is part of the candidate)
+//   `1.24.0-dev.20251116-b39e144322` -> full dev token (authorised only via measuredVersions)
+// A `/` immediately after the version is a REAL URL path separator and terminates the candidate, so an
+// exact authorised version followed by `/dist/...` is GREEN; whitespace, quotes, `)`, `,`, and end of
+// line also terminate the candidate. `+` and `_` are not npm semver characters but MUST be captured so
+// the full offending string is judged instead of its allowed numeric prefix. The required X.Y.Z prefix
+// keeps a bare prose shorthand like `1.21` (not a pin) from being reported as a phantom version. The
+// string is valid both as POSIX ERE (for grep -E) and as a JavaScript RegExp, which is how the grep
+// scans and the in-process extraction share one definition.
+export const VERSION_TOKEN = "[0-9]+\\.[0-9]+\\.[0-9]+[0-9A-Za-z._+?%#=-]*";
+export const ORT_PIN_PATTERN = `onnxruntime-web@${VERSION_TOKEN}`;
+export const TJS_PIN_PATTERN = `@huggingface/transformers@${VERSION_TOKEN}`;
+// In-process full-version captures for the two text scans. The scans read each matching LINE (not
+// `grep -o` records) and re-run these regexes over the line content, capturing the WHOLE RAW candidate
+// so a version can never be truncated to its numeric prefix or have a suffix dropped. Shares
+// VERSION_TOKEN with the grep patterns above.
+const ORT_FULL_VERSION_RE = new RegExp(`onnxruntime-web@(${VERSION_TOKEN})`, "g");
+const TJS_FULL_VERSION_RE = new RegExp(`@huggingface/transformers@(${VERSION_TOKEN})`, "g");
+// Full-token captures for the two single-file shared pins checked below (web-llm, mediapipe). They
+// reuse VERSION_TOKEN so a dev/bad suffix can never truncate down to the allowed shared base version.
+const WEBLLM_VERSION_RE = new RegExp(`@mlc-ai/web-llm@(${VERSION_TOKEN})`);
+const MEDIAPIPE_VERSION_ASSIGN_RE = new RegExp(`TASKS_VISION_VERSION\\s*=\\s*["'](${VERSION_TOKEN})["']`);
+const MEDIAPIPE_CDN_RE = new RegExp(`tasks-vision@(${VERSION_TOKEN})`);
 export const PIN_PATTERNS = [
   { label: "onnxruntime-web", grep: ORT_PIN_PATTERN },
   { label: "@huggingface/transformers", grep: TJS_PIN_PATTERN },
@@ -45,6 +87,16 @@ export const MIN_REASON_LENGTH = 10;
 export const MIN_EVIDENCE_LENGTH = 5;
 export const REVIEWED_ON_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 export const SEMVER_VERSION_RE = /^[0-9]+\.[0-9]+\.[0-9]+$/;
+
+// STRICT RAW (web-ai-showcase-mtu): the captured token is the WHOLE RAW candidate and is compared
+// against the allowlist exactly as captured — never stripped, never normalised, never decoded, never
+// context-heuristicked. A trailing full stop is part of the candidate and therefore FAILS; sentence
+// punctuation in prose is now a DELIBERATE false red (accepted: the prose author rewords). Query (`?`)
+// and hash (`#`) suffixed specifiers are UNREVIEWED and FAIL CLOSED (we never assume they select the
+// same bytes as the bare version); a percent-encoded separator (`%2F`) is part of the candidate and
+// FAILS. There is deliberately no punctuation exception and no comment detector here: both would
+// re-open the truncation hole this gate exists to close. The derived-inventory exemption
+// (isDerivedInventoryHit below) keeps using this same unmodified raw candidate.
 
 const args = process.argv.slice(2);
 const CHECK_ONLY = args.includes("--check");
@@ -243,12 +295,12 @@ async function transformerPins() {
   }
   const localOverrides = {};
   const files = execSync(
-    `grep -I -rlE '@huggingface/transformers@[0-9]+\\.[0-9]+\\.[0-9]+' models/ 2>/dev/null || true`,
+    `grep -I -rlE '${TJS_PIN_PATTERN}' models/ 2>/dev/null || true`,
     { cwd: ROOT, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
   ).trim().split("\n").filter(Boolean);
   for (const rel of files) {
     const text = await readFile(ROOT + rel, "utf8");
-    for (const m of text.matchAll(/@huggingface\/transformers@([0-9.]+)/g)) {
+    for (const m of text.matchAll(TJS_FULL_VERSION_RE)) {
       localOverrides[m[1]] ||= new Set();
       localOverrides[m[1]].add(rel.split("/")[1]);
     }
@@ -262,8 +314,8 @@ async function transformerPins() {
     recentStable = Object.keys(j.versions || {}).filter((v) => !v.includes("-")).slice(-6);
   } catch { /* offline: report null, never guess */ }
   const shared =
-    (await readFile(ROOT + "lib/webai.js", "utf8")).match(/@huggingface\/transformers@([0-9.]+)/)
-      ?.[1] ?? null;
+    (await readFile(ROOT + "lib/webai.js", "utf8"))
+      .match(new RegExp(`@huggingface/transformers@(${VERSION_TOKEN})`))?.[1] ?? null;
   return {
     shared,
     latest,
@@ -314,6 +366,10 @@ export function findPinsInBinaryFiles() {
   return [...found.values()].sort((a, b) => a.file.localeCompare(b.file));
 }
 
+// NARROW CLAIM (web-ai-showcase-mtu): this gate validates LITERAL numeric-version runtime references in
+// the scanned paths (PIN_SCAN_TARGETS) only. It does NOT claim to cover dynamically built URLs,
+// floating/`latest` specifiers, transitive downloads, or unscanned paths — those remain separate,
+// tracked gaps (floating pins, constant-built ORT URLs), not something this gate silently absorbs.
 export function checkRuntimePins() {
   if (!existsSync(ALLOWLIST_PATH)) {
     return ["missing scripts/runtime-pin-allowlist.json — runtime pin allowlist required"];
@@ -375,6 +431,49 @@ export function checkRuntimePins() {
     }
   }
 
+  if (allowlist.derivedInventory) {
+    const di = allowlist.derivedInventory;
+    const EXEMPTABLE = ["sw.js", "runtime-integrity.json", "scripts/runtime-integrity.mjs"];
+    if (!Array.isArray(di.files)) {
+      return ["scripts/runtime-pin-allowlist.json: derivedInventory.files must be an array"];
+    }
+    // Restrict to exactly the generated inventory. Without this, adding any model worker here would
+    // silently exempt it forever - a reviewer demonstrated exactly that against the previous revision.
+    const badPath = di.files.find((f) => typeof f !== "string" || !EXEMPTABLE.includes(f));
+    if (badPath) {
+      return [
+        `scripts/runtime-pin-allowlist.json: derivedInventory.files may only name the generated inventory (${EXEMPTABLE.join(", ")}), not "${badPath}"`,
+      ];
+    }
+    // Set EQUALITY, not merely "permitted". The exempt set must be exactly this immutable list: adding a
+    // route file is the bypass to close (isDerivedInventoryHit would return true for it), and narrowing it
+    // silently would hide which files are exempt. Equality makes both impossible without editing this
+    // validator, which is itself a reviewed file.
+    const wantSet = [...EXEMPTABLE].sort().join("|");
+    const gotSet = [...di.files].sort().join("|");
+    if (gotSet !== wantSet) {
+      return [
+        `scripts/runtime-pin-allowlist.json: derivedInventory.files must be EXACTLY [${EXEMPTABLE.join(", ")}] (got [${di.files.join(", ")}])`,
+      ];
+    }
+    if (typeof di.reason !== "string" || di.reason.length <= 10) {
+      return ["scripts/runtime-pin-allowlist.json: derivedInventory.reason is required (> 10 chars)"];
+    }
+    if (!REVIEWED_ON_DATE_RE.test(String(di.reviewedOn))) {
+      return ["scripts/runtime-pin-allowlist.json: derivedInventory.reviewedOn must be YYYY-MM-DD"];
+    }
+    if (!Array.isArray(di.gatedBy) || di.gatedBy.length === 0) {
+      return ["scripts/runtime-pin-allowlist.json: derivedInventory.gatedBy must be a non-empty array"];
+    }
+    if (!di.measuredVersions || typeof di.measuredVersions !== "object" || Array.isArray(di.measuredVersions)) {
+      return ["scripts/runtime-pin-allowlist.json: derivedInventory.measuredVersions must be an object"];
+    }
+    for (const [lib, versions] of Object.entries(di.measuredVersions)) {
+      if (!Array.isArray(versions) || versions.length === 0) {
+        return [`scripts/runtime-pin-allowlist.json: derivedInventory.measuredVersions["${lib}"] must be a non-empty array`];
+      }
+    }
+  }
   if (
     !Array.isArray(allowlist.onnxruntimeWeb?.allowedVersions) ||
     allowlist.onnxruntimeWeb.allowedVersions.length === 0
@@ -434,6 +533,70 @@ export function checkRuntimePins() {
   }
 
   const errors = [];
+  // Number of pin occurrences the text scans below actually examined, per pattern. This is the
+  // non-vacuity signal: a pattern that matched nothing returns 0 for its own scan and the test fails
+  // loudly rather than passing on an empty (trivially clean) result. Tracking each pattern separately
+  // means a broken scan for ONE runtime cannot be masked by the other runtime's healthy count
+  // (web-ai-showcase-mtu: the single total previously let a fully-broken onnxruntime-web scan pass
+  // because the transformers count alone already cleared the floor).
+  const scannedCounts = { onnxruntimeWeb: 0, transformers: 0 };
+
+  // The generated integrity inventory is EXEMPT from route-scoped pin checking, and the exemption is
+  // recorded as data in scripts/runtime-pin-allowlist.json (derivedInventory) rather than being a
+  // silent skip in this file, so a reviewer can see and challenge exactly what is exempt.
+  // sw.js emits those URLs inside a delimited generated block; the rest of sw.js is still scanned, so a
+  // runtime URL hardcoded elsewhere in the worker still fails. See the allowlist for what gates it instead.
+  const derivedInventoryFiles = new Set(allowlist.derivedInventory?.files || []);
+  const derivedMeasured = allowlist.derivedInventory?.measuredVersions || {};
+  let swGeneratedRange = null;
+  try {
+    const swLines = readFileSync(ROOT + "sw.js", "utf8").split("\n");
+    const starts = swLines.map((l, n) => (l.includes(">>> runtime-integrity (generated") ? n : -1)).filter((n) => n >= 0);
+    const ends = swLines.map((l, n) => (l.includes("<<< runtime-integrity") ? n : -1)).filter((n) => n >= 0);
+    // FAIL CLOSED on a missing OR DUPLICATED marker. With duplicates, findIndex would silently pick the
+    // first of each and could exempt a span wider than the real manifest. Refuse the exemption and say so
+    // loudly rather than guessing which marker is genuine.
+    const start = starts.length === 1 ? starts[0] : -1;
+    const end = ends.length === 1 ? ends[0] : -1;
+    if (starts.length !== 1 || ends.length !== 1) {
+      errors.push(
+        `sw.js must contain exactly one '>>> runtime-integrity (generated' marker and one '<<< runtime-integrity' marker (found ${starts.length} and ${ends.length}); the derived-inventory exemption is disabled so nothing is skipped`,
+      );
+    }
+    if (starts.length === 1 && ends.length === 1 && starts[0] >= ends[0]) {
+      errors.push(
+        "sw.js runtime-integrity markers must be a single ORDERED pair (opening before closing); the exemption is disabled so nothing is skipped",
+      );
+    }
+    // [start + 2, end] is the generated block WITHOUT either marker line, so a pin written on a marker
+    // line is never exempt. Note this range can never be made airtight by arithmetic alone: a line
+    // inserted just above the closing marker always lands inside it. That is why the exemption is
+    // version-scoped below - the range only says WHERE an exempt line may be, never WHAT may appear there.
+    if (start >= 0 && end > start) swGeneratedRange = [start + 2, end];
+  } catch {
+    // sw.js absent: nothing to exempt, every hit is scanned normally.
+  }
+  // A pin is in the DERIVED region when it lives in one of the generated-inventory files, or inside the
+  // sw.js generated block. (The block is the only part of sw.js that is exempt; the rest of sw.js is
+  // scanned as normal prose.) This is the file/line half of the exemption — the version half is checked
+  // separately in isDerivedInventoryHit. The raw candidate is passed through UNMODIFIED: no normalisation
+  // is applied to any hit, derived or not.
+  const isDerivedRegion = (file, lineNo) => {
+    if (!file || !derivedInventoryFiles.has(file)) return false;
+    if (file !== "sw.js") return true; // runtime-integrity.json / scripts/runtime-integrity.mjs are wholly derived
+    if (!swGeneratedRange) return false; // markers broken → exemption disabled → nothing derived in sw.js
+    const n = Number(lineNo);
+    return Number.isFinite(n) && n >= swGeneratedRange[0] && n <= swGeneratedRange[1];
+  };
+  const isDerivedInventoryHit = (file, lineNo, lib, version) => {
+    if (!isDerivedRegion(file, lineNo)) return false;
+    // VERSION-SCOPED: the file alone earns nothing. The version must also be one the generated inventory
+    // actually measured, so an unauthorised runtime version appearing in any of these files is STILL an
+    // error - which is the whole point of the gate. A reviewer defeated an earlier file-scoped version of
+    // this by adding an unauthorised pin inside the generated block and in the generator's arrays.
+    const allowed = derivedMeasured[lib];
+    return Array.isArray(allowed) && allowed.includes(version);
+  };
 
   // 1. Check onnxruntime-web versions (using grep -I)
   const allowedOrt = new Set(
@@ -441,13 +604,29 @@ export function checkRuntimePins() {
   );
   try {
     const raw = execSync(
-      `grep -I -rhoE '${ORT_PIN_PATTERN}' ${PIN_SCAN_TARGETS} 2>/dev/null || true`,
+      `grep -I -rnE '${ORT_PIN_PATTERN}' ${PIN_SCAN_TARGETS} 2>/dev/null || true`,
       { cwd: ROOT, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
     );
     const foundOrt = new Set();
     for (const line of raw.split("\n")) {
-      const v = line.split("@").pop()?.trim();
-      if (v) foundOrt.add(v);
+      if (!line.trim()) continue;
+      const hit = line.match(/^(.*?):(\d+):(.+)$/);
+      const file = hit ? hit[1] : null;
+      const lineNo = hit ? hit[2] : null;
+      const content = hit ? hit[3] : line;
+      // Enumerate EVERY match on the line (grep emits each matching line once; matchAll re-reads the
+      // content so a multi-match line cannot hide its later versions). The capture uses the WHOLE RAW
+      // candidate (including any suffix) so `1.21.0+malicious` is never truncated to `1.21.0`.
+      for (const m of content.matchAll(ORT_FULL_VERSION_RE)) {
+        scannedCounts.onnxruntimeWeb++;
+        const rawVersion = m[1];
+        if (!rawVersion) continue;
+        // STRICT RAW: the whole captured candidate is judged exactly as captured (no trailing-dot
+        // stripping, no query/hash/percent decoding). The derived-inventory exemption also receives this
+        // same unmodified raw candidate.
+        if (isDerivedInventoryHit(file, lineNo, "onnxruntime-web", rawVersion)) continue;
+        foundOrt.add(rawVersion);
+      }
     }
     for (const v of foundOrt) {
       if (!allowedOrt.has(v)) {
@@ -469,35 +648,50 @@ export function checkRuntimePins() {
 
   try {
     const raw = execSync(
+      // Full-line capture (no -o). grep emits each matching line once; matchAll below re-reads the
+      // content and enumerates EVERY match, so a second, unapproved pin on the same line is still judged
+      // independently.
       `grep -I -rnE '${TJS_PIN_PATTERN}' ${PIN_SCAN_TARGETS} 2>/dev/null || true`,
       { cwd: ROOT, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
     );
     for (const line of raw.split("\n")) {
       if (!line.trim()) continue;
+      const tjsHit = line.match(/^(.*?):(\d+):(.*)$/);
       const colonIdx = line.indexOf(":");
-      const file = colonIdx >= 0 ? line.slice(0, colonIdx) : line;
-      const match = line.match(/@huggingface\/transformers@([0-9.]+)/);
-      if (!match) continue;
-      const v = match[1];
-      if (v === allowedTjsShared) continue;
+      const file = tjsHit ? tjsHit[1] : colonIdx >= 0 ? line.slice(0, colonIdx) : line;
+      const lineNo = tjsHit ? tjsHit[2] : null;
+      const content = tjsHit ? tjsHit[3] : line;
+      // Enumerate EVERY match on the line, not just the first, so a second unapproved pin on the same
+      // line is still judged independently. The capture uses the whole raw candidate (including any
+      // suffix) so `3.7.5-evil.1` is never truncated to `3.7.5`.
+      const matches = [...content.matchAll(TJS_FULL_VERSION_RE)];
+      if (matches.length === 0) continue;
+      for (const m of matches) {
+        scannedCounts.transformers++;
+        const rawVersion = m[1];
+        if (isDerivedInventoryHit(file, lineNo, "@huggingface/transformers", rawVersion)) continue;
+        // STRICT RAW: judged exactly as captured (see VERSION_TOKEN).
+        const v = rawVersion;
+        if (v === allowedTjsShared) continue;
 
-      const allowedSlugs = tjsOverrideMap.get(v);
-      if (!allowedSlugs) {
-        errors.push(
-          `unauthorized @huggingface/transformers version "${v}" in ${file} — not in scripts/runtime-pin-allowlist.json`,
-        );
-        continue;
-      }
+        const allowedSlugs = tjsOverrideMap.get(v);
+        if (!allowedSlugs) {
+          errors.push(
+            `unauthorized @huggingface/transformers version "${v}" in ${file} — not in scripts/runtime-pin-allowlist.json`,
+          );
+          continue;
+        }
 
-      // If version is an allowed override, assert that the file belongs to an authorized slug
-      const slugMatch = file.match(/^models\/([^/]+)\//);
-      const slug = slugMatch ? slugMatch[1] : null;
-      if (!slug || !allowedSlugs.has(slug)) {
-        errors.push(
-          `unauthorized @huggingface/transformers override "${v}" in ${file} — route "${
-            slug || file
-          }" is not authorized in scripts/runtime-pin-allowlist.json`,
-        );
+        // If version is an allowed override, assert that the file belongs to an authorized slug
+        const slugMatch = file.match(/^models\/([^/]+)\//);
+        const slug = slugMatch ? slugMatch[1] : null;
+        if (!slug || !allowedSlugs.has(slug)) {
+          errors.push(
+            `unauthorized @huggingface/transformers override "${v}" in ${file} — route "${
+              slug || file
+            }" is not authorized in scripts/runtime-pin-allowlist.json`,
+          );
+        }
       }
     }
   } catch (e) {
@@ -507,7 +701,7 @@ export function checkRuntimePins() {
   // 3. Check @mlc-ai/web-llm in lib/webllm.js
   if (existsSync(ROOT + "lib/webllm.js")) {
     const text = readFileSync(ROOT + "lib/webllm.js", "utf8");
-    const m = text.match(/@mlc-ai\/web-llm@([0-9.]+)/);
+    const m = text.match(WEBLLM_VERSION_RE);
     const v = m ? m[1] : null;
     if (v !== allowlist.webLlm?.shared) {
       errors.push(
@@ -519,8 +713,7 @@ export function checkRuntimePins() {
   // 4. Check @mediapipe/tasks-vision in lib/mediapipe.js
   if (existsSync(ROOT + "lib/mediapipe.js")) {
     const text = readFileSync(ROOT + "lib/mediapipe.js", "utf8");
-    const m = text.match(/TASKS_VISION_VERSION\s*=\s*["']([0-9.]+)["']/) ||
-      text.match(/tasks-vision@([0-9.]+)/);
+    const m = text.match(MEDIAPIPE_VERSION_ASSIGN_RE) || text.match(MEDIAPIPE_CDN_RE);
     const v = m ? m[1] : null;
     if (v !== allowlist.mediapipe?.shared) {
       errors.push(
@@ -542,6 +735,14 @@ export function checkRuntimePins() {
     errors.push(`failed to scan binary-classified files for runtime pins: ${e.message}`);
   }
 
+  // Non-vacuity signal: how many pin occurrences the text scans actually examined. Attached to the
+  // errors array as a named property (not an indexed element) so existing callers that read .length or
+  // iterate the array keep working, while the test can assert the scan saw a healthy positive number of
+  // pins instead of silently returning [] because the pattern matched nothing. `scannedCount` is the
+  // total (kept for compatibility); `scannedCounts` carries the per-pattern breakdown so a broken scan
+  // for ONE runtime cannot hide behind the other runtime's count.
+  errors.scannedCount = scannedCounts.onnxruntimeWeb + scannedCounts.transformers;
+  errors.scannedCounts = { ...scannedCounts };
   return errors;
 }
 
