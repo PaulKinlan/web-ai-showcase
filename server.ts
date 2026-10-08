@@ -100,8 +100,12 @@ function isLegacyDeployHost(hostname: string): boolean {
   return LEGACY_DEPLOY_HOSTS.has(hostname);
 }
 
-function upstreamRequest(request: Request, url: URL): Request {
-  const target = new URL(`${SITE_PREFIX}${url.pathname}${url.search}`, UPSTREAM_ORIGIN);
+function upstreamRequest(
+  request: Request,
+  url: URL,
+  upstreamOrigin: string = UPSTREAM_ORIGIN,
+): Request {
+  const target = new URL(`${SITE_PREFIX}${url.pathname}${url.search}`, upstreamOrigin);
   const headers = new Headers();
   for (const name of ["accept", "if-modified-since", "if-none-match", "range"]) {
     const value = request.headers.get(name);
@@ -120,23 +124,26 @@ const MAX_UPSTREAM_REDIRECTS = 5;
 // isolated 502 and no body from the foreign origin is ever read, rewritten, or republished.
 class OffOriginUpstreamRedirect extends Error {}
 
-// Every hop of a redirect chain MUST stay on UPSTREAM_ORIGIN. Upstream is GitHub Pages, so a 3xx is
-// normally a same-origin canonicalization (a trailing slash, a renamed path) and legitimately
-// followed. A 3xx to any other origin is refused BEFORE the request is issued, so the foreign origin
-// is never contacted and its bytes can never be republished under CANONICAL_ORIGIN. As with
-// canonicalTarget, the RESOLVED target's origin is checked, never the raw Location string, so a
-// network-path reference such as "//evil.com/x" is rejected rather than resolved off-origin.
+// Every hop of a redirect chain MUST stay on the configured upstream origin (UPSTREAM_ORIGIN in
+// production; injectable so the guard can be exercised end-to-end against a local fixture). Upstream
+// is GitHub Pages, so a 3xx is normally a same-origin canonicalization (a trailing slash, a renamed
+// path) and legitimately followed. A 3xx to any other origin is refused BEFORE the request is issued,
+// so the foreign origin is never contacted and its bytes can never be republished under
+// CANONICAL_ORIGIN. As with canonicalTarget, the RESOLVED target's origin is checked, never the raw
+// Location string, so a network-path reference such as "//evil.com/x" is rejected rather than
+// resolved off-origin.
 async function fetchUpstreamSameOrigin(
   fetchUpstream: typeof fetch,
   request: Request,
   url: URL,
+  upstreamOrigin: string = UPSTREAM_ORIGIN,
 ): Promise<Response> {
-  let current = upstreamRequest(request, url);
+  let current = upstreamRequest(request, url, upstreamOrigin);
   for (let hop = 0; hop <= MAX_UPSTREAM_REDIRECTS; hop++) {
     const response = await fetchUpstream(current);
     // Applied to EVERY response before any body is read or republished, whatever its status. The loop
-    // above only ever issues requests to UPSTREAM_ORIGIN, but if the fetch implementation followed a
-    // redirect on its own the final URL would show it. `response.url` is set by the fetch implementation
+    // above only ever issues requests to the configured upstream origin, but if the fetch
+    // implementation followed a redirect on its own the final URL would show it. `response.url` is set by the fetch implementation
     // for every network response, so a non-empty value that is off-origin is a real escape; it is empty
     // only for a locally constructed Response, which is the test seam, where there is no network origin
     // to verify. Checking here rather than only on the non-redirect path also covers the case below where
@@ -148,7 +155,7 @@ async function fetchUpstreamSameOrigin(
       } catch {
         finalOrigin = null;
       }
-      if (finalOrigin !== UPSTREAM_ORIGIN) throw new OffOriginUpstreamRedirect();
+      if (finalOrigin !== upstreamOrigin) throw new OffOriginUpstreamRedirect();
     }
     if (!UPSTREAM_REDIRECT_STATUSES.has(response.status)) return response;
     const location = response.headers.get("location");
@@ -160,7 +167,7 @@ async function fetchUpstreamSameOrigin(
     } catch {
       throw new OffOriginUpstreamRedirect();
     }
-    if (next.origin !== UPSTREAM_ORIGIN) throw new OffOriginUpstreamRedirect();
+    if (next.origin !== upstreamOrigin) throw new OffOriginUpstreamRedirect();
     current = new Request(next, {
       method: current.method,
       headers: current.headers,
@@ -233,7 +240,12 @@ async function canonicalized(response: Response, request: Request, url: URL): Pr
   );
 }
 
-export function createHandler(fetchUpstream: typeof fetch = fetch) {
+export function createHandler(
+  fetchUpstream: typeof fetch = fetch,
+  // Injectable ONLY so tests can point the proxy at a local fixture and exercise the redirect guard
+  // end-to-end. Production callers pass nothing and get UPSTREAM_ORIGIN, unchanged.
+  upstreamOrigin: string = UPSTREAM_ORIGIN,
+) {
   return async (request: Request): Promise<Response> => {
     const url = new URL(request.url);
     if (request.method !== "GET" && request.method !== "HEAD") {
@@ -256,7 +268,7 @@ export function createHandler(fetchUpstream: typeof fetch = fetch) {
     if (!publicPath(url.pathname)) return isolated(new Response("Not found", { status: 404 }));
 
     try {
-      const response = await fetchUpstreamSameOrigin(fetchUpstream, request, url);
+      const response = await fetchUpstreamSameOrigin(fetchUpstream, request, url, upstreamOrigin);
       return await canonicalized(response, request, url);
     } catch (error) {
       if (error instanceof OffOriginUpstreamRedirect) {
