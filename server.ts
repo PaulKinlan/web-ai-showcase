@@ -107,7 +107,67 @@ function upstreamRequest(request: Request, url: URL): Request {
     const value = request.headers.get(name);
     if (value) headers.set(name, value);
   }
-  return new Request(target, { method: request.method, headers, redirect: "follow" });
+  // "manual" rather than "follow": the proxy must never blind-follow a 3xx whose destination it has
+  // not checked. fetchUpstreamSameOrigin resolves and checks each hop itself.
+  return new Request(target, { method: request.method, headers, redirect: "manual" });
+}
+
+const UPSTREAM_REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+// Bounded so a redirect cycle cannot hold a connection open indefinitely.
+const MAX_UPSTREAM_REDIRECTS = 5;
+
+// A redirect chain left UPSTREAM_ORIGIN. Thrown rather than returned so every caller gets the same
+// isolated 502 and no body from the foreign origin is ever read, rewritten, or republished.
+class OffOriginUpstreamRedirect extends Error {}
+
+// Every hop of a redirect chain MUST stay on UPSTREAM_ORIGIN. Upstream is GitHub Pages, so a 3xx is
+// normally a same-origin canonicalization (a trailing slash, a renamed path) and legitimately
+// followed. A 3xx to any other origin is refused BEFORE the request is issued, so the foreign origin
+// is never contacted and its bytes can never be republished under CANONICAL_ORIGIN. As with
+// canonicalTarget, the RESOLVED target's origin is checked, never the raw Location string, so a
+// network-path reference such as "//evil.com/x" is rejected rather than resolved off-origin.
+async function fetchUpstreamSameOrigin(
+  fetchUpstream: typeof fetch,
+  request: Request,
+  url: URL,
+): Promise<Response> {
+  let current = upstreamRequest(request, url);
+  for (let hop = 0; hop <= MAX_UPSTREAM_REDIRECTS; hop++) {
+    const response = await fetchUpstream(current);
+    // Applied to EVERY response before any body is read or republished, whatever its status. The loop
+    // above only ever issues requests to UPSTREAM_ORIGIN, but if the fetch implementation followed a
+    // redirect on its own the final URL would show it. `response.url` is set by the fetch implementation
+    // for every network response, so a non-empty value that is off-origin is a real escape; it is empty
+    // only for a locally constructed Response, which is the test seam, where there is no network origin
+    // to verify. Checking here rather than only on the non-redirect path also covers the case below where
+    // a redirect status carries no Location and is therefore handed straight back unchecked.
+    if (response.url) {
+      let finalOrigin: string | null = null;
+      try {
+        finalOrigin = new URL(response.url).origin;
+      } catch {
+        finalOrigin = null;
+      }
+      if (finalOrigin !== UPSTREAM_ORIGIN) throw new OffOriginUpstreamRedirect();
+    }
+    if (!UPSTREAM_REDIRECT_STATUSES.has(response.status)) return response;
+    const location = response.headers.get("location");
+    // A 3xx with no Location cannot be followed; hand it back rather than guessing at a destination.
+    if (!location) return response;
+    let next: URL;
+    try {
+      next = new URL(location, current.url);
+    } catch {
+      throw new OffOriginUpstreamRedirect();
+    }
+    if (next.origin !== UPSTREAM_ORIGIN) throw new OffOriginUpstreamRedirect();
+    current = new Request(next, {
+      method: current.method,
+      headers: current.headers,
+      redirect: "manual",
+    });
+  }
+  throw new OffOriginUpstreamRedirect();
 }
 
 function isRewritableContentType(contentType: string): boolean {
@@ -196,9 +256,14 @@ export function createHandler(fetchUpstream: typeof fetch = fetch) {
     if (!publicPath(url.pathname)) return isolated(new Response("Not found", { status: 404 }));
 
     try {
-      const response = await fetchUpstream(upstreamRequest(request, url));
+      const response = await fetchUpstreamSameOrigin(fetchUpstream, request, url);
       return await canonicalized(response, request, url);
-    } catch {
+    } catch (error) {
+      if (error instanceof OffOriginUpstreamRedirect) {
+        // Named distinctly from an unreachable upstream: this is a refusal, not an outage, and the
+        // message must not suggest the canonical origin can be retried into serving foreign bytes.
+        return isolated(new Response("Upstream redirect refused", { status: 502 }));
+      }
       return isolated(new Response("Upstream unavailable", { status: 502 }));
     }
   };
