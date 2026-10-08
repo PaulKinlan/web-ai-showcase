@@ -6,8 +6,12 @@
 // project expects (models/embeddinggemma-2/acceptance-run.json).
 //
 // HALF PATH (documented contract — raw per-half evidence lives here, never at the final path):
-//   models/embeddinggemma-2/acceptance-runs/desktop-half.json
-//   models/embeddinggemma-2/acceptance-runs/mobile-half.json
+//   reports/acceptance/embeddinggemma-2/acceptance-runs/desktop-half.json
+//   reports/acceptance/embeddinggemma-2/acceptance-runs/mobile-half.json
+// These live OUTSIDE models/embeddinggemma-2/ on purpose: scripts/check-portfolio-acceptance.mjs
+// scopes a family's staleness/dirty check to models/<slug> (plus validator + dependency scripts) and
+// only excludes acceptance.json + acceptance-run.json. A committed half under models/ would advance the
+// gate's "latest family commit" past the record; an uncommitted one would trip its dirty check.
 // A single-viewport run with --write-run writes ONLY its half; it can never write the final record.
 // The final record is produced exclusively by `node scripts/validate-embeddinggemma-2.mjs --merge-halves`
 // after both halves exist and pass every fail-closed rule below.
@@ -31,14 +35,14 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = fileURLToPath(new URL("..", import.meta.url));
 
 export const VALIDATOR_PATH = fileURLToPath(new URL("./validate-embeddinggemma-2.mjs", import.meta.url));
 export const FINAL_RECORD_PATH = join(repoRoot, "models/embeddinggemma-2/acceptance-run.json");
-export const HALF_DIR = join(repoRoot, "models/embeddinggemma-2/acceptance-runs");
+export const HALF_DIR = join(repoRoot, "reports/acceptance/embeddinggemma-2/acceptance-runs");
 export const HALF_PATHS = {
   desktop: join(HALF_DIR, "desktop-half.json"),
   mobile: join(HALF_DIR, "mobile-half.json"),
@@ -215,7 +219,7 @@ export function validateHalfPair({ desktop, mobile, currentCommit, currentValida
   const halves = [
     {
       viewport: "desktop",
-      path: "models/embeddinggemma-2/acceptance-runs/desktop-half.json",
+      path: relative(repoRoot, HALF_PATHS.desktop),
       commit: desktop.commit,
       validatorBlobSha: desktop.validatorBlobSha,
       ranAt: desktop.ranAt,
@@ -224,7 +228,7 @@ export function validateHalfPair({ desktop, mobile, currentCommit, currentValida
     },
     {
       viewport: "mobile",
-      path: "models/embeddinggemma-2/acceptance-runs/mobile-half.json",
+      path: relative(repoRoot, HALF_PATHS.mobile),
       commit: mobile.commit,
       validatorBlobSha: mobile.validatorBlobSha,
       ranAt: mobile.ranAt,

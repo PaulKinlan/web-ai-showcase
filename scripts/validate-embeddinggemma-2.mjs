@@ -20,7 +20,7 @@
 // ~2750s but the box reaps a browser at 45 min (2700s), so it does not fit in one run. Two separate runs —
 //   VIEWPORTS=desktop node scripts/acceptance-run.mjs scripts/validate-embeddinggemma-2.mjs --write-run --max-load 40
 //   VIEWPORTS=mobile  node scripts/acceptance-run.mjs scripts/validate-embeddinggemma-2.mjs --write-run --max-load 40
-// each write a HALF artifact (models/embeddinggemma-2/acceptance-runs/{desktop,mobile}-half.json), never the
+// each write a HALF artifact (reports/acceptance/embeddinggemma-2/acceptance-runs/{desktop,mobile}-half.json), never the
 // final record. Then the merge assembles the single 10-cell record the project expects:
 //   node scripts/validate-embeddinggemma-2.mjs --merge-halves
 // See scripts/embeddinggemma-2-half-merge.mjs for the fail-closed rules (missing/failed/stale/duplicate/

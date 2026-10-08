@@ -6,9 +6,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   EXPECTED_ROUTES,
+  HALF_PATHS,
   mergeHalves,
   validateHalfPair,
 } from "../scripts/embeddinggemma-2-half-merge.mjs";
@@ -16,6 +18,7 @@ import {
 const COMMIT = "a".repeat(40);
 const BLOB = "b".repeat(64);
 const SIBLING = new URL("../models/all-distilroberta-v1/acceptance-run.json", import.meta.url);
+const REPO_ROOT = fileURLToPath(new URL("..", import.meta.url));
 
 function cells(viewport) {
   return EXPECTED_ROUTES.map((route) => ({ route, viewport, pass: true }));
@@ -272,4 +275,27 @@ test("validateHalfPair is pure: the good path returns a record with no disk side
   assert.equal(verdict.ok, true, verdict.reason);
   assert.equal(verdict.record.results.length, 10);
   assert.equal(verdict.record.commit, COMMIT);
+});
+
+test("splitMethod.halves paths are derived from HALF_PATHS and live OUTSIDE models/ (gate-trap regression)", () => {
+  const verdict = validateHalfPair({
+    desktop: half("desktop"),
+    mobile: half("mobile"),
+    currentCommit: COMMIT,
+    currentValidatorBlobSha: BLOB,
+  });
+  assert.equal(verdict.ok, true, verdict.reason);
+  const byViewport = Object.fromEntries(verdict.record.splitMethod.halves.map((h) => [h.viewport, h]));
+  // Derived, not hardcoded: the record's splitMethod.halves[].path must equal what the module itself
+  // computes from HALF_PATHS, so the two can never drift apart (review finding 2).
+  assert.equal(byViewport.desktop.path, relative(REPO_ROOT, HALF_PATHS.desktop));
+  assert.equal(byViewport.mobile.path, relative(REPO_ROOT, HALF_PATHS.mobile));
+  // And they must resolve to the new acceptance-evidence location, never under models/<slug> — that is
+  // the path that made scripts/check-portfolio-acceptance.mjs treat committed halves as a stale family
+  // commit (or uncommitted halves as a dirty tree).
+  assert.equal(byViewport.desktop.path, "reports/acceptance/embeddinggemma-2/acceptance-runs/desktop-half.json");
+  assert.equal(byViewport.mobile.path, "reports/acceptance/embeddinggemma-2/acceptance-runs/mobile-half.json");
+  for (const h of verdict.record.splitMethod.halves) {
+    assert.ok(!h.path.startsWith("models/"), `half path must live outside models/: ${h.path}`);
+  }
 });
