@@ -9,6 +9,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { alertWaitTerminal, hasSpeechAlert, isFreshMultiTerminal } from "./ast-acceptance-predicates.mjs";
 import {
   CDP,
   closePage,
@@ -218,16 +219,16 @@ async function drive(rung, viewport) {
       if (rung === "practical") {
         // First fake-mic window can start on a non-speech segment; keep the real stream running
         // until a matching speech window fires the actual alert, or fail after four windows.
-        await waitFor(sid, `!document.querySelector('#alert')?.hidden ||
-          Number(document.querySelector('#rCount')?.textContent) >= 4 ||
-          /Classify error/.test(document.querySelector('#status')?.textContent||'')`,
-          180_000, `${label} real speech alert from fake-mic stream`);
+        await waitFor(sid, `(${alertWaitTerminal.toString()})({
+          hidden:document.querySelector('#alert')?.hidden,
+          count:Number(document.querySelector('#rCount')?.textContent),
+          status:document.querySelector('#status')?.textContent||''
+        })`, 180_000, `${label} real speech alert from fake-mic stream`);
         const alert = await evaluate(sid, `({hidden:document.querySelector('#alert')?.hidden,
           text:document.querySelector('#alert')?.textContent,
           count:Number(document.querySelector('#rCount')?.textContent),
           labels:document.querySelector('#live')?.textContent})`);
-        mark("speech monitor alerts visibly", alert.hidden === false &&
-          /Heard it/i.test(alert.text) && /Speech/i.test(alert.text), JSON.stringify(alert));
+        mark("speech monitor alerts visibly", hasSpeechAlert(alert), JSON.stringify(alert));
         if (!alert.hidden) {
           await evaluate(sid, `(() => { document.querySelector('#alert').scrollIntoView({block:'center'}); return true; })()`);
           await screenshot(cdp, sid, join(EVIDENCE, `${viewport}-practical-alert.png`));
@@ -266,11 +267,14 @@ async function drive(rung, viewport) {
         document.querySelector('#route')?.textContent === 'Ready — hit Route.'`,
         30_000, `${label} JFK sample decoded`);
       await evaluate(sid, `(() => { document.querySelector('#run').click(); return true; })()`);
-      await waitFor(sid, `!document.querySelector('#run')?.disabled &&
-        (!document.querySelector('#whisperOut')?.hidden ||
-        document.querySelector('#rRoute')?.textContent === 'tagged, no ASR' ||
-        /Pipeline failed/.test(document.querySelector('#route')?.textContent||''))`,
-        180_000, `${label} real AST speech → Whisper`);
+      await waitFor(sid, `(${isFreshMultiTerminal.toString()})({
+        runDisabled:document.querySelector('#run')?.disabled,
+        status:document.querySelector('#route')?.textContent||'',
+        readoutVisible:!document.querySelector('#readout')?.hidden,
+        scores:document.querySelector('#astScores')?.children.length||0,
+        route:document.querySelector('#rRoute')?.textContent,
+        whisperVisible:!document.querySelector('#whisperOut')?.hidden
+      })`, 180_000, `${label} real AST speech → Whisper`);
       const result = await evaluate(sid, `({route:document.querySelector('#rRoute')?.textContent,
         ast:document.querySelector('#rAst')?.textContent,
         scores:document.querySelector('#astScores')?.children.length,
