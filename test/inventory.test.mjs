@@ -202,6 +202,41 @@ test("lineage summary reconciliation detects stale inventory and catalogue denom
   );
 });
 
+test("committed catalogue status counts match the committed inventory summary without a scan", async () => {
+  const [catalogue, summary] = await Promise.all([
+    readFile(new URL("models.json", ROOT), "utf8").then(JSON.parse),
+    readFile(new URL("inventory/summary.json", ROOT), "utf8").then(JSON.parse),
+  ]);
+  const counts = { built: 0, pending: 0, blocked: 0 };
+  for (const model of catalogue.models) {
+    assert.ok(
+      Object.hasOwn(counts, model.status),
+      `unknown models.json status ${String(model.status)} for ${model.id ?? model.hfId}`,
+    );
+    counts[model.status]++;
+  }
+  const total = catalogue.models.length;
+  assert.equal(
+    counts.built + counts.pending + counts.blocked,
+    total,
+    "models.json statuses must account for every catalogue entry",
+  );
+  for (const [key, expected] of Object.entries({ total, ...counts })) {
+    assert.equal(
+      summary.catalogue[key],
+      expected,
+      `inventory/summary.json catalogue.${key}=${
+        summary.catalogue[key]
+      } but models.json=${expected}`,
+    );
+  }
+  assert.equal(
+    summary.catalogue.built + summary.catalogue.pending + summary.catalogue.blocked,
+    summary.catalogue.total,
+    "summary catalogue status counts must sum to total",
+  );
+});
+
 test("curated MediaPipe entries are the only scan-time verified eligible type", () => {
   const result = discoveryClassification({
     id: "mediapipe/face-landmarker",
