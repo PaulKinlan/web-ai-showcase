@@ -425,3 +425,56 @@ Deno.test("accepts a same-origin final url so the origin check is not rejecting 
   assertEquals(await response.text(), "<html>fine</html>");
   assertIsolated(response);
 });
+
+// These two tests exist to prove the injectable upstreamOrigin actually REACHES the guard. Without
+// them, an injection that was silently ignored would still pass the whole existing suite, because
+// every existing test uses the default and the default is the constant.
+Deno.test("an injected upstream origin is followed by the guard instead of the constant", async () => {
+  const injected = "https://injected.example";
+  const seen: string[] = [];
+  const handleInjected = createHandler((input) => {
+    const request = input instanceof Request ? input : new Request(input);
+    seen.push(request.url);
+    if (new URL(request.url).pathname.endsWith("/models/demo")) {
+      return Promise.resolve(
+        new Response(null, {
+          status: 301,
+          headers: { location: `${injected}${SITE_PREFIX}/models/demo/` },
+        }),
+      );
+    }
+    return Promise.resolve(
+      new Response("<html>ok</html>", { headers: { "content-type": "text/html" } }),
+    );
+  }, injected);
+  const response = await handleInjected(new Request(`${CANONICAL_ORIGIN}/models/demo`));
+  // A same-origin hop against the INJECTED origin must be followed; a guard still comparing to the
+  // constant would refuse this and return 502.
+  assertEquals(response.status, 200);
+  assertEquals(seen.length, 2);
+  assertMatch(seen[0], /^https:\/\/injected\.example/);
+  assertMatch(seen[1], new RegExp(`^${injected}${SITE_PREFIX}/models/demo/$`));
+});
+
+Deno.test("with an injected origin, the production constant is treated as the foreign origin", async () => {
+  const injected = "https://injected.example";
+  const seen: string[] = [];
+  const handleInjected = createHandler((input) => {
+    const request = input instanceof Request ? input : new Request(input);
+    seen.push(request.url);
+    // Redirect onto the real production constant, which is now NOT the configured upstream.
+    return Promise.resolve(
+      new Response(null, {
+        status: 301,
+        headers: { location: `${UPSTREAM_ORIGIN}${SITE_PREFIX}/models/demo/` },
+      }),
+    );
+  }, injected);
+  const response = await handleInjected(new Request(`${CANONICAL_ORIGIN}/models/demo`));
+  assertEquals(response.status, 502);
+  assertIsolated(response);
+  // Refused before contact: only the injected origin was ever asked, never the constant.
+  assertEquals(seen.length, 1);
+  assertMatch(seen[0], /^https:\/\/injected\.example/);
+  assertNotMatch(seen.join(" "), new RegExp(UPSTREAM_ORIGIN));
+});
