@@ -121,6 +121,8 @@ async function verifyCredit(sid, label, rung, viewport, mark) {
     return {href:a.href, visible:!!a.getClientRects().length,
       context:a.parentElement.textContent.trim()};
   })()`);
+  if (rung === "practical" || rung === "wild") await evaluate(sid,
+    `(() => { document.querySelector('#readout')?.scrollIntoView({block:'center'}); return true; })()`);
   await screenshot(cdp, sid, join(EVIDENCE, `${viewport}-${rung}.png`));
   if (rung === "practical" || rung === "wild") {
     mark("no false bundled JFK credit on mic-only route", !credit);
@@ -213,8 +215,24 @@ async function drive(rung, viewport) {
       mark("real live mic AST classification", result.count > 0 && result.backend === "WASM" &&
         /^\d+ ms$/.test(result.ms) && result.live > 0 && !/error|blocked/i.test(result.status),
         JSON.stringify(result));
-      if (rung === "practical") mark("speech monitor alerts visibly", result.alertHidden === false &&
-        /Heard it/i.test(result.alert), JSON.stringify(result));
+      if (rung === "practical") {
+        // First fake-mic window can start on a non-speech segment; keep the real stream running
+        // until a matching speech window fires the actual alert, or fail after four windows.
+        await waitFor(sid, `!document.querySelector('#alert')?.hidden ||
+          Number(document.querySelector('#rCount')?.textContent) >= 4 ||
+          /Classify error/.test(document.querySelector('#status')?.textContent||'')`,
+          180_000, `${label} real speech alert from fake-mic stream`);
+        const alert = await evaluate(sid, `({hidden:document.querySelector('#alert')?.hidden,
+          text:document.querySelector('#alert')?.textContent,
+          count:Number(document.querySelector('#rCount')?.textContent),
+          labels:document.querySelector('#live')?.textContent})`);
+        mark("speech monitor alerts visibly", alert.hidden === false &&
+          /Heard it/i.test(alert.text) && /Speech/i.test(alert.text), JSON.stringify(alert));
+        if (!alert.hidden) {
+          await evaluate(sid, `(() => { document.querySelector('#alert').scrollIntoView({block:'center'}); return true; })()`);
+          await screenshot(cdp, sid, join(EVIDENCE, `${viewport}-practical-alert.png`));
+        }
+      }
       if (rung === "wild") mark("real live best-guess feed", result.guess && result.guess !== "—" &&
         /% confident/.test(result.score) && result.feed > 0, JSON.stringify(result));
       await evaluate(sid, `(() => { document.querySelector('#listen').click(); return true; })()`);
@@ -230,9 +248,10 @@ async function drive(rung, viewport) {
         document.querySelector('#samples button[data-src="../sample-tone.wav"]')?.getAttribute('aria-pressed') === 'true'`,
         30_000, `${label} tone decoded`);
       await evaluate(sid, `(() => { document.querySelector('#run').click(); return true; })()`);
-      await waitFor(sid, `document.querySelector('#rRoute')?.textContent === 'tagged, no ASR' ||
+      await waitFor(sid, `!document.querySelector('#run')?.disabled &&
+        (document.querySelector('#rRoute')?.textContent === 'tagged, no ASR' ||
         document.querySelector('#rRoute')?.textContent === '→ Whisper' ||
-        /Pipeline failed/.test(document.querySelector('#route')?.textContent||'')`,
+        /Pipeline failed/.test(document.querySelector('#route')?.textContent||''))`,
         120_000, `${label} real non-speech gate`);
       const tone = await evaluate(sid, `({route:document.querySelector('#rRoute')?.textContent,
         whisper:document.querySelector('#rWhisper')?.textContent,
@@ -247,9 +266,10 @@ async function drive(rung, viewport) {
         document.querySelector('#route')?.textContent === 'Ready — hit Route.'`,
         30_000, `${label} JFK sample decoded`);
       await evaluate(sid, `(() => { document.querySelector('#run').click(); return true; })()`);
-      await waitFor(sid, `!document.querySelector('#whisperOut')?.hidden ||
+      await waitFor(sid, `!document.querySelector('#run')?.disabled &&
+        (!document.querySelector('#whisperOut')?.hidden ||
         document.querySelector('#rRoute')?.textContent === 'tagged, no ASR' ||
-        /Pipeline failed/.test(document.querySelector('#route')?.textContent||'')`,
+        /Pipeline failed/.test(document.querySelector('#route')?.textContent||''))`,
         180_000, `${label} real AST speech → Whisper`);
       const result = await evaluate(sid, `({route:document.querySelector('#rRoute')?.textContent,
         ast:document.querySelector('#rAst')?.textContent,
