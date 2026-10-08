@@ -328,6 +328,7 @@ export const AST_CSS = `
 .dropzone.drag { border-color:var(--accent); background:var(--bg-secondary); }
 .dropzone:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
 .sample-row { display:flex; flex-wrap:wrap; gap:.4rem; margin:.5rem 0; }
+.chip { min-block-size:44px; }
 .scores { display:flex; flex-direction:column; gap:.35rem; margin:.5rem 0; }
 .score-row { display:grid; grid-template-columns:minmax(8ch,10rem) 1fr 4.5ch; align-items:center; gap:.5rem;
   font-size:.85rem; }
