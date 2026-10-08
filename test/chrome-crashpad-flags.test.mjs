@@ -1,4 +1,5 @@
-// web-ai-showcase-9z1: verify crashpad / breakpad suppression flags in test harness browser launch args.
+// web-ai-showcase-9z1 / web-ai-showcase-c3h: verify breakpad suppression flags in test harness browser launch args
+// and static assertion that forbidden --disable-crashpad-for-testing is absent.
 // Pure static and argument generation tests — browser-free (verified by test/suite-stays-browser-free.test.mjs).
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -11,15 +12,15 @@ import {
 
 const ROOT = new URL("..", import.meta.url).pathname;
 
-test("HEADLESS_CHROME_CRASH_SUPPRESSION_FLAGS exports recognized Chrome 154 flags", () => {
+test("HEADLESS_CHROME_CRASH_SUPPRESSION_FLAGS exports recognized Chrome 154 flags and omits forbidden flags", () => {
   assert.ok(Array.isArray(HEADLESS_CHROME_CRASH_SUPPRESSION_FLAGS), "must be an array");
   assert.ok(
     HEADLESS_CHROME_CRASH_SUPPRESSION_FLAGS.includes("--disable-breakpad"),
     "must include --disable-breakpad",
   );
   assert.ok(
-    HEADLESS_CHROME_CRASH_SUPPRESSION_FLAGS.includes("--disable-crashpad-for-testing"),
-    "must include --disable-crashpad-for-testing",
+    !HEADLESS_CHROME_CRASH_SUPPRESSION_FLAGS.includes("--disable-crashpad-for-testing"),
+    "must NOT include --disable-crashpad-for-testing (forbidden: causes net::ERR_ABORTED in Chrome 154)",
   );
   assert.ok(
     !HEADLESS_CHROME_CRASH_SUPPRESSION_FLAGS.includes("--disable-crash-reporter"),
@@ -27,7 +28,7 @@ test("HEADLESS_CHROME_CRASH_SUPPRESSION_FLAGS exports recognized Chrome 154 flag
   );
 });
 
-test("getChromeLaunchArgs incorporates suppression flags into default headless arguments", () => {
+test("getChromeLaunchArgs incorporates suppression flags and excludes forbidden flags from headless arguments", () => {
   const args = getChromeLaunchArgs();
   assert.ok(args.includes("--headless=new"), "must include --headless=new");
   assert.ok(args.includes("--no-sandbox"), "must include --no-sandbox");
@@ -41,8 +42,8 @@ test("getChromeLaunchArgs incorporates suppression flags into default headless a
   );
   assert.ok(args.includes("--disable-breakpad"), "launch args must include --disable-breakpad");
   assert.ok(
-    args.includes("--disable-crashpad-for-testing"),
-    "launch args must include --disable-crashpad-for-testing",
+    !args.includes("--disable-crashpad-for-testing"),
+    "launch args must NOT include forbidden flag --disable-crashpad-for-testing",
   );
   assert.ok(
     !args.includes("--disable-crash-reporter"),
@@ -57,12 +58,12 @@ test("getChromeLaunchArgs handles userDataDir correctly", () => {
   assert.ok(args.includes(`--user-data-dir=${targetDir}`), "must include user-data-dir flag");
 });
 
-test("getChromeLaunchArgs respects webgpu option while preserving suppression flags", () => {
+test("getChromeLaunchArgs respects webgpu option while preserving suppression flags and omitting forbidden flags", () => {
   const gpuDisabled = getChromeLaunchArgs({ webgpu: false });
   assert.ok(gpuDisabled.includes("--disable-gpu"));
   assert.ok(!gpuDisabled.includes("--enable-unsafe-webgpu"));
   assert.ok(gpuDisabled.includes("--disable-breakpad"));
-  assert.ok(gpuDisabled.includes("--disable-crashpad-for-testing"));
+  assert.ok(!gpuDisabled.includes("--disable-crashpad-for-testing"));
 
   const gpuEnabled = getChromeLaunchArgs({ webgpu: true });
   assert.ok(!gpuEnabled.includes("--disable-gpu"));
@@ -70,19 +71,19 @@ test("getChromeLaunchArgs respects webgpu option while preserving suppression fl
   assert.ok(gpuEnabled.includes("--use-angle=vulkan"));
   assert.ok(gpuEnabled.includes("--enable-features=Vulkan"));
   assert.ok(gpuEnabled.includes("--disable-breakpad"));
-  assert.ok(gpuEnabled.includes("--disable-crashpad-for-testing"));
+  assert.ok(!gpuEnabled.includes("--disable-crashpad-for-testing"));
 });
 
-test("getChromeLaunchArgs passes extraArgs through without duplicate GPU args", () => {
+test("getChromeLaunchArgs passes extraArgs through without duplicate GPU args and without forbidden flags", () => {
   const extra = ["--js-flags=--max-old-space-size=4096", "--custom-flag"];
   const args = getChromeLaunchArgs({ extraArgs: extra });
   assert.ok(args.includes("--js-flags=--max-old-space-size=4096"));
   assert.ok(args.includes("--custom-flag"));
   assert.ok(args.includes("--disable-breakpad"));
-  assert.ok(args.includes("--disable-crashpad-for-testing"));
+  assert.ok(!args.includes("--disable-crashpad-for-testing"));
 });
 
-test("static check: scripts/browser.mjs source wires launch args into spawnChromeOnce", () => {
+test("static check: scripts/browser.mjs source wires launch args into spawnChromeOnce and forbids --disable-crashpad-for-testing", () => {
   const src = readFileSync(join(ROOT, "scripts/browser.mjs"), "utf8");
 
   // Verify the suppression constants and helpers are defined and exported
@@ -97,12 +98,17 @@ test("static check: scripts/browser.mjs source wires launch args into spawnChrom
     "browser.mjs must export getChromeLaunchArgs helper",
   );
 
-  // Verify flags are present in source
+  // Verify --disable-breakpad is present in source
   assert.match(src, /"--disable-breakpad"/, "browser.mjs must contain --disable-breakpad");
-  assert.match(
-    src,
-    /"--disable-crashpad-for-testing"/,
-    "browser.mjs must contain --disable-crashpad-for-testing",
+
+  // Static assertion: forbidden flag must NOT be present as an argument in browser.mjs launch flags
+  assert.ok(
+    !HEADLESS_CHROME_CRASH_SUPPRESSION_FLAGS.includes("--disable-crashpad-for-testing"),
+    "HEADLESS_CHROME_CRASH_SUPPRESSION_FLAGS must NOT contain --disable-crashpad-for-testing",
+  );
+  assert.ok(
+    !src.includes('"--disable-crashpad-for-testing"'),
+    "browser.mjs must NOT pass forbidden flag --disable-crashpad-for-testing (causes net::ERR_ABORTED in Chrome 154)",
   );
 
   // Verify absent flag is NOT passed to Chrome
