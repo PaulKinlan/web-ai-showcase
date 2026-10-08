@@ -11,7 +11,6 @@ const ORT_WASM = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.21.0/dist/";
 const GTCRN_ID = "bitsydarel/gtcrn-onnx";
 const GTCRN_URL = `https://huggingface.co/${GTCRN_ID}/resolve/main/gtcrn_simple.onnx`;
 const GTCRN_CACHE = "gtcrn-onnx-cache";
-const ASR_ID = "Xenova/whisper-tiny.en";
 const N = 512, H = 256, F = 257, SR = 16000;
 
 let ort = null, gtcrn = null, mod = null, asr = null, device = "wasm";
@@ -85,7 +84,7 @@ async function ensureLoaded() {
   post({ type: "progress", p: { status: "progress", progress: 15 } });
   mod = await import(TRANSFORMERS_URL);
   mod.env.allowLocalModels = false;
-  asr = await mod.pipeline("automatic-speech-recognition", ASR_ID, {
+  asr = await mod.pipeline("automatic-speech-recognition", "Xenova/whisper-tiny.en", {
     dtype: "q8",
     device: "wasm",
     progress_callback: (p) => post({ type: "progress", p }),
