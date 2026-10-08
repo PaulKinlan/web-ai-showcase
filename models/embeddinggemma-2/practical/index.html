@@ -6,7 +6,7 @@
     <title>EmbeddingGemma 2 Practical — chunked semantic search with instant Matryoshka re-ranking · Web AI Showcase</title>
     <meta
       name="description"
-      content="Index a modular technical corpus with EmbeddingGemma 2 on WebGPU, then use the Matryoshka dial to shrink vectors from 768 down to 128 dimensions for a 6× smaller on-device store with instant re-ranking."
+      content="Index a modular technical corpus with EmbeddingGemma 2 on WebGPU, then use the Matryoshka dial to truncate the vectors used for scoring from 768 down to 128 dimensions for instant re-ranking. This page keeps full-width 768-d vectors in its in-memory index; the size figure is only what would be persisted at the chosen width, not a saving it realises."
     />
     <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🧭</text></svg>" />
@@ -16,14 +16,15 @@
 
     <header>
       <p class="eyebrow">use case · practical</p>
-      <h1>Practical: chunked semantic search, then store 6× smaller vectors</h1>
+      <h1>Practical: chunked semantic search with instant Matryoshka re-ranking</h1>
       <p class="lede">
         Chunking a document into semantic windows keeps each passage focused for retrieval. While EmbeddingGemma 2's
         model card documents an 8K context window (and its export <code>config.json</code> configures a 262,144 position range
         with a 512 sliding window), practical on-device search indexes bounded chunks to preserve fast retrieval and low latency.
-        Once indexed, the <strong>Matryoshka dial</strong> lets you truncate stored vectors from 768 down to 128 dimensions—a
-        <strong>6× reduction in storage footprint</strong> (from 3,072 bytes to 512 bytes per chunk)—re-ranking
-        instantly from cached in-memory vectors without re-embedding.
+        Once indexed, the <strong>Matryoshka dial</strong> truncates the vectors used for scoring from 768 down to 128 dimensions,
+        re-ranking instantly from cached in-memory vectors without re-embedding. This page keeps the full-width 768-d vectors in
+        its in-memory index and truncates only to score, so the dial changes retrieval quality, not this page's memory use—
+        a <strong>6× smaller store only for vectors you actually persist at that width</strong> (3,072 → 512 bytes per chunk).
       </p>
     </header>
 
@@ -67,12 +68,13 @@ Client telemetry payloads should utilize the Compression Streams API before uplo
       </div>
 
       <div class="control" style="max-inline-size:32rem;margin:.8rem 0">
-        <label for="dims" style="font-size:.82rem">Stored vector size (Matryoshka dial): <b id="dimsVal">768</b>-d</label>
+        <label for="dims" style="font-size:.82rem">Matryoshka truncation width for scoring (the stored-size figure below is a projection, not a saving this page realises): <b id="dimsVal">768</b>-d</label>
         <div class="row">
           <input id="dims" type="range" min="0" max="3" step="1" value="0" disabled aria-describedby="dimsHint" style="min-inline-size:0" />
         </div>
         <span id="dimsHint" class="hint" style="font-size:.76rem;color:var(--muted)">
-          768 → 512 → 256 → 128. Truncates and re-normalizes cached 768-d unit vectors in memory with zero re-embedding.
+          768 → 512 → 256 → 128. Truncates and re-normalizes the full 768-d unit vectors to score each result, with zero re-embedding.
+          The index still holds full 768-d vectors in memory; the size figure below is only what would be persisted at this width.
         </span>
       </div>
 
@@ -82,19 +84,21 @@ Client telemetry payloads should utilize the Compression Streams API before uplo
 
       <div class="readout" id="readout" hidden>
         <span>backend <b id="rBackend">–</b></span>
-        <span>stored dims <b id="rDim">–</b></span>
+        <span>width <b id="rDim">–</b></span>
         <span>chunks <b id="rChunks">–</b></span>
         <span>max chunk tokens <b id="rTokens">–</b></span>
-        <span>stored size <b id="rSize">–</b></span>
+        <span>projected persisted size <b id="rSize">–</b></span>
         <span>latency <b id="rMs">–</b></span>
       </div>
     </section>
 
     <p class="muted" style="font-size:.85rem">
       Everything runs on-device via WebGPU: the document text never leaves your browser, the embeddings live in
-      memory as Float32 arrays, and moving the slider slices the vector dimensions and re-normalizes Euclidean
-      length via <code>matryoshka()</code>. At 128 dimensions, storing each vector in IndexedDB or OPFS takes only
-      512 bytes (versus 3,072 bytes at 768-d)—a 6× savings for constrained mobile devices.
+      memory as full 768-d Float32 arrays, and moving the slider slices the vector dimensions and re-normalizes Euclidean
+      length via <code>matryoshka()</code> while scoring. This page does not shrink its stored index: it keeps the full
+      768-d vectors in memory, so choosing a smaller width here does not reduce this page's memory use. Persisting
+      truncated vectors yourself would instead take only 512 bytes per vector at 128-d (versus 3,072 bytes at 768-d)—a
+      6× saving only in that persisted store.
       Limitation: although the model card describes cross-modal capability, image inference is unproven on this export and is not exercised here.
     </p>
 
@@ -343,7 +347,9 @@ Client telemetry payloads should utilize the Compression Streams API before uplo
         }
         const bytes = cached.chunks.length * d * 4;
         const sizeStr = bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(1)} KB`;
-        const ratioStr = d < 768 ? ` (${(768 / d).toFixed(0)}× smaller)` : "";
+        // A projection only: the page keeps full 768-d vectors in `cached.docVecs` and never persists a
+        // truncated index, so a smaller width must not read as a saving this page has realised.
+        const ratioStr = d < 768 ? ` (${(768 / d).toFixed(0)}× smaller if persisted at this width)` : "";
         $("rSize").textContent = sizeStr + ratioStr;
         $("rMs").textContent = cachedQuery ? `${cachedQuery.ms} ms (${cached.embedMs} ms doc)` : `${cached.embedMs} ms`;
       }
@@ -372,7 +378,7 @@ Client telemetry payloads should utilize the Compression Streams API before uplo
           const orderNote = sameOrder
             ? `The top-3 retrieval order is <strong>identical</strong> to the 768-d baseline.`
             : `Top results remain concentrated in the same relevant chunks, with minor rank-order variations.`;
-          note.innerHTML = `<strong>Top-3 comparison:</strong> Baseline (768-d): ${baseStr} · Current (${d}-d, ${(768 / d).toFixed(0)}× smaller): ${currStr}. ${orderNote}`;
+          note.innerHTML = `<strong>Top-3 comparison:</strong> Baseline (768-d): ${baseStr} · Current (${d}-d truncation, ${(768 / d).toFixed(0)}× smaller only if persisted): ${currStr}. ${orderNote}`;
         }
       }
     </script>

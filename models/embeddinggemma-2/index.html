@@ -262,8 +262,24 @@ const small = sentence_embedding.slice(null, [0, 256]).normalize(2, -1);</code><
 
       const $ = (id) => document.getElementById(id);
       let engine = null;
+      let runCount = 0;
       const DEFAULT = $("sentences").value;
       let last = null;
+
+      function teardownEngine() {
+        if (engine) {
+          try {
+            if (typeof engine.dispose === "function") {
+              engine.dispose();
+            } else if (engine.worker) {
+              engine.worker.terminate();
+            }
+          } catch {
+            // ignore
+          }
+          engine = null;
+        }
+      }
 
       function renderBudgetTable(container) {
         const table = document.createElement("table");
@@ -314,22 +330,38 @@ const small = sentence_embedding.slice(null, [0, 256]).normalize(2, -1);</code><
           requiresWebGPU: true,
         },
         load: async (onProgress) => {
-          engine = new EmbeddingGemma2Engine();
-          const info = await engine.load(onProgress, { vision: false, audio: false, dtype: "q4", device: "webgpu" });
-          renderBudgetTable($("budget"));
-          return engine;
+          teardownEngine();
+          const next = new EmbeddingGemma2Engine();
+          engine = next;
+          try {
+            const info = await next.load(onProgress, { vision: false, audio: false, dtype: "q4", device: "webgpu" });
+            renderBudgetTable($("budget"));
+            return next;
+          } catch (err) {
+            teardownEngine();
+            throw err;
+          }
         },
         onReady: () => {
           $("run").disabled = false;
           $("query").disabled = false;
           $("search").disabled = false;
         },
-        dispose: (e) => e.worker.terminate(),
+        onError: () => {
+          teardownEngine();
+        },
+        dispose: (e) => {
+          if (e && typeof e.dispose === "function") {
+            e.dispose();
+          } else if (e?.worker) {
+            e.worker.terminate();
+          }
+        },
         onDispose: () => {
           $("run").disabled = true;
           $("query").disabled = true;
           $("search").disabled = true;
-          engine = null;
+          teardownEngine();
         },
       });
 
@@ -348,12 +380,14 @@ const small = sentence_embedding.slice(null, [0, 256]).normalize(2, -1);</code><
         $("run").disabled = true;
         try {
           const r = await engine.embed(texts, "document");
+          runCount++;
           last = r;
           renderMatrix($("matrix"), simMatrix(r.embeddings), r.texts);
           const { points, explained } = pca2d(r.embeddings);
           renderProjection($("projection"), points, r.texts);
           $("explained").textContent = `PC1+PC2 explain ${(explained * 100).toFixed(0)}% of the variance`;
           $("readout").hidden = false;
+          $("readout").dataset.runCount = String(runCount);
           $("rBackend").textContent = r.device.toUpperCase();
           $("rDtype").textContent = r.dtype ?? "q4";
           $("rMs").textContent = r.ms + " ms";

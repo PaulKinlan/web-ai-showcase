@@ -6,7 +6,7 @@
     <title>EmbeddingGemma 2 Multi-model — two generations, one corpus · Web AI Showcase</title>
     <meta
       name="description"
-      content="Compare two generations of EmbeddingGemma on the exact same text corpus: EmbeddingGemma 2 (q4, WebGPU) and EmbeddingGemma v1 (q8, WASM). Observe real ranking overlap, latency, and memory cost with honest sequential unload."
+      content="Compare two generations of EmbeddingGemma on the exact same text corpus: EmbeddingGemma 2 (q4, WebGPU) and EmbeddingGemma v1 (q8, WASM). Observe real ranking overlap (only when both runs scored the same inputs), latency, and combined download footprint, with honest sequential unload."
     />
     <link rel="stylesheet" href="/web-ai-showcase/public/styles.css" />
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🧭</text></svg>" />
@@ -20,10 +20,10 @@
       <p class="lede">
         Run two distinct model generations — EmbeddingGemma 2 (270M backbone, q4 WebGPU) and the original
         EmbeddingGemma 300M (v1, q8 WASM) — over the exact same text corpus and query. Each model runs in its
-        own dedicated worker runtime. Observe the measured ranking agreement, per-model latency, and combined
-        download footprint. The first model is disposed before the second is loaded, which releases its WebGPU
-        session and worker; the released figure shown is what the page reports at that point, not a measurement
-        of other hardware.
+        own dedicated worker runtime. When both runs used the same inputs, the page reports the measured ranking
+        agreement, alongside per-model latency and the combined download footprint. The first model is disposed
+        before the second is loaded: its worker is terminated, which releases its WebGPU session. How much memory
+        the browser reclaims after that is browser-managed and not measured by this page.
       </p>
     </header>
 
@@ -93,9 +93,9 @@ Distributed key-value storage nodes replicating transaction logs across independ
       </div>
 
       <div class="readout" id="readout" hidden style="margin-top:1.2rem">
-        <span>v2 size <b id="rV2Size">175 MB</b></span>
-        <span>v1 size <b id="rV1Size">314 MB</b></span>
-        <span>total size <b id="totalSize">489 MB</b></span>
+        <span>v2 download <b id="rV2Size">175 MB</b></span>
+        <span>v1 download <b id="rV1Size">314 MB</b></span>
+        <span>total download <b id="totalSize">489 MB</b></span>
         <span>v2 tokens <b id="rV2Tokens">–</b></span>
         <span>v1 tokens <b id="rV1Tokens" title="Not reported by this model worker" aria-label="Not reported by this model worker">–</b></span>
         <span>v2 latency <b id="rV2Ms">–</b></span>
@@ -113,10 +113,11 @@ Distributed key-value storage nodes replicating transaction logs across independ
       </p>
       <p class="muted" style="font-size:.85rem">
         Holding both models in browser memory simultaneously is the expensive case: downloading and maintaining both
-        (v1 at ~314 MB q8 and v2 at ~175 MB q4) totals ~489 MB of transfer plus corresponding memory allocations.
-        On mobile or constrained devices, concurrent allocation risks out-of-memory crashes. Sequential unloading —
-        releasing the active model's worker, sessions, and memory buffers before loading the other — is what keeps
-        multi-model evaluation practical and survivable on consumer hardware.
+        (v1 at ~314 MB q8 and v2 at ~175 MB q4) means ~489 MB of transfer, and both sets of weights resident at once.
+        On mobile or constrained devices, that concurrent residency risks out-of-memory crashes. Sequential unloading —
+        terminating the active model's worker, and with it its GPU/WASM session, before loading the other — keeps only
+        one model's weights resident at a time, which is what makes multi-model evaluation survivable on consumer
+        hardware. How much memory the browser actually reclaims is browser-managed and not measured here.
       </p>
     </section>
 
@@ -138,6 +139,8 @@ Distributed key-value storage nodes replicating transaction logs across independ
 .model-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem; margin-bottom: 1rem; }
 .actions-row { display: flex; flex-wrap: wrap; gap: .6rem; align-items: center; margin: .8rem 0; }
 .model-action-group { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; padding: .4rem .6rem; background: var(--bg-secondary); border-radius: 8px; }
+#overlap.mismatch { color: var(--warn, #b8860b); }
+#verdict.mismatch { color: var(--warn, #b8860b); }
 `;
       document.head.append(style);
 
@@ -151,6 +154,9 @@ Distributed key-value storage nodes replicating transaction logs across independ
       let v1Shortlist = null;
       let isUnloadingV2 = false;
       let isUnloadingV1 = false;
+      // The exact inputs each run scored, so two runs can be compared only when they are like-for-like.
+      let v2Signature = null; // { texts: string[], query: string, k: number } | null
+      let v1Signature = null;
 
       function showStatus(msg, isErr = false) {
         const el = $("status");
@@ -161,6 +167,25 @@ Distributed key-value storage nodes replicating transaction logs across independ
         } else {
           el.classList.remove("err");
         }
+      }
+
+      // Stable description of what a run consumed. Two runs may only be compared when their signatures are
+      // equal; otherwise a "ranking agreement" figure would be computed across different text and shown as
+      // though both models saw one corpus. `k` is recorded too, and the top-k handler below keeps it in sync
+      // because that control re-slices each model's already-computed, k-independent full ranking identically.
+      function makeSignature(texts, query, k) {
+        return { texts: [...texts], query, k };
+      }
+
+      function signaturesMatch() {
+        return v2Signature !== null && v1Signature !== null &&
+          JSON.stringify(v2Signature) === JSON.stringify(v1Signature);
+      }
+
+      function setOverlap(text, mismatch = false) {
+        $("overlap").textContent = text;
+        $("overlap").classList.toggle("mismatch", mismatch);
+        $("verdict").classList.toggle("mismatch", mismatch);
       }
 
       function updateInputsState() {
@@ -194,7 +219,7 @@ Distributed key-value storage nodes replicating transaction logs across independ
             releaseBtn.click();
           }
           updateInputsState();
-          showStatus("Model 2 (EmbeddingGemma 2 q4) unloaded: WebGPU session disposed, worker terminated, ~175 MB released from memory.", false);
+          showStatus("Model 2 (EmbeddingGemma 2 q4) unloaded: worker terminated (which releases its WebGPU session). Whether the browser reclaims its ~175 MB download is browser-managed and not measured here.", false);
         } finally {
           isUnloadingV2 = false;
         }
@@ -219,7 +244,7 @@ Distributed key-value storage nodes replicating transaction logs across independ
             releaseBtn.click();
           }
           updateInputsState();
-          showStatus("Model 1 (EmbeddingGemma v1 q8) unloaded: WASM session disposed, worker terminated, ~314 MB released from memory.", false);
+          showStatus("Model 1 (EmbeddingGemma v1 q8) unloaded: worker terminated (which releases its WASM session). Whether the browser reclaims its ~314 MB download is browser-managed and not measured here.", false);
         } finally {
           isUnloadingV1 = false;
         }
@@ -227,18 +252,28 @@ Distributed key-value storage nodes replicating transaction logs across independ
 
       function updateComparison(k) {
         if (!v2Shortlist && !v1Shortlist) {
-          $("overlap").textContent = "–";
+          setOverlap("–");
           $("verdict").textContent = "Run both models on the corpus to compare ranking overlap.";
           return;
         }
         if (!v2Shortlist) {
-          $("overlap").textContent = "–";
+          setOverlap("–");
           $("verdict").textContent = "Model 2 results not available. Both models must complete inference to compare agreement.";
           return;
         }
         if (!v1Shortlist) {
-          $("overlap").textContent = "–";
+          setOverlap("–");
           $("verdict").textContent = "Model 1 results not available. Both models must complete inference to compare agreement.";
+          return;
+        }
+
+        // Both runs produced a ranking — but only report an agreement figure when they scored the SAME inputs.
+        // Editing the corpus, query, or top-k between the two runs would otherwise be presented as a same-input
+        // comparison; instead, say plainly that no agreement is claimed.
+        if (!signaturesMatch()) {
+          setOverlap("Inputs changed between runs — no agreement claimed", true);
+          $("verdict").textContent =
+            "The corpus, query, or top-k differed between the Model 2 and Model 1 runs, so the two rankings were computed over different inputs and are not like-for-like. No agreement is claimed. Re-run both models on the same inputs to compare ranking overlap.";
           return;
         }
 
@@ -249,7 +284,7 @@ Distributed key-value storage nodes replicating transaction logs across independ
         const top1Match = v2Texts[0] === v1Texts[0];
 
         const pct = Math.round((sharedCount / k) * 100);
-        $("overlap").textContent = `${sharedCount} of ${k} (${pct}%) shared in top-${k} · Top-1 ${top1Match ? "matches" : "differs"}`;
+        setOverlap(`${sharedCount} of ${k} (${pct}%) shared in top-${k} · Top-1 ${top1Match ? "matches" : "differs"}`);
 
         if (top1Match) {
           $("verdict").textContent = sharedCount === k
@@ -272,6 +307,9 @@ Distributed key-value storage nodes replicating transaction logs across independ
           showStatus("Model 2 is not loaded. Click 'Load model into memory' in the loader above.", true);
           return;
         }
+        // Record exactly what this run scores, before the async inference, so the later comparison can tell
+        // whether Model 1 saw the same inputs.
+        v2Signature = makeSignature(texts, q, k);
         $("runV2").disabled = true;
         showStatus("Running Model 2 (EmbeddingGemma 2 q4 WebGPU) inference…", false);
         try {
@@ -301,6 +339,7 @@ Distributed key-value storage nodes replicating transaction logs across independ
           showStatus(`BLOCKED: Model 2 (v2) inference failed: ${errMsg}`, true);
           v2AllScored = null;
           v2Shortlist = null;
+          v2Signature = null;
           $("rankedV2").replaceChildren();
           $("rV2Tokens").textContent = "–";
           $("rV2Ms").textContent = "–";
@@ -322,6 +361,10 @@ Distributed key-value storage nodes replicating transaction logs across independ
           showStatus("Model 1 is not loaded. Click 'Load model into memory' in the loader above.", true);
           return;
         }
+        // Record exactly what this run scores, before the async inference, so the comparison can tell whether
+        // Model 2 saw the same inputs. The v2 ranking below survives unloadV2(), so a genuine same-input
+        // comparison is still possible.
+        v1Signature = makeSignature(texts, q, k);
         if (client2) {
           await unloadV2();
         }
@@ -368,6 +411,7 @@ Distributed key-value storage nodes replicating transaction logs across independ
           showStatus(`BLOCKED: Model 1 (v1) inference failed: ${errMsg}`, true);
           v1AllScored = null;
           v1Shortlist = null;
+          v1Signature = null;
           $("rankedV1").replaceChildren();
           $("rV1Tokens").textContent = "–";
           $("rV1Tokens").setAttribute("title", "Not reported by this model worker");
@@ -386,6 +430,11 @@ Distributed key-value storage nodes replicating transaction logs across independ
 
       $("topk").addEventListener("input", () => {
         const k = Math.max(2, Math.min(6, +$("topk").value || 3));
+        // top-k only slices each model's already-computed, k-independent full ranking, and it is applied to
+        // both identically — so move both run signatures to the new k instead of treating it as a change of
+        // scoring input that would void an otherwise valid comparison.
+        if (v2Signature) v2Signature = { ...v2Signature, k };
+        if (v1Signature) v1Signature = { ...v1Signature, k };
         if (v2AllScored) {
           v2Shortlist = v2AllScored.slice(0, k);
           renderRanked($("rankedV2"), v2Shortlist);
@@ -420,6 +469,7 @@ Distributed key-value storage nodes replicating transaction logs across independ
           showStatus(`BLOCKED: Model 2 (EmbeddingGemma 2) failed to load: ${errMsg}`, true);
           v2AllScored = null;
           v2Shortlist = null;
+          v2Signature = null;
           $("rankedV2").replaceChildren();
           $("rV2Tokens").textContent = "–";
           $("rV2Ms").textContent = "–";
@@ -440,7 +490,7 @@ Distributed key-value storage nodes replicating transaction logs across independ
         onDispose: () => {
           client2 = null;
           updateInputsState();
-          showStatus("Model 2 (EmbeddingGemma 2 q4) released from memory (~175 MB freed).", false);
+          showStatus("Model 2 (EmbeddingGemma 2 q4): worker terminated and WebGPU session released. Reclaiming its ~175 MB download is browser-managed and not measured here.", false);
         },
       });
 
@@ -470,6 +520,7 @@ Distributed key-value storage nodes replicating transaction logs across independ
           showStatus(`BLOCKED: Model 1 (v1) failed to load: ${errMsg}`, true);
           v1AllScored = null;
           v1Shortlist = null;
+          v1Signature = null;
           $("rankedV1").replaceChildren();
           $("rV1Tokens").textContent = "–";
           $("rV1Tokens").setAttribute("title", "Not reported by this model worker");
@@ -491,7 +542,7 @@ Distributed key-value storage nodes replicating transaction logs across independ
         onDispose: () => {
           client1 = null;
           updateInputsState();
-          showStatus("Model 1 (EmbeddingGemma v1 q8) released from memory (~314 MB freed).", false);
+          showStatus("Model 1 (EmbeddingGemma v1 q8): worker terminated and WASM session released. Reclaiming its ~314 MB download is browser-managed and not measured here.", false);
         },
       });
     </script>

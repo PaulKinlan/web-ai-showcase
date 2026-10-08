@@ -87,8 +87,31 @@ export class EmbedClient2 {
     this.worker.addEventListener("message", (e) => this._onMessage(e.data));
     this.worker.addEventListener("error", (e) => {
       const err = new Error(e.message || "Worker failed to start");
-      this._fail(err);
+      if (!this._ready || this._loadWaiters.length > 0) {
+        this.dispose(err);
+      } else {
+        this._fail(err);
+      }
     });
+  }
+
+  /**
+   * Shared teardown/disposal helper. Terminates the underlying worker, nulls the reference,
+   * resets readiness/modalities, and rejects any pending waiters. Safe to call multiple times.
+   */
+  dispose(err) {
+    if (this.worker) {
+      try {
+        this.worker.terminate();
+      } catch {
+        // ignore
+      }
+      this.worker = null;
+    }
+    this._ready = false;
+    this.modalities = { vision: false, audio: false };
+    this.sessions = [];
+    this._fail(err || new Error("Worker disposed"));
   }
 
   _fail(err) {
@@ -124,18 +147,31 @@ export class EmbedClient2 {
         this._pending.get(msg.id).reject(new Error(msg.message));
         this._pending.delete(msg.id);
       } else {
-        this._fail(new Error(msg.message));
+        const err = new Error(msg.message);
+        if (!this._ready || this._loadWaiters.length > 0) {
+          this.dispose(err);
+        } else {
+          this._fail(err);
+        }
       }
     }
   }
 
   /** Load (or reload) with the requested encoder set. Resolves with { device, dtype, modalities, sessions }. */
-  load(onProgress, { vision = false, audio = false, dtype = "q4", device = "webgpu" } = {}) {
+  async load(onProgress, { vision = false, audio = false, dtype = "q4", device = "webgpu" } = {}) {
     if (onProgress) this.onProgress = onProgress;
-    this.worker.postMessage({ type: "load", vision, audio, dtype, device });
-    return new Promise((resolve, reject) => {
-      this._loadWaiters.push({ resolve, reject });
-    });
+    if (!this.worker) {
+      throw new Error("Worker is not available or has been disposed");
+    }
+    try {
+      this.worker.postMessage({ type: "load", vision, audio, dtype, device });
+      return await new Promise((resolve, reject) => {
+        this._loadWaiters.push({ resolve, reject });
+      });
+    } catch (err) {
+      this.dispose(err);
+      throw err;
+    }
   }
 
   /** Text → { embeddings: number[][] (768-d unit vectors), norms, dim, tokenCounts, mode, ms, device }. */
@@ -155,8 +191,17 @@ export class EmbedClient2 {
 
   _request(id, payload) {
     return new Promise((resolve, reject) => {
+      if (!this.worker) {
+        reject(new Error("Worker is not available or has been disposed"));
+        return;
+      }
       this._pending.set(id, { resolve, reject });
-      this.worker.postMessage(payload);
+      try {
+        this.worker.postMessage(payload);
+      } catch (err) {
+        this._pending.delete(id);
+        reject(err);
+      }
     });
   }
 }

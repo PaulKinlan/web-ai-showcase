@@ -186,10 +186,45 @@ async function exercise(routeName, viewportName, viewport, firstVisit = false) {
       const reinit = await waitFor(page.sessionId, `(()=>{for(const b of document.querySelectorAll('.model-loader button')){if(/Load model into memory/.test(b.textContent)){b.click();return true}}return false})()`, "overview release", 4 * 60_000);
       ok = check(`${viewportName} overview: model can be released from memory`, reinit) && ok;
       await waitFor(page.sessionId, `!document.querySelector('#run')?.disabled`, "overview re-init");
+
+      // Anti-stale re-inference detection:
+      // The first inference run populated #rDim ('768'), #iNorm (~1.0000), #iNan ('0'), and #rMs. Those DOM
+      // values survive the release/re-init lifecycle. If the second inference silently fails or never runs,
+      // a check waiting only on '#rDim === 768' would pass vacuously on stale output from the first run.
+      // To ensure the assertion only passes if a genuine NEW inference occurred:
+      // 1. Record the pre-run count exposed by the page on #readout.dataset.runCount.
+      // 2. Clear/blank the output DOM nodes (#rDim, #iNorm, #iNan, #rMs) before triggering re-inference.
+      // 3. Trigger re-inference by clicking #run.
+      // 4. Wait for both a fresh run count (> prevRuns) AND #rDim to become non-empty ('768').
+      // 5. Assert afterRelease has norm ~ 1, nan == 0, and runs > prevRuns.
+      const prevRuns = Number(await evaluate(page.sessionId, `Number(document.querySelector('#readout')?.dataset.runCount || 0)`));
+      await evaluate(page.sessionId, `(()=>{
+        const dim = document.querySelector('#rDim');
+        if (dim) dim.textContent = '';
+        const norm = document.querySelector('#iNorm');
+        if (norm) norm.textContent = '';
+        const nan = document.querySelector('#iNan');
+        if (nan) nan.textContent = '';
+        const ms = document.querySelector('#rMs');
+        if (ms) ms.textContent = '';
+        return true;
+      })()`);
       await evaluate(page.sessionId, click("#run"));
-      await waitFor(page.sessionId, `document.querySelector('#rDim')?.textContent==='768'`, "overview re-run after re-init");
-      const afterRelease = JSON.parse(await evaluate(page.sessionId, `JSON.stringify({norm:Number(document.querySelector('#iNorm')?.textContent),nan:Number(document.querySelector('#iNan')?.textContent)})`));
-      ok = check(`${viewportName} overview: inference works again after release + re-initialise`, Math.abs(afterRelease.norm - 1) < 0.01 && afterRelease.nan === 0, JSON.stringify(afterRelease)) && ok;
+      await waitFor(
+        page.sessionId,
+        `document.querySelector('#rDim')?.textContent==='768' && Number(document.querySelector('#readout')?.dataset.runCount || 0) > ${prevRuns}`,
+        "overview re-run after re-init",
+      );
+      const afterRelease = JSON.parse(await evaluate(page.sessionId, `JSON.stringify({
+        norm: Number(document.querySelector('#iNorm')?.textContent),
+        nan: Number(document.querySelector('#iNan')?.textContent),
+        runs: Number(document.querySelector('#readout')?.dataset.runCount || 0)
+      })`));
+      ok = check(
+        `${viewportName} overview: inference works again after release + re-initialise`,
+        afterRelease.runs > prevRuns && Math.abs(afterRelease.norm - 1) < 0.01 && afterRelease.nan === 0,
+        JSON.stringify(afterRelease),
+      ) && ok;
       ok = await hygiene(page, route, viewportName) && ok;
       pass = ok;
     } else if (routeName === "basics") {
@@ -199,7 +234,17 @@ async function exercise(routeName, viewportName, viewport, firstVisit = false) {
       // Read the COSINE column (3rd cell) for the finite check, not td:last-child: the last cell is the delta
       // column, and the baseline row renders "0.000 (baseline)", so Number() on it is NaN and would fail a
       // correct page. The baseline row is asserted separately for its own text, which is the real property.
-      const basics = JSON.parse(await evaluate(page.sessionId, `JSON.stringify({score:Number(document.querySelector('#score')?.textContent),rows:[...document.querySelectorAll('#prefixTable tbody tr')].map(r=>Number(r.querySelector('td:nth-child(3)')?.textContent)),deltas:[...document.querySelectorAll('#prefixTable tbody tr')].map(r=>r.querySelector('td:last-child')?.textContent||''),prompts:[...document.querySelectorAll('#prefixTable tbody tr')].map(r=>r.querySelector('td:nth-child(2)')?.textContent||''),conclusion:document.querySelector('#prefixTable .ctx-note')?.textContent||'',mode:document.querySelector('#rMode')?.textContent,tok:document.querySelector('#rTok')?.textContent,dim:document.querySelector('#rDim')?.textContent})`));
+      const basics = JSON.parse(await evaluate(page.sessionId, `JSON.stringify({
+        score: Number(document.querySelector('#score')?.textContent),
+        tasks: [...document.querySelectorAll('#prefixTable tbody tr')].map(r => r.querySelector('th')?.textContent?.trim() || ''),
+        rows: [...document.querySelectorAll('#prefixTable tbody tr')].map(r => Number(r.querySelector('td:nth-child(3)')?.textContent)),
+        deltas: [...document.querySelectorAll('#prefixTable tbody tr')].map(r => r.querySelector('td:last-child')?.textContent || ''),
+        prompts: [...document.querySelectorAll('#prefixTable tbody tr')].map(r => r.querySelector('td:nth-child(2)')?.textContent || ''),
+        conclusion: document.querySelector('#prefixTable .ctx-note')?.textContent || '',
+        mode: document.querySelector('#rMode')?.textContent,
+        tok: document.querySelector('#rTok')?.textContent,
+        dim: document.querySelector('#rDim')?.textContent
+      })`));
       ok = check(`${viewportName} Basics: real cosine in (0,1]`, basics.score > 0 && basics.score <= 1.0001, String(basics.score)) && ok;
       ok = check(`${viewportName} Basics: 768-d output reported`, basics.dim === "768", String(basics.dim)) && ok;
       // Honest name: this asserts the table is internally consistent, NOT that the vectors were really
@@ -210,33 +255,75 @@ async function exercise(routeName, viewportName, viewport, firstVisit = false) {
       ok = check(`${viewportName} Basics: selected score is one of the table rows`, basics.rows.some((v) => Math.abs(v - basics.score) <= 0.0005), `score=${basics.score} rows=${JSON.stringify(basics.rows)}`) && ok;
       // The baseline row must be labelled as the baseline rather than showing a bare delta, so a page that
       // silently dropped its control row cannot pass just by producing five finite cosines.
-      ok = check(`${viewportName} Basics: baseline row labelled`, basics.deltas.filter((d) => /baseline/i.test(d)).length === 1, JSON.stringify(basics.deltas)) && ok;
-      // The labelled row must be the genuinely BARE row, not just any row someone labelled. The page renders
-      // each row's prompt mapping in the 2nd cell, and the no-prefix row's mapping says so in words.
-      const baselinePrompt = basics.prompts[baselineIdxOf(basics)] ?? "";
-      ok = check(`${viewportName} Basics: labelled row is the bare no-prefix row`, /bare text|no task prefix/i.test(String(baselinePrompt)), `prompt="${String(baselinePrompt).slice(0, 80)}"`) && ok;
-      // Five identical cosines plus a baseline label would satisfy everything above while demonstrating no
-      // prefix effect at all, so require real variation AND require the DISPLAYED deltas to reconcile with
-      // the cosines (delta_i = cosine_i - cosine_baseline). That ties the table's two numeric columns
-      // together, which is the property the page exists to show.
       const baselineIdx = basics.deltas.findIndex((d) => /baseline/i.test(d));
+      ok = check(`${viewportName} Basics: baseline row labelled`, basics.deltas.filter((d) => /baseline/i.test(d)).length === 1 && baselineIdx >= 0, JSON.stringify(basics.deltas)) && ok;
+
+      // FIX 4 (a): Require EXACTLY ONE row to be the genuinely bare/baseline row (i.e. no other row's
+      // prompt mapping is bare).
+      const isBare = (p) => /bare text|no task prefix/i.test(String(p));
+      const bareIndices = basics.prompts
+        .map((p, idx) => (isBare(p) ? idx : -1))
+        .filter((idx) => idx >= 0);
+      const exactlyOneBareRow = bareIndices.length === 1 && bareIndices[0] === baselineIdx;
+      ok = check(
+        `${viewportName} Basics: exactly one row is bare and matches the baseline row`,
+        exactlyOneBareRow,
+        `bareIndices=${JSON.stringify(bareIndices)} baselineIdx=${baselineIdx} prompts=${JSON.stringify(basics.prompts)}`,
+      ) && ok;
+
+      // FIX 4 (c): Assert that the displayed prefix mapping for each row matches the prefix the page claims
+      // to have applied rather than merely being non-empty. All 5 documented tasks must be present, and each
+      // row's displayed instruction mapping in column 2 must match the instruction syntax for that task.
+      const EXPECTED_PREFIX_SPECS = [
+        { name: "search result", labelRe: /search result/i, promptRe: /task:\s*search result\s*\|\s*query:.*title:\s*none\s*\|\s*text:/i },
+        { name: "classification", labelRe: /classification/i, promptRe: /task:\s*classification\s*\|\s*query:/i },
+        { name: "clustering", labelRe: /clustering/i, promptRe: /task:\s*clustering\s*\|\s*query:/i },
+        { name: "sentence similarity", labelRe: /sentence similarity/i, promptRe: /task:\s*sentence similarity\s*\|\s*query:/i },
+        { name: "none", labelRe: /none/i, promptRe: /bare text|no task prefix/i },
+      ];
+      const allSpecsCovered = EXPECTED_PREFIX_SPECS.every((spec) =>
+        basics.tasks.some((taskText) => spec.labelRe.test(taskText))
+      );
+      const prefixMappingsMatch = basics.tasks.length >= 5 && basics.tasks.every((taskText, i) => {
+        const spec = EXPECTED_PREFIX_SPECS.find((s) => s.labelRe.test(taskText));
+        if (!spec) return false;
+        return spec.promptRe.test(basics.prompts[i]);
+      });
+      ok = check(
+        `${viewportName} Basics: displayed prefix mapping matches the task prefix claimed for each row`,
+        allSpecsCovered && prefixMappingsMatch,
+        `tasks=${JSON.stringify(basics.tasks)} prompts=${JSON.stringify(basics.prompts)}`,
+      ) && ok;
+
+      // FIX 4 (b): Five identical cosines plus a baseline label would demonstrate no prefix effect at all.
+      // Require real variation across prefixes (unique values at 3 decimals) AND non-zero variation vs baseline,
+      // AND reconcile the displayed deltas against the cosine column (delta_i = cosine_i - cosine_baseline).
       const uniqueCos = new Set(basics.rows.map((v) => v.toFixed(3))).size;
-      ok = check(`${viewportName} Basics: cosine values actually vary across prefixes`, uniqueCos > 1, `distinct=${uniqueCos} rows=${JSON.stringify(basics.rows)}`) && ok;
       const cosBase = basics.rows[baselineIdx];
+      const hasCosVariation = uniqueCos > 1 && Number.isFinite(cosBase) && basics.rows.some((v) => Math.abs(v - cosBase) >= 0.0005);
+      ok = check(`${viewportName} Basics: cosine values actually vary across prefixes`, hasCosVariation, `distinct=${uniqueCos} baseline=${cosBase} rows=${JSON.stringify(basics.rows)}`) && ok;
       const deltaReconciles = Number.isFinite(cosBase) && basics.rows.every((cos, i) => {
         const shown = Number(String(basics.deltas[i]).match(/[-+]?\d*\.?\d+/)?.[0]);
         return Number.isFinite(shown) && Math.abs(shown - (cos - cosBase)) <= 0.002;
       });
       ok = check(`${viewportName} Basics: displayed deltas reconcile with the cosine column`, deltaReconciles, `baseline=${cosBase} deltas=${JSON.stringify(basics.deltas)}`) && ok;
-      // Tie the page's OWN conclusion sentence to its own numbers, using the ±0.01 rule the page states. This
-      // catches a conclusion that contradicts the table without hard-coding an effect size the model must
-      // show, which would false-fail on a run where prefixes genuinely do not move the score.
+
+      // FIX 3: Tie the page's OWN conclusion sentence to its own numbers, using the ±0.01 rule the page states.
+      // Invert vacuous pass: an unrecognised, empty, or missing conclusion must FAIL (the page must state a
+      // conclusion the validator recognises and that agrees with its own deltas).
       const maxAbsDelta = Math.max(...basics.rows.map((cos) => Math.abs(cos - cosBase)));
-      const conclusion = String(basics.conclusion);
-      const conclusionConsistent = /unchanged/i.test(conclusion)
-        ? maxAbsDelta < 0.01
-        : (/changed the similarity/i.test(conclusion) ? maxAbsDelta >= 0.01 : true);
-      ok = check(`${viewportName} Basics: table conclusion agrees with the table's own deltas`, conclusionConsistent, `maxAbsDelta=${maxAbsDelta.toFixed(3)} conclusion="${conclusion.slice(0, 90)}"`) && ok;
+      const conclusion = String(basics.conclusion).trim();
+      const claimsUnchanged = /unchanged/i.test(conclusion);
+      const claimsChanged = /changed the similarity/i.test(conclusion);
+      const conclusionRecognised = (claimsUnchanged || claimsChanged) && !(claimsUnchanged && claimsChanged);
+      const conclusionConsistent = conclusionRecognised && (
+        claimsUnchanged ? maxAbsDelta < 0.01 : maxAbsDelta >= 0.01
+      );
+      ok = check(
+        `${viewportName} Basics: table conclusion agrees with the table's own deltas`,
+        conclusionConsistent,
+        `maxAbsDelta=${maxAbsDelta.toFixed(3)} recognised=${conclusionRecognised} conclusion="${conclusion.slice(0, 90)}"`,
+      ) && ok;
       ok = await hygiene(page, route, viewportName) && ok;
       pass = ok;
     } else if (routeName === "practical") {
@@ -252,13 +339,18 @@ async function exercise(routeName, viewportName, viewport, firstVisit = false) {
       await waitFor(page.sessionId, `document.querySelectorAll('#ranked .result-row').length>=2`, "Practical search");
       const hits = JSON.parse(await evaluate(page.sessionId, `JSON.stringify([...document.querySelectorAll('#ranked .result-row .result-score')].map(s=>Number(s.textContent)))`));
       ok = check(`${viewportName} Practical: chunk retrieval returns finite scores`, hits.length >= 2 && hits.every(Number.isFinite), JSON.stringify(hits.slice(0, 4))) && ok;
-      // Matryoshka dial: the stored width changes and the reported corpus size shrinks, with no re-embedding.
+      // Matryoshka dial: the width changes, the re-rank is real, and the PROJECTED persisted size changes
+      // with no re-embedding. The page must not claim it realised a saving: it keeps full-width 768-d
+      // vectors in memory and truncates only for scoring, so the figure has to be labelled a projection.
+      // That wording is asserted below, because the dishonest version of this page passed every numeric
+      // check here while claiming a 6x memory reduction it never made.
       const before = await evaluate(page.sessionId, `document.querySelector('#rSize')?.textContent`);
       await evaluate(page.sessionId, `(()=>{const s=document.querySelector('#dims');if(!s)return false;s.value=s.max;s.dispatchEvent(new Event('input',{bubbles:true}));return true})()`);
       await waitFor(page.sessionId, `document.querySelector('#rDim')?.textContent==='128-d' || document.querySelector('#rDim')?.textContent==='128'`, "Practical 128-d");
       const after = await evaluate(page.sessionId, `document.querySelector('#rSize')?.textContent`);
       const afterHits = JSON.parse(await evaluate(page.sessionId, `JSON.stringify([...document.querySelectorAll('#ranked .result-row .result-score')].map(s=>Number(s.textContent)))`));
-      ok = check(`${viewportName} Practical: 128-d re-rank is real and the stored index shrinks`, afterHits.every(Number.isFinite) && after !== before && afterHits.length >= 2, `${before} -> ${after}`) && ok;
+      ok = check(`${viewportName} Practical: 128-d re-rank is real and the projected persisted size changes`, afterHits.every(Number.isFinite) && after !== before && afterHits.length >= 2, `${before} -> ${after}`) && ok;
+      ok = check(`${viewportName} Practical: size figure is labelled a projection, not a realised saving`, /if persisted/i.test(String(after)), `after="${after}"`) && ok;
       ok = await hygiene(page, route, viewportName) && ok;
       pass = ok;
     } else if (routeName === "wild") {
