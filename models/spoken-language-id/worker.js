@@ -11,7 +11,6 @@
 
 import { loadPipeline } from "/web-ai-showcase/lib/webai.js";
 
-const MODEL = "Xenova/mms-lid-126";
 const TASK = "audio-classification";
 const SR = 16000;
 
@@ -26,7 +25,7 @@ async function ensureLoaded() {
   if (pipe) return;
   const loaded = await loadPipeline({
     task: TASK,
-    model: MODEL,
+    model: "Xenova/mms-lid-126",
     backend: "wasm",
     dtype: "q8",
     onProgress: (p) => post({ type: "progress", p }),
