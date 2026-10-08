@@ -274,32 +274,29 @@ async function exercise(cdp, page, rung, viewport) {
     return true;
   })()`);
   await screenshot(cdp, sid, join(EVIDENCE_DIR, `${viewport}-${rung}.png`));
-  if (rung === "wild") {
-    check(`${viewport} ${rung}: no JFK sample attributed to the microphone recording`, !credit);
-  } else {
-    const recordUrl = "https://github.com/PaulKinlan/web-ai-showcase/blob/ab33435d6c4a50ca5d02184e8445b61998eb88fc/audio-provenance/ledger.json";
-    const visible = credit?.visible && credit.href.startsWith(recordUrl) &&
-      /John F\. Kennedy/.test(credit.context) && /public domain/.test(credit.context);
-    let responseStatus = 0;
-    cdp.on((msg) => {
-      if (msg.sessionId === sid && msg.method === "Network.responseReceived" &&
-          msg.params.type === "Document" && msg.params.response.url.startsWith(recordUrl)) {
-        responseStatus = msg.params.response.status;
-      }
-    });
-    if (visible) {
-      await evaluate(cdp, sid, `(() => {
-        const link = document.querySelector('a[href^="https://github.com/PaulKinlan/web-ai-showcase/blob/ab33435d6c4a50ca5d02184e8445b61998eb88fc/audio-provenance/ledger.json"]');
-        setTimeout(() => link.click(), 0);
-        return true;
-      })()`);
-      await waitFor(cdp, sid, `location.href.startsWith(${JSON.stringify(recordUrl)})`,
-        30_000, `${viewport} ${rung} credit navigation`, 500);
+  const recordUrl = "https://github.com/PaulKinlan/web-ai-showcase/blob/ab33435d6c4a50ca5d02184e8445b61998eb88fc/audio-provenance/ledger.json";
+  const visible = credit?.visible && credit.href.startsWith(recordUrl) &&
+    /John F\. Kennedy/.test(credit.context) && /public domain/.test(credit.context) &&
+    (rung !== "wild" || /other rungs/.test(credit.context));
+  let responseStatus = 0;
+  cdp.on((msg) => {
+    if (msg.sessionId === sid && msg.method === "Network.responseReceived" &&
+        msg.params.type === "Document" && msg.params.response.url.startsWith(recordUrl)) {
+      responseStatus = msg.params.response.status;
     }
-    check(`${viewport} ${rung}: visible JFK credit opens live provenance record`,
-      visible && responseStatus >= 200 && responseStatus < 400,
-      JSON.stringify({ credit, responseStatus }));
+  });
+  if (visible) {
+    await evaluate(cdp, sid, `(() => {
+      const link = document.querySelector('a[href^="https://github.com/PaulKinlan/web-ai-showcase/blob/ab33435d6c4a50ca5d02184e8445b61998eb88fc/audio-provenance/ledger.json"]');
+      setTimeout(() => link.click(), 0);
+      return true;
+    })()`);
+    await waitFor(cdp, sid, `location.href.startsWith(${JSON.stringify(recordUrl)})`,
+      30_000, `${viewport} ${rung} credit navigation`, 500);
   }
+  check(`${viewport} ${rung}: visible JFK credit opens live provenance record`,
+    visible && responseStatus >= 200 && responseStatus < 400,
+    JSON.stringify({ credit, responseStatus }));
 }
 
 try {
