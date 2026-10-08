@@ -193,9 +193,13 @@ async function drive(rung, viewport) {
         !/failed/i.test(result.status), JSON.stringify(result));
       if (rung === "overview") mark("see-inside real score table", result.inside > 0);
     } else if (rung === "practical" || rung === "wild") {
-      if (rung === "practical") await evaluate(sid, `(() => {
-        const t=document.querySelector('#thresh'); t.value='0.02'; t.dispatchEvent(new Event('input',{bubbles:true})); return true;
-      })()`);
+      if (rung === "practical") {
+        const defaults = await evaluate(sid, `({pressed:[...document.querySelectorAll('#targets button')]
+          .filter(b=>b.getAttribute('aria-pressed')==='true').map(b=>b.dataset.match),
+          threshold:document.querySelector('#thresh')?.value})`);
+        mark("default Speech target and sensitivity remain selected", defaults.pressed.length === 1 &&
+          defaults.pressed[0] === "Speech" && defaults.threshold === "0.12", JSON.stringify(defaults));
+      }
       await evaluate(sid, `(() => { document.querySelector('#listen').click(); return true; })()`);
       await waitFor(sid, `document.querySelector('#listen')?.textContent === 'Stop listening'`,
         25_000, `${label} fake-device mic stream started`);
@@ -320,7 +324,7 @@ try {
   if (server) await new Promise((resolve) => server.close(resolve));
   rmSync(PROFILE, {recursive:true,force:true});
 }
-const succeeded = results.length === 10 && results.every((r) => r.pass) && checks === 62 && checks === passed;
+const succeeded = results.length === 10 && results.every((r) => r.pass) && checks === 64 && checks === passed;
 console.log(`\n${passed}/${checks} checks passed across ${results.length}/10 route cells.`);
 console.log(`ROUTE-RESULTS-JSON: ${JSON.stringify(results)}`);
 if (WRITE_RUN && succeeded) {
@@ -330,7 +334,7 @@ if (WRITE_RUN && succeeded) {
     ":(exclude)models/ast-audio-classification/acceptance-run.json"],
   {cwd:repoRoot,encoding:"utf8"}).trim();
   writeFileSync(RECORD, JSON.stringify({commit,ranAt:new Date().toISOString(),exitCode:0,
-    results,notes:"Ten route×viewport cells: real AST classification on every rung, fake-mic live listening on practical/wild, real AST speech gate and Whisper transcription on multi-model, non-speech tone skips Whisper. Visible linked JFK Speech clip credit on three JFK routes with clicked GitHub ledger hash, creator, licence and path; no false bundled credit on mic-only routes; responsive/console/network checks; screenshots outside repo."},null,2)+"\n");
+    results,notes:"Ten route×viewport cells: real AST classification on every rung, fake-mic live listening on practical/wild; Practical keeps the selected default Speech target and default 0.12 sensitivity, with an actual visible Speech alert on both desktop and mobile. Real AST speech gate and Whisper transcription on multi-model; non-speech tone skips Whisper. Visible linked JFK Speech clip credit on three JFK routes with clicked GitHub ledger hash, creator, licence and path; no false bundled credit on mic-only routes; responsive/console/network checks; screenshots outside repo."},null,2)+"\n");
   console.log(`WROTE ${RECORD} for ${commit}`);
 }
 process.exit(succeeded ? 0 : 1);
