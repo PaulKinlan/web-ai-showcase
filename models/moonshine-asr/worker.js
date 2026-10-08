@@ -9,7 +9,6 @@
 
 import { loadPipeline } from "/web-ai-showcase/lib/webai.js";
 
-const MODEL = "onnx-community/moonshine-base-ONNX";
 const TASK = "automatic-speech-recognition";
 
 let pipe = null;
@@ -36,7 +35,7 @@ async function ensureLoaded(preferred) {
   try {
     const loaded = await loadPipeline({
       task: TASK,
-      model: MODEL,
+      model: "onnx-community/moonshine-base-ONNX",
       backend: want,
       dtype: "q8", // maps to the *_quantized.onnx files Moonshine ships
       onProgress: (p) => post({ type: "progress", p }),
@@ -48,7 +47,7 @@ async function ensureLoaded(preferred) {
       post({ type: "progress", p: { status: "initiate", file: "retrying on WASM…" } });
       const loaded = await loadPipeline({
         task: TASK,
-        model: MODEL,
+        model: "onnx-community/moonshine-base-ONNX",
         backend: "wasm",
         dtype: "q8",
         onProgress: (p) => post({ type: "progress", p }),
