@@ -900,3 +900,22 @@ test("cdt: the gate's grep scans use execFileSync argv (no shell interpolation)"
   assert.ok(src.includes('execFileSync("grep"'), "the gate must invoke grep via argv");
   assert.ok(!/execSync\(\s*`grep/.test(src), "no shell-interpolated grep call may remain in the gate");
 });
+
+test("cdt: committed prose fingerprints are in sync with a fresh regeneration (--check)", () => {
+  // The fingerprint file is a review artifact: it must be byte-identical to what the committed
+  // generator produces from the tree, so nobody can hand-edit a suppression in. Runs in the
+  // isolated copy so the working-tree generator + fingerprints overlay is what gets checked.
+  const result = (() => {
+    try {
+      execFileSync("node", [join(COPY_ROOT, "scripts/generate-prose-fingerprints.mjs"), "--check"], {
+        cwd: COPY_ROOT,
+        stdio: "pipe",
+        encoding: "utf8",
+      });
+      return { status: 0, stderr: "" };
+    } catch (e) {
+      return { status: e.status ?? 1, stderr: String(e.stderr ?? "") };
+    }
+  })();
+  assert.equal(result.status, 0, `fingerprint freshness check must pass: ${result.stderr}`);
+});
