@@ -18,39 +18,13 @@
 
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync, execSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-
-const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { materializeIsolatedRepo } from "./lib/isolated-repo.mjs";
 
 // The isolated copy the mutations are applied to. Materialised once in `before`, removed in `after`.
 let COPY_ROOT = null;
-
-/** Shell-quote a value for interpolation into a single shell pipeline. */
-const shq = (s) => `'${String(s).replaceAll("'", "'\\''")}'`;
-
-/**
- * Materialise a clean, immutable copy of the repository from the committed HEAD. HEAD (unlike the live
- * working tree, which other test FILES mutate in parallel) is a stable tree, so two mutating tests can
- * never capture one another's half-written files. Running `--check` from this copy exercises the audit's
- * `import.meta.url`-relative root resolution (everything resolves against the copy, not this checkout).
- */
-function materializeIsolatedRepo() {
-  const dir = mkdtempSync(join(tmpdir(), "web-ai-currency-exemption-"));
-  execSync(`git archive HEAD | tar -x -C ${shq(dir)}`, {
-    cwd: ROOT,
-    stdio: "pipe",
-    maxBuffer: 64 * 1024 * 1024,
-  });
-  assert.ok(
-    existsSync(join(dir, "scripts/audit-model-currency.mjs")),
-    "the isolated copy must contain the audit script",
-  );
-  return dir;
-}
 
 before(() => {
   COPY_ROOT = materializeIsolatedRepo();

@@ -40,17 +40,36 @@ export const PIN_SCAN_TARGETS =
 // Single-sourced pin patterns: the text scans and the fail-closed binary pass both use them, so
 // detection cannot drift between the passes.
 //
-// VERSION_TOKEN captures the FULL runtime version token: MAJOR.MINOR.PATCH plus an optional
-// -prerelease/-dev suffix (e.g. -dev.20251116-b39e144322). The suffix is compared as part of one
-// string, so an unauthorised build like `3.7.5-evil.1` can never normalise down to the allowed
-// `3.7.5`. The string is valid both as POSIX ERE (for grep -E) and as a JavaScript RegExp, which is
-// how the grep scans and the in-process extraction share a single definition.
-export const VERSION_TOKEN = "[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?";
+// VERSION_TOKEN captures the FULL runtime version token up to the first real delimiter, and the
+// captured string is then validated in JavaScript against the allowlist. It requires MAJOR.MINOR.PATCH
+// and then takes every following version character (digits, letters, '.', '-', '+', '_'), so an
+// unauthorised suffix is captured IN FULL and rejected rather than truncated down to an allowed base.
+// (Examples below are written as bare version strings so this file does not itself trip the scans.)
+//   `3.7.5+build1`   -> captured in full, rejected ('+build1' survives)
+//   `3.7.5.evil`     -> captured in full, rejected
+//   `3.7.5_evil`     -> captured in full, rejected
+//   `3.7.5evil`      -> captured in full, rejected
+//   `3.7.5-`         -> captured in full, rejected
+//   `1.24.0-dev.20251116-b39e144322` -> full dev token (authorised only via measuredVersions)
+// The optional-hyphen-group form the reviewer defeated (`(-[0-9A-Za-z]...)?`) left a version like
+// `3.7.5+build1` truncating to `3.7.5` because `+`/`.`/`_`/a bare letter were never part of the token.
+// `+` and `_` are not npm semver characters, but they MUST be captured (never treated as delimiters)
+// so the full offending string is judged instead of its allowed numeric prefix. The required X.Y.Z
+// prefix still keeps a bare prose shorthand like `1.21` (which is not a pin) from being reported as a
+// phantom version. The string is valid both as POSIX ERE (for grep -E) and as a JavaScript RegExp,
+// which is how the grep scans and the in-process extraction share one definition.
+export const VERSION_TOKEN = "[0-9]+\\.[0-9]+\\.[0-9]+[0-9A-Za-z._+-]*";
 export const ORT_PIN_PATTERN = `onnxruntime-web@${VERSION_TOKEN}`;
 export const TJS_PIN_PATTERN = `@huggingface/transformers@${VERSION_TOKEN}`;
 // In-process full-version capture for the transformers scan (grep -o already splits matches per line,
-// but this regex re-reads each record so a version cannot be truncated to its numeric prefix).
+// but this regex re-reads each record and captures the FULL token so a version cannot be truncated to
+// its numeric prefix). Shares VERSION_TOKEN with the grep patterns above.
 const TJS_FULL_VERSION_RE = new RegExp(`@huggingface/transformers@(${VERSION_TOKEN})`, "g");
+// Full-token captures for the two single-file shared pins checked below (web-llm, mediapipe). They
+// reuse VERSION_TOKEN so a dev/bad suffix can never truncate down to the allowed shared base version.
+const WEBLLM_VERSION_RE = new RegExp(`@mlc-ai/web-llm@(${VERSION_TOKEN})`);
+const MEDIAPIPE_VERSION_ASSIGN_RE = new RegExp(`TASKS_VISION_VERSION\\s*=\\s*["'](${VERSION_TOKEN})["']`);
+const MEDIAPIPE_CDN_RE = new RegExp(`tasks-vision@(${VERSION_TOKEN})`);
 export const PIN_PATTERNS = [
   { label: "onnxruntime-web", grep: ORT_PIN_PATTERN },
   { label: "@huggingface/transformers", grep: TJS_PIN_PATTERN },
@@ -257,12 +276,12 @@ async function transformerPins() {
   }
   const localOverrides = {};
   const files = execSync(
-    `grep -I -rlE '@huggingface/transformers@[0-9]+\\.[0-9]+\\.[0-9]+' models/ 2>/dev/null || true`,
+    `grep -I -rlE '${TJS_PIN_PATTERN}' models/ 2>/dev/null || true`,
     { cwd: ROOT, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
   ).trim().split("\n").filter(Boolean);
   for (const rel of files) {
     const text = await readFile(ROOT + rel, "utf8");
-    for (const m of text.matchAll(/@huggingface\/transformers@([0-9.]+)/g)) {
+    for (const m of text.matchAll(TJS_FULL_VERSION_RE)) {
       localOverrides[m[1]] ||= new Set();
       localOverrides[m[1]].add(rel.split("/")[1]);
     }
@@ -276,8 +295,8 @@ async function transformerPins() {
     recentStable = Object.keys(j.versions || {}).filter((v) => !v.includes("-")).slice(-6);
   } catch { /* offline: report null, never guess */ }
   const shared =
-    (await readFile(ROOT + "lib/webai.js", "utf8")).match(/@huggingface\/transformers@([0-9.]+)/)
-      ?.[1] ?? null;
+    (await readFile(ROOT + "lib/webai.js", "utf8"))
+      .match(new RegExp(`@huggingface/transformers@(${VERSION_TOKEN})`))?.[1] ?? null;
   return {
     shared,
     latest,
@@ -491,6 +510,10 @@ export function checkRuntimePins() {
   }
 
   const errors = [];
+  // Number of pin occurrences the text scans below actually examined. This is the non-vacuity
+  // signal: a pattern that matched nothing returns scannedCount 0 and the test fails loudly rather
+  // than passing on an empty (trivially clean) result.
+  let scannedCount = 0;
 
   // The generated integrity inventory is EXEMPT from route-scoped pin checking, and the exemption is
   // recorded as data in scripts/runtime-pin-allowlist.json (derivedInventory) rather than being a
@@ -553,6 +576,7 @@ export function checkRuntimePins() {
     const foundOrt = new Set();
     for (const line of raw.split("\n")) {
       if (!line.trim()) continue;
+      scannedCount++;
       const hit = line.match(/^(.*?):(\d+):(.+)$/);
       const payload = hit ? hit[3] : line;
       const v = payload.split("@").pop()?.trim();
@@ -589,6 +613,7 @@ export function checkRuntimePins() {
     );
     for (const line of raw.split("\n")) {
       if (!line.trim()) continue;
+      scannedCount++;
       const tjsHit = line.match(/^(.*?):(\d+):(.*)$/);
       const colonIdx = line.indexOf(":");
       const file = tjsHit ? tjsHit[1] : colonIdx >= 0 ? line.slice(0, colonIdx) : line;
@@ -628,7 +653,7 @@ export function checkRuntimePins() {
   // 3. Check @mlc-ai/web-llm in lib/webllm.js
   if (existsSync(ROOT + "lib/webllm.js")) {
     const text = readFileSync(ROOT + "lib/webllm.js", "utf8");
-    const m = text.match(/@mlc-ai\/web-llm@([0-9.]+)/);
+    const m = text.match(WEBLLM_VERSION_RE);
     const v = m ? m[1] : null;
     if (v !== allowlist.webLlm?.shared) {
       errors.push(
@@ -640,8 +665,7 @@ export function checkRuntimePins() {
   // 4. Check @mediapipe/tasks-vision in lib/mediapipe.js
   if (existsSync(ROOT + "lib/mediapipe.js")) {
     const text = readFileSync(ROOT + "lib/mediapipe.js", "utf8");
-    const m = text.match(/TASKS_VISION_VERSION\s*=\s*["']([0-9.]+)["']/) ||
-      text.match(/tasks-vision@([0-9.]+)/);
+    const m = text.match(MEDIAPIPE_VERSION_ASSIGN_RE) || text.match(MEDIAPIPE_CDN_RE);
     const v = m ? m[1] : null;
     if (v !== allowlist.mediapipe?.shared) {
       errors.push(
@@ -663,6 +687,11 @@ export function checkRuntimePins() {
     errors.push(`failed to scan binary-classified files for runtime pins: ${e.message}`);
   }
 
+  // Non-vacuity signal: how many pin occurrences the text scans actually examined. Attached to the
+  // errors array as a named property (not an indexed element) so existing callers that read .length or
+  // iterate the array keep working, while the test can assert the scan saw a healthy positive number of
+  // pins instead of silently returning [] because the pattern matched nothing.
+  errors.scannedCount = scannedCount;
   return errors;
 }
 
