@@ -169,13 +169,21 @@ if (process.env.ARR_FIXTURE_SUBREAPER !== "1") {
     teardownAll();
   }
 
-  // Post-teardown zero-residue assertion (credits outside-verifier evidence gap): attribute the
-  // no-leak outcome to THIS cleanup, not to service teardown — assert inside the fixture that no
-  // adopted child still carries any of the three tokens.
-  const residue = [tokenA, tokenB, tokenC].flatMap((t) => pidsWithMarker(t));
-  results.push(residue.length === 0
-    ? "ok - teardown attribution: zero fixture-owned handlers remain"
-    : `FAIL - teardown attribution: leftover fake handlers ${residue}`);
+  // Post-teardown absence assertion (credits outside-verifier gap; Codex P1 fix): track the
+  // RECORDED pids, not cmdline markers — zombies have an empty cmdline and would be invisible to a
+  // marker scan, and a just-signaled handler may not have exited yet. A fixture-owned pid is
+  // acceptable in exactly two terminal states: gone from /proc, or a zombie HELD BY US (inert,
+  // unreapable by others, PID un-reusable, reaped at our exit). Poll to that bounded state.
+  const fixturePids = [...aPids, ...bPids, ...cPids];
+  let unresolved = [];
+  for (let i = 0; i < 40; i++) {
+    unresolved = fixturePids.filter((pid) => existsSync(`/proc/${pid}`) && !cleanup.isZombieOf(pid));
+    if (unresolved.length === 0) break;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  results.push(unresolved.length === 0
+    ? "ok - teardown attribution: no LIVE fixture-owned handler remains (held zombies are inert and unreapable by others)"
+    : `FAIL - teardown attribution: live fixture handlers remain: ${unresolved}`);
 
   for (const line of results) console.log(line);
   const failures = results.filter((r) => r.startsWith("FAIL"));
