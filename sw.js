@@ -18,6 +18,10 @@ const RUNTIME_INTEGRITY = {
     "sha256": "770f4cfc9857958f8db9c783b406b1c7f3beb3ce0c9b72776ca1e973dae9e145",
     "bytes": 873307
   },
+  "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.5/dist/ort-wasm-simd-threaded.jsep.mjs": {
+    "sha256": "08fb86ec433c78bfb032c5d84a68b8e8e5a8d81268fa39e24314179a5767a5b9",
+    "bytes": 44484
+  },
   "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.5/dist/ort-wasm-simd-threaded.jsep.wasm": {
     "sha256": "c46655e8a94afc45338d4cb2b840475f88e5012d524509916e505079c00bfa39",
     "bytes": 21596019
@@ -54,13 +58,25 @@ function integrityFailure() {
   });
 }
 
-async function verifiedLibraryResponse(req, expected) {
-  const cached = await caches.match(req);
+// The manifest is keyed by URL without query or fragment. jsDelivr version paths are immutable, so a
+// query string changes nothing about the bytes and must NOT be a way to slip past verification: an
+// exact-match lookup would have treated "...@3.7.5?t=1" as an unknown URL and served it unverified.
+function runtimeIntegrityKey(url) {
+  const parsed = new URL(url);
+  return `${parsed.origin}${parsed.pathname}`;
+}
+
+async function verifiedLibraryResponse(req, sha256) {
+  // Both the read and the eviction are scoped to the cache this worker owns. caches.match() searches
+  // EVERY cache in the origin, so a matching entry in a cache we do not own would be re-read on every
+  // request, evict nothing, and force a network fetch each time - an unrecoverable 502 while offline.
+  const shell = await caches.open(SHELL_CACHE);
+  const cached = await shell.match(req);
   if (cached) {
-    if (await sha256Hex(await cached.clone().arrayBuffer()) === expected) return cached;
-    // Poisoned after it was stored. Evict it so no later request can be served from it either, then
-    // fall through to the network for a clean copy rather than serving the bad bytes.
-    (await caches.open(SHELL_CACHE)).delete(req).catch(() => {});
+    if (await sha256Hex(await cached.clone().arrayBuffer()) === sha256) return cached;
+    // Poisoned after it was stored. Evict it BEFORE refetching, and await it: a delete left in flight
+    // can land after the clean copy is stored and wipe the good entry instead of the bad one.
+    await shell.delete(req).catch(() => {});
   }
   let res;
   try {
@@ -70,9 +86,9 @@ async function verifiedLibraryResponse(req, expected) {
     return integrityFailure();
   }
   if (!res.ok) return res;
-  if (await sha256Hex(await res.clone().arrayBuffer()) !== expected) return integrityFailure();
+  if (await sha256Hex(await res.clone().arrayBuffer()) !== sha256) return integrityFailure();
   const copy = res.clone();
-  caches.open(SHELL_CACHE).then((c) => c.put(req, copy)).catch(() => {});
+  shell.put(req, copy).catch(() => {});
   return res;
 }
 
@@ -113,12 +129,16 @@ self.addEventListener("fetch", (e) => {
   // never served from the shell cache and never stored as a trusted shell asset, so an unlisted
   // runtime cannot inherit trust it was never granted.
   if (LIB_HOSTS.includes(url.hostname)) {
-    const expected = RUNTIME_INTEGRITY[req.url];
-    if (!expected) {
+    // `.sha256` and not the entry itself: the manifest maps a URL to { sha256, bytes }, and comparing
+    // the hex string against that object is always false, which served 502 for every pinned runtime
+    // and broke all Transformers.js routes. The tests missed it because they substituted a manifest of
+    // plain strings; they now use the production shape, and a schema test pins it.
+    const entry = RUNTIME_INTEGRITY[runtimeIntegrityKey(req.url)];
+    if (!entry) {
       e.respondWith(fetch(req));
       return;
     }
-    e.respondWith(verifiedLibraryResponse(req, expected));
+    e.respondWith(verifiedLibraryResponse(req, entry.sha256));
     return;
   }
 

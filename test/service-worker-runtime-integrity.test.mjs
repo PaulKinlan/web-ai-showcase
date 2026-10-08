@@ -34,18 +34,29 @@ function jsResponse(body, status = 200) {
 }
 
 // Load sw.js with a stubbed worker environment. Returns the captured fetch listener plus the store.
-async function loadWorker({ stored = new Map(), network }) {
+// `foreign` simulates a matching entry living in a cache this worker does NOT own (for example the
+// runtime library's own cache, or a shell cache from an older version). Reading is scoped to the shell
+// cache, so a foreign entry must not shadow a clean shell copy; the global caches.match sees it, which
+// is what makes this discriminating.
+async function loadWorker({ stored = new Map(), foreign = new Map(), network }) {
   const store = new Map(stored);
   const listeners = new Map();
   const calls = { fetch: 0, deletes: [] };
+  // `match` is exposed on the opened cache as well as globally, because the worker scopes its runtime
+  // lookup to the cache it owns; a stub without it fails rather than exercising that.
+  const shellCache = {
+    put: async (req, res) => { store.set(typeof req === "string" ? req : req.url, res.clone()); },
+    delete: async (req) => { const key = typeof req === "string" ? req : req.url; calls.deletes.push(key); return store.delete(key); },
+    match: async (req) => { const hit = store.get(typeof req === "string" ? req : req.url); return hit ? hit.clone() : undefined; },
+  };
   const cachesStub = {
-    open: async () => ({
-      put: async (req, res) => { store.set(typeof req === "string" ? req : req.url, res.clone()); },
-      delete: async (req) => { calls.deletes.push(typeof req === "string" ? req : req.url); return store.delete(typeof req === "string" ? req : req.url); },
-    }),
-    keys: async () => [...store.keys()],
+    open: async () => shellCache,
+    keys: async () => [...store.keys(), ...foreign.keys()],
+    // Order matters: the foreign cache is consulted first, so a naive caches.match implementation in
+    // sw.js would pick up the poisoned foreign copy instead of the clean shell one.
     match: async (req) => {
-      const hit = store.get(typeof req === "string" ? req : req.url);
+      const key = typeof req === "string" ? req : req.url;
+      const hit = foreign.get(key) ?? store.get(key);
       return hit ? hit.clone() : undefined;
     },
   };
@@ -61,12 +72,19 @@ async function loadWorker({ stored = new Map(), network }) {
     return network(url);
   };
 
-  // Data substitution only: swap the generated manifest for the test one.
+  // Data substitution only: swap the generated manifest for the test one, USING THE PRODUCTION ENTRY
+  // SHAPE ({ sha256, bytes }). An earlier version of this file substituted plain hash STRINGS, which
+  // let a string-versus-object comparison in sw.js pass every test while every pinned runtime returned
+  // 502 in production. The schema test at the bottom pins the shape so this cannot regress.
   const start = SW_SOURCE.indexOf("// >>> runtime-integrity");
   const end = SW_SOURCE.indexOf("// <<< runtime-integrity");
   assert.ok(start !== -1 && end !== -1, "sw.js must keep its runtime-integrity marker block");
+  const testManifest = {
+    [ALLOWED]: { sha256: await sha256(CLEAN), bytes: encoder.encode(CLEAN).length },
+    [MODEL]: { sha256: "unused", bytes: 1 },
+  };
   const withTestManifest = SW_SOURCE.slice(0, start) +
-    `const RUNTIME_INTEGRITY = ${JSON.stringify({ [ALLOWED]: await sha256(CLEAN), [MODEL]: "unused" })};` +
+    `const RUNTIME_INTEGRITY = ${JSON.stringify(testManifest)};` +
     SW_SOURCE.slice(end);
 
   globalThis.self = selfStub;
@@ -164,10 +182,55 @@ test("model host behaviour is unchanged: cache-first, never stored by the worker
   assert.equal(await store.get(MODEL).text(), "model-bytes", "the worker must not re-store model blobs");
 });
 
+// The cache-scoping fix, made discriminating: a poisoned copy in a cache this worker does not own must
+// not shadow the clean copy it does own. A caches.match() lookup would read the foreign poison, fail
+// verification, evict the GOOD shell entry, and - offline - return 502 even though a verified copy was
+// available. Verified to fail when the lookup is reverted to caches.match().
+test("a poisoned entry in a foreign cache does not shadow the clean copy in the shell cache", async () => {
+  const { request, store } = await loadWorker({
+    stored: new Map([[ALLOWED, jsResponse(CLEAN)]]),
+    foreign: new Map([[ALLOWED, jsResponse(POISON)]]),
+    network: () => Promise.reject(new Error("offline")),
+  });
+  const res = await request(ALLOWED);
+  assert.equal(res.status, 200, "offline, a verified shell copy must still be served");
+  assert.equal(await res.text(), CLEAN, "the foreign poisoned copy must not be served");
+  assert.equal(await store.get(ALLOWED).text(), CLEAN, "the clean shell entry must not be evicted");
+});
+
 test("the manifest embedded in sw.js matches runtime-integrity.json", () => {
   const start = SW_SOURCE.indexOf("// >>> runtime-integrity");
   const end = SW_SOURCE.indexOf("// <<< runtime-integrity");
   const block = SW_SOURCE.slice(start, end);
   const json = block.slice(block.indexOf("{"), block.lastIndexOf("}") + 1);
   assert.deepEqual(JSON.parse(json), MANIFEST.urls, "regenerate with scripts/runtime-integrity.mjs");
+});
+
+// This is the test that would have caught the string-versus-object defect: sw.js reads
+// `entry.sha256`, so a manifest of plain strings is not merely untidy, it makes every comparison false
+// and 502s every pinned runtime. Schema, not values, is what is pinned here.
+test("every manifest entry is an object with a string sha256 and a numeric byte count", () => {
+  const urls = Object.keys(MANIFEST.urls);
+  assert.ok(urls.length > 0, "the manifest must not be empty");
+  for (const url of urls) {
+    const entry = MANIFEST.urls[url];
+    assert.equal(typeof entry, "object", `${url} must map to an object, not a bare hash string`);
+    assert.equal(typeof entry.sha256, "string", `${url}.sha256 must be a string`);
+    assert.match(entry.sha256, /^[0-9a-f]{64}$/, `${url}.sha256 must be a lowercase sha256 hex digest`);
+    assert.equal(typeof entry.bytes, "number", `${url}.bytes must be a number`);
+  }
+});
+
+// Guards the key-normalisation fix: a request carrying a query string must still be verified rather
+// than falling to the unverified unpinned path, because an exact-key lookup would have missed it.
+test("a library url with a query string is still verified rather than treated as unpinned", async () => {
+  let networkCalls = 0;
+  const { request, calls } = await loadWorker({
+    stored: new Map(),
+    network: () => { networkCalls++; return Promise.resolve(jsResponse(POISON)); },
+  });
+  const res = await request(`${ALLOWED}?cachebust=1`);
+  assert.equal(res.status, 502, "a queried pinned url must not escape verification");
+  assert.equal(networkCalls, 1);
+  assert.equal(calls.fetch, 1);
 });
