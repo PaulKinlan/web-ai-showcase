@@ -4,6 +4,13 @@
 // a marker argv[0], spawned in their own sessions/PGIDs. No real Chrome, no global cleanup, no
 // signals to any process outside this fixture's own adopted children, no 63s/SIGKILL scope.
 //
+// Sentinel split (credits outside-verifier note): everything we spawn sits under this process's
+// subreaper, so sentinel C is an ADOPTED fake with a foreign token (identity-marker refusal), while
+// the truly external case is covered by the process.ppid foreign-process test (PPID refusal).
+// Genuine numeric-PID recycling cannot be forced deterministically in a fixture; the safety claim
+// is structural (pidfd pins the process at open; identity is verified after; signal via fd only),
+// and the reuse-window state is exercised by the held-zombie refusal test.
+//
 // The file has two stages:
 //   - outer (node --test): re-execs THIS file as a plain script under the pidfd bridge's
 //     subreaper wrapper with CRASHPAD_CLEANUP_PHASE1=1 (the only way adoption can exist);
@@ -127,6 +134,17 @@ if (process.env.ARR_FIXTURE_SUBREAPER !== "1") {
       if (!refused) throw new Error("a stale numeric PID must never be signaled");
     });
 
+    check("zombie (exited-but-unreaped) candidate is refused — the reuse-window state", () => {
+      // Outside-verifier evidence gap (credits): the stale test above covers a never-existing PID.
+      // The dangerous reuse window is a RECENTLY-EXITED pid. While the zombie is held by us its PID
+      // cannot be recycled; signaling it must refuse (empty cmdline), never signal, never error green.
+      const zombiePid = aPids[0]; // signaled in the launch-A test above, held as our zombie
+      if (!cleanup.isZombieOf(zombiePid)) throw new Error("precondition: A handler must be a held zombie");
+      let refused = false;
+      try { cleanup.pidfdSignal(zombiePid, { expectCmdline: tokenA }); } catch { refused = true; }
+      if (!refused) throw new Error("a zombie must be refused (cmdline unreadable), not signaled");
+    });
+
     check("cross-launch protection: B's handler with A's marker is refused, B stays alive", () => {
       let refused = false;
       try { cleanup.pidfdSignal(bPids[0], { expectCmdline: tokenA }); } catch { refused = true; }
@@ -150,6 +168,14 @@ if (process.env.ARR_FIXTURE_SUBREAPER !== "1") {
     // Tear down every surviving fake handler we spawned — fixture-owned processes only.
     teardownAll();
   }
+
+  // Post-teardown zero-residue assertion (credits outside-verifier evidence gap): attribute the
+  // no-leak outcome to THIS cleanup, not to service teardown — assert inside the fixture that no
+  // adopted child still carries any of the three tokens.
+  const residue = [tokenA, tokenB, tokenC].flatMap((t) => pidsWithMarker(t));
+  results.push(residue.length === 0
+    ? "ok - teardown attribution: zero fixture-owned handlers remain"
+    : `FAIL - teardown attribution: leftover fake handlers ${residue}`);
 
   for (const line of results) console.log(line);
   const failures = results.filter((r) => r.startsWith("FAIL"));
