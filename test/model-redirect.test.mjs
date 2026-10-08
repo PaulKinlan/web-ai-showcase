@@ -40,10 +40,50 @@ test("accepts direct HF and observed Xet/LFS CDN final origins; rejects lookalik
     () => assertTrustedHFResponse(requested, { url: requested, type: "opaque" }),
     /Untrusted/,
   );
+  assert.throws(
+    () =>
+      assertTrustedHFResponse("http://huggingface.co/example/resolve/main/config.json", {
+        url: requested,
+      }),
+    /Untrusted/,
+  );
   // The existing localhost browser resume fixture is deliberately out of this HF-only policy's scope.
   assert.doesNotThrow(() =>
     assertTrustedHFResponse("http://127.0.0.1:1234/model", { url: "http://127.0.0.1:1234/model" })
   );
+});
+
+test("foreign paths-info metadata redirect fails closed before any file fetch", async () => {
+  const originalFetch = globalThis.fetch;
+  let fileFetches = 0;
+  let writes = 0;
+  globalThis.fetch = async (url) => {
+    if (String(url).includes("/paths-info/")) {
+      return { url: "https://foreign.example/metadata", ok: true, json: async () => [] };
+    }
+    fileFetches++;
+    throw new Error("File fetch must not run after foreign metadata redirect");
+  };
+  try {
+    await assert.rejects(
+      prefetchModel({
+        modelId,
+        files: [file],
+        deps: {
+          cacheOpen: async () => ({
+            put: async () => {
+              writes++;
+            },
+          }),
+        },
+      }),
+      /Untrusted model download redirect/,
+    );
+    assert.equal(fileFetches, 0);
+    assert.equal(writes, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 async function listen(server) {

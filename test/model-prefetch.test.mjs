@@ -146,6 +146,32 @@ test("emitted events drive the tracker to a correct byte-weighted snapshot", asy
   assert.equal(tracker.snapshot().phase, "ready");
 });
 
+test("unknown-size weight uses streaming downloader, not unbounded small-file blob fetch", async () => {
+  const cache = fakeCache();
+  let streamed = 0;
+  await prefetchModel({
+    modelId: PALI,
+    files: ["onnx/model.onnx"],
+    deps: {
+      resolveInfo: async () => [{
+        file: "onnx/model.onnx",
+        url: assetUrl(PALI, "main", "onnx/model.onnx"),
+        size: null,
+      }],
+      cacheOpen: async () => cache,
+      download: async () => {
+        streamed++;
+        return { blob: new Blob(["ok"]), total: 2 };
+      },
+      simpleFetch: async () => {
+        throw new Error("Unknown weight size must not buffer with blob()");
+      },
+    },
+  });
+  assert.equal(streamed, 1);
+  assert.equal(cache.store.size, 1);
+});
+
 test("small non-LFS file with known mismatched metadata size is not cached", async () => {
   const cache = fakeCache();
   await assert.rejects(
