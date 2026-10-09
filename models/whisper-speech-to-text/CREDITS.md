@@ -20,4 +20,4 @@
 - **Use here:** Faithfully labelled, neutral historical automatic-speech-recognition and timestamp testing only
 - **SHA-256:** `627f0e49f927ffcd4120ed60a035ff2f8d448e2e7469452c7ecaffed06fe135b`
 
-The rights-unclear TED preset is no longer offered by the Whisper pages. Upload remains available for visitors’ own audio. The legacy asset path is temporarily retained only because two published cross-family routes still depend on it; their migration is tracked separately.
+Whisper's own pages offer the credited JFK excerpt and visitor uploads. The former rights-unclear TED asset path is removed. The two published cross-family summarization routes now use `librispeech.wav`: LibriSpeech `dev-clean` utterance `2412-153954-0006`, reader calystra (*Erewhon*), corpus © 2014 Vassil Panayotov, [source](https://www.openslr.org/12), [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). It was decoded from FLAC to 16 kHz mono PCM WAV with no content edit; [hash and source-path record](../../audio-provenance/librispeech-replacements.md). This does not claim those routes have been rerun since the sample replacement.

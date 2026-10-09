@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // W7: five wav2vec2 CTC routes × desktop/mobile; real JFK ASR, aligned words,
-// frame scrubbing and dual-stage Qwen punctuation. TED is never selected.
+// frame scrubbing and dual-stage Qwen punctuation. The LibriSpeech preset is not selected by this JFK-only validator; z79 requires separate route-complete browser acceptance.
 // Primary Xenova/wav2vec2-base-960h q8 95MB + multi-model
 // onnx-community/Qwen2.5-0.5B-Instruct q4 400MB
 // (~495MB TOTAL weights, not 95MB overall). All FIVE rungs bundle the JFK clip.
@@ -115,7 +115,7 @@ async function drive(rung,viewport){
       ready.checks.every(x=>Number.isFinite(x)&&x<=450),JSON.stringify(ready.checks));
     const selected=await evaluate(sid,`({src:document.querySelector('#player')?.getAttribute('src'),
       label:document.querySelector('#clipLabel')?.textContent})`);
-    mark("JFK is default source; TED was never selected",rung==="wild"?
+    mark("JFK is default source; LibriSpeech preset was not selected",rung==="wild"?
       /JFK/.test(selected.label)&&await evaluate(sid,`document.querySelector('#samples button[data-src="../jfk.wav"]')!==null`):
       /(?:^|\/)jfk\.wav$/.test(selected.src)&&/JFK/.test(selected.label),JSON.stringify(selected));
     await waitFor(sid,`!document.querySelector('#run')?.disabled`,45_000,`${label} JFK decoded`);
@@ -223,9 +223,12 @@ async function drive(rung,viewport){
     }
     const hygiene=await evaluate(sid,`({overflow:document.documentElement.scrollWidth-innerWidth,
       named:[...document.querySelectorAll('button')].every(b=>(b.textContent||b.getAttribute('aria-label')||'').trim()),
-      tedLoaded:performance.getEntriesByType('resource').some(x=>x.name.endsWith('/ted.wav'))})`);
-    mark("responsive named controls, TED not loaded",hygiene.overflow<=1&&hygiene.named&&
-      !hygiene.tedLoaded,JSON.stringify(hygiene));
+      librispeechLoaded:performance.getEntriesByType('resource').some(x=>x.name.endsWith('/librispeech.wav')),
+      librispeechOption:!!document.querySelector('#samples button[data-src$="librispeech.wav"]'),
+      librispeechCredit:!!document.querySelector('[data-audio-credit="librispeech"] a[href="https://www.openslr.org/12"]')})`);
+    mark("responsive named controls; unselected LibriSpeech preset credited and not loaded",
+      hygiene.overflow<=1&&hygiene.named&&hygiene.librispeechOption&&hygiene.librispeechCredit&&
+      !hygiene.librispeechLoaded,JSON.stringify(hygiene));
     mark("console/network clean",page.errors.length===0&&page.netFailures.length===0,
       JSON.stringify({errors:page.errors,network:page.netFailures}));
     await verifyCredit(sid,label,mark);
@@ -251,7 +254,7 @@ if(WRITE_RUN&&succeeded){
     "scripts/validate-wav2vec2-asr.mjs",`:(exclude)${FAMILY}/acceptance.json`,
     `:(exclude)${FAMILY}/acceptance-run.json`],{cwd:repoRoot,encoding:"utf8"}).trim();
   writeFileSync(RECORD,JSON.stringify({commit,ranAt:new Date().toISOString(),exitCode:0,
-    results,notes:"Ten route×viewport cells; real JFK wav2vec2 CTC transcripts and per-frame collapse, Practical per-word timing and clickable audio seek, Wild frame scrub, multi BOTH 95MB Wav2Vec2 and 400MB q4 Qwen second stage (~495MB total) with actual JFK raw transcript and generated punctuation cleanup (factual accuracy not evaluated). Five JFK-only bundled sample credits per viewport click through to pinned GitHub ledger hash/creator/public-domain/path; TED never selected. Responsive/console/network checks; screenshots outside repo."},null,2)+"\n");
+    results,notes:"Ten route×viewport cells; real JFK wav2vec2 CTC transcripts and per-frame collapse, Practical per-word timing and clickable audio seek, Wild frame scrub, multi BOTH 95MB Wav2Vec2 and 400MB q4 Qwen second stage (~495MB total) with actual JFK raw transcript and generated punctuation cleanup (factual accuracy not evaluated). Five JFK-only bundled sample credits per viewport click through to pinned GitHub ledger hash/creator/public-domain/path; LibriSpeech preset not selected in these JFK-only checks; z79 still needs its own route-complete browser acceptance. Responsive/console/network checks; screenshots outside repo."},null,2)+"\n");
   console.log(`WROTE ${RECORD} for ${commit}`);
 }
 process.exit(succeeded?0:1);

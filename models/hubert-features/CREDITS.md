@@ -7,7 +7,7 @@ All model inference happens on-device; nothing is uploaded.
 | File | Speaker / language | Source | License |
 |------|--------------------|--------|---------|
 | jfk.wav | English (JFK) | John F. Kennedy inaugural excerpt | Public domain |
-| ted.wav | English (TED speaker) | TED talk excerpt (reused from the Whisper/wav2vec2 demos) | Educational/showcase use |
+| librispeech.wav | English (Mary J) | [LibriSpeech dev-clean, `8842-302203-0005`](https://www.openslr.org/12), *New Life (La vita nuova)*; 16 kHz WAV decode. [Exact hash and modification record](../../audio-provenance/librispeech-replacements.md) | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) — corpus © 2014 Vassil Panayotov |
 | sample-spa.wav | Spanish | Wikimedia Commons: Spanish Spoken Wikipedia — Dengue - Historia | CC BY-SA |
 | sample-deu.wav | German | Wikimedia Commons: De-Thekenschaaf-article | CC BY-SA |
 | sample-rus.wav | Russian | Wikimedia Commons: Ru-Russian language part 4 1 Old Russian period | CC BY-SA |
