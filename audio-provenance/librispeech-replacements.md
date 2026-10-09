@@ -5,8 +5,8 @@ These samples replace the unreconciled TED audio under bead `web-ai-showcase-z79
 ## Rights and acquisition
 
 - Corpus: [LibriSpeech ASR corpus (OpenSLR SLR12)](https://www.openslr.org/12), `dev-clean.tar.gz` at `https://www.openslr.org/resources/12/dev-clean.tar.gz` (337,926,286 compressed bytes). Official [checksum list](https://www.openslr.org/resources/12/md5sum.txt) states archive MD5 `42e2234ba48799c1f50f24a7926300a1`; verified against the complete downloaded archive before extracting. The archived `LibriSpeech/LICENSE.TXT` says “LibriSpeech (c) 2014 by Vassil Panayotov” and licenses the corpus under [Creative Commons Attribution 4.0 International](https://creativecommons.org/licenses/by/4.0/). Archived `README.TXT` describes read speech derived from LibriVox public-domain audiobooks. **Attribution:** LibriSpeech corpus © 2014 Vassil Panayotov; corpus paper by Vassil Panayotov, Guoguo Chen, Daniel Povey and Sanjeev Khudanpur; individual readers and works below. No affiliation or endorsement is implied.
-- Reproducible selection: shuffle the 2,703 `dev-clean` FLAC utterance paths with Python `random.Random('web-ai-showcase-z79-2026-10-09-openslr12-dev-clean-v1')`, retain the first utterance for each distinct speaker, then select the first 10 with FLAC duration from 6 to 13 seconds inclusive. Selected shuffled ranks: `1, 2, 5, 7, 10, 15, 19, 21, 24, 28`. This is seeded pseudo-random selection subject only to duration and speaker-diversity filters, not a claim of representative acoustic quality.
-- Conversion: decode each official mono 16 kHz FLAC with FFmpeg to signed 16-bit PCM, package losslessly as a mono 16 kHz RIFF/WAV with Python `wave` (44-byte header). No speed change, filtering, loudness normalization or voice alteration. For the speaker-diarization example only, concatenate the two specified utterances in source order with **0.300 s of inserted digital silence** between them to present two readers. These transformations are disclosed as required by CC BY 4.0. Every output below has one independently verified SHA-256, WAV header, sample count and duration. The byte-identical `2412-153954-0006` WAV appears at two paths; this is one of ten derived output hashes, not two different recordings.
+- Reproducible selection: enumerate the 2,703 FLAC **file members in their order inside the MD5-verified archive** (not filesystem order or lexicographic sort), shuffle their paths using Python `random.Random('web-ai-showcase-z79-2026-10-09-openslr12-dev-clean-v1').shuffle(paths)`, retain only the first encountered utterance for each distinct speaker ID (preserving that shuffled order), then take the first 10 remaining utterances whose FLAC durations are 6 to 13 seconds inclusive. The selected **speaker-deduplicated stream ranks** are `1, 2, 5, 7, 10, 15, 19, 21, 24, 28`; their distinct **raw shuffled-list positions** are `1, 2, 5, 7, 10, 15, 20, 24, 28, 36`. The official archive MD5 and source FLAC SHA-256 values below pin the input. This is seeded pseudo-random selection subject only to duration and speaker-diversity filters, not a claim of representative acoustic quality.
+- Conversion: decode each official mono 16 kHz FLAC with FFmpeg to signed 16-bit PCM, package losslessly as a mono 16 kHz RIFF/WAV with Python `wave` (44-byte header). No speed change, filtering, loudness normalization or voice alteration. For the speaker-diarization example only, concatenate the two specified utterances in source order with **0.300 s of inserted digital silence** between them to present two readers. These transformations are disclosed as required by CC BY 4.0. Every output below has one independently verified SHA-256, WAV header, sample count and duration. The byte-identical `2412-153954-0006` WAV appears at the Wav2Vec2 and Whisper sample paths; the two cross-family summarization routes load the **Whisper copy**. These are **11 bundled paths but 10 unique output WAV hashes**, not 11 different recordings. Ten distinct source FLAC utterances were selected; `5694-64025-0020` contributes both a standalone WAV and the two-reader composite.
 
 | Bundled path | OpenSLR `dev-clean` utterance ID(s) | Reader / work | Length | WAV SHA-256 |
 |---|---|---|---:|---|
@@ -22,6 +22,33 @@ These samples replace the unreconciled TED audio under bead `web-ai-showcase-z79
 | `models/whisper-large-v3-turbo/librispeech.wav` | `5694-64025-0020` | Winston Tharp / *Co. Aytch* | 7.350 s | `6f958952800add5182cdd4b4cc745e09769d434de79a6d84f1dc844bab96c32b` |
 | `models/whisper-speech-to-text/librispeech.wav` | `2412-153954-0006` | calystra / *Erewhon* | 10.220 s | `67edbb16435d76a1cecddd14916c116fb1683389c478b7d5d8bfdebd3c075ad6` |
 
-For any ID `speaker-chapter-utterance`, the exact source within the verified archive is `LibriSpeech/dev-clean/<speaker>/<chapter>/<ID>.flac`; its reference transcript is in the adjacent `<speaker>-<chapter>.trans.txt`. `LibriSpeech/SPEAKERS.TXT` and `CHAPTERS.TXT` in that archive supply the reader/work names above. The transcript is *source reference text*, not a claim that a browser ASR model produced it.
+### Two-reader diarization composite — aligned source segments
+
+| Composite PCM interval | Reader / source FLAC | Reference transcript for that source interval |
+|---|---|---|
+| 0.000–7.770 s (124,320 frames) | iamartin, `5895-34615-0010.flac` | “ALL HIS EMOTIONS WHATEVER THEY MIGHT HAVE BEEN AUGMENTED HIS STRANGE FACE OF JOY OR TO SPEAK MORE CORRECTLY AGGRAVATED IT” |
+| 7.770–8.070 s (4,800 frames) | **inserted digital silence** (no source speaker or words) | none |
+| 8.070–15.420 s (117,600 frames) | Winston Tharp, `5694-64025-0020.flac` | “MULE DID NOT DESIRE TO CROSS WHILE I WAS TRYING TO PERSUADE HIM WITH A BIG STICK A ROCK IN HIS EAR AND A TWISTER ON HIS NOSE” |
+
+This is **source-aligned composition metadata**, not a measured model diarization/timing result. Two distinct readers do not prove that the browser model will identify two speakers; that remains a blocked acceptance check.
+
+### Exact source-file integrity
+
+For each ID `speaker-chapter-utterance`, the exact source inside the MD5-verified archive is `LibriSpeech/dev-clean/<speaker>/<chapter>/<ID>.flac`. The source files themselves have these SHA-256 hashes (not to be confused with the derived WAV hashes above):
+
+| Original utterance ID | FLAC bytes | Original FLAC SHA-256 |
+|---|---:|---|
+| `5895-34615-0010` | 154,547 | `dc6759cf467a74ce415d70279b343ce24ef8bbb95f3cde44ac89ca20dfb1930b` |
+| `5694-64025-0020` | 134,901 | `a29e98c98718e1c0ef1fc9ebb58658175d3666efab32be8b968ad337fddad84c` |
+| `251-118436-0000` | 99,741 | `8a8a2f34930ea37432f1cc1082061cd889eceed949b3c13a79cbdc10a96f99e0` |
+| `1272-135031-0010` | 186,553 | `cec411cc16334eae88f793cf4cc0c2c6f83087c06b4e11a451c329a33b26b884` |
+| `8842-302203-0005` | 155,729 | `f3e0a032bc3e29600efe37c26edbaa5f134d55aafb8bbf3850ac893a938fdb72` |
+| `6295-244435-0009` | 155,323 | `fd89d4d906579b2135ddcf6bdc53ec03923f7dffcc27c3795fad17a2dc06f264` |
+| `1919-142785-0022` | 138,837 | `e8f1c17ac9dd8957e0181cd2fbc2d44442655587f2ff95d8839124f9992826e8` |
+| `6313-66129-0016` | 145,620 | `0640055049684429839aa7109e12f660b6a0680b9d3283a69a6cc5317c06ee0c` |
+| `2412-153954-0006` | 169,329 | `3feac5890500534685cde5eca5835e47d06bb2b7d0923b2ae3a544f2d68e30d1` |
+| `7976-110523-0006` | 136,012 | `61d7839fa23dbe0febabe4d067ee25bbdadaeb8583de6ffdd8edbd9a5942ea25` |
+
+The exact reference transcript for each ID lives in the adjacent `<speaker>-<chapter>.trans.txt` in the official archive. `LibriSpeech/SPEAKERS.TXT` and `CHAPTERS.TXT` supply the reader/work names above. A transcript is *source reference text*, not a claim that a browser ASR model produced it.
 
 The site's `audio-provenance/ledger.json` maps **the actual WAV byte hashes** to these paths and licence/reader/source records. Its `legacyBaseline` intentionally remains a historical snapshot of the old TED hash at `e9c20b7`; a baseline hash is not a current shipped-file claim. The retired TED bytes must be absent from every tracked media path, and the retired TED ledger entry must be absent from current `entries` after the migration. JFK remains a separate public-domain content-hash entry (17 paths); this change neither replaces JFK nor treats its attribution as proof for LibriSpeech.
