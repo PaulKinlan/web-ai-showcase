@@ -18,6 +18,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import {
   deduplicateFamilies,
   discoveryClassification,
+  decisionModelBrowserTag,
   familyKey,
   findCatalogueCollision,
   isExactCatalogueMatch,
@@ -164,6 +165,42 @@ async function collectWebLLM() {
   return { models: out, apiTotal: total };
 }
 
+// Decision-model exports with pipeline_tag:null never pass the TASKS filter in collect(), even
+// when they carry an onnx/transformers.js browser artifact tag (crn inventory + w3a reproduction:
+// exactly onnx-community/d1-omni-600M-ONNX at scan time). Collect them under their own task so
+// the inventory COUNTS them; discovery classification still lands them candidate-unverified — a
+// tag is never browser-eligibility proof.
+async function collectDecisionModels() {
+  let cursor = null, pages = 0, total = 0;
+  const out = [];
+  do {
+    const { rows, total: t, nextCursor } = await hfPage(
+      { filter: "decision-model", sort: "downloads", limit: "100", full: "false" },
+      cursor,
+    );
+    total = t || total;
+    for (const r of rows) {
+      if (r.pipeline_tag != null) continue; // supported-tag rows are handled by collect()
+      const artifactTag = decisionModelBrowserTag(r);
+      if (!artifactTag) continue; // ONNX/GGUF blob or tag alone without a browser runtime tag is out
+      out.push({
+        id: r.id,
+        task: "decision-model",
+        modality: "decision",
+        runtime: artifactTag,
+        likes: r.likes ?? 0,
+        downloads: r.downloads ?? 0,
+        gated: r.gated ?? false,
+        tags: r.tags ?? [],
+        license: (r.tags ?? []).find((x) => x.startsWith("license:"))?.slice(8) ?? null,
+        card: `https://huggingface.co/${r.id}`,
+      });
+    }
+    cursor = nextCursor;
+  } while (cursor && ++pages < MAX_PAGES);
+  return { models: out, apiTotal: total };
+}
+
 async function main() {
   const reviewedAliasPolicy = JSON.parse(
     await readFile(new URL("inventory/reviewed-aliases.json", ROOT), "utf8"),
@@ -203,6 +240,16 @@ async function main() {
     console.error(`  webllm(mlc): collected ${models.length} -MLC repos`);
   } catch (e) {
     console.error(`  webllm: FAILED ${e.message}`);
+  }
+  try {
+    const { models, apiTotal } = await collectDecisionModels();
+    apiTotals["decision-model"] = apiTotal;
+    all.push(...models);
+    console.error(
+      `  decision-model: HF reports ${apiTotal} tagged; collected ${models.length} null-pipeline_tag browser-tagged exports`,
+    );
+  } catch (e) {
+    console.error(`  decision-model: FAILED ${e.message}`);
   }
   all.push(...MEDIAPIPE);
   apiTotals.mediapipe = `${MEDIAPIPE.length} curated`;
@@ -316,6 +363,7 @@ async function main() {
       "library=transformers.js",
       "library=onnx",
       "author=mlc-ai (-MLC)",
+      "filter=decision-model (null pipeline_tag browser-tagged exports only)",
       "MediaPipe Tasks (curated)",
     ],
     depthCurve: { "8": 635, "10": 754, "20": 1288, "40": 2355 },
