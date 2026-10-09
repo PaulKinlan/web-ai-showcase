@@ -88,6 +88,16 @@ export function deduplicateFamilies(models) {
   };
 }
 
+// A decision-model-tagged row counts as a browser candidate only when it carries a browser
+// runtime artifact tag (onnx/transformers.js). The tag is a discovery signal, not eligibility
+// proof (see summary.verificationRule). Returns the artifact tag or null. (web-ai-showcase-w3a)
+export function decisionModelBrowserTag(row) {
+  const tags = row?.tags ?? [];
+  if (tags.includes("transformers.js")) return "transformers.js";
+  if (tags.includes("onnx")) return "onnx";
+  return null;
+}
+
 export function discoveryClassification(model) {
   if (model.gated) {
     return {

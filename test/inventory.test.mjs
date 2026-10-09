@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
   declaredQuantizedBase,
+  decisionModelBrowserTag,
   deduplicateFamilies,
   discoveryClassification,
   familyKey,
@@ -246,4 +247,39 @@ test("curated MediaPipe entries are the only scan-time verified eligible type", 
   });
   assert.equal(result.status, "verified-eligible");
   assert.equal(result.runtime.verification, "verified-curated");
+});
+
+test("decision-model browser-candidate tag rule (w3a): artifact tag required, tag is not proof", () => {
+  // The null-pipeline_tag gap the w3a fix closes: a decision-model export with a browser
+  // runtime artifact tag must be countable; without one it must not.
+  assert.equal(
+    decisionModelBrowserTag({ id: "onnx-community/d1-omni-600M-ONNX", tags: ["decision-model", "onnx", "transformers.js"] }),
+    "transformers.js",
+  );
+  assert.equal(decisionModelBrowserTag({ id: "x/y", tags: ["decision-model", "onnx"] }), "onnx");
+  assert.equal(decisionModelBrowserTag({ id: "x/y", tags: ["decision-model", "gguf"] }), null);
+  assert.equal(decisionModelBrowserTag({ id: "x/y", tags: ["decision-model"] }), null);
+  assert.equal(decisionModelBrowserTag({ id: "x/y" }), null);
+  assert.equal(decisionModelBrowserTag(null), null);
+});
+
+test("a collected decision-model export stays candidate-unverified, never scan-verified (w3a)", () => {
+  // The collector must count the export WITHOUT inflating built/web-capable status.
+  const result = discoveryClassification({
+    id: "onnx-community/d1-omni-600M-ONNX",
+    runtime: "transformers.js",
+    gated: false,
+    tags: ["decision-model", "onnx", "transformers.js"],
+  });
+  assert.equal(result.status, "candidate-unverified");
+  assert.equal(result.browserArtifact.verification, "unverified");
+  assert.equal(result.feasibleSize.verification, "unverified");
+  // Gated decision models are blocked, not silently dropped from the denominator.
+  const gated = discoveryClassification({
+    id: "x/decision-gated",
+    runtime: "onnx",
+    gated: true,
+    tags: ["decision-model", "onnx"],
+  });
+  assert.equal(gated.status, "blocked");
 });
