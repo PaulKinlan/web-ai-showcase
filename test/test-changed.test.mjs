@@ -22,6 +22,7 @@ import {
   parseNameStatusZ,
   resolveRel,
   routeChanges,
+  scanSourceRefs,
   stripComments,
   testsForPath,
   validateConfig,
@@ -247,8 +248,60 @@ test("an unknown base runs the whole suite and says so", () => {
   const index = fakeIndex({ tests: ALL });
   const r = routeChanges({ entries: [], index, unknownBase: "origin/main does not resolve" });
   assert.equal(r.fallback?.mode, "all");
-  assert.match(r.fallback.trigger, /unknown base/);
+  assert.equal(r.fallback.reason, "unknown-base", "the reason code is machine-readable");
+  assert.match(r.fallback.detail, /origin\/main does not resolve/);
   assert.deepEqual(r.run, ALL);
+});
+
+test("every fallback carries a machine-readable reason code", () => {
+  const index = fakeIndex({ tests: ALL });
+  const cases = [
+    [[change("newarea/thing.mjs", "A")], {}, "unmapped"],
+    [[{ status: "D", path: "test/a.test.mjs", oldPath: "test/a.test.mjs" }], {}, "deleted-test"],
+    [[change(CONFIG_REL)], {}, "config-change"],
+    [[change("docs/x.md")], { forceAll: true }, "all-flag"],
+  ];
+  for (const [entries, extra, expected] of cases) {
+    const r = routeChanges({ entries, index, ...extra });
+    assert.equal(r.fallback?.reason, expected, `entries ${JSON.stringify(entries)}`);
+  }
+  const paths = routeChanges({ entries: [change("newarea/thing.mjs", "A")], index });
+  assert.deepEqual(
+    paths.fallback.paths,
+    ["newarea/thing.mjs"],
+    "the trigger paths stay on the marker",
+  );
+});
+
+test("docs-only changes do not widen to the suite even when a repo-wide sweep test exists", () => {
+  // coord, 2026-10-11: only proven non-runtime paths are inert, and no needless all-unit fallback.
+  const index = fakeIndex({ tests: ALL, repoWide: ["test/b.test.mjs"] });
+  const r = routeChanges({ entries: [change("docs/notes.md", "A")], index });
+  assert.equal(r.fallback, null);
+  assert.deepEqual(r.run, ["test/b.test.mjs"], "the cheap repo-wide sweep still runs");
+  assert.deepEqual(r.unmappedAll, []);
+});
+
+test("browser-facing paths are reported as unverified without suppressing their routing", () => {
+  // coord, 2026-10-11: a browser change must say BROWSER_UNVERIFIED/jdz, never imply coverage.
+  const index = fakeIndex({ tests: ALL });
+  const config = { browser: ["public/**", "**/*.css"] };
+  const r = routeChanges({ entries: [change("public/styles.css")], index, config });
+  assert.deepEqual(r.browserUnverified, ["public/styles.css"]);
+  assert.deepEqual(r.unmappedAll, ["public/styles.css"], "the marker is not coverage");
+  assert.equal(
+    r.fallback?.reason,
+    "unmapped",
+    "an unmapped browser path still triggers the fallback",
+  );
+
+  const mapped = routeChanges({
+    entries: [change("public/styles.css")],
+    index: fakeIndex({ tests: ALL, exact: { "public/styles.css": ["test/a.test.mjs"] } }),
+    config,
+  });
+  assert.deepEqual(mapped.browserUnverified, ["public/styles.css"]);
+  assert.deepEqual(mapped.run, ["test/a.test.mjs"], "routing is untouched by the report");
 });
 
 test("a changed browser test is reported, never silently absorbed", () => {
@@ -353,6 +406,34 @@ test("when the decision covers the whole suite, no path is reported unmapped", (
   assert.deepEqual(r.unmappedAll, ["brand-new/thing.mjs"], "the underlying gap is still recorded");
 });
 
+test("a repo-wide git scan written in argv form is detected too (P2 review finding)", () => {
+  // `execFileSync("git", ["ls-files"])` separates git from its subcommand with comma/bracket text,
+  // so a whitespace-only regex misses it and the sweep test silently drops out of the fallback set.
+  const dir = mkdtempSync(join(tmpdir(), "test-changed-scan-"));
+  try {
+    const cases = [
+      [`execSync("git ls-files", { encoding: "utf8" });`, true],
+      [`execFileSync("git", ["ls-files"], { cwd: ROOT });`, true],
+      [`spawnSync("git", ["grep", "-n", "x"]);`, true],
+      [`execFileSync("git", ["ls-tree", "-r", sha]);`, true],
+      [`execSync("git archive HEAD | tar -x -C dir");`, true],
+      [`execFileSync("git", ["rev-parse", "HEAD"]);`, false],
+      [`execFileSync("git", ["status", "--porcelain"]);`, false],
+    ];
+    for (const [src, expected] of cases) {
+      write(
+        dir,
+        "scan.mjs",
+        `import { execSync, execFileSync, spawnSync } from "node:child_process";\n${src}\n`,
+      );
+      const refs = scanSourceRefs(dir, "scan.mjs", new Set(["scan.mjs"]));
+      assert.equal(refs.repoWide, expected, `repoWide for: ${src}`);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // ── config validation ─────────────────────────────────────────────────────────────────────────
 
 test("validateConfig refuses malformed sections instead of silently narrowing the gate", () => {
@@ -361,6 +442,7 @@ test("validateConfig refuses malformed sections instead of silently narrowing th
     {
       fallback: { mode: "sometimes", list: "nope" },
       heavy: "test/a.test.mjs",
+      browser: "public/**",
       map: { "models/**": "test/a.test.mjs" },
       external: [
         { globs: ["server.ts"] },
@@ -374,9 +456,17 @@ test("validateConfig refuses malformed sections instead of silently narrowing th
   assert.equal(config.fallback.mode, "all");
   assert.deepEqual(config.fallback.list, []);
   assert.equal(config.heavy, undefined);
+  assert.equal(config.browser, undefined);
   assert.deepEqual(config.map, {});
   assert.deepEqual(config.external.map((e) => e.label), ["node x"]);
-  assert.ok(warnings.length >= 3, `expected warnings, got ${JSON.stringify(warnings)}`);
+  assert.ok(warnings.length >= 4, `expected warnings, got ${JSON.stringify(warnings)}`);
+});
+
+test("validateConfig accepts the browser glob list that drives BROWSER_UNVERIFIED", () => {
+  const warnings = [];
+  const config = validateConfig({ browser: ["public/**", "**/*.css"] }, warnings);
+  assert.deepEqual(config.browser, ["public/**", "**/*.css"]);
+  assert.deepEqual(warnings, []);
 });
 
 test("the router never shells out to npm (fleet-deps owns node_modules)", () => {
@@ -404,6 +494,7 @@ function fixture() {
       "lib/a.mjs": "export const a = 1;\n",
       "test/a.test.mjs": `import { a } from "../lib/a.mjs";\n${PASSING_TEST}`,
       "docs/readme.md": "# docs\n",
+      "public/styles.css": ":root { --warm: #fff; }\n",
       "package.json": '{ "name": "fixture", "private": true }\n',
     },
   });
@@ -462,7 +553,10 @@ test("CLI: an unknown new module falls back to the whole suite and names the unv
       "--no-deps",
       "--quiet",
     ]);
-    assert.match(out, /^fast-gate: FALLBACK\(all\): unmapped path\(s\): brand-new\/thing\.mjs$/m);
+    assert.match(
+      out,
+      /^fast-gate: fallback: mode=all reason=unmapped paths=brand-new\/thing\.mjs$/m,
+    );
     assert.match(out, /test\/a\.test\.mjs/, "the fallback includes the fixture's unit test");
     // When the decision covered the whole suite, an `unmapped:` line would be a false blindness
     // alarm — the fallback line above is the honest report.
@@ -619,6 +713,138 @@ test("CLI: an unknown flag is refused rather than absorbed", () => {
       () => runRouter(repo.dir, ["--not-a-flag"]),
       (e) => e.status === 2 && /unknown argument/.test(String(e.stderr)),
     );
+  } finally {
+    repo.cleanup();
+    repo.cleanupBare();
+  }
+});
+
+test("CLI: a matched external rule cannot be skipped by a flag (P2 review finding)", () => {
+  // The only way to a partial set is --allow-unmapped, which is loud and not for CHECK_FAST_CMD.
+  const repo = fixture();
+  try {
+    assert.throws(
+      () => runRouter(repo.dir, ["--no-external"]),
+      (e) => e.status === 2 && /unknown argument/.test(String(e.stderr)),
+    );
+  } finally {
+    repo.cleanup();
+    repo.cleanupBare();
+  }
+});
+
+test("CLI: a change routed only to heavy tests reports DEFERRED, not 'none test-bearing'", () => {
+  // P3 review finding: an empty fast-tier run with deferred tests is not a test-free change.
+  const repo = fixture();
+  const cfgDir = mkdtempSync(join(tmpdir(), "test-changed-cfg-"));
+  try {
+    const config = join(cfgDir, "heavy.config.json");
+    writeFileSync(config, JSON.stringify({ heavy: ["test/a.test.mjs"] }));
+    write(repo.dir, "lib/a.mjs", "export const a = 7;\n");
+    const out = runRouter(repo.dir, [
+      "--base",
+      "origin/main",
+      "--no-fetch",
+      "--no-deps",
+      "--quiet",
+      "--config",
+      config,
+    ]);
+    assert.match(out, /^fast-gate: deferred-only: test\/a\.test\.mjs$/m);
+    assert.match(out, /^fast-gate: result: DEFERRED/m);
+    assert.doesNotMatch(out, /none test-bearing/);
+    assert.match(out, /^fast-gate: deferred-heavy: test\/a\.test\.mjs$/m);
+  } finally {
+    repo.cleanup();
+    repo.cleanupBare();
+    rmSync(cfgDir, { recursive: true, force: true });
+  }
+});
+
+test("CLI: a renamed test file runs its NEW path and never the vanished old one", () => {
+  const repo = fixture();
+  try {
+    repo.run(repo.dir, "mv", "test/a.test.mjs", "test/a-moved.test.mjs");
+    const planned = routeJson(repo.dir, ["--base", "origin/main", "--no-fetch"]);
+    assert.ok(planned.run.includes("test/a-moved.test.mjs"), "the new path runs");
+    assert.ok(
+      !planned.run.includes("test/a.test.mjs"),
+      "the vanished old path must never be routed (node --test would ignore it silently)",
+    );
+    assert.deepEqual(planned.renamedTests, [
+      { from: "test/a.test.mjs", to: "test/a-moved.test.mjs" },
+    ]);
+
+    const out = runRouter(repo.dir, [
+      "--base",
+      "origin/main",
+      "--no-fetch",
+      "--no-deps",
+      "--quiet",
+    ]);
+    assert.match(
+      out,
+      /^fast-gate: renamed-test: test\/a\.test\.mjs -> test\/a-moved\.test\.mjs$/m,
+    );
+    assert.match(out, /^fast-gate: result: PASS/m);
+  } finally {
+    repo.cleanup();
+    repo.cleanupBare();
+  }
+});
+
+test("CLI: a routed test that does not exist fails closed instead of silently not running", () => {
+  // node --test ignores a missing path when other files are present and exits 0, so a partial set
+  // would be reported as `completed:`. Refuse it.
+  const repo = fixture();
+  try {
+    const config = join(repo.dir, "stale.config.json");
+    writeFileSync(config, JSON.stringify({ map: { "lib/a.mjs": ["test/gone.test.mjs"] } }));
+    write(repo.dir, "lib/a.mjs", "export const a = 8;\n");
+    assert.throws(
+      () =>
+        runRouter(repo.dir, [
+          "--base",
+          "origin/main",
+          "--no-fetch",
+          "--no-deps",
+          "--quiet",
+          "--config",
+          config,
+        ]),
+      (e) => {
+        assert.equal(e.status, 2);
+        assert.match(String(e.stdout), /MISSING-ROUTED-TEST: test\/gone\.test\.mjs/);
+        assert.doesNotMatch(String(e.stdout), /fast-gate: completed:/);
+        return true;
+      },
+    );
+  } finally {
+    repo.cleanup();
+    repo.cleanupBare();
+  }
+});
+
+test("CLI: a browser-facing change prints BROWSER_UNVERIFIED with the jdz blocker", () => {
+  const repo = fixture();
+  try {
+    const config = join(repo.dir, "browser.config.json");
+    writeFileSync(config, JSON.stringify({ browser: ["public/**", "**/*.css"] }));
+    write(repo.dir, "public/styles.css", ":root { --warm: #fefefe; }\n");
+    const out = runRouter(repo.dir, [
+      "--base",
+      "origin/main",
+      "--no-fetch",
+      "--no-deps",
+      "--quiet",
+      "--config",
+      config,
+    ]);
+    assert.match(
+      out,
+      /^BROWSER_UNVERIFIED: public\/styles\.css \(Chrome gate blocked by web-ai-showcase-jdz\)$/m,
+    );
+    assert.match(out, /^fast-gate: fallback: mode=all reason=unmapped/m);
   } finally {
     repo.cleanup();
     repo.cleanupBare();

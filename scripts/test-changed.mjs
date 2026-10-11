@@ -58,13 +58,15 @@
 //   {
 //     "fallback": { "mode": "all", "list": [] },   // "all" (default) | "list" (bounded core set)
 //     "heavy": ["test/slow.test.mjs"],             // routed but deferred by the fast tier
+//     "browser": ["public/**", "**/*.css"],        // browser-facing: reported BROWSER_UNVERIFIED
 //     "inert": ["docs/**"],                        // extra no-test-needed globs (last resort only)
 //     "map": { "models/**": ["test/x.test.mjs"] }, // extra routing overrides
 //     "external": [{ "globs": ["server.ts"], "cmd": ["deno", "task", "test:server"] }]
 //   }
 // An `external` rule's command is EXECUTED by this gate, so it is verification rather than a
 // promise: it exists for paths another runner owns (the Deno server proxy tests) that no Node test
-// covers. A declared-but-unrun claim would be the green skip this router exists to prevent.
+// covers. A declared-but-unrun claim would be the green skip this router exists to prevent — there
+// is deliberately no flag that skips a matched external rule.
 
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
@@ -75,7 +77,6 @@ export const UNIT_TEST_DIR = "test";
 export const BROWSER_TEST_DIR = "test-browser";
 export const TEST_SUFFIX = ".test.mjs";
 export const CONFIG_REL = "scripts/test-changed.config.json";
-export const SELF_REL = "scripts/test-changed.mjs";
 
 // Directories scanned to build the module graph. models/ is deliberately absent: it holds thousands
 // of worker/demo files that are DATA to these tests (read as text, or scanned as directories), never
@@ -410,7 +411,10 @@ export function scanSourceRefs(repoDir, fileRel, topLevel) {
   }
   for (const m of stripped.matchAll(EXEC_CALL_RE)) {
     const args = m[1];
-    if (/\bgit\s+(?:ls-files|ls-tree|archive|grep)\b/.test(args)) refs.repoWide = true;
+    // Both spellings count: execSync("git ls-files") and execFileSync("git", ["ls-files"]). A
+    // repo-wide reader is a real dependency of every tracked file, so missing one would drop a test
+    // from a change it does read.
+    if (/\bgit\b[^)]{0,80}?\b(?:ls-files|ls-tree|archive|grep)\b/.test(args)) refs.repoWide = true;
     for (const q of args.matchAll(QUOTED_RE)) addResolved(q[2], { fromScan: true });
   }
 
@@ -607,28 +611,33 @@ export function routeChanges({
   config = {},
   tier = "fast",
   unknownBase = null,
+  forceAll = false,
   allowUnmapped = false,
 }) {
   const fallbackCfg = { ...DEFAULT_FALLBACK, ...(config.fallback ?? {}) };
   const heavy = new Set(config.heavy ?? []);
+  const browserGlobs = Array.isArray(config.browser) ? config.browser : [];
   const run = new Set();
   const unmapped = [];
   const deletedTests = [];
+  const renamedTests = [];
   const browserChanged = [];
+  const browserUnverified = [];
   const inert = [];
   const reasons = [];
   const externalRules = Array.isArray(config.external) ? config.external : [];
   const external = new Map(); // label -> { label, cmd, timeoutMs, paths:Set }
 
   for (const entry of entries) {
-    const targets = entry.status === "R" || entry.status === "C"
-      ? [entry.oldPath, entry.path]
-      : [entry.path];
+    const renamed = entry.status === "R" || entry.status === "C";
+    const targets = renamed ? [entry.oldPath, entry.path] : [entry.path];
     for (const target of targets) {
+      // The OLD side of a rename no longer exists: running it would hand `node --test` a path it
+      // silently ignores, and claiming it as `completed:` would be a false record. The new side runs.
+      const isOldSide = renamed && target === entry.oldPath;
       const unitTest = isUnitTestPath(target);
       const { specific, sweep } = testsForPath(index, target, config);
-      // A changed test file is its own test (a deleted one is not: it forces the fallback below).
-      if (unitTest && entry.status !== "D") specific.add(target);
+      if (unitTest && !isOldSide && entry.status !== "D") specific.add(target);
       sweep.forEach((t) => run.add(t));
       specific.forEach((t) => run.add(t));
       // A path another runner verifies is covered by a command this invocation RUNS, never by a
@@ -653,9 +662,26 @@ export function routeChanges({
           reason: `covered by external runner(s): ${[...external.keys()].join(", ")}`,
         });
       }
+      // Browser-facing paths have no gate while cgroup containment is blocked (bead jdz): say so on
+      // every run instead of letting a fast-tier PASS read as browser verification.
+      if (browserGlobs.some((g) => globMatch(target, g))) {
+        browserUnverified.push(target);
+        reasons.push({
+          path: target,
+          reason: "browser-facing: BROWSER_UNVERIFIED (Chrome gate blocked by web-ai-showcase-jdz)",
+        });
+      }
       if (unitTest && entry.status === "D") {
         deletedTests.push(target);
         reasons.push({ path: target, reason: "deleted unit test file (forces the fallback)" });
+        continue;
+      }
+      if (unitTest && isOldSide) {
+        renamedTests.push({ from: entry.oldPath, to: entry.path });
+        reasons.push({
+          path: target,
+          reason: `renamed to ${entry.path}: the new path runs, the old path no longer exists`,
+        });
         continue;
       }
       if (unitTest) {
@@ -694,21 +720,27 @@ export function routeChanges({
   }
 
   // Anything here triggers the fallback: a change the fast gate cannot route is never skipped.
-  let trigger = null;
-  if (unmapped.length > 0) {
-    trigger = `unmapped path(s): ${unmapped.slice(0, 3).join(", ")}${
-      unmapped.length > 3 ? ", …" : ""
-    }`;
+  // `code` is the machine-readable half (coord: markers must be greppable), `prose` the human half.
+  let code = null;
+  let paths = [];
+  if (entries.some((e) => e.path === CONFIG_REL)) {
+    // A gate-config diff is the strongest signal: nobody re-verified the new policy.
+    code = "config-change";
+    paths = [CONFIG_REL];
   } else if (deletedTests.length > 0) {
-    trigger = `deleted test file(s): ${deletedTests.join(", ")}`;
-  } else if (entries.some((e) => e.path === CONFIG_REL)) {
-    trigger = `gate config changed (${CONFIG_REL})`;
+    code = "deleted-test";
+    paths = deletedTests;
+  } else if (unmapped.length > 0) {
+    code = "unmapped";
+    paths = unmapped;
   } else if (unknownBase) {
-    trigger = `unknown base: ${unknownBase}`;
+    code = "unknown-base";
+  } else if (forceAll) {
+    code = "all-flag";
   }
 
   let fallback = null;
-  if (trigger && !allowUnmapped) {
+  if (code && !allowUnmapped) {
     let mode = fallbackCfg.mode === "list" ? "list" : "all";
     let list = [];
     if (mode === "list") {
@@ -726,7 +758,13 @@ export function routeChanges({
         mode = "all";
       }
     }
-    fallback = { mode, trigger, list: mode === "list" ? list : [] };
+    fallback = {
+      mode,
+      reason: code,
+      paths,
+      detail: unknownBase ?? null,
+      list: mode === "list" ? list : [],
+    };
     if (mode === "all") index.allUnitTests.forEach((t) => run.add(t));
     else list.forEach((t) => run.add(t));
   }
@@ -752,7 +790,9 @@ export function routeChanges({
     unmapped: decisionCoversAll ? [] : unmapped,
     unmappedAll: unmapped,
     deletedTests,
+    renamedTests,
     browserChanged,
+    browserUnverified,
     inert,
     external: [...external.values()].map((e) => ({ ...e, paths: [...e.paths].sort() })),
     fallback,
@@ -775,7 +815,7 @@ export function loadConfig(repoDir, explicitPath) {
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
       throw new Error("config must be an object");
     }
-    const known = new Set(["fallback", "heavy", "inert", "map", "external"]);
+    const known = new Set(["fallback", "heavy", "inert", "map", "external", "browser"]);
     for (const k of Object.keys(parsed)) {
       if (k.startsWith("_")) continue; // `_note`-style documentation keys
       if (!known.has(k)) warnings.push(`unknown config key ${JSON.stringify(k)} ignored`);
@@ -811,7 +851,7 @@ export function validateConfig(parsed, warnings = []) {
       config.fallback = { mode: mode === "list" ? "list" : "all", list };
     }
   }
-  for (const key of ["heavy", "inert"]) {
+  for (const key of ["heavy", "inert", "browser"]) {
     if (config[key] === undefined) continue;
     if (!Array.isArray(config[key])) bad(`${key} must be an array of globs/paths`, key);
     else config[key] = config[key].map(String);
@@ -914,7 +954,6 @@ Route the tests this branch needs, then run them (default) or report them.
   --json              print the routing decision as JSON and exit
   --explain           print the per-path routing reasons
   --allow-unmapped    run the mapped tests even when paths are unmapped (LOUD warning; NOT for the gate)
-  --no-external       do not run config-declared external test commands
   --no-deps           skip the fleet-deps bootstrap
   --quiet             fewer progress lines (warnings, deferrals and run output still shown)
   --help
@@ -934,7 +973,6 @@ export function parseArgs(argv) {
     json: false,
     explain: false,
     allowUnmapped: false,
-    external: true,
     deps: true,
     quiet: false,
     help: false,
@@ -991,9 +1029,6 @@ export function parseArgs(argv) {
       case "--allow-unmapped":
         opts.allowUnmapped = true;
         break;
-      case "--no-external":
-        opts.external = false;
-        break;
       case "--no-deps":
         opts.deps = false;
         break;
@@ -1049,7 +1084,15 @@ export function plan(
     if (d.error) unknownBase = d.error;
     else entries = d.entries;
   }
-  const route = routeChanges({ entries, index, config, tier, unknownBase, allowUnmapped });
+  const route = routeChanges({
+    entries,
+    index,
+    config,
+    tier,
+    unknownBase,
+    forceAll: all,
+    allowUnmapped,
+  });
   return {
     repoRoot,
     configPath,
@@ -1089,7 +1132,13 @@ export function main(argv = process.argv.slice(2)) {
   const { route } = p;
   p.configWarnings.forEach((w) => warn(`${PREFIX} WARN: ${w}`));
   p.baseWarnings.forEach((w) => warn(`${PREFIX} WARN: ${w}`));
-  if (!p.baseSha) warn(`${PREFIX} FAIL-CLOSED: ${route.fallback?.trigger ?? "unknown base"}`);
+  if (!p.baseSha) {
+    warn(
+      `${PREFIX} FAIL-CLOSED: unknown base (${
+        route.fallback?.detail ?? "unresolvable"
+      }); running the fallback`,
+    );
+  }
 
   if (opts.json) {
     process.stdout.write(
@@ -1115,17 +1164,47 @@ export function main(argv = process.argv.slice(2)) {
 
   if (!opts.quiet) out(`${PREFIX} changed ${p.entries.length} path(s)`);
   for (const n of route.browserChanged) out(`${PREFIX} browser-gated: ${n}`);
+  for (const n of route.browserUnverified) {
+    out(`BROWSER_UNVERIFIED: ${n} (Chrome gate blocked by web-ai-showcase-jdz)`);
+  }
   for (const n of route.deletedTests) out(`${PREFIX} deleted-test: ${n}`);
+  for (const r of route.renamedTests) out(`${PREFIX} renamed-test: ${r.from} -> ${r.to}`);
   for (const n of route.unmapped) out(`unmapped: ${n}`);
-  if (route.fallback) out(`${PREFIX} FALLBACK(${route.fallback.mode}): ${route.fallback.trigger}`);
+  if (route.fallback) {
+    out(
+      `${PREFIX} fallback: mode=${route.fallback.mode} reason=${route.fallback.reason} paths=${
+        route.fallback.paths.slice(0, 3).join(" ")
+      }`,
+    );
+    if (route.fallback.detail) out(`${PREFIX} fallback-detail: ${route.fallback.detail}`);
+  }
   for (const t of route.deferred) out(`${PREFIX} deferred-heavy: ${t}`);
   for (const e of route.external) out(`${PREFIX} external: ${e.paths.join(", ")} -> ${e.label}`);
   if (opts.explain) {
     for (const r of route.reasons) out(`${PREFIX} route: ${r.path} -> ${r.reason}`);
   }
 
-  const needExternal = opts.external && route.external.length > 0;
+  // A routed test that does not exist would be silently ignored by `node --test` (it errors only
+  // when EVERY path is missing) and then reported as completed. Refuse instead of pretending.
+  const missingRouted = route.run.filter((t) => !existsSync(join(p.repoRoot, t)));
+  if (missingRouted.length > 0) {
+    for (const t of missingRouted) out(`${PREFIX} MISSING-ROUTED-TEST: ${t}`);
+    warn(
+      `${PREFIX} FAIL-CLOSED: ${missingRouted.length} routed test file(s) do not exist on disk; refusing to run a partial set`,
+    );
+    return 2;
+  }
+
+  const needExternal = route.external.length > 0;
   if (route.run.length === 0 && !needExternal) {
+    if (route.deferred.length > 0) {
+      // Every routed test is a declared-heavy deferral: say DEFERRED, never "none test-bearing".
+      for (const t of route.deferred) out(`${PREFIX} deferred-only: ${t}`);
+      out(
+        `${PREFIX} result: DEFERRED (0 test file(s) run, ${route.deferred.length} deferred, 0 external, ${route.unmapped.length} unmapped)`,
+      );
+      return 0;
+    }
     if (route.unmappedAll.length > 0) {
       warn(
         `${PREFIX} FAIL-CLOSED: ${route.unmappedAll.length} changed path(s) have no routed test${
