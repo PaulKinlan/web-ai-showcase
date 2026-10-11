@@ -75,7 +75,12 @@ test("the two suites stay declared apart, so the browser one cannot be orphaned"
   );
   // The fast suite has no deno task: CI runs it directly. So the property to assert is that no task
   // anywhere mixes the two globs, and that CI declares the browser step instead of leaving it orphaned.
+  // `//`-prefixed keys are deno.json's comment mechanism (JSON.parse keeps them as ordinary keys), and
+  // a comment is prose, not a command — it can launch nothing. The ehf adversarial-tier comment names
+  // both suites while explaining the layout, which tripped this check as a false positive; comments
+  // are skipped rather than prose reworded, so future documentation cannot break this guard either.
   for (const [name, cmd] of Object.entries(deno.tasks || {})) {
+    if (name.startsWith("//")) continue;
     if (!String(cmd).includes("node --test")) continue;
     assert.ok(
       !(String(cmd).includes("test-browser") && String(cmd).includes("test/**")),

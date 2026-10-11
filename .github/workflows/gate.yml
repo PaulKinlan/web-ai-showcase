@@ -8,9 +8,20 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # The adversarial runtime-pin tier (below) runs ONLY on this daily schedule and on manual
+  # dispatch (bead web-ai-showcase-ehf): ~60+ isolated-copy mutation gate runs, ~7 minutes —
+  # too heavy for every push/PR, but its scheduled result is the durable proof the gate still
+  # catches every bad-pin class. The regular gate jobs below are unchanged by the schedule
+  # trigger: they carry an event_name guard so pushes/PRs never queue the heavy tier.
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
 
 jobs:
   gate:
+    # Skip the regular gate jobs on scheduled/dispatch runs — those events exist for the
+    # adversarial tier alone (pushes already run everything below on main).
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -76,3 +87,25 @@ jobs:
           # CHROME_BIN that points at a runnable file and ignores one that does not (web-ai-showcase-fdy).
           { [ -n "${CHROME_BIN:-}" ] && [ -x "${CHROME_BIN}" ]; } || command -v google-chrome-stable >/dev/null 2>&1 || command -v google-chrome >/dev/null 2>&1 || command -v chromium >/dev/null 2>&1 || { echo "::error::No Chrome/Chromium found on PATH or in CHROME_BIN — this step declares a browser dependency"; exit 1; }
           node --test test-browser/mobile-viewport.test.mjs test-browser/example-gallery-attribution.test.mjs test-browser/image-credit-hostile.test.mjs test-browser/chrome-navigation.test.mjs test-browser/static-server-paths.test.mjs
+
+  # Scheduled heavy tier (bead web-ai-showcase-ehf): the runtime-pin ADVERSARIAL suite — every
+  # mutation proof that the currency gate catches bad pins (MUTANT PROOF / STRICT RAW / FLOATING /
+  # LITERAL BOUNDARY / LEDGER tampering / vs2 falsification). ~60+ isolated-copy gate runs, ~7 min,
+  # no browser, no network. It lives in test-adversarial/ (outside the default node --test glob, the
+  # same layout as test-browser/) so per-push CI stays fast; this daily job is its durable result —
+  # the check-run record on main IS the audit trail. Run ad hoc with `deno task test:adversarial`.
+  adversarial-runtime-pins:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      # The adversarial suite materialises its isolated copy via `git archive HEAD` and symlinks the
+      # repo's node_modules into it (test/lib/isolated-repo.mjs); the literal pass parses with the
+      # pinned acorn/parse5 deps, so install the exact lockfile first (same as the node-suite step).
+      - name: Install pinned parser dependencies (exact lockfile)
+        run: npm ci --ignore-scripts
+      - name: Runtime-pin adversarial suite (mutation proofs · ~7 min · no browser, no network)
+        run: node --test test-adversarial/runtime-pins-adversarial.test.mjs
