@@ -32,6 +32,14 @@ import {
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const ROUTER = join(ROOT, "scripts", "test-changed.mjs");
 const ROUTER_SRC = readFileSync(ROUTER, "utf8");
+// Repository-shaped paths live in a JSON fixture (test/fixtures/router-paths.json) because a literal
+// path in THIS file is a dependency claim to the router: naming docs/, public/ or server.ts here
+// would route this test suite (seconds) on unrelated changes to those files.
+const PATHS = JSON.parse(readFileSync(join(ROOT, "test", "fixtures", "router-paths.json"), "utf8"));
+const DOC = PATHS.inertDoc; // docs/readme.md — built-in inert prefix
+const DOC2 = PATHS.inertDocOther; // docs/x.md — same, for the reason-code test
+const CSS = PATHS.browserCss; // public/styles.css — matches the shipped `browser` globs
+const SERVER = PATHS.serverTs; // server.ts — covered by the config's external rule
 
 // ── helpers ───────────────────────────────────────────────────────────────────────────────────
 
@@ -136,7 +144,7 @@ const p = "lib/real.js";
 
 test("globMatch handles **, *, a plain directory prefix and non-matches", () => {
   assert.ok(globMatch("models/x/worker.js", "models/**"));
-  assert.ok(globMatch("server.ts", "server.ts"));
+  assert.ok(globMatch(SERVER, SERVER));
   assert.ok(globMatch("models/x/worker.js", "models/x"));
   assert.ok(globMatch("test/a.test.mjs", "test/*.test.mjs"));
   assert.ok(!globMatch("test/nested/a.test.mjs", "test/*.test.mjs"));
@@ -260,7 +268,7 @@ test("every fallback carries a machine-readable reason code", () => {
     [[change("newarea/thing.mjs", "A")], {}, "unmapped"],
     [[{ status: "D", path: "test/a.test.mjs", oldPath: "test/a.test.mjs" }], {}, "deleted-test"],
     [[change(CONFIG_REL)], {}, "config-change"],
-    [[change("docs/x.md")], { forceAll: true }, "all-flag"],
+    [[change(DOC2)], { forceAll: true }, "all-flag"],
   ];
   for (const [entries, extra, expected] of cases) {
     const r = routeChanges({ entries, index, ...extra });
@@ -287,9 +295,9 @@ test("browser-facing paths are reported as unverified without suppressing their 
   // coord, 2026-10-11: a browser change must say BROWSER_UNVERIFIED/jdz, never imply coverage.
   const index = fakeIndex({ tests: ALL });
   const config = { browser: ["public/**", "**/*.css"] };
-  const r = routeChanges({ entries: [change("public/styles.css")], index, config });
-  assert.deepEqual(r.browserUnverified, ["public/styles.css"]);
-  assert.deepEqual(r.unmappedAll, ["public/styles.css"], "the marker is not coverage");
+  const r = routeChanges({ entries: [change(CSS)], index, config });
+  assert.deepEqual(r.browserUnverified, [CSS]);
+  assert.deepEqual(r.unmappedAll, [CSS], "the marker is not coverage");
   assert.equal(
     r.fallback?.reason,
     "unmapped",
@@ -297,11 +305,11 @@ test("browser-facing paths are reported as unverified without suppressing their 
   );
 
   const mapped = routeChanges({
-    entries: [change("public/styles.css")],
-    index: fakeIndex({ tests: ALL, exact: { "public/styles.css": ["test/a.test.mjs"] } }),
+    entries: [change(CSS)],
+    index: fakeIndex({ tests: ALL, exact: { [CSS]: ["test/a.test.mjs"] } }),
     config,
   });
-  assert.deepEqual(mapped.browserUnverified, ["public/styles.css"]);
+  assert.deepEqual(mapped.browserUnverified, [CSS]);
   assert.deepEqual(mapped.run, ["test/a.test.mjs"], "routing is untouched by the report");
 });
 
@@ -362,23 +370,23 @@ test("an external runner covers a path — and is collected so the gate really r
   const index = fakeIndex({ tests: ALL });
   const config = {
     external: [{
-      globs: ["server.ts"],
+      globs: [SERVER],
       cmd: ["deno", "task", "test:server"],
       label: "deno server",
     }],
   };
-  const r = routeChanges({ entries: [change("server.ts")], index, config });
+  const r = routeChanges({ entries: [change(SERVER)], index, config });
   assert.deepEqual(r.unmappedAll, []);
   assert.equal(r.fallback, null);
   assert.deepEqual(r.external.map((e) => e.label), ["deno server"]);
-  assert.deepEqual(r.external[0].paths, ["server.ts"]);
+  assert.deepEqual(r.external[0].paths, [SERVER]);
   assert.deepEqual(r.external[0].cmd, ["deno", "task", "test:server"]);
 });
 
 test("without an external rule the same path still falls back", () => {
   const index = fakeIndex({ tests: ALL });
-  const r = routeChanges({ entries: [change("server.ts")], index });
-  assert.deepEqual(r.unmappedAll, ["server.ts"]);
+  const r = routeChanges({ entries: [change(SERVER)], index });
+  assert.deepEqual(r.unmappedAll, [SERVER]);
   assert.equal(r.fallback?.mode, "all");
 });
 
@@ -451,7 +459,7 @@ test("validateConfig refuses malformed sections instead of silently narrowing th
       browser: "public/**",
       map: { "models/**": "test/a.test.mjs" },
       external: [
-        { globs: ["server.ts"] },
+        { globs: [SERVER] },
         { cmd: ["x"] },
         { globs: ["a.ts"], cmd: ["node", "x"] },
         7,
@@ -499,8 +507,8 @@ function fixture() {
     files: {
       "lib/a.mjs": "export const a = 1;\n",
       "test/a.test.mjs": `import { a } from "../lib/a.mjs";\n${PASSING_TEST}`,
-      "docs/readme.md": "# docs\n",
-      "public/styles.css": ":root { --warm: #fff; }\n",
+      [DOC]: "# docs\n",
+      [CSS]: ":root { --warm: #fff; }\n",
       "package.json": '{ "name": "fixture", "private": true }\n',
     },
   });
@@ -623,12 +631,12 @@ test("CLI: an external rule's command is really executed, and its failure fails 
       config,
       JSON.stringify({
         external: [{
-          globs: ["server.ts"],
+          globs: [SERVER],
           cmd: ["node", "-e", `require("fs").writeFileSync(${JSON.stringify(marker)},"yes")`],
         }],
       }),
     );
-    write(repo.dir, "server.ts", "export const s = 1;\n");
+    write(repo.dir, SERVER, "export const s = 1;\n");
     const ok = runRouter(repo.dir, [
       "--base",
       "origin/main",
@@ -646,7 +654,7 @@ test("CLI: an external rule's command is really executed, and its failure fails 
     writeFileSync(
       failing,
       JSON.stringify({
-        external: [{ globs: ["server.ts"], cmd: ["node", "-e", "process.exit(3)"] }],
+        external: [{ globs: [SERVER], cmd: ["node", "-e", "process.exit(3)"] }],
       }),
     );
     assert.throws(
@@ -695,7 +703,7 @@ test("CLI: a deleted test file falls back, and a rename reports both sides", () 
 test("CLI: docs-only changes run nothing and say so (no fallback, no silent pass)", () => {
   const repo = fixture();
   try {
-    write(repo.dir, "docs/readme.md", "# docs changed\n");
+    write(repo.dir, DOC, "# docs changed\n");
     const out = runRouter(repo.dir, [
       "--base",
       "origin/main",
@@ -836,7 +844,7 @@ test("CLI: a browser-facing change prints BROWSER_UNVERIFIED with the jdz blocke
   try {
     const config = join(repo.dir, "browser.config.json");
     writeFileSync(config, JSON.stringify({ browser: ["public/**", "**/*.css"] }));
-    write(repo.dir, "public/styles.css", ":root { --warm: #fefefe; }\n");
+    write(repo.dir, CSS, ":root { --warm: #fefefe; }\n");
     const out = runRouter(repo.dir, [
       "--base",
       "origin/main",
