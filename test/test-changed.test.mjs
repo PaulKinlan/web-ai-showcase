@@ -833,6 +833,25 @@ test("CLI: a routed test that does not exist fails closed instead of silently no
         return true;
       },
     );
+    // --json carries it too, and exits 2 rather than reporting a routable set.
+    assert.throws(
+      () =>
+        runRouter(repo.dir, [
+          "--base",
+          "origin/main",
+          "--no-fetch",
+          "--no-deps",
+          "--quiet",
+          "--json",
+          "--config",
+          config,
+        ]),
+      (e) => {
+        assert.equal(e.status, 2);
+        assert.deepEqual(JSON.parse(String(e.stdout)).missingRouted, ["test/gone.test.mjs"]);
+        return true;
+      },
+    );
   } finally {
     repo.cleanup();
     repo.cleanupBare();

@@ -1140,6 +1140,7 @@ export function main(argv = process.argv.slice(2)) {
     );
   }
 
+  const missingRouted = route.run.filter((t) => !existsSync(join(p.repoRoot, t)));
   if (opts.json) {
     process.stdout.write(
       `${
@@ -1148,6 +1149,7 @@ export function main(argv = process.argv.slice(2)) {
             base: p.baseSha,
             config: p.configPath,
             changed: p.entries.map((e) => ({ status: e.status, path: e.path, oldPath: e.oldPath })),
+            missingRouted,
             ...route,
           },
           null,
@@ -1155,7 +1157,7 @@ export function main(argv = process.argv.slice(2)) {
         )
       }\n`,
     );
-    return 0;
+    return missingRouted.length > 0 ? 2 : 0;
   }
   if (opts.list) {
     route.run.forEach((t) => process.stdout.write(`${t}\n`));
@@ -1186,7 +1188,6 @@ export function main(argv = process.argv.slice(2)) {
 
   // A routed test that does not exist would be silently ignored by `node --test` (it errors only
   // when EVERY path is missing) and then reported as completed. Refuse instead of pretending.
-  const missingRouted = route.run.filter((t) => !existsSync(join(p.repoRoot, t)));
   if (missingRouted.length > 0) {
     for (const t of missingRouted) out(`${PREFIX} MISSING-ROUTED-TEST: ${t}`);
     warn(
