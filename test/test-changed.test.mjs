@@ -14,6 +14,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  buildIndex,
   changedPaths,
   CONFIG_REL,
   globMatch,
@@ -409,29 +410,34 @@ test("when the decision covers the whole suite, no path is reported unmapped", (
 test("a repo-wide git scan written in argv form is detected too (P2 review finding)", () => {
   // `execFileSync("git", ["ls-files"])` separates git from its subcommand with comma/bracket text,
   // so a whitespace-only regex misses it and the sweep test silently drops out of the fallback set.
+  // The cases live in test/fixtures/scan-cases.json (see its __note) so this test file's own source
+  // does not contain the call pattern — otherwise IT would be detected as a repo-wide sweep test and
+  // would run on every change in the repository.
+  const scanCases = JSON.parse(readFileSync(join(ROOT, "test/fixtures/scan-cases.json"), "utf8"));
   const dir = mkdtempSync(join(tmpdir(), "test-changed-scan-"));
   try {
-    const cases = [
-      [`execSync("git ls-files", { encoding: "utf8" });`, true],
-      [`execFileSync("git", ["ls-files"], { cwd: ROOT });`, true],
-      [`spawnSync("git", ["grep", "-n", "x"]);`, true],
-      [`execFileSync("git", ["ls-tree", "-r", sha]);`, true],
-      [`execSync("git archive HEAD | tar -x -C dir");`, true],
-      [`execFileSync("git", ["rev-parse", "HEAD"]);`, false],
-      [`execFileSync("git", ["status", "--porcelain"]);`, false],
-    ];
-    for (const [src, expected] of cases) {
+    for (const { src, repoWide } of scanCases) {
       write(
         dir,
         "scan.mjs",
         `import { execSync, execFileSync, spawnSync } from "node:child_process";\n${src}\n`,
       );
       const refs = scanSourceRefs(dir, "scan.mjs", new Set(["scan.mjs"]));
-      assert.equal(refs.repoWide, expected, `repoWide for: ${src}`);
+      assert.equal(refs.repoWide, repoWide, `repoWide for: ${src}`);
     }
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("the router's own test file is not a repo-wide sweep test", () => {
+  // A sweep test is routed for EVERY change; this one asserting its own absence keeps the gate fast
+  // (the fixtures that contain the scan patterns are JSON, not scanned modules).
+  const index = buildIndex(ROOT);
+  assert.ok(
+    !index.repoWideTests.has("test/test-changed.test.mjs"),
+    "test/test-changed.test.mjs must not sweep the repo: it would run on every unrelated change",
+  );
 });
 
 // ── config validation ─────────────────────────────────────────────────────────────────────────
