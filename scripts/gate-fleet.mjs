@@ -159,7 +159,8 @@ function runStage(stage, index, total) {
     return 1;
   }
   if (res.status !== 0) {
-    console.error(`\n[gate-fleet] FAIL at stage ${index + 1}/${total} (${stage.id}) after ${secs}s: exit ${res.status}`);
+    const how = res.status !== null ? `exit ${res.status}` : `signal ${res.signal}`;
+    console.error(`\n[gate-fleet] FAIL at stage ${index + 1}/${total} (${stage.id}) after ${secs}s: ${how}`);
     return res.status ?? 1;
   }
   console.log(`[gate-fleet] ok (${secs}s)`);
