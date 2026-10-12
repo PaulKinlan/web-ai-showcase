@@ -50,6 +50,20 @@
 //
 // NO CHROME, NO NETWORK beyond `git fetch`, NO `npm ci` (fleet-deps hard-links node_modules).
 //
+// EVIDENCE MARKERS (why they exist — bead web-ai-showcase-75ym)
+// The coverage step of the fleet gate (remote/check-coverage.py) reads only this log: it cannot see
+// the dependency graph below, so it attributes coverage from filename stems and `import` statements.
+// For a changed DATA file — a fixture a test reads rather than imports — that guess fails, and the
+// report warned "1 unmapped changed file" on a run where the suite covering it HAD in fact executed
+// (94s: test/fixtures/safe-url-worker.mjs, 7 suites / 97 tests). The router knows the mapping, so it
+// states it machine-readably, one line per changed path:
+//   fast-gate: mapped: <changed path> -> <suite> [<suite> ...]
+// `mapped:` is evidence, never a decision: it is printed only for the paths this same code already
+// routes to a SPECIFIC test (the `specific.size > 0` branch below), never for a sweep-only or
+// unmapped path, so it cannot turn an unrouted change green — those still print `unmapped:` and
+// still force the fallback. A consumer that requires the named suite to have EXECUTED (`completed:`)
+// keeps fail-closed semantics; the marker alone asserts mapping, not execution.
+//
 // Usage (the CHECK_FAST_CMD shape ADR cxw describes):
 //   fleet-deps && node scripts/test-changed.mjs
 // Inspection: --list, --json, --explain. See --help.
@@ -625,6 +639,9 @@ export function routeChanges({
   const browserUnverified = [];
   const inert = [];
   const reasons = [];
+  // Changed path -> the SPECIFIC suites that cover it (75ym). Evidence for the coverage reporter;
+  // never consulted by any routing decision below.
+  const mapped = [];
   const externalRules = Array.isArray(config.external) ? config.external : [];
   const external = new Map(); // label -> { label, cmd, timeoutMs, paths:Set }
 
@@ -697,6 +714,7 @@ export function routeChanges({
         continue;
       }
       if (specific.size > 0) {
+        mapped.push({ path: target, suites: [...specific].sort() });
         reasons.push({ path: target, reason: `mapped to ${[...specific].sort().join(", ")}` });
         continue;
       }
@@ -794,6 +812,7 @@ export function routeChanges({
     browserChanged,
     browserUnverified,
     inert,
+    mapped: [...mapped].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0)),
     external: [...external.values()].map((e) => ({ ...e, paths: [...e.paths].sort() })),
     fallback,
     decisionCoversAll,
@@ -1171,6 +1190,7 @@ export function main(argv = process.argv.slice(2)) {
   }
   for (const n of route.deletedTests) out(`${PREFIX} deleted-test: ${n}`);
   for (const r of route.renamedTests) out(`${PREFIX} renamed-test: ${r.from} -> ${r.to}`);
+  for (const m of route.mapped) out(`${PREFIX} mapped: ${m.path} -> ${m.suites.join(" ")}`);
   for (const n of route.unmapped) out(`unmapped: ${n}`);
   if (route.fallback) {
     out(

@@ -920,3 +920,115 @@ test("changedPaths reads the working tree against the merge base, with both rena
     repo.cleanupBare();
   }
 });
+
+// ── mapped: evidence for the coverage report (bead web-ai-showcase-75ym) ──────────────────────────
+// The gate's coverage step reads this log and nothing else, so a changed DATA file (a fixture a test
+// reads rather than imports) had no evidence at all and was reported "unmapped" on a run where the
+// suite covering it had executed. These tests pin the evidence line and, just as importantly, pin
+// that it can never be printed for a change the router did not actually route.
+
+test("CLI: a mapped DATA file publishes path->suite evidence (75ym)", () => {
+  const repo = makeRepo({
+    files: {
+      "test/a.test.mjs": `import { readFileSync } from "node:fs";
+import { test } from "node:test";
+import assert from "node:assert/strict";
+test("reads its fixture", () => {
+  assert.match(readFileSync(new URL("./fixtures/scan.json", import.meta.url), "utf8"), /ok/);
+});
+`,
+      "test/fixtures/scan.json": '{ "ok": true }\n',
+    },
+  });
+  try {
+    write(repo.dir, "test/fixtures/scan.json", '{ "ok": false }\n');
+    const out = runRouter(repo.dir, ["--base", "origin/main", "--no-fetch", "--no-deps"]);
+    assert.match(
+      out,
+      /^fast-gate: mapped: test\/fixtures\/scan\.json -> test\/a\.test\.mjs$/m,
+      "the router knows the mapping for a data file; that is the evidence the report cannot derive",
+    );
+    assert.doesNotMatch(out, /^unmapped: test\/fixtures\/scan\.json$/m);
+
+    const planned = routeJson(repo.dir, ["--base", "origin/main", "--no-fetch", "--no-deps"]);
+    assert.deepEqual(planned.mapped, [
+      { path: "test/fixtures/scan.json", suites: ["test/a.test.mjs"] },
+    ]);
+    assert.deepEqual(planned.run, ["test/a.test.mjs"], "evidence does not change what runs");
+    assert.equal(planned.fallback, null);
+  } finally {
+    repo.cleanup();
+    repo.cleanupBare();
+  }
+});
+
+test("CLI: mapped: is never printed for an unrouted change, and the fallback still fires (75ym)", () => {
+  // The marker must not become a way to look covered: a path that only a repo-wide sweep could reach
+  // is still unmapped, still forces the fallback, and gets no `mapped:` line.
+  const repo = makeRepo({
+    files: {
+      "lib/a.mjs": "export const a = 1;\n",
+      "test/a.test.mjs": `import { a } from "../lib/a.mjs";\n${PASSING_TEST}`,
+      "test/sweep.test.mjs": PATHS.sweepTestSource,
+    },
+  });
+  try {
+    write(repo.dir, "lib/orphan.mjs", "export const orphan = 1;\n");
+    const out = runRouter(repo.dir, ["--base", "origin/main", "--no-fetch", "--no-deps"]);
+    assert.doesNotMatch(out, /^fast-gate: mapped: lib\/orphan\.mjs/m);
+    assert.match(out, /^fast-gate: fallback: mode=all reason=unmapped paths=lib\/orphan\.mjs$/m);
+
+    const planned = routeJson(repo.dir, ["--base", "origin/main", "--no-fetch", "--no-deps"]);
+    assert.deepEqual(planned.unmappedAll, ["lib/orphan.mjs"]);
+    assert.equal(
+      planned.decisionCoversAll,
+      true,
+      "the whole unit suite still runs for an unrouted path",
+    );
+    assert.equal(planned.fallback.reason, "unmapped");
+    assert.ok(
+      planned.mapped.every((m) => m.path !== "lib/orphan.mjs"),
+      "no mapping evidence may be invented for an unrouted path",
+    );
+    // The sweep test IS routed (it runs for any change) but it must not be reported as this path's
+    // specific coverage — sweep-only never clears a path.
+    assert.ok(
+      planned.mapped.every((m) =>
+        !m.suites.includes("test/sweep.test.mjs") || m.path !== "lib/orphan.mjs"
+      ),
+      "a repo-wide sweep is not specific mapping evidence",
+    );
+    assert.ok(planned.run.includes("test/sweep.test.mjs"));
+  } finally {
+    repo.cleanup();
+    repo.cleanupBare();
+  }
+});
+
+test("contract: .fleet/coverage-contract.json agrees with what the router routes (75ym)", () => {
+  // The report's contract file is a second statement of the same mapping. Keep the two from drifting:
+  // a declared suite that the router does not route would credit coverage the gate never dispatched.
+  const contract = JSON.parse(readFileSync(join(ROOT, ".fleet", "coverage-contract.json"), "utf8"));
+  const declared = Object.entries(contract).filter(([k]) => !k.startsWith("_"));
+  assert.ok(declared.length > 0, "the contract must declare at least one path");
+  for (const [path, suites] of declared) {
+    assert.ok(
+      Array.isArray(suites) && suites.length > 0,
+      `${path} must declare at least one suite (the report reads a list)`,
+    );
+    for (const s of suites) {
+      assert.ok(
+        existsSync(join(ROOT, s)),
+        `${s} declared for ${path} must exist — a contract naming a missing suite can never be met`,
+      );
+    }
+  }
+  const index = buildIndex(ROOT);
+  for (const [path, suites] of declared) {
+    if (!existsSync(join(ROOT, path))) continue; // inert until the declared path itself exists
+    const { specific } = testsForPath(index, path, {});
+    for (const s of suites) {
+      assert.ok(specific.has(s), `the router must route ${path} -> ${s} (contract says so)`);
+    }
+  }
+});
