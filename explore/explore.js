@@ -15,6 +15,7 @@
 // performance (content-visibility on result rows; no main-thread scoring).
 
 import { QueueOverflowError, SupersededError, WorkerClient } from "../lib/worker-protocol.js";
+import { comboboxKeydownDecision } from "./combobox-keys.js";
 
 const METHOD = {
   BUILD: "build",
@@ -530,24 +531,35 @@ function navigateTo(opt) {
 }
 
 els.q.addEventListener("keydown", (e) => {
-  if (!activeOptions.length) return;
-  if (e.key === "ArrowDown") {
-    e.preventDefault();
-    setActive(Math.min(activeIdx + 1, activeOptions.length - 1));
-  } else if (e.key === "ArrowUp") {
-    e.preventDefault();
-    setActive(Math.max(activeIdx - 1, 0));
-  } else if (e.key === "Home" && activeIdx >= 0) {
-    e.preventDefault();
-    setActive(0);
-  } else if (e.key === "End" && activeIdx >= 0) {
-    e.preventDefault();
-    setActive(activeOptions.length - 1);
-  } else if (e.key === "Enter" && activeIdx >= 0) {
-    e.preventDefault();
-    navigateTo(activeOptions[activeIdx]);
-  } else if (e.key === "Escape") {
-    setActive(-1);
+  // IME-safe (web-ai-showcase-gtr): the decision module early-returns null while an IME is
+  // composing (isComposing or the legacy 229 signal — Safari delivers compositionend before the
+  // confirming Enter keydown, WebKit bug 165004), so Enter/Arrows/Home/End belong to the IME
+  // candidate window during composition, and ordinary keys keep their pre-gtr behavior.
+  const decision = comboboxKeydownDecision(e, {
+    hasOptions: activeOptions.length > 0,
+    hasActive: activeIdx >= 0,
+  });
+  if (!decision) return;
+  if (decision.preventDefault) e.preventDefault();
+  switch (decision.action) {
+    case "next":
+      setActive(Math.min(activeIdx + 1, activeOptions.length - 1));
+      break;
+    case "prev":
+      setActive(Math.max(activeIdx - 1, 0));
+      break;
+    case "home":
+      setActive(0);
+      break;
+    case "end":
+      setActive(activeOptions.length - 1);
+      break;
+    case "commit":
+      navigateTo(activeOptions[activeIdx]);
+      break;
+    case "clear":
+      setActive(-1);
+      break;
   }
 });
 
