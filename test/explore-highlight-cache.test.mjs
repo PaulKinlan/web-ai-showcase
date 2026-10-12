@@ -127,20 +127,40 @@ test("the cache is bounded: it holds the cap, and beyond the cap effort degrades
   assert.equal(overCap.compiles(), 20);
 });
 
-test("eviction is least-recently-used and deterministic", () => {
+test("eviction is least-recently-used: a cache HIT refreshes recency and the LRU entry is the one dropped", () => {
+  // The discriminating shape matters: touching a list that was ALREADY EVICTED re-inserts it at the
+  // tail under any insertion-ordered policy, so a FIFO cache would answer the same way and the test
+  // would not bite (found by review, bead web-ai-showcase-4v5v). The only sequence that separates LRU
+  // from FIFO is a HIT on a still-cached entry before the eviction, which refreshes recency under LRU
+  // and does nothing under FIFO.
+  const h = makeHarness();
+  for (let i = 0; i < 16; i++) h.highlight("name", [`list${i}a`, `list${i}b`]);
+  assert.equal(h.compiles(), 16, "16 distinct lists fill the cap exactly");
+
+  h.highlight("name", ["list0a", "list0b"]); // HIT on a cached entry: no compile, but recency moves
+  assert.equal(h.compiles(), 16, "a cache hit must not recompile");
+
+  h.highlight("name", ["list16a", "list16b"]); // 17th distinct list: exactly one entry must go
+  assert.equal(h.compiles(), 17);
+
+  // Under LRU the hit above saved list0 and list1 is the least recently used, so list0 is still cached
+  // and list1 has to recompile. A FIFO cache evicts list0 here, and a clear-on-overflow cache would
+  // have dropped everything, so both fail the next assertion.
+  h.highlight("name", ["list0a", "list0b"]);
+  assert.equal(h.compiles(), 17, "the list refreshed by a hit must survive the eviction");
+  h.highlight("name", ["list1a", "list1b"]);
+  assert.equal(h.compiles(), 18, "the least recently used list must be the one that was dropped");
+});
+
+test("an evicted list is recompiled, and the most recent one is not", () => {
   const h = makeHarness();
   for (let i = 0; i < 17; i++) h.highlight("name", [`list${i}a`, `list${i}b`]);
-  assert.equal(h.compiles(), 17);
+  assert.equal(h.compiles(), 17, "17 distinct lists: the 17th insert evicts exactly one entry");
 
   h.highlight("name", ["list0a", "list0b"]); // evicted by the seventeenth insert -> must recompile
   assert.equal(h.compiles(), 18);
   h.highlight("name", ["list16a", "list16b"]); // most recent -> still cached
   assert.equal(h.compiles(), 18);
-
-  h.highlight("name", ["list17a", "list17b"]); // a new list evicts the least recently used
-  assert.equal(h.compiles(), 19);
-  h.highlight("name", ["list0a", "list0b"]); // list0 was refreshed by its hit above: LRU keeps it,
-  assert.equal(h.compiles(), 19, "where a FIFO (or clear-on-overflow) cache would have dropped it");
 });
 
 test("invalidation keys on the full ordered term list", () => {
