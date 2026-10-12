@@ -8,7 +8,10 @@ import {
   storageEstimate,
 } from "../lib/model-cache.js";
 
-const started = performance.now();
+// Real timer, no wall-clock bound: awaiting a pending 25 ms reject is reliable; asserting the VM
+// scheduled it within 500 ms was not. The virtual-clock proof of the deadline itself lives in
+// test/model-cache-deadline-clock.test.mjs — deliberately a separate file, because mock timers and
+// this file's module-scope real timers must not be enabled at the same time (web-ai-showcase-xs9y).
 await assert.rejects(
   settleWithin(new Promise(() => {}), 25, "Test operation"),
   (error) =>
@@ -16,7 +19,6 @@ await assert.rejects(
     error.operation === "Test operation" &&
     error.timeoutMs === 25,
 );
-assert.ok(performance.now() - started < 500, "timeout must settle promptly");
 
 Object.defineProperty(globalThis, "self", { configurable: true, value: globalThis });
 Object.defineProperty(globalThis, "indexedDB", {
