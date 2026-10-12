@@ -22,6 +22,55 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+
+// Properties that move a box (and therefore a page) when they change. The page copy mirrors GEOMETRY
+// only - colour, focus and transition styling stay in QWEN_CSS on purpose, where they cannot shift
+// anything - so the drift check below is closure over THIS set rather than equality of every
+// declaration (which would force the copy to duplicate colours as well).
+const BOX_PREFIXES = [
+  "display",
+  "position",
+  "inset",
+  "top",
+  "right",
+  "bottom",
+  "left",
+  "flex",
+  "order",
+  "gap",
+  "row-gap",
+  "column-gap",
+  "margin",
+  "padding",
+  "border",
+  "inline-size",
+  "block-size",
+  "width",
+  "height",
+  "min",
+  "max",
+  "aspect-ratio",
+  "object-fit",
+  "box-sizing",
+  "overflow",
+  "align",
+  "justify",
+  "place",
+  "grid",
+];
+const NOT_BOX = new Set([
+  "border-radius",
+  "border-color",
+  "border-top-color",
+  "border-right-color",
+  "border-bottom-color",
+  "border-left-color",
+  "border-image",
+]);
+function isBoxProp(prop) {
+  if (NOT_BOX.has(prop)) return false;
+  return BOX_PREFIXES.some((p) => prop === p || prop.startsWith(`${p}-`));
+}
 const QWEN_DIR = "models/qwen2-vl";
 const PAGES = ["index.html", "basics/index.html", "practical/index.html"];
 const read = (rel) => readFileSync(join(ROOT, rel), "utf8");
@@ -133,6 +182,20 @@ test("every page copy of the box rules exists identically in QWEN_CSS", () => {
             "fix models/qwen2-vl/qwen2vl.js and this copy together, or the box shifts twice",
         );
       }
+      // The OTHER direction, for geometry: a box-affecting declaration added to QWEN_CSS and not mirrored
+      // here shifts the box the moment the deferred sheet arrives. Review found this gap: the check below
+      // did not exist, so `margin-bottom` added to QWEN_CSS's .sample-thumb slipped through with every
+      // test still green. Raw declaration equality would close it too, at the cost of forcing the copy to
+      // duplicate colour/focus rules as well; closure over the properties that move boxes is the intent.
+      for (const [prop, value] of src) {
+        if (!isBoxProp(prop)) continue;
+        assert.equal(
+          decls.get(prop),
+          value,
+          `${page}: QWEN_CSS ${selector}{${prop}: ${value}} is a box-affecting declaration this page does ` +
+            "not mirror — mirror it in the head block, or the box shifts when the deferred CSS arrives",
+        );
+      }
     }
   }
 });
@@ -147,6 +210,10 @@ test("the geometry that reserves the media box is present in every page", () => 
     ".preview-img": ["max-inline-size", "max-block-size", "display"],
     ".sample-strip": ["display", "flex-wrap", "gap"],
     ".sample-thumb": ["inline-size", "block-size", "object-fit", "padding", "border"],
+    // Found by review: .dropzone was mirrored in the block but absent from this schema, so deleting it
+    // from a page left every test green while the dropzone - which sits between the strip and the
+    // preview in the same column - lost its border and padding before the deferred CSS arrived.
+    ".dropzone": ["border", "padding"],
   };
   for (const page of PAGES) {
     const { rules } = boxStyle(page);
