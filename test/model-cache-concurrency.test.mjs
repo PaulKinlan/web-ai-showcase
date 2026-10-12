@@ -133,6 +133,21 @@ test("750 ms local cache timeout contract stays optimistic without increasing fa
   // schedule a real timer: with real timers under full-suite CPU contention the same assertion failed
   // 5/10 runs (65 ms bound, observed 75-159 ms) even though the product behaviour was correct.
   t.mock.timers.enable({ apis: ["setTimeout"] });
+  // node:test still runs t.after() when an assertion fails, so the mocks below cannot leak into the
+  // following tests in this file if one of the pre-deadline assertions throws: without this, a
+  // regression that fails line ~147/151 left globalThis.caches/indexedDB patched and turned one real
+  // failure into cascading failures in the rest of the file (reviewer P2, web-ai-showcase-9d4d).
+  const savedGlobals = {
+    self: globalThis.self,
+    caches: globalThis.caches,
+    indexedDB: globalThis.indexedDB,
+  };
+  t.after(() => {
+    for (const [name, value] of Object.entries(savedGlobals)) {
+      if (value === undefined) delete globalThis[name];
+      else globalThis[name] = value;
+    }
+  });
   const mock = mockCaches({ cacheCount: 3, entriesPerCache: 2 });
   // Storage slower than the deadline: if the budget were per cache, three hung opens could not settle
   // after a single 750 ms tick, so the assertion below fails instead of silently passing.
