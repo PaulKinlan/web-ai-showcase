@@ -10,9 +10,14 @@
 //   20-hit render, all hits one list .......... 40 -> 1
 //   20-hit render, two alternating lists ...... 40 -> 2
 //   20-hit render, three interleaved lists .... 40 -> 3
-//   20-hit render, 8 distinct lists (== cap) .. 40 -> 8
-//   20-hit render, 10 distinct lists (> cap) .. 40 -> 20   (documented degradation: the cap thrashes)
+//   20-hit render, 16 distinct lists (== cap) . 40 -> 16
+//   20-hit render, 18 distinct lists (> cap) .. 40 -> 20   (documented: ~one compile per hit)
 //   five distinct searches .................... 200 -> 5
+//
+// The cap is 16 because the number of distinct lists one render can carry is bounded by the non-empty
+// subsets of the query's tokenized terms: 15 for the largest query worth caching (four terms), plus one
+// spare. Beyond it the cache still degrades gracefully - one eviction-and-recompile per hit, never
+// unbounded - and that limit is asserted here so it stays visible.
 //
 // SEAM: explore/explore.js reads the DOM at module scope (document.getElementById while building `els`),
 // so it cannot be imported in Node without a DOM shim, and the change was deliberately kept in-file
@@ -112,30 +117,30 @@ test("five distinct searches compile five times, not 200", () => {
 
 test("the cache is bounded: it holds the cap, and beyond the cap effort degrades to ~one compile per hit", () => {
   const atCap = makeHarness();
-  render(atCap, cycles(8)(20));
-  assert.equal(atCap.compiles(), 8, "8 distinct lists fit the cap, so each compiles once");
+  render(atCap, cycles(16)(20));
+  assert.equal(atCap.compiles(), 16, "16 distinct lists fit the cap, so each compiles once");
 
   const overCap = makeHarness();
-  render(overCap, cycles(10)(20));
-  // Documented degradation, not a guarantee: a working set larger than the cap thrashes. This is still
-  // no worse than half the pre-fix cost (40), but it is deliberately asserted so the limit is visible.
+  render(overCap, cycles(18)(20));
+  // Documented degradation, not a guarantee: a working set larger than the cap evicts and recompiles.
+  // This is still half the pre-fix cost (40), but it is deliberately asserted so the limit is visible.
   assert.equal(overCap.compiles(), 20);
 });
 
 test("eviction is least-recently-used and deterministic", () => {
   const h = makeHarness();
-  for (let i = 0; i < 9; i++) h.highlight("name", [`list${i}a`, `list${i}b`]);
-  assert.equal(h.compiles(), 9);
+  for (let i = 0; i < 17; i++) h.highlight("name", [`list${i}a`, `list${i}b`]);
+  assert.equal(h.compiles(), 17);
 
-  h.highlight("name", ["list0a", "list0b"]); // evicted by the ninth insert -> must recompile
-  assert.equal(h.compiles(), 10);
-  h.highlight("name", ["list8a", "list8b"]); // most recent -> still cached
-  assert.equal(h.compiles(), 10);
+  h.highlight("name", ["list0a", "list0b"]); // evicted by the seventeenth insert -> must recompile
+  assert.equal(h.compiles(), 18);
+  h.highlight("name", ["list16a", "list16b"]); // most recent -> still cached
+  assert.equal(h.compiles(), 18);
 
-  h.highlight("name", ["list9a", "list9b"]); // a new list evicts the least recently used
-  assert.equal(h.compiles(), 11);
+  h.highlight("name", ["list17a", "list17b"]); // a new list evicts the least recently used
+  assert.equal(h.compiles(), 19);
   h.highlight("name", ["list0a", "list0b"]); // list0 was refreshed by its hit above: LRU keeps it,
-  assert.equal(h.compiles(), 11, "where a FIFO (or clear-on-overflow) cache would have dropped it");
+  assert.equal(h.compiles(), 19, "where a FIFO (or clear-on-overflow) cache would have dropped it");
 });
 
 test("invalidation keys on the full ordered term list", () => {

@@ -247,16 +247,21 @@ function esc(s) {
 // The cache is a bounded map because the term list varies PER HIT: the worker records, per document,
 // only the query terms that document matched (matchedByDoc in search/worker.js), so a render's hits can
 // alternate between lists. Measured compiles for a 20-hit render: 1 when every hit carries the same
-// list, 2 when they alternate between two lists, 3 for three interleaved lists (all were 40 before).
-// These are workload-conditional counts, not a render-wide guarantee: the cost is one compile per
-// DISTINCT list per render, and a search that produces more than HIGHLIGHT_CACHE_MAX distinct lists
-// evicts the oldest.
+// list, 2 when they alternate between two lists, 3 for three interleaved lists, 16 when a render
+// carries 16 distinct lists (all were 40 before); beyond the cap it falls back to about one compile per
+// hit (20 for a 20-hit render, still half the pre-fix cost). These are workload-conditional counts, not
+// a render-wide guarantee: the cost is one compile per DISTINCT list per render while the working set
+// fits the cap.
 //
 // The cache key is the FULL ORDERED term list as JSON: every term value, in order, with JSON escaping
 // rather than a join separator a term could itself contain (["a","b"] and ["a\u0000b"] must not collide).
 // A different term list of the same LENGTH can never hit a stale entry. Never key on the array identity
 // (each hit's matchedTerms is a fresh array, so nothing would ever be reused) or on the term count.
-const HIGHLIGHT_CACHE_MAX = 8;
+// The cap is 16: the number of distinct lists one render can carry is bounded by the non-empty subsets
+// of the query's tokenized terms, which is 15 for the largest query worth caching (four terms), so 16
+// covers that realistic worst case with one spare. A render with more than 16 distinct lists still
+// degrades gracefully - the least recently used list is evicted and recompiled, never unbounded.
+const HIGHLIGHT_CACHE_MAX = 16;
 const highlightCache = new Map();
 function termRegex(terms) {
   const key = JSON.stringify(terms);
