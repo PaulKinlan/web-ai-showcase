@@ -13,43 +13,54 @@
 //
 // Usage: node scripts/route-download-inventory.mjs            (writes download-routes.json)
 //        node scripts/route-download-inventory.mjs --check    (print summary only, non-zero if any unknown)
+//        --out <path>        write the inventory elsewhere
+//        --evidence <path>   write diagnostics: per route the matched rule/token/file, and any source
+//                           that had to be treated as ambiguous (comments could not be masked safely)
+//        --models <dir>      classify a different tree (fixture tests; the gate uses models/)
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, relative } from "node:path";
+import * as acorn from "acorn";
+import * as parse5 from "parse5";
 
 const MODELS = "models";
+// --models <dir> lets the fixture test drive a synthetic tree; the gate always uses the real one.
+const modelsDir = process.argv.includes("--models")
+  ? process.argv[process.argv.indexOf("--models") + 1]
+  : MODELS;
 const routes = [];
+const evidence = { routes: {} };
 
 // signal → family. Ordered by SPECIFICITY (first match wins); each family carries its honest
 // byte-control + resume semantics.
 const FAMILIES = {
   "transformers-resumable-prefetch": {
     // The site prefetches big weights resumably (Range/206/sha256 → cache) before from_pretrained.
-    test: (t) => /model-prefetch\.mjs|prefetchModel\s*\(/.test(t),
+    pattern: /model-prefetch\.mjs|prefetchModel\s*\(/,
     byteControl: "site-controlled",
     resume: "resumable",
     note:
       "site fetches weights resumably (Range/206/sha256) into transformers-cache; from_pretrained then cache-hits",
   },
   "webllm": {
-    test: (t) => /lib\/webllm\.js|CreateMLCEngine|@mlc-ai|web-llm/.test(t),
+    pattern: /lib\/webllm\.js|CreateMLCEngine|@mlc-ai|web-llm/,
     byteControl: "runtime-owned",
     resume: "runtime-owned",
     note: "WebLLM/MLC engine fetches + caches shards; no per-file resume hooks exposed to the page",
   },
   "mediapipe": {
-    test: (t) =>
+    pattern:
       // The bundle-name alternatives are ANCHORED to a quoted filename. A bare /\.task\b/ also matches
       // ordinary JavaScript property access (`${p.task}`, `row.task.id`), which classified any route that
       // reads a `.task` property as MediaPipe. Note readAll() concatenates only .js/.mjs/.html, so a
       // FilesetResolver mention that lives in a route's conformance.json is not visible here either.
-      /lib\/mediapipe\.js|FilesetResolver|tasks-vision|tasks-genai|["'][^"']*\.task["']|["'][^"']*\.tflite["']/.test(t),
+      /lib\/mediapipe\.js|FilesetResolver|tasks-vision|tasks-genai|["'][^"']*\.task["']|["'][^"']*\.tflite["']/,
     byteControl: "runtime-owned",
     resume: "runtime-owned",
     note:
       "MediaPipe Tasks fetches the .task/.tflite bundle; download managed inside the WASM runtime",
   },
   "raw-ort": {
-    test: (t) => /onnxruntime-web|InferenceSession|\bort\.(InferenceSession|env)/.test(t),
+    pattern: /onnxruntime-web|InferenceSession|\bort\.(InferenceSession|env)/,
     byteControl: "site-controlled",
     // refined below: resumable only if it goes through lib/model-download.js
     resume: "restart-only",
@@ -58,31 +69,29 @@ const FAMILIES = {
   },
   "transformers-wrapped": {
     // Third-party libs (outetts, kokoro-js) that wrap Transformers.js and download through it.
-    test: (t) => /outetts@|kokoro-js[@/]|npm\/(outetts|kokoro-js)/.test(t),
+    pattern: /outetts@|kokoro-js[@/]|npm\/(outetts|kokoro-js)/,
     byteControl: "runtime-owned",
     resume: "cached-only",
     note:
       "third-party library (outetts / kokoro-js) wraps Transformers.js; it downloads + caches via TJS, so per-file progress depends on the wrapper surfacing it",
   },
   "transformers-from_pretrained": {
-    test: (t) =>
-      /from_pretrained\s*\(|AutoModel|AutoProcessor|AutoTokenizer|ForConditionalGeneration|\.from_pretrained/
-        .test(t),
+    pattern:
+      /from_pretrained\s*\(|AutoModel|AutoProcessor|AutoTokenizer|ForConditionalGeneration|\.from_pretrained/,
     byteControl: "runtime-owned",
     resume: "cached-only",
     note:
       "Transformers.js fetches each file (no Range); re-running resumes at whole-file granularity from Cache Storage",
   },
   "transformers-pipeline": {
-    test: (t) => /lib\/webai\.js|loadPipeline\s*\(|[^a-zA-Z]pipeline\s*\(/.test(t),
+    pattern: /lib\/webai\.js|loadPipeline\s*\(|[^a-zA-Z]pipeline\s*\(/,
     byteControl: "runtime-owned",
     resume: "cached-only",
     note: "Transformers.js pipeline() fetches each file (no Range); whole-file cache resume only",
   },
   "browser-builtin": {
-    test: (t) =>
-      /window\.(ai|LanguageModel|Summarizer|Translator|Rewriter|Writer)\b|\bLanguageModel\.(create|availability)|ai\.languageModel/
-        .test(t),
+    pattern:
+      /window\.(ai|LanguageModel|Summarizer|Translator|Rewriter|Writer)\b|\bLanguageModel\.(create|availability)|ai\.languageModel/,
     byteControl: "browser-owned",
     resume: "runtime-owned",
     note:
@@ -91,9 +100,103 @@ const FAMILIES = {
 };
 const FAMILY_ORDER = Object.keys(FAMILIES);
 
+// ---------------------------------------------------------------- comment masking
+// The signals below are API mentions, so a comment that merely NAMES another runtime's API must not be
+// able to change a route's public download classification. Measured (web-ai-showcase-x4ba): a comment
+// containing the token "ort.env" flipped ai-image-detection from transformers-pipeline to raw-ort -
+// claiming sitely-controlled bytes and restart-only resume for a route that downloads through
+// loadPipeline. So comments are masked to spaces before any matching: same length, same offsets,
+// every executable token untouched.
+//
+// Masking is LEXICAL (acorn tokenizer), not parse-based: comment spans are all we need, no AST is
+// required, and the corpus lexes cleanly this way (781 model JS/MJS files, 0 lexical failures).
+// A source that cannot be lexed safely - an unterminated comment or string - cannot be trusted, so it
+// is reported as AMBIGUOUS and fails the gate closed instead of being classified from raw text.
+const JS_MIME_ESSENCES = new Set([
+  "", "module", "text/javascript", "application/javascript", "text/ecmascript", "application/ecmascript",
+  "application/x-javascript", "text/x-javascript", "text/jscript", "text/livescript",
+  "text/javascript1.0", "text/javascript1.1", "text/javascript1.2", "text/javascript1.3",
+  "text/javascript1.4", "text/javascript1.5",
+]);
+
+function maskRanges(source, ranges) {
+  if (ranges.length === 0) return source;
+  const sorted = [...ranges].sort((a, b) => a[0] - b[0]);
+  let out = "";
+  let pos = 0;
+  for (const [start, end] of sorted) {
+    if (start < pos || end <= start) continue; // overlapping or empty span: already masked
+    out += source.slice(pos, start) + " ".repeat(end - start);
+    pos = end;
+  }
+  return out + source.slice(pos);
+}
+
+/** Comment spans of a JS source, or null when it cannot be lexed safely. */
+function jsCommentRanges(source) {
+  for (const sourceType of ["module", "script"]) {
+    const ranges = [];
+    try {
+      const tokenizer = acorn.tokenizer(source, {
+        ecmaVersion: "latest",
+        sourceType,
+        allowHashBang: true,
+        allowReturnOutsideFunction: true,
+        allowAwaitOutsideFunction: true,
+        onComment: (block, text, start, end) => ranges.push([start, end]),
+      });
+      while (tokenizer.getToken().type.label !== "eof") { /* drain: onComment fires as it advances */ }
+      return ranges;
+    } catch { /* try the other source type, then give up */ }
+  }
+  return null;
+}
+
+/** Mask HTML comments and the JS comments inside inline <script> blocks. */
+function htmlCommentRanges(source) {
+  const document = parse5.parse(source, { sourceCodeLocationInfo: true });
+  const ranges = [];
+  let ambiguous = null;
+  const visit = (node) => {
+    if (node.nodeName === "#comment") {
+      const loc = node.sourceCodeLocation;
+      if (!loc || loc.startOffset === undefined) ambiguous ??= "comment node without a source location";
+      else ranges.push([loc.startOffset, loc.endOffset]);
+    }
+    if (node.tagName === "script") {
+      const text = (node.childNodes || []).find((c) => c.nodeName === "#text");
+      if (text?.value && text.sourceCodeLocation) {
+        const typeAttr = (node.attrs || []).find((a) => a.name.toLowerCase() === "type");
+        const essence = (typeAttr?.value ?? "").split(";")[0].trim().toLowerCase();
+        if (JS_MIME_ESSENCES.has(essence)) {
+          const inner = jsCommentRanges(text.value);
+          if (inner === null) ambiguous ??= "inline <script> could not be lexed";
+          else {
+            const base = text.sourceCodeLocation.startOffset;
+            for (const [start, end] of inner) ranges.push([base + start, base + end]);
+          }
+        }
+      }
+    }
+    for (const child of node.childNodes || []) visit(child);
+  };
+  visit(document);
+  return { ranges, ambiguous };
+}
+
+function maskSourceComments(source, file) {
+  if (/\.(js|mjs)$/.test(file)) {
+    const ranges = jsCommentRanges(source);
+    if (ranges === null) return { text: null, ambiguous: "not lexable (unterminated comment or string?)" };
+    return { text: maskRanges(source, ranges), ambiguous: null };
+  }
+  const { ranges, ambiguous } = htmlCommentRanges(source);
+  return { text: maskRanges(source, ranges), ambiguous };
+}
+
 function readAll(dir) {
-  // concatenate the demo's own worker + page scripts + index.html (the download entrypoints live here).
-  let text = "";
+  // The demo's own worker + page scripts + index.html (the download entrypoints live here), with
+  // comments masked. Entries stay per file so a match can name the token AND the file behind it.
   const files = [];
   const walk = (d) => {
     for (const n of readdirSync(d)) {
@@ -104,33 +207,50 @@ function readAll(dir) {
     }
   };
   walk(dir);
-  for (const f of files) text += "\n" + readFileSync(f, "utf8");
-  return { text, files };
+  const entries = [];
+  const ambiguous = [];
+  for (const f of files) {
+    const masked = maskSourceComments(readFileSync(f, "utf8"), f);
+    if (masked.ambiguous) ambiguous.push(`${f}: ${masked.ambiguous}`);
+    entries.push({ file: f, text: masked.text ?? "" });
+  }
+  return { text: entries.map((e) => "\n" + e.text).join(""), files, entries, ambiguous };
 }
 
-for (const slug of readdirSync(MODELS).sort()) {
-  const dir = join(MODELS, slug);
+for (const slug of readdirSync(modelsDir).sort()) {
+  const dir = join(modelsDir, slug);
   if (!statSync(dir).isDirectory()) continue;
   if (!existsSync(join(dir, "index.html"))) continue; // built route
-  const { text } = readAll(dir);
+  const { text, entries, ambiguous } = readAll(dir);
 
   // multi-model page = a subpage that loads ≥2 model groups concurrently
   const multiModel = existsSync(join(dir, "multi-model")) || existsSync(join(dir, "multimodel"));
 
   let family = "unknown";
+  let familyMatch = null;
+  // First family in FAMILY_ORDER that matches ANY of the demo's files, and the exact token that did it
+  // - the token is what the gate prints when a route's committed classification goes stale.
   for (const f of FAMILY_ORDER) {
-    if (FAMILIES[f].test(text)) {
-      family = f;
-      break;
+    for (const entry of entries) {
+      const m = FAMILIES[f].pattern.exec(entry.text);
+      if (m) {
+        family = f;
+        familyMatch = { rule: f, token: m[0].trim(), file: entry.file };
+        break;
+      }
     }
+    if (familyMatch) break;
   }
 
   // Does the route ADOPT the shared, component-rendering loader? createModelLoader (lib/model-loader.js)
   // and createResumableLoader (lib/resumable-loader.mjs, PaliGemma) both render <model-download-status>
   // and route progress through the adapters (Phase 3/4). Calling one of them IS the adoption.
-  const usesResumable = /createResumableLoader\s*\(|resumable-loader/.test(text);
-  const usesCentral = /createModelLoader\s*\(/.test(text);
+  const resumableMatch = /createResumableLoader\s*\(|resumable-loader/.exec(text);
+  const centralMatch = /createModelLoader\s*\(/.exec(text);
+  const usesResumable = resumableMatch !== null;
+  const usesCentral = centralMatch !== null;
   const adoption = usesResumable ? "resumable-loader" : (usesCentral ? "central-loader" : "bypass");
+  const adoptionMatch = resumableMatch ?? centralMatch;
 
   // does it download at all? a route with NO loader signal AND no worker is non-applicable.
   const hasWorker = existsSync(join(dir, "worker.js"));
@@ -185,6 +305,13 @@ for (const slug of readdirSync(MODELS).sort()) {
     status,
     note,
   });
+  // Diagnostics only (written to the --evidence side file, never into download-routes.json): what
+  // matched, where, and whether any source had to be treated as ambiguous.
+  evidence.routes[slug] = {
+    family: familyMatch,
+    adoption: adoptionMatch ? { rule: adoption, token: adoptionMatch[0] } : null,
+    ambiguous,
+  };
 }
 
 const tally = (key) => routes.reduce((m, r) => ((m[r[key]] = (m[r[key]] || 0) + 1), m), {});
@@ -218,6 +345,8 @@ const inventory = {
 
 const outIdx = process.argv.indexOf("--out");
 const outPath = outIdx >= 0 ? process.argv[outIdx + 1] : "download-routes.json";
+const evIdx = process.argv.indexOf("--evidence");
+if (evIdx >= 0) writeFileSync(process.argv[evIdx + 1], JSON.stringify(evidence, null, 2) + "\n");
 if (!process.argv.includes("--check")) {
   writeFileSync(outPath, JSON.stringify(inventory, null, 2) + "\n");
 }
