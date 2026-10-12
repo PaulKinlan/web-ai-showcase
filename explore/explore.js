@@ -240,13 +240,33 @@ function esc(s) {
     (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]),
   );
 }
+// highlight() is called twice per rendered result row (name + blurb, see renderResults) and every hit
+// in a render carries the SAME matched-term values, so compiling the alternation per call rebuilt the
+// identical RegExp: measured 40 compilations for a 20-hit render and 200 across five typed searches,
+// all of them the same pattern. One slot is enough - a render is driven by one search's term list.
+//
+// The cache key is the FULL ORDERED term list as JSON: every term value, in order, with JSON escaping
+// rather than a join separator a term could itself contain (["a","b"] and ["a\u0000b"] must not collide).
+// A different term list of the same LENGTH can never hit a stale entry. Never key on the array identity
+// (each hit's matchedTerms is a fresh array, so nothing would ever be reused) or on the term count.
+let highlightCache = { key: null, re: null };
+function termRegex(terms) {
+  const key = JSON.stringify(terms);
+  if (key === highlightCache.key) return highlightCache.re;
+  // TODO(baseline/regexp-escape): replace this manual metacharacter escape with RegExp.escape() once
+  // the Baseline target allows it (canonical feature id regexp-escape, verified with web-features-cli;
+  // currently Baseline Newly available since 2025-05-01, so a fallback would still be required).
+  const escaped = terms.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
+  const re = new RegExp(`\\b(${escaped})`, "gi");
+  highlightCache = { key, re };
+  return re;
+}
 function highlight(text, terms) {
   if (!terms?.length) return esc(text);
-  const re = new RegExp(
-    "\\b(" + terms.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|") + ")",
-    "gi",
-  );
-  return esc(text).replace(re, "<mark>$1</mark>");
+  // The cached regex is global, and it is only ever used with String.prototype.replace, which resets
+  // lastIndex before scanning, so sharing it across calls is safe. It must never be passed to test()
+  // or exec(), which are stateful through lastIndex.
+  return esc(text).replace(termRegex(terms), "<mark>$1</mark>");
 }
 
 function renderSkeleton() {
