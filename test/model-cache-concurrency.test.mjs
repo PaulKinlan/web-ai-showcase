@@ -4,6 +4,14 @@ import { scanCacheInventory, scanCachedFiles, inspectModel } from "../lib/model-
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+// Drain the microtask queue completely (microtasks always drain before the event-loop check phase
+// runs a setImmediate). Used with node:test's mock timers so a deadline assertion never depends on
+// real-clock scheduling: this suite also runs inside the full gate, where a 2-vCPU heavy slot can
+// delay a real 15 ms `setTimeout` past any wall-clock bound the test could pick.
+const flushMicrotasks = async () => {
+  for (let i = 0; i < 5; i++) await new Promise((resolve) => setImmediate(resolve));
+};
+
 function mockCaches({ cacheCount = 3, entriesPerCache = 6, matchDelay = () => 2, failAt = null } = {}) {
   const names = Array.from({ length: cacheCount }, (_, i) => `cache-${i}`);
   const requests = names.map((_, i) => Array.from({ length: entriesPerCache }, (_, j) => ({
@@ -119,17 +127,47 @@ test("validated model retains expected URL ordering and partial state", async ()
   assert.equal(result.cachedFiles, 2);
 });
 
-test("750 ms local cache timeout contract stays optimistic without increasing fan-out", async () => {
+test("750 ms local cache timeout contract stays optimistic without increasing fan-out", async (t) => {
+  // The deadline is driven on a virtual clock. The contract under test is "the WHOLE check settles at
+  // its single deadline", and that is a statement about the clock, not about how quickly this VM can
+  // schedule a real timer: with real timers under full-suite CPU contention the same assertion failed
+  // 5/10 runs (65 ms bound, observed 75-159 ms) even though the product behaviour was correct.
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  // node:test still runs t.after() when an assertion fails, so the mocks below cannot leak into the
+  // following tests in this file if one of the pre-deadline assertions throws: without this, a
+  // regression that fails line ~147/151 left globalThis.caches/indexedDB patched and turned one real
+  // failure into cascading failures in the rest of the file (reviewer P2, web-ai-showcase-9d4d).
+  const savedGlobals = {
+    self: globalThis.self,
+    caches: globalThis.caches,
+    indexedDB: globalThis.indexedDB,
+  };
+  t.after(() => {
+    for (const [name, value] of Object.entries(savedGlobals)) {
+      if (value === undefined) delete globalThis[name];
+      else globalThis[name] = value;
+    }
+  });
   const mock = mockCaches({ cacheCount: 3, entriesPerCache: 2 });
-  mock.caches.open = async () => { await delay(80); throw new Error("late storage error"); };
+  // Storage slower than the deadline: if the budget were per cache, three hung opens could not settle
+  // after a single 750 ms tick, so the assertion below fails instead of silently passing.
+  let openCalls = 0;
+  mock.caches.open = async () => { openCalls++; await delay(5000); throw new Error("late storage error"); };
   const record = { files: [mock.requests[0][0].url] };
-  const start = performance.now();
-  const result = await withCacheMock(mock, () => withValidationRecord(record, () =>
-    inspectModel({ key: "cached-model", timeoutMs: 15 })
-  ));
+  let result;
+  let settled = false;
+  const pending = withCacheMock(mock, () => withValidationRecord(record, () =>
+    inspectModel({ key: "cached-model" })
+  )).then((value) => { settled = true; result = value; });
+  await flushMicrotasks();
+  assert.equal(settled, false, "a hung cache open must not settle the check before its deadline");
+  t.mock.timers.tick(750); // the documented local cache-check deadline (inspectModel default)
+  await flushMicrotasks();
+  assert.ok(settled, "the whole cache check must settle at its single 750 ms deadline, not once per cache");
+  await pending;
   assert.equal(result.state, "current");
   assert.equal(result.cachedFiles, 0);
-  assert.ok(performance.now() - start < 65, "whole cache check must settle within its deadline, not per cache");
+  assert.equal(openCalls, 1, "a hung cache open must not be retried or fanned out");
 });
 
 test("cache-file scan remains cache-major and local inspect timeout stays optimistic", async () => {
