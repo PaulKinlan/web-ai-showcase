@@ -129,7 +129,7 @@ async function scanPage(cdp, port, slug) {
   }
 }
 
-function renderRollup(runs) {
+function renderRollup(runs, generatedAt = NOW) {
   const rows = runs.map((r) => {
     const cell = (c) =>
       `<td class="${c.pass ? "ok" : "warn"}">${c.pass ? "clean" : "review"}${
@@ -140,16 +140,20 @@ function renderRollup(runs) {
   }).join("\n");
   const dOk = runs.filter((r) => r.desktop.pass).length;
   const mOk = runs.filter((r) => r.mobile.pass).length;
-  return `<!doctype html><meta charset="utf-8"><title>Responsive matrix · web-ai-showcase</title>
-<style>body{font:15px/1.5 system-ui,sans-serif;max-width:1000px;margin:2rem auto;padding:0 1rem;color:#1a1a1a}
-h1{font-family:Georgia,serif}table{border-collapse:collapse;width:100%}td,th{border:1px solid #ddd;padding:.4rem .6rem;text-align:left;vertical-align:top}
-.ok{color:#0a7d33}.warn{color:#8a6d00}.summary{background:#f5f3ee;padding:1rem;border-radius:8px}
-@media(prefers-color-scheme:dark){body{background:#111;color:#eee}td,th{border-color:#333}.summary{background:#1c1c1c}}</style>
+  // Same rule as the conformance rollup: link the single shared stylesheet and reference only
+  // var(--token) values, so this page cannot drift from the site theme on its own.
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Responsive matrix · web-ai-showcase</title>
+<link rel="stylesheet" href="../../public/styles.css">
+<style>body{font:15px/1.5 var(--font-body);max-width:1000px;margin:2rem auto;padding:0 1rem;background:var(--background);color:var(--color)}
+h1{font-family:var(--font-display)}table{border-collapse:collapse;width:100%}td,th{border:1px solid var(--border);padding:.4rem .6rem;text-align:left;vertical-align:top}
+.ok{color:var(--good)}.warn{color:var(--warn)}.summary{background:var(--bg-secondary);padding:1rem;border-radius:var(--radius)}</style>
+</head><body>
 <h1>Responsive matrix — web-ai-showcase</h1>
 <p class="summary">${runs.length} pages scanned · desktop automated-clean <b>${dOk}</b> · mobile automated-clean <b>${mOk}</b>.
-Automated signal only ⇒ <b>needs-review</b>, never <b>ok</b>. Generated ${NOW}.</p>
+Automated signal only ⇒ <b>needs-review</b>, never <b>ok</b>. Generated ${generatedAt}.</p>
 <table><thead><tr><th>demo</th><th>desktop (1280×800)</th><th>mobile (360×740 DPR3)</th><th>shots</th></tr></thead>
-<tbody>${rows}</tbody></table>`;
+<tbody>${rows}</tbody></table>
+</body></html>`;
 }
 
 function seedSupport(runs) {
@@ -184,7 +188,35 @@ function seedSupport(runs) {
   );
 }
 
+// Deterministic evidence -> HTML re-emit: reads the committed results.json and writes the rollup page
+// with no Chrome, no server, no network and NO data refresh. The evidence file is opened read-only, and
+// the page keeps the DATA's own generatedAt, so a rollup-only run can never claim a new measurement.
+// Fails closed: missing, unreadable or empty evidence exits non-zero without touching the page.
+function rollupOnly() {
+  // --results lets a caller (or a test) point the rollup at an explicit evidence file; it defaults to
+  // the committed one next to the page.
+  const resultsPath = val("--results", join(outDir, "results.json"));
+  let data;
+  try {
+    data = JSON.parse(readFileSync(resultsPath, "utf8"));
+  } catch (e) {
+    console.error(`ROLLUP ONLY: cannot read ${resultsPath.replace(repoRoot, "")}: ${e.message}`);
+    console.error("ROLLUP ONLY: refusing to write a rollup without valid evidence (no Chrome, no data refresh).");
+    process.exit(1);
+  }
+  if (!data || !Array.isArray(data.runs) || data.runs.length === 0) {
+    console.error(`ROLLUP ONLY: ${resultsPath.replace(repoRoot, "")} has no runs to roll up; refusing to write a page from invalid evidence.`);
+    process.exit(1);
+  }
+  const target = val("--out", outDir);
+  mkdirSync(target, { recursive: true });
+  const page = join(target, "index.html");
+  writeFileSync(page, renderRollup(data.runs, data.generatedAt || NOW));
+  console.log(`ROLLUP ONLY: wrote ${page} from ${data.runs.length} recorded page(s); evidence generatedAt ${data.generatedAt}; no Chrome, no data refresh.`);
+}
+
 async function main() {
+  if (opt("--rollup-only")) return rollupOnly();
   mkdirSync(outDir, { recursive: true });
   let slugs = builtModels(loadCatalogue()).map((m) => m.slug);
   const s = val("--slug");

@@ -236,7 +236,7 @@ function aggregate(runs) {
   }, { total: 0, tested: 0, pass: 0, fail: 0, blocked: 0, manual: 0 });
 }
 
-function renderRollup(runs) {
+function renderRollup(runs, generatedAt = NOW) {
   const agg = aggregate(runs);
   const rows = runs.map((r) => {
     const detail = r.results.map((x) =>
@@ -247,20 +247,54 @@ function renderRollup(runs) {
     return `<details><summary><b>${r.slug}</b> — ${r.pass}✓ ${r.fail}✗ ${r.blocked}▨ ${r.manual}◍ / ${r.total}</summary>
       <table class="det"><thead><tr><th>assertion</th><th>category</th><th>class</th><th>state</th><th>evidence</th></tr></thead><tbody>${detail}</tbody></table></details>`;
   }).join("\n");
-  return `<!doctype html><meta charset="utf-8"><title>Conformance rollup · web-ai-showcase</title>
-<style>body{font:15px/1.5 system-ui,sans-serif;max-width:1100px;margin:2rem auto;padding:0 1rem;color:#1a1a1a}
-h1{font-family:Georgia,serif}table{border-collapse:collapse;width:100%}.det td,.det th{border:1px solid #ddd;padding:.25rem .5rem;font-size:13px;text-align:left}
-.summary{background:#f5f3ee;padding:1rem;border-radius:8px}.pass td:nth-child(4){color:#0a7d33;font-weight:600}.fail td:nth-child(4){color:#c0392b;font-weight:700}
-.blocked td:nth-child(4){color:#8a6d00}.manual td:nth-child(4){color:#555}details{margin:.4rem 0}summary{cursor:pointer;padding:.3rem 0}
-@media(prefers-color-scheme:dark){body{background:#111;color:#eee}.summary{background:#1c1c1c}.det td,.det th{border-color:#333}}</style>
+  // This page consumes the site's design tokens: it links the single shared stylesheet (relative, so it
+  // resolves both when served from the repo root and from a local server) and references only
+  // var(--token) below. No literal palette and no page-local dark block - public/styles.css already
+  // carries the dark overrides, and a copy here was exactly the drift this page used to have.
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Conformance rollup · web-ai-showcase</title>
+<link rel="stylesheet" href="../../public/styles.css">
+<style>body{font:15px/1.5 var(--font-body);max-width:1100px;margin:2rem auto;padding:0 1rem;background:var(--background);color:var(--color)}
+h1{font-family:var(--font-display)}table{border-collapse:collapse;width:100%}.det td,.det th{border:1px solid var(--border);padding:.25rem .5rem;font-size:13px;text-align:left}
+.summary{background:var(--bg-secondary);padding:1rem;border-radius:var(--radius)}.pass td:nth-child(4){color:var(--good);font-weight:600}.fail td:nth-child(4){color:var(--bad);font-weight:700}
+.blocked td:nth-child(4){color:var(--warn)}.manual td:nth-child(4){color:var(--muted)}details{margin:.4rem 0}summary{cursor:pointer;padding:.3rem 0}</style>
+</head><body>
 <h1>Conformance rollup — web-ai-showcase</h1>
 <p class="summary">Suites: <b>${runs.length}</b> · assertions <b>${agg.total}</b> · tested <b>${agg.tested}</b>
 (pass <b>${agg.pass}</b> · fail <b>${agg.fail}</b> · blocked <b>${agg.blocked}</b>) · manual-evidenced awaiting verdict <b>${agg.manual}</b>.
-<br>Generated ${NOW} · headless Chrome (no GPU, fresh profile, download-free). blocked = genuinely device/feature-unavailable, honest, never a pass.</p>
-${rows}`;
+<br>Generated ${generatedAt} · headless Chrome (no GPU, fresh profile, download-free). blocked = genuinely device/feature-unavailable, honest, never a pass.</p>
+${rows}
+</body></html>`;
+}
+
+// Deterministic evidence -> HTML re-emit: reads the committed results.json and writes the rollup page
+// with no Chrome, no server, no network and NO data refresh. The evidence file is opened read-only, and
+// the page keeps the DATA's own generatedAt, so a rollup-only run can never claim a new measurement.
+// Fails closed: missing, unreadable or empty evidence exits non-zero without touching the page.
+function rollupOnly() {
+  // --results lets a caller (or a test) point the rollup at an explicit evidence file; it defaults to
+  // the committed one next to the page.
+  const resultsPath = val("--results", join(outDir, "results.json"));
+  let data;
+  try {
+    data = JSON.parse(readFileSync(resultsPath, "utf8"));
+  } catch (e) {
+    console.error(`ROLLUP ONLY: cannot read ${resultsPath.replace(repoRoot, "")}: ${e.message}`);
+    console.error("ROLLUP ONLY: refusing to write a rollup without valid evidence (no Chrome, no data refresh).");
+    process.exit(1);
+  }
+  if (!data || !Array.isArray(data.runs) || data.runs.length === 0) {
+    console.error(`ROLLUP ONLY: ${resultsPath.replace(repoRoot, "")} has no runs to roll up; refusing to write a page from invalid evidence.`);
+    process.exit(1);
+  }
+  const target = val("--out", outDir);
+  mkdirSync(target, { recursive: true });
+  const page = join(target, "index.html");
+  writeFileSync(page, renderRollup(data.runs, data.generatedAt || NOW));
+  console.log(`ROLLUP ONLY: wrote ${page} from ${data.runs.length} recorded suite(s); evidence generatedAt ${data.generatedAt}; no Chrome, no data refresh.`);
 }
 
 async function main() {
+  if (opt("--rollup-only")) return rollupOnly();
   mkdirSync(outDir, { recursive: true });
   let slugs;
   if (opt("--all")) {
