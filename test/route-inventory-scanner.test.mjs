@@ -282,7 +282,11 @@ test("--evidence with no path fails loudly instead of crashing or writing a file
   try {
     mkdirSync(join(root, "demo"), { recursive: true });
     writeFileSync(join(root, "demo", "index.html"), `<!doctype html><html><body></body></html>`);
-    const run = (args) => spawnSync("node", ["scripts/route-download-inventory.mjs", ...args], { encoding: "utf8" });
+    // Absolute script path + `cwd: root`: a *relative* write (e.g. a file named after a flag) therefore
+    // lands in `root`, which is where the assertion below looks. Without this the assertion checked a
+    // directory the script never wrote to and passed vacuously (reviewer P3 on b020ebb5).
+    const script = join(process.cwd(), "scripts", "route-download-inventory.mjs");
+    const run = (args) => spawnSync("node", [script, ...args], { cwd: root, encoding: "utf8" });
     for (const args of [["--models", root, "--evidence"], ["--models", root, "--evidence", "--check"]]) {
       const res = run(args);
       assert.equal(res.status, 1, `expected a loud failure for ${args.join(" ")}`);
