@@ -152,6 +152,36 @@ function jsCommentRanges(source) {
   return null;
 }
 
+/**
+ * Comment spans of a CSS stylesheet - the block comment form is the only comment syntax CSS has -
+ * or null when it cannot be scanned safely (unterminated comment or string). Strings are skipped so an
+ * opener inside one stays data. A <style> block is not executable either way, but a comment in it
+ * naming another runtime's API must not be able to classify the route, the same rule as everywhere else.
+ */
+function cssCommentRanges(source) {
+  const ranges = [];
+  let i = 0;
+  while (i < source.length) {
+    const ch = source[i];
+    if (ch === "/" && source[i + 1] === "*") {
+      const end = source.indexOf("*/", i + 2);
+      if (end === -1) return null;
+      ranges.push([i, end + 2]);
+      i = end + 2;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      let j = i + 1;
+      while (j < source.length && source[j] !== ch) j += source[j] === "\\" ? 2 : 1;
+      if (j >= source.length) return null;
+      i = j + 1;
+      continue;
+    }
+    i++;
+  }
+  return ranges;
+}
+
 /** Mask HTML comments and the JS comments inside inline <script> blocks. */
 function htmlCommentRanges(source) {
   const document = parse5.parse(source, { sourceCodeLocationInfo: true });
@@ -178,6 +208,28 @@ function htmlCommentRanges(source) {
           if (inner === null) ambiguous ??= "inline <script> could not be lexed";
           else for (const [start, end] of inner) ranges.push([loc.startOffset + start, loc.startOffset + end]);
         }
+      }
+    }
+    if (node.tagName === "noscript") {
+      // Under scripting-enabled parsing (parse5's default, and how these JS demos run) <noscript>
+      // content is inert RAWTEXT: parse5 builds a #text node, not a comment node, so nothing in it
+      // executes and an "<!-- ort.env -->" written there is literal text. Mask the whole element so
+      // no-JS fallback prose cannot classify a route (measured: it used to leak as raw-ort).
+      const nsLoc = node.sourceCodeLocation;
+      if (nsLoc && nsLoc.startOffset !== undefined && nsLoc.endOffset !== undefined) {
+        ranges.push([nsLoc.startOffset, nsLoc.endOffset]);
+      } else {
+        ambiguous ??= "<noscript> without a source location";
+      }
+    }
+    if (node.tagName === "style") {
+      const cssText = (node.childNodes || []).find((c) => c.nodeName === "#text");
+      const cssLoc = cssText?.sourceCodeLocation;
+      if (cssText?.value && cssLoc && cssLoc.startOffset !== undefined && cssLoc.endOffset !== undefined) {
+        // Scan the RAW slice for the same reason as inline scripts: parse5 normalises CRLF in value.
+        const inner = cssCommentRanges(source.slice(cssLoc.startOffset, cssLoc.endOffset));
+        if (inner === null) ambiguous ??= "<style> could not be scanned for comments";
+        else for (const [start, end] of inner) ranges.push([cssLoc.startOffset + start, cssLoc.startOffset + end]);
       }
     }
     for (const child of node.childNodes || []) visit(child);

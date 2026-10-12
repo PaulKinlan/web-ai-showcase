@@ -25,7 +25,7 @@ const FIXTURE = join(ROOT, "test", "fixtures", "download-inventory-comments", "m
 const ALL_SLUGS = [
   "comment-names-ort", "comment-names-mediapipe", "code-ort", "string-traps", "html-comments",
   "html-entity-offset", "template-inert-comment", "template-script-comment", "crlf-inline-comment",
-  "crlf-html-comment", "ambiguous",
+  "crlf-html-comment", "noscript-inert-comment", "css-comment", "ambiguous",
 ];
 
 /** Isolated repo root: the chosen fixture demos, the working-tree gate scripts, a node_modules link. */
@@ -93,6 +93,11 @@ test("a comment naming another runtime's API cannot change a route's download fa
     "crlf-inline-comment": "transformers-pipeline",
     // a CRLF-containing HTML comment is a comment-node range (raw offsets), so it was never affected.
     "crlf-html-comment": "transformers-pipeline",
+    // <noscript> is inert RAWTEXT under scripting-enabled parsing (parse5 makes a #text node, not a
+    // comment node); its no-JS fallback prose used to leak as raw-ort.
+    "noscript-inert-comment": "transformers-pipeline",
+    // CSS comments are the stylesheet's own comment form and name another runtime here.
+    "css-comment": "transformers-pipeline",
     // script bodies are raw text: an entity earlier in the script must not shift the comment offsets,
     // or the wrong span gets masked and the ort.env comment leaks back in. Also probes the HTML comment
     // above the script, which is masked before any entity is seen.
