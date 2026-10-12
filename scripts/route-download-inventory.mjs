@@ -22,6 +22,10 @@
 // Usage: node scripts/route-download-inventory.mjs            (writes download-routes.json)
 //        node scripts/route-download-inventory.mjs --check    (print summary only, non-zero if any unknown)
 //        node scripts/route-download-inventory.mjs --models <dir>  (fixture root for tests; default "models")
+//        node scripts/route-download-inventory.mjs --evidence <path>  (OPTIONAL diagnostic provenance JSON:
+//            which signal value and which file decided each route's family, plus any executable source that
+//            failed to parse. Never written unless asked for, and never derived from — the gate reads only
+//            download-routes.json.)
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import * as acorn from "acorn";
@@ -30,6 +34,8 @@ import * as parse5 from "parse5";
 
 const modelsIdx = process.argv.indexOf("--models");
 const MODELS = modelsIdx >= 0 ? process.argv[modelsIdx + 1] : "models";
+// Provenance is OPTIONAL and additive: without the flag the scanner does no extra bookkeeping at all.
+const WANT_EVIDENCE = process.argv.includes("--evidence");
 const routes = [];
 
 // ── executable-source extraction ─────────────────────────────────────────────────────────────────────
@@ -38,11 +44,12 @@ const routes = [];
 const EXECUTABLE_SCRIPT_TYPES = new Set(["", "module", "application/javascript", "text/javascript"]);
 
 /**
- * Collect executable script bodies + importmap texts from a parse5 document.
+ * Collect executable script bodies + importmap texts from a parse5 document, each carrying the file it
+ * came from (used only as diagnostic provenance — a file name never influences classification).
  * <template> content (inert by definition — j0pm's executable-LOOKING snippet inside a template is
  * documentation, not code) and <noscript> are never descended into.
  */
-function extractHtmlScripts(node, out, { inInert = false } = {}) {
+function extractHtmlScripts(node, out, { inInert = false, file = null } = {}) {
   if (!node) return;
   const name = node.nodeName;
   const inert = inInert || name === "template" || name === "noscript";
@@ -50,12 +57,12 @@ function extractHtmlScripts(node, out, { inInert = false } = {}) {
     const type = node.attrs?.find((a) => a.name === "type")?.value ?? "";
     const body = node.childNodes?.find((c) => c.nodeName === "#text")?.value;
     if (body !== undefined) {
-      if (type === "importmap") out.importmaps.push(body);
-      else if (EXECUTABLE_SCRIPT_TYPES.has(type)) out.scripts.push(body);
+      if (type === "importmap") out.importmaps.push({ text: body, file });
+      else if (EXECUTABLE_SCRIPT_TYPES.has(type)) out.scripts.push({ code: body, file });
     }
   }
-  if (node.content) extractHtmlScripts(node.content, out, { inInert: inert });
-  for (const child of node.childNodes ?? []) extractHtmlScripts(child, out, { inInert: inert });
+  if (node.content) extractHtmlScripts(node.content, out, { inInert: inert, file });
+  for (const child of node.childNodes ?? []) extractHtmlScripts(child, out, { inInert: inert, file });
 }
 
 /** One demo's executable sources: JS files verbatim, HTML scripts + importmaps from executable contexts. */
@@ -66,9 +73,9 @@ function readExecutableSources(dir) {
       const p = join(d, n);
       const st = statSync(p);
       if (st.isDirectory()) walk(p);
-      else if (/\.(js|mjs)$/.test(n)) { out.scripts.push(readFileSync(p, "utf8")); out.files++; }
+      else if (/\.(js|mjs)$/.test(n)) { out.scripts.push({ code: readFileSync(p, "utf8"), file: p }); out.files++; }
       else if (/\.html$/.test(n)) {
-        extractHtmlScripts(parse5.parse(readFileSync(p, "utf8")), out);
+        extractHtmlScripts(parse5.parse(readFileSync(p, "utf8")), out, { file: p });
         out.files++;
       }
     }
@@ -101,7 +108,8 @@ function memberPrefixes(path) {
 
 /**
  * Parse one executable script and collect its semantic signals.
- * @returns {boolean} false when the script FAILS TO PARSE (route must fail closed).
+ * @returns {string|null} the parse error message when the script FAILS TO PARSE (the route must fail
+ *   closed), otherwise null.
  */
 function collectScriptSignals(code, signals) {
   let ast;
@@ -113,8 +121,8 @@ function collectScriptSignals(code, signals) {
       // Demo pages may embed code the browser accepts but strict ES modules reject; ambiguity still
       // fails closed at the parse level per the ADR — we never guess a classification.
     });
-  } catch {
-    return false;
+  } catch (err) {
+    return err?.message ?? String(err);
   }
   const rememberMember = (node) => {
     const path = memberPath(node);
@@ -160,33 +168,61 @@ function collectScriptSignals(code, signals) {
         break;
     }
   });
-  return true;
+  return null;
 }
 
-/** Signals for one demo route from all its executable sources. parseFailed ⇒ fail closed downstream. */
+const SIGNAL_SETS = ["imports", "strings", "calls", "memberCalls", "members", "idents"];
+
+/** Union `from` into `into` — classification sees every source's signals, exactly as before. */
+function mergeSignals(into, from) {
+  for (const k of SIGNAL_SETS) for (const v of from[k]) into[k].add(v);
+}
+
+const emptySignals = () => ({
+  imports: new Set(), strings: new Set(), calls: new Set(),
+  memberCalls: new Set(), members: new Set(), idents: new Set(),
+});
+
+/**
+ * Signals for one demo route from all its executable sources. parseFailed ⇒ fail closed downstream.
+ * `perFile` (file → that file's own signals) and `unparseable` are OPTIONAL diagnostics only:
+ * classification always reads the union below, so provenance can never change a decision.
+ */
 function routeSignals(dir) {
-  const signals = {
-    imports: new Set(), strings: new Set(), calls: new Set(),
-    memberCalls: new Set(), members: new Set(), idents: new Set(),
-    parseFailed: false,
-  };
+  const signals = { ...emptySignals(), parseFailed: false, perFile: [], unparseable: [] };
   const sources = readExecutableSources(dir);
-  for (const code of sources.scripts) {
-    if (!collectScriptSignals(code, signals)) signals.parseFailed = true;
+  for (const { code, file } of sources.scripts) {
+    // Without --evidence the signals go straight into the union, exactly as before (no extra objects).
+    const own = WANT_EVIDENCE ? emptySignals() : signals;
+    const parseError = collectScriptSignals(code, own);
+    if (parseError !== null) {
+      signals.parseFailed = true;
+      signals.unparseable.push({ file, error: parseError });
+    }
+    if (WANT_EVIDENCE) {
+      mergeSignals(signals, own);
+      signals.perFile.push({ file, signals: own });
+    }
   }
-  for (const map of sources.importmaps) {
+  for (const { text, file } of sources.importmaps) {
     // importmap is declarative config: its string values/keys are visible signals, but it is not
     // executed code. Invalid JSON ⇒ fail closed (ambiguous config, not a guessable one).
+    const own = WANT_EVIDENCE ? emptySignals() : signals;
     try {
-      const json = JSON.parse(map);
+      const json = JSON.parse(text);
       const visit = (v) => {
-        if (typeof v === "string") { signals.strings.add(v); signals.imports.add(v); }
+        if (typeof v === "string") { own.strings.add(v); own.imports.add(v); }
         else if (Array.isArray(v)) v.forEach(visit);
-        else if (v && typeof v === "object") { for (const [k, val] of Object.entries(v)) { signals.strings.add(k); visit(val); } }
+        else if (v && typeof v === "object") { for (const [k, val] of Object.entries(v)) { own.strings.add(k); visit(val); } }
       };
       visit(json);
-    } catch {
+    } catch (err) {
       signals.parseFailed = true;
+      signals.unparseable.push({ file, error: `importmap is not valid JSON: ${err?.message ?? err}` });
+    }
+    if (WANT_EVIDENCE) {
+      mergeSignals(signals, own);
+      signals.perFile.push({ file, signals: own });
     }
   }
   return signals;
@@ -275,11 +311,92 @@ const FAMILIES = {
 };
 const FAMILY_ORDER = Object.keys(FAMILIES);
 
+// ── OPTIONAL diagnostic provenance (bead web-ai-showcase-iem2) ──────────────────────────────────────
+// Which signal value actually satisfied a family's test, and which file carries it. This is a
+// DIAGNOSTIC layer: the decision is made by FAMILIES[*].test above and nothing here can change it, so
+// the committed inventory stays field-for-field identical. Emitted only via --evidence, plus a
+// fail-closed error line naming any executable source that failed to parse.
+
+const evidenceValue = (value, set) => ({
+  token: value,
+  kind: { calls: "call", memberCalls: "member-call", idents: "identifier", members: "member",
+    imports: "import-string", strings: "string" }[set] ?? set,
+  set,
+});
+
+/** First string/import value matching `re` (strings first, mirroring strOrImport). */
+function strToken(s, re) {
+  for (const v of [...s.strings, ...s.imports]) {
+    if (re.test(v)) return evidenceValue(v, s.strings.has(v) ? "strings" : "imports");
+  }
+  return null;
+}
+function strTokenWhere(s, pred) {
+  for (const v of s.strings) if (pred(v)) return evidenceValue(v, "strings");
+  return null;
+}
+function callToken(s, name) {
+  if (s.calls.has(name)) return evidenceValue(name, "calls");
+  for (const p of s.memberCalls) if (p === name || p.endsWith(`.${name}`)) return evidenceValue(p, "memberCalls");
+  return null;
+}
+function identToken(s, names) {
+  for (const n of (Array.isArray(names) ? names : [names])) if (s.idents.has(n)) return evidenceValue(n, "idents");
+  return null;
+}
+function memberToken(s, paths) {
+  for (const p of (Array.isArray(paths) ? paths : [paths])) if (s.members.has(p)) return evidenceValue(p, "members");
+  return null;
+}
+function memberEndingToken(s, suffix) {
+  for (const p of s.members) if (p.endsWith(suffix)) return evidenceValue(p, "members");
+  return null;
+}
+
+// One probe per family, mirroring that family's test conditions in the same order, so the token it
+// reports is the signal that test used. Kept separate from `test` on purpose (see the note above).
+const FAMILY_EVIDENCE = {
+  "transformers-resumable-prefetch": (s) => strToken(s, /model-prefetch\.mjs/) ?? callToken(s, "prefetchModel"),
+  "webllm": (s) => strToken(s, /lib\/webllm\.js|@mlc-ai|web-llm/) ?? identToken(s, "CreateMLCEngine"),
+  "mediapipe": (s) =>
+    strToken(s, /lib\/mediapipe\.js|tasks-vision|tasks-genai/) ?? identToken(s, "FilesetResolver") ??
+    strTokenWhere(s, (v) => v.endsWith(".task") || v.endsWith(".tflite")),
+  "raw-ort": (s) =>
+    strToken(s, /onnxruntime-web/) ?? identToken(s, "InferenceSession") ??
+    memberToken(s, ["ort.env", "ort.InferenceSession"]),
+  "transformers-wrapped": (s) => strToken(s, /outetts@|kokoro-js[@/]|npm\/(outetts|kokoro-js)/),
+  "transformers-from_pretrained": (s) =>
+    callToken(s, "from_pretrained") ?? memberEndingToken(s, ".from_pretrained") ??
+    identToken(s, ["AutoModel", "AutoProcessor", "AutoTokenizer", "ForConditionalGeneration"]),
+  "transformers-pipeline": (s) =>
+    strToken(s, /lib\/webai\.js/) ?? callToken(s, "loadPipeline") ?? callToken(s, "pipeline"),
+  "browser-builtin": (s) =>
+    memberToken(s, ["window.ai", "window.LanguageModel", "window.Summarizer", "window.Translator",
+      "window.Rewriter", "window.Writer", "LanguageModel.create", "LanguageModel.availability",
+      "ai.languageModel"]),
+};
+
+/** Provenance for the family that won: the token that satisfied it and the file(s) carrying it. */
+function familyEvidence(s, family) {
+  const found = FAMILY_EVIDENCE[family]?.(s) ?? null;
+  const files = found ? s.perFile.filter((f) => f.signals[found.set].has(found.token)).map((f) => f.file) : [];
+  return { rule: family, token: found?.token ?? null, kind: found?.kind ?? null, file: files[0] ?? null, files };
+}
+
+const evidenceBySlug = {};
+const unparseableSources = [];
+
 for (const slug of readdirSync(MODELS).sort()) {
   const dir = join(MODELS, slug);
   if (!statSync(dir).isDirectory()) continue;
   if (!existsSync(join(dir, "index.html"))) continue; // built route
   const s = routeSignals(dir);
+  // Fail-closed diagnostics (errors channel): name the source, so an "unknown" route is actionable
+  // without bisecting the demo by hand. The public route fields are unaffected.
+  for (const u of s.unparseable) {
+    unparseableSources.push({ slug, ...u });
+    console.error(`AMBIGUOUS SOURCE: ${u.file}: ${u.error}`);
+  }
 
   // multi-model page = a subpage that loads ≥2 model groups concurrently
   const multiModel = existsSync(join(dir, "multi-model")) || existsSync(join(dir, "multimodel"));
@@ -350,6 +467,8 @@ for (const slug of readdirSync(MODELS).sort()) {
     status = adoption === "bypass" ? "blocked" : "adopted";
   }
 
+  if (WANT_EVIDENCE) evidenceBySlug[slug] = familyEvidence(s, family);
+
   routes.push({
     slug,
     route: `models/${slug}/`,
@@ -406,4 +525,15 @@ console.error(
   `multiModel: ${inventory.totals.multiModel} · UNKNOWN (need manual classification): ${unknown.length}`,
 );
 if (unknown.length) console.error("  " + unknown.map((r) => r.slug).join(", "));
+
+// OPTIONAL diagnostic provenance: written only when --evidence is passed, and read by nothing.
+const evidenceIdx = process.argv.indexOf("--evidence");
+if (evidenceIdx >= 0) {
+  writeFileSync(process.argv[evidenceIdx + 1], JSON.stringify({
+    note:
+      "OPTIONAL diagnostic provenance (bead web-ai-showcase-iem2). Not part of download-routes.json and derived from by no gate: rule = the family that matched; token/kind = the signal value that satisfied that family's test; file/files = the source file(s) carrying that token; unparseable = executable sources that failed to parse (their route fails closed).",
+    routes: evidenceBySlug,
+    unparseable: unparseableSources,
+  }, null, 2) + "\n");
+}
 process.exit(process.argv.includes("--check") && unknown.length ? 1 : 0);
