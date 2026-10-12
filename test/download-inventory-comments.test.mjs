@@ -24,7 +24,8 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const FIXTURE = join(ROOT, "test", "fixtures", "download-inventory-comments", "models");
 const ALL_SLUGS = [
   "comment-names-ort", "comment-names-mediapipe", "code-ort", "string-traps", "html-comments",
-  "html-entity-offset", "template-inert-comment", "template-script-comment", "ambiguous",
+  "html-entity-offset", "template-inert-comment", "template-script-comment", "crlf-inline-comment",
+  "crlf-html-comment", "ambiguous",
 ];
 
 /** Isolated repo root: the chosen fixture demos, the working-tree gate scripts, a node_modules link. */
@@ -87,6 +88,11 @@ test("a comment naming another runtime's API cannot change a route's download fa
     "template-inert-comment": "transformers-pipeline",
     // same container, reached through the script path: a JS comment inside a <script> in a template.
     "template-script-comment": "transformers-pipeline",
+    // parse5 normalises CRLF to LF inside text.value, so masking a script body must be computed from
+    // the RAW source slice: a short "// ort.env" after CRLF lines used to escape masking (raw-ort).
+    "crlf-inline-comment": "transformers-pipeline",
+    // a CRLF-containing HTML comment is a comment-node range (raw offsets), so it was never affected.
+    "crlf-html-comment": "transformers-pipeline",
     // script bodies are raw text: an entity earlier in the script must not shift the comment offsets,
     // or the wrong span gets masked and the ort.env comment leaks back in. Also probes the HTML comment
     // above the script, which is masked before any entity is seen.
@@ -112,6 +118,13 @@ test("a comment naming another runtime's API cannot change a route's download fa
   assert.equal(
     evidence.routes["template-inert-comment"].family.file,
     "models/template-inert-comment/index.html",
+  );
+  // The CRLF case is only discriminating while the fixture really has CRLF endings - if a future
+  // checkout config normalises them, this test must fail loudly rather than silently weaken.
+  assert.match(
+    readFileSync(join(FIXTURE, "crlf-inline-comment", "index.html"), "utf8"),
+    /\r\n/,
+    "the crlf-inline-comment fixture must keep its CRLF line endings",
   );
   assert.equal(evidence.routes["html-entity-offset"].family.file, "models/html-entity-offset/index.html");
 });

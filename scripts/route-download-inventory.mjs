@@ -165,16 +165,18 @@ function htmlCommentRanges(source) {
     }
     if (node.tagName === "script") {
       const text = (node.childNodes || []).find((c) => c.nodeName === "#text");
-      if (text?.value && text.sourceCodeLocation) {
+      const loc = text?.sourceCodeLocation;
+      if (text?.value && loc && loc.startOffset !== undefined && loc.endOffset !== undefined) {
         const typeAttr = (node.attrs || []).find((a) => a.name.toLowerCase() === "type");
         const essence = (typeAttr?.value ?? "").split(";")[0].trim().toLowerCase();
         if (JS_MIME_ESSENCES.has(essence)) {
-          const inner = jsCommentRanges(text.value);
+          // Tokenize the RAW slice of the source, never text.value: parse5 normalises CRLF to LF in
+          // value, so value-relative offsets drift from the source by one per preceding CRLF and a
+          // short trailing "// ort.env" comment escapes masking entirely (review finding on x4ba).
+          const raw = source.slice(loc.startOffset, loc.endOffset);
+          const inner = jsCommentRanges(raw);
           if (inner === null) ambiguous ??= "inline <script> could not be lexed";
-          else {
-            const base = text.sourceCodeLocation.startOffset;
-            for (const [start, end] of inner) ranges.push([base + start, base + end]);
-          }
+          else for (const [start, end] of inner) ranges.push([loc.startOffset + start, loc.startOffset + end]);
         }
       }
     }
