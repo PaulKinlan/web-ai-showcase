@@ -25,7 +25,7 @@ const FIXTURE = join(ROOT, "test", "fixtures", "download-inventory-comments", "m
 const ALL_SLUGS = [
   "comment-names-ort", "comment-names-mediapipe", "code-ort", "string-traps", "html-comments",
   "html-entity-offset", "template-inert-comment", "template-script-comment", "crlf-inline-comment",
-  "crlf-html-comment", "noscript-inert-comment", "css-comment", "ambiguous",
+  "crlf-html-comment", "noscript-inert-comment", "css-comment", "inline-ort-code", "ambiguous",
 ];
 
 /** Isolated repo root: the chosen fixture demos, the working-tree gate scripts, a node_modules link. */
@@ -98,9 +98,14 @@ test("a comment naming another runtime's API cannot change a route's download fa
     "noscript-inert-comment": "transformers-pipeline",
     // CSS comments are the stylesheet's own comment form and name another runtime here.
     "css-comment": "transformers-pipeline",
-    // script bodies are raw text: an entity earlier in the script must not shift the comment offsets,
-    // or the wrong span gets masked and the ort.env comment leaks back in. Also probes the HTML comment
-    // above the script, which is masked before any entity is seen.
+    // The other direction of the contract, in the file type where masking actually deletes text:
+    // executable ORT code in an inline <script> must STILL classify raw-ort, and an earlier family
+    // named only in a comment must not win.
+    "inline-ort-code": "raw-ort",
+    // Script bodies are raw text, so entities are NOT decoded and this fixture does not test offset
+    // drift (reviewer P3: the real drift case is crlf-inline-comment below). It pins the general
+    // contract with entities and an HTML comment present in the same file: the ort.env comment still
+    // cannot classify the route.
     "html-entity-offset": "transformers-pipeline",
     ambiguous: "transformers-pipeline",
   });
@@ -112,6 +117,10 @@ test("a comment naming another runtime's API cannot change a route's download fa
   assert.match(evidence.routes["comment-names-mediapipe"].family.token, /CreateMLCEngine|lib\/webllm\.js/);
   assert.equal(evidence.routes["code-ort"].family.rule, "raw-ort");
   assert.match(evidence.routes["code-ort"].family.token, /onnxruntime-web|InferenceSession/);
+  // masking must not hide executable code: the inline-script ORT token survives it.
+  assert.equal(evidence.routes["inline-ort-code"].family.rule, "raw-ort");
+  assert.match(evidence.routes["inline-ort-code"].family.token, /onnxruntime-web|InferenceSession|ort\./);
+  assert.deepEqual(evidence.routes["inline-ort-code"].ambiguous, []);
   // The unlexable fixture is reported, and it did not contribute to the family decision.
   assert.equal(evidence.routes.ambiguous.ambiguous.length, 1);
   assert.match(evidence.routes.ambiguous.ambiguous[0], /broken\.js/);
