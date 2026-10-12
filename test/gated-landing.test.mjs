@@ -190,9 +190,26 @@ test("parseArgs: --branch is required; unknown arguments are rejected", () => {
 
 const hasGit = spawnSync("git", ["--version"], { encoding: "utf8" }).status === 0;
 
+// Git's default branch is the machine's business, and this suite used to inherit it. CI (GH Actions run
+// 38218585779) has no `init.defaultBranch`, so `git init --bare` there left the origin with HEAD ->
+// refs/heads/master; the rival clone came up on master, and `git push origin main` died with
+// "error: src refspec main does not match any" while the same suite passed on a developer machine whose
+// ~/.gitconfig happens to set `main` (full-suite 494/494 locally, first CI failure at this file).
+// Every git call below therefore runs with the default branch forced to something that is NOT main, so
+// no fixture here can pass by inheriting the machine's setting: a `main` branch only exists because a
+// fixture asked for it explicitly with `-b main`.
+const AMBIENT_DEFAULT_BRANCH = "not-main";
+
 function sh(args, cwd) {
-  const r = spawnSync("git", args, { cwd, encoding: "utf8" });
-  assert.equal(r.status, 0, `git ${args.join(" ")}: ${r.stderr}`);
+  const r = spawnSync("git", ["-c", `init.defaultBranch=${AMBIENT_DEFAULT_BRANCH}`, ...args], {
+    cwd,
+    encoding: "utf8",
+  });
+  assert.equal(
+    r.status,
+    0,
+    `git ${args.join(" ")}: ${r.stderr?.trim() || r.error?.message || "no stderr"}`,
+  );
   return (r.stdout ?? "").trim();
 }
 
@@ -209,7 +226,12 @@ function makeRepo(t) {
   writeFileSync(join(work, "f.txt"), "one\n");
   sh(["add", "f.txt"], work);
   sh(["commit", "-m", "one"], work);
-  sh(["init", "--bare", remote], base);
+  sh(["init", "--bare", "-b", "main", remote], base);
+  assert.equal(
+    sh(["symbolic-ref", "HEAD"], remote),
+    "refs/heads/main",
+    "a bare origin must publish main as its HEAD, or a clone of it inherits the machine's default branch",
+  );
   sh(["remote", "add", "origin", remote], work);
   sh(["push", "-u", "origin", "main"], work);
   const logDir = join(base, "logs");
@@ -235,7 +257,12 @@ test("integration REFUSED (REAL capture): diverged local-path remote, sha-ish re
   const { work, remote, logDir } = makeRepo(t);
   // A rival clone advances origin/main so our push is genuinely rejected.
   const rival = join(mkdtempSync(join(tmpdir(), "gated-landing-rival-")), "rival");
-  sh(["clone", remote, rival], tmpdir());
+  sh(["clone", "-b", "main", remote, rival], tmpdir());
+  assert.equal(
+    sh(["symbolic-ref", "--short", "HEAD"], rival),
+    "main",
+    "the rival must clone onto main explicitly, not onto whatever this machine defaults to",
+  );
   sh(["config", "user.email", "rival@example.invalid"], rival);
   sh(["config", "user.name", "rival"], rival);
   sh(["config", "commit.gpgsign", "false"], rival);
