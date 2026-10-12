@@ -21,9 +21,11 @@ let device = "wasm";
 let RawImage = null;
 let loadPromise = null;
 
-// How many forwards may be in flight at once. The engine is single-threaded WASM (ort.env.wasm.numThreads
-// = 1 on this repo, and this worker pins backend "wasm"), so extra concurrency buys no throughput; it
-// only multiplies live decoded buffers and tensors in the WASM heap. Bound it and queue the rest FIFO.
+// How many forwards may be in flight at once. This worker pins backend "wasm"; on the deployed origin
+// (GitHub Pages, which cannot set COOP/COEP, so no SharedArrayBuffer threads) the WASM engine runs
+// single-threaded, so extra concurrency buys little throughput and mainly multiplies live decoded
+// buffers and tensors in the WASM heap. Bound it and queue the rest FIFO. This is a safety bound, not
+// a speed knob - making the batch faster is web-ai-showcase-dad, measurable only in a browser.
 const MAX_IN_FLIGHT_FORWARDS = 2;
 let forwardsInFlight = 0;
 const forwardQueue = [];
