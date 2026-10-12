@@ -6,50 +6,233 @@
 // denominator the site-wide <model-download-status> component + its adoption gate build on: you cannot
 // adopt (or honestly limit) a route you have not classified. Emits download-routes.json.
 //
-// Evidence-based: it reads each demo's worker.js + page JS + index.html and matches concrete signals
-// (imports of the shared loader libs, pipeline()/from_pretrained, CreateMLCEngine, MediaPipe
-// FilesetResolver/.task, onnxruntime-web InferenceSession, model-prefetch.mjs, browser built-in AI).
-// An unclassifiable route is recorded as family "unknown" — which the gate treats as a failure.
+// EXECUTABLE-CONTEXT SCANNER (bead web-ai-showcase-6rgd, ADR web-ai-showcase-kc7p): classification
+// signals are extracted ONLY from executable code, never from inert text:
+//   · parse5 parses each demo HTML and yields <script> bodies from executable contexts only —
+//     anything inside <template> (inert, e.g. j0pm's ort.env snippet) or <noscript> is skipped, and
+//     <style> is not a script; <script type="importmap"> bodies are parsed as declarative JSON config,
+//     not executed code.
+//   · every executable script (inline or .js/.mjs file) is parsed with acorn; acorn-walk collects
+//     semantic signals — ImportDeclaration sources, CallExpression callees (identifier + member
+//     paths), MemberExpression dotted paths with all prefixes (ort.env preserved as an object/property
+//     relation, punctuation intact), string Literals, and Identifiers. CRLF is native to the parser.
+//   · FAIL CLOSED: a script that does not parse (or an importmap that is not valid JSON) marks the
+//     whole route "unknown" — never a guessed classification.
 //
 // Usage: node scripts/route-download-inventory.mjs            (writes download-routes.json)
 //        node scripts/route-download-inventory.mjs --check    (print summary only, non-zero if any unknown)
+//        node scripts/route-download-inventory.mjs --models <dir>  (fixture root for tests; default "models")
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import * as acorn from "acorn";
+import * as walkAst from "acorn-walk";
+import * as parse5 from "parse5";
 
-const MODELS = "models";
+const modelsIdx = process.argv.indexOf("--models");
+const MODELS = modelsIdx >= 0 ? process.argv[modelsIdx + 1] : "models";
 const routes = [];
 
-// signal → family. Ordered by SPECIFICITY (first match wins); each family carries its honest
-// byte-control + resume semantics.
+// ── executable-source extraction ─────────────────────────────────────────────────────────────────────
+
+/** Executable <script> types. Anything else (importmap handled separately, JSON templates, data-…) is inert. */
+const EXECUTABLE_SCRIPT_TYPES = new Set(["", "module", "application/javascript", "text/javascript"]);
+
+/**
+ * Collect executable script bodies + importmap texts from a parse5 document.
+ * <template> content (inert by definition — j0pm's executable-LOOKING snippet inside a template is
+ * documentation, not code) and <noscript> are never descended into.
+ */
+function extractHtmlScripts(node, out, { inInert = false } = {}) {
+  if (!node) return;
+  const name = node.nodeName;
+  const inert = inInert || name === "template" || name === "noscript";
+  if (!inert && name === "script") {
+    const type = node.attrs?.find((a) => a.name === "type")?.value ?? "";
+    const body = node.childNodes?.find((c) => c.nodeName === "#text")?.value;
+    if (body !== undefined) {
+      if (type === "importmap") out.importmaps.push(body);
+      else if (EXECUTABLE_SCRIPT_TYPES.has(type)) out.scripts.push(body);
+    }
+  }
+  if (node.content) extractHtmlScripts(node.content, out, { inInert: inert });
+  for (const child of node.childNodes ?? []) extractHtmlScripts(child, out, { inInert: inert });
+}
+
+/** One demo's executable sources: JS files verbatim, HTML scripts + importmaps from executable contexts. */
+function readExecutableSources(dir) {
+  const out = { scripts: [], importmaps: [], files: 0 };
+  const walk = (d) => {
+    for (const n of readdirSync(d).sort()) {
+      const p = join(d, n);
+      const st = statSync(p);
+      if (st.isDirectory()) walk(p);
+      else if (/\.(js|mjs)$/.test(n)) { out.scripts.push(readFileSync(p, "utf8")); out.files++; }
+      else if (/\.html$/.test(n)) {
+        extractHtmlScripts(parse5.parse(readFileSync(p, "utf8")), out);
+        out.files++;
+      }
+    }
+  };
+  walk(dir);
+  return out;
+}
+
+// ── AST signal collection ────────────────────────────────────────────────────────────────────────────
+
+/** Dotted path of a member chain ("ort.env.wasm"), with computed string-literal segments included. */
+function memberPath(node) {
+  if (node.type !== "MemberExpression") return null;
+  const prop = node.computed
+    ? (node.property.type === "Literal" && typeof node.property.value === "string" ? node.property.value : null)
+    : (node.property.type === "Identifier" ? node.property.name : null);
+  const base = memberPath(node.object) ??
+    (node.object.type === "Identifier" ? node.object.name : null);
+  if (base === null || prop === null) return null;
+  return `${base}.${prop}`;
+}
+
+/** Every dotted prefix of a member chain: ort.env.wasm.numThreads → [ort.env, ort.env.wasm, …]. */
+function memberPrefixes(path) {
+  const parts = path.split(".");
+  const out = [];
+  for (let i = 2; i <= parts.length; i++) out.push(parts.slice(0, i).join("."));
+  return out;
+}
+
+/**
+ * Parse one executable script and collect its semantic signals.
+ * @returns {boolean} false when the script FAILS TO PARSE (route must fail closed).
+ */
+function collectScriptSignals(code, signals) {
+  let ast;
+  try {
+    ast = acorn.parse(code, {
+      ecmaVersion: "latest",
+      sourceType: "module",
+      allowHashBang: true,
+      // Demo pages may embed code the browser accepts but strict ES modules reject; ambiguity still
+      // fails closed at the parse level per the ADR — we never guess a classification.
+    });
+  } catch {
+    return false;
+  }
+  const rememberMember = (node) => {
+    const path = memberPath(node);
+    if (path) for (const p of memberPrefixes(path)) signals.members.add(p);
+  };
+  walkAst.full(ast, (node) => {
+    switch (node.type) {
+      case "ImportDeclaration":
+      case "ExportNamedDeclaration":
+      case "ExportAllDeclaration":
+        if (node.source?.value !== undefined) signals.imports.add(node.source.value);
+        break;
+      case "CallExpression": {
+        const c = node.callee;
+        if (c.type === "Identifier") signals.calls.add(c.name);
+        else if (c.type === "MemberExpression") {
+          const path = memberPath(c);
+          if (path) signals.memberCalls.add(path);
+        } else if (c.type === "Import") {
+          const arg = node.arguments[0];
+          if (arg?.type === "Literal" && typeof arg.value === "string") signals.imports.add(arg.value);
+        }
+        break;
+      }
+      case "MemberExpression":
+        rememberMember(node);
+        break;
+      case "Property":
+        // acorn-walk's full() does not visit non-computed Property KEYS as Identifier nodes (a key is a
+        // config name, not a value reference) — but `modelAssetBuffer:` IS the executable signal the
+        // mediapipe refine keys on, so collect non-computed identifier keys explicitly.
+        if (!node.computed && node.key?.type === "Identifier") signals.idents.add(node.key.name);
+        break;
+      case "PropertyDefinition":
+      case "MethodDefinition":
+        if (!node.computed && node.key?.type === "Identifier") signals.idents.add(node.key.name);
+        break;
+      case "Literal":
+        if (typeof node.value === "string") signals.strings.add(node.value);
+        break;
+      case "Identifier":
+        signals.idents.add(node.name);
+        break;
+    }
+  });
+  return true;
+}
+
+/** Signals for one demo route from all its executable sources. parseFailed ⇒ fail closed downstream. */
+function routeSignals(dir) {
+  const signals = {
+    imports: new Set(), strings: new Set(), calls: new Set(),
+    memberCalls: new Set(), members: new Set(), idents: new Set(),
+    parseFailed: false,
+  };
+  const sources = readExecutableSources(dir);
+  for (const code of sources.scripts) {
+    if (!collectScriptSignals(code, signals)) signals.parseFailed = true;
+  }
+  for (const map of sources.importmaps) {
+    // importmap is declarative config: its string values/keys are visible signals, but it is not
+    // executed code. Invalid JSON ⇒ fail closed (ambiguous config, not a guessable one).
+    try {
+      const json = JSON.parse(map);
+      const visit = (v) => {
+        if (typeof v === "string") { signals.strings.add(v); signals.imports.add(v); }
+        else if (Array.isArray(v)) v.forEach(visit);
+        else if (v && typeof v === "object") { for (const [k, val] of Object.entries(v)) { signals.strings.add(k); visit(val); } }
+      };
+      visit(json);
+    } catch {
+      signals.parseFailed = true;
+    }
+  }
+  return signals;
+}
+
+// ── classification (signal conditions replacing the raw regexes) ────────────────────────────────────
+
+const strOrImport = (s, re) => [...s.strings, ...s.imports].some((v) => re.test(v));
+const call = (s, name) => s.calls.has(name) || [...s.memberCalls].some((p) => p === name || p.endsWith(`.${name}`));
+const ident = (s, name) => s.idents.has(name);
+
+// signal conditions → family. Ordered by SPECIFICITY (first match wins); each family carries its honest
+// byte-control + resume semantics. Conditions are the AST-walk equivalents of the pre-6rgd regexes,
+// matched one-for-one (imports/strings, call names incl. member-call tails, member-path prefixes,
+// identifiers, quoted filenames) so the committed inventory is reproducible field-for-field.
 const FAMILIES = {
   "transformers-resumable-prefetch": {
     // The site prefetches big weights resumably (Range/206/sha256 → cache) before from_pretrained.
-    test: (t) => /model-prefetch\.mjs|prefetchModel\s*\(/.test(t),
+    test: (s) => strOrImport(s, /model-prefetch\.mjs/) || call(s, "prefetchModel"),
     byteControl: "site-controlled",
     resume: "resumable",
     note:
       "site fetches weights resumably (Range/206/sha256) into transformers-cache; from_pretrained then cache-hits",
   },
   "webllm": {
-    test: (t) => /lib\/webllm\.js|CreateMLCEngine|@mlc-ai|web-llm/.test(t),
+    test: (s) => strOrImport(s, /lib\/webllm\.js|@mlc-ai|web-llm/) || ident(s, "CreateMLCEngine"),
     byteControl: "runtime-owned",
     resume: "runtime-owned",
     note: "WebLLM/MLC engine fetches + caches shards; no per-file resume hooks exposed to the page",
   },
   "mediapipe": {
-    test: (t) =>
-      // The bundle-name alternatives are ANCHORED to a quoted filename. A bare /\.task\b/ also matches
-      // ordinary JavaScript property access (`${p.task}`, `row.task.id`), which classified any route that
-      // reads a `.task` property as MediaPipe. Note readAll() concatenates only .js/.mjs/.html, so a
-      // FilesetResolver mention that lives in a route's conformance.json is not visible here either.
-      /lib\/mediapipe\.js|FilesetResolver|tasks-vision|tasks-genai|["'][^"']*\.task["']|["'][^"']*\.tflite["']/.test(t),
+    test: (s) =>
+      // .task/.tflite are matched as QUOTED FILENAMES (string literals ending in the extension) — a
+      // bare property access like row.task is an Identifier/Member signal, never a filename string.
+      strOrImport(s, /lib\/mediapipe\.js|tasks-vision|tasks-genai/) || ident(s, "FilesetResolver") ||
+      [...s.strings].some((v) => v.endsWith(".task") || v.endsWith(".tflite")),
     byteControl: "runtime-owned",
     resume: "runtime-owned",
     note:
       "MediaPipe Tasks fetches the .task/.tflite bundle; download managed inside the WASM runtime",
   },
   "raw-ort": {
-    test: (t) => /onnxruntime-web|InferenceSession|\bort\.(InferenceSession|env)/.test(t),
+    // ort.env / ort.InferenceSession as an object/property RELATION (member-path prefix), not text.
+    test: (s) =>
+      strOrImport(s, /onnxruntime-web/) || ident(s, "InferenceSession") ||
+      s.members.has("ort.env") || s.members.has("ort.InferenceSession"),
     byteControl: "site-controlled",
     // refined below: resumable only if it goes through lib/model-download.js
     resume: "restart-only",
@@ -58,31 +241,32 @@ const FAMILIES = {
   },
   "transformers-wrapped": {
     // Third-party libs (outetts, kokoro-js) that wrap Transformers.js and download through it.
-    test: (t) => /outetts@|kokoro-js[@/]|npm\/(outetts|kokoro-js)/.test(t),
+    test: (s) => strOrImport(s, /outetts@|kokoro-js[@/]|npm\/(outetts|kokoro-js)/),
     byteControl: "runtime-owned",
     resume: "cached-only",
     note:
       "third-party library (outetts / kokoro-js) wraps Transformers.js; it downloads + caches via TJS, so per-file progress depends on the wrapper surfacing it",
   },
   "transformers-from_pretrained": {
-    test: (t) =>
-      /from_pretrained\s*\(|AutoModel|AutoProcessor|AutoTokenizer|ForConditionalGeneration|\.from_pretrained/
-        .test(t),
+    test: (s) =>
+      call(s, "from_pretrained") || [...s.members].some((p) => p.endsWith(".from_pretrained")) ||
+      ["AutoModel", "AutoProcessor", "AutoTokenizer", "ForConditionalGeneration"].some((n) => ident(s, n)),
     byteControl: "runtime-owned",
     resume: "cached-only",
     note:
       "Transformers.js fetches each file (no Range); re-running resumes at whole-file granularity from Cache Storage",
   },
   "transformers-pipeline": {
-    test: (t) => /lib\/webai\.js|loadPipeline\s*\(|[^a-zA-Z]pipeline\s*\(/.test(t),
+    test: (s) => strOrImport(s, /lib\/webai\.js/) || call(s, "loadPipeline") || call(s, "pipeline"),
     byteControl: "runtime-owned",
     resume: "cached-only",
     note: "Transformers.js pipeline() fetches each file (no Range); whole-file cache resume only",
   },
   "browser-builtin": {
-    test: (t) =>
-      /window\.(ai|LanguageModel|Summarizer|Translator|Rewriter|Writer)\b|\bLanguageModel\.(create|availability)|ai\.languageModel/
-        .test(t),
+    test: (s) =>
+      ["window.ai", "window.LanguageModel", "window.Summarizer", "window.Translator", "window.Rewriter",
+        "window.Writer", "LanguageModel.create", "LanguageModel.availability", "ai.languageModel"]
+        .some((m) => s.members.has(m)),
     byteControl: "browser-owned",
     resume: "runtime-owned",
     note:
@@ -91,52 +275,45 @@ const FAMILIES = {
 };
 const FAMILY_ORDER = Object.keys(FAMILIES);
 
-function readAll(dir) {
-  // concatenate the demo's own worker + page scripts + index.html (the download entrypoints live here).
-  let text = "";
-  const files = [];
-  const walk = (d) => {
-    for (const n of readdirSync(d)) {
-      const p = join(d, n);
-      const st = statSync(p);
-      if (st.isDirectory()) walk(p);
-      else if (/\.(js|mjs|html)$/.test(n)) files.push(p);
-    }
-  };
-  walk(dir);
-  for (const f of files) text += "\n" + readFileSync(f, "utf8");
-  return { text, files };
-}
-
 for (const slug of readdirSync(MODELS).sort()) {
   const dir = join(MODELS, slug);
   if (!statSync(dir).isDirectory()) continue;
   if (!existsSync(join(dir, "index.html"))) continue; // built route
-  const { text } = readAll(dir);
+  const s = routeSignals(dir);
 
   // multi-model page = a subpage that loads ≥2 model groups concurrently
   const multiModel = existsSync(join(dir, "multi-model")) || existsSync(join(dir, "multimodel"));
 
+  // FAIL CLOSED (ADR #4): any executable source that did not parse makes the route unclassifiable.
   let family = "unknown";
-  for (const f of FAMILY_ORDER) {
-    if (FAMILIES[f].test(text)) {
-      family = f;
-      break;
+  if (!s.parseFailed) {
+    for (const f of FAMILY_ORDER) {
+      if (FAMILIES[f].test(s)) {
+        family = f;
+        break;
+      }
     }
   }
 
   // Does the route ADOPT the shared, component-rendering loader? createModelLoader (lib/model-loader.js)
   // and createResumableLoader (lib/resumable-loader.mjs, PaliGemma) both render <model-download-status>
   // and route progress through the adapters (Phase 3/4). Calling one of them IS the adoption.
-  const usesResumable = /createResumableLoader\s*\(|resumable-loader/.test(text);
-  const usesCentral = /createModelLoader\s*\(/.test(text);
+  const usesResumable = call(s, "createResumableLoader") || strOrImport(s, /resumable-loader/);
+  const usesCentral = call(s, "createModelLoader");
   const adoption = usesResumable ? "resumable-loader" : (usesCentral ? "central-loader" : "bypass");
 
   // does it download at all? a route with NO loader signal AND no worker is non-applicable.
   const hasWorker = existsSync(join(dir, "worker.js"));
+  const dynamicTransformersImport = [...s.imports].some((v) => v.includes("transformers"));
+  const onnxFilename = [...s.strings].some((v) => /\.onnx\b/.test(v));
   let byteControl, resume, note, status;
   if (family === "unknown") {
-    if (!hasWorker && !/createModelLoader|import\(.*transformers|\.onnx\b/.test(text)) {
+    if (s.parseFailed) {
+      byteControl = "unknown";
+      resume = "unknown";
+      note = "executable source failed to parse — inventory fails closed rather than guess (see bead 6rgd)";
+      status = "unknown";
+    } else if (!hasWorker && !usesCentral && !dynamicTransformersImport && !onnxFilename) {
       family = "non-applicable";
       byteControl = "none";
       resume = "non-applicable";
@@ -153,17 +330,17 @@ for (const slug of readdirSync(MODELS).sort()) {
     // A MediaPipe page that fetches bytes itself and supplies modelAssetBuffer owns the transfer.
     // Unless it uses the shared resumable downloader, interruption restarts from byte zero.
     if (
-      family === "mediapipe" && /modelAssetBuffer/.test(text) &&
-      /fetch\s*\(/.test(text)
+      family === "mediapipe" && (ident(s, "modelAssetBuffer") || s.members.has("modelAssetBuffer")) &&
+      call(s, "fetch")
     ) {
       byteControl = "site-controlled";
-      resume = /model-download\.js|downloadModelFile/.test(text) ? "resumable" : "restart-only";
+      resume = strOrImport(s, /model-download\.js/) || call(s, "downloadModelFile") ? "resumable" : "restart-only";
       note = resume === "resumable"
         ? "site fetches the MediaPipe artifact via lib/model-download.js (Range/206/sha256) before supplying modelAssetBuffer"
         : "site fetches and verifies the complete MediaPipe artifact before supplying modelAssetBuffer; interruption restarts from byte zero";
     }
     // refine raw-ort: resumable only when the weights go through the site's resumable downloader
-    if (family === "raw-ort" && /model-download\.js|downloadModelFile/.test(text)) {
+    if (family === "raw-ort" && (strOrImport(s, /model-download\.js/) || call(s, "downloadModelFile"))) {
       resume = "resumable";
       note =
         "page fetches the .onnx via lib/model-download.js (Range/206/sha256) — genuinely resumable";
