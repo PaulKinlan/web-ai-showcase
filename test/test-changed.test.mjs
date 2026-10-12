@@ -20,6 +20,7 @@ import {
   globMatch,
   isBrowserTestPath,
   isUnitTestPath,
+  loadConfig,
   parseNameStatusZ,
   resolveRel,
   routeChanges,
@@ -191,6 +192,39 @@ test("a repo-wide sweep test alone does NOT count as a mapping", () => {
   assert.equal(r.fallback?.mode, "all");
   assert.deepEqual(r.unmappedAll, [path]);
   assert.ok(r.run.includes("test/b.test.mjs"), "the sweep test still runs");
+});
+
+test("the shipped config maps the download scanner to the suite that drives it", () => {
+  // Regression pin for bead web-ai-showcase-wkf7. scripts/route-download-inventory.mjs is driven by
+  // its suite through a shell command (execSync), which is not an import, so NO dependency walk can
+  // see the edge: the table entry in scripts/test-changed.config.json is the only thing that routes
+  // it. Lose that entry and a scanner-only change falls closed to the widened set while the external
+  // coverage reporter separately warns the path is unmapped - which is what happened for three
+  // consecutive gate runs on iem2. This test fails if the entry is dropped, if it is retargeted, or
+  // if it names a suite that no longer exists.
+  const { config, warnings } = loadConfig(ROOT);
+  assert.deepEqual(warnings, [], "the shipped config must parse without warnings");
+  const mapped = config.map?.[PATHS.scannerScript];
+  assert.deepEqual(
+    mapped,
+    [PATHS.scannerSuite],
+    "scripts/route-download-inventory.mjs must stay mapped to the suite that drives it",
+  );
+  for (const t of mapped) {
+    assert.ok(existsSync(join(ROOT, t)), `${t} is mapped but does not exist - a stale table entry`);
+  }
+  // The entry routes for real...
+  const index = fakeIndex({ tests: mapped });
+  const { specific } = testsForPath(index, PATHS.scannerScript, config);
+  assert.deepEqual([...specific], mapped);
+  const routed = routeChanges({ entries: [change(PATHS.scannerScript)], index, config });
+  assert.equal(routed.fallback, null);
+  assert.deepEqual(routed.run, mapped);
+  // ...and it stays fail-closed: adding a table entry must not let an unrouted path through.
+  const unrouted = "newarea/unrouted-probe.mjs";
+  const closed = routeChanges({ entries: [change(unrouted, "A")], index, config });
+  assert.equal(closed.fallback?.mode, "all");
+  assert.deepEqual(closed.unmappedAll, [unrouted]);
 });
 
 test("a changed unit test runs itself; a DELETED unit test forces the fallback", () => {
