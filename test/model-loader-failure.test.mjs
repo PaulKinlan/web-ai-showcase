@@ -86,13 +86,15 @@ test("presentLoadFailure routes the decision into the status line and the recove
   assert.match(calls[0][2], /could not initialize on this device\/runtime/);
   assert.equal(calls[0][1], "error");
 
-  // Transient: identical shape, but the Retry is created, in the same order as before this change.
+  // Transient: identical shape, but the Retry is created — and AFTER onError, which is the order the
+  // base catch used before this refactor. That ordering is pinned on purpose: the first version of
+  // presentLoadFailure created the Retry first and this assertion blessed that drift (found in review).
   calls.length = 0;
   const transient = presentLoadFailure(
     new Error("Failed to fetch dynamically imported module"),
     io,
   );
   assert.equal(transient.retry, true);
-  assert.deepEqual(calls.map((c) => c[0]), ["setState", "retryButton", "onError"]);
+  assert.deepEqual(calls.map((c) => c[0]), ["setState", "onError", "retryButton"]);
   assert.equal(calls[0][2], "Failed to fetch dynamically imported module");
 });
