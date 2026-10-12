@@ -22,7 +22,10 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const FIXTURE = join(ROOT, "test", "fixtures", "download-inventory-comments", "models");
-const ALL_SLUGS = ["comment-names-ort", "comment-names-mediapipe", "code-ort", "string-traps", "html-comments", "html-entity-offset", "ambiguous"];
+const ALL_SLUGS = [
+  "comment-names-ort", "comment-names-mediapipe", "code-ort", "string-traps", "html-comments",
+  "html-entity-offset", "template-inert-comment", "template-script-comment", "ambiguous",
+];
 
 /** Isolated repo root: the chosen fixture demos, the working-tree gate scripts, a node_modules link. */
 function makeRoot(slugs) {
@@ -79,6 +82,11 @@ test("a comment naming another runtime's API cannot change a route's download fa
     "string-traps": "transformers-pipeline",
     // both the HTML comment and the inline <script>'s JS comment are ignored.
     "html-comments": "transformers-pipeline",
+    // <template> descendants live in parse5's `content` fragment, not childNodes: a reviewer found
+    // (and this pins) that an inert comment inside a template used to leak back in as raw-ort.
+    "template-inert-comment": "transformers-pipeline",
+    // same container, reached through the script path: a JS comment inside a <script> in a template.
+    "template-script-comment": "transformers-pipeline",
     // script bodies are raw text: an entity earlier in the script must not shift the comment offsets,
     // or the wrong span gets masked and the ort.env comment leaks back in. Also probes the HTML comment
     // above the script, which is masked before any entity is seen.
@@ -99,6 +107,12 @@ test("a comment naming another runtime's API cannot change a route's download fa
   assert.equal(evidence.routes.ambiguous.family.file, "models/ambiguous/index.html");
   assert.deepEqual(evidence.routes["html-comments"].ambiguous, []);
   assert.deepEqual(evidence.routes["html-entity-offset"].ambiguous, []);
+  assert.deepEqual(evidence.routes["template-inert-comment"].ambiguous, []);
+  assert.deepEqual(evidence.routes["template-script-comment"].ambiguous, []);
+  assert.equal(
+    evidence.routes["template-inert-comment"].family.file,
+    "models/template-inert-comment/index.html",
+  );
   assert.equal(evidence.routes["html-entity-offset"].family.file, "models/html-entity-offset/index.html");
 });
 

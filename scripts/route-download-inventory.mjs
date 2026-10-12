@@ -179,6 +179,11 @@ function htmlCommentRanges(source) {
       }
     }
     for (const child of node.childNodes || []) visit(child);
+    // <template> descendants live in the node's `content` fragment, NOT in childNodes (review finding
+    // on web-ai-showcase-x4ba): without this, an inert comment inside a template stays in the matchable
+    // text and can still flip a route's family - reproduced with
+    // <template><!-- ort.env --></template> alongside a real loadPipeline script.
+    if (node.content) visit(node.content);
   };
   visit(document);
   return { ranges, ambiguous };
