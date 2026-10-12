@@ -22,7 +22,7 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const FIXTURE = join(ROOT, "test", "fixtures", "download-inventory-comments", "models");
-const ALL_SLUGS = ["comment-names-ort", "comment-names-mediapipe", "code-ort", "string-traps", "html-comments", "ambiguous"];
+const ALL_SLUGS = ["comment-names-ort", "comment-names-mediapipe", "code-ort", "string-traps", "html-comments", "html-entity-offset", "ambiguous"];
 
 /** Isolated repo root: the chosen fixture demos, the working-tree gate scripts, a node_modules link. */
 function makeRoot(slugs) {
@@ -79,6 +79,10 @@ test("a comment naming another runtime's API cannot change a route's download fa
     "string-traps": "transformers-pipeline",
     // both the HTML comment and the inline <script>'s JS comment are ignored.
     "html-comments": "transformers-pipeline",
+    // script bodies are raw text: an entity earlier in the script must not shift the comment offsets,
+    // or the wrong span gets masked and the ort.env comment leaks back in. Also probes the HTML comment
+    // above the script, which is masked before any entity is seen.
+    "html-entity-offset": "transformers-pipeline",
     ambiguous: "transformers-pipeline",
   });
   // The diagnostic names the exact token and file that produced each family.
@@ -94,6 +98,8 @@ test("a comment naming another runtime's API cannot change a route's download fa
   assert.match(evidence.routes.ambiguous.ambiguous[0], /broken\.js/);
   assert.equal(evidence.routes.ambiguous.family.file, "models/ambiguous/index.html");
   assert.deepEqual(evidence.routes["html-comments"].ambiguous, []);
+  assert.deepEqual(evidence.routes["html-entity-offset"].ambiguous, []);
+  assert.equal(evidence.routes["html-entity-offset"].family.file, "models/html-entity-offset/index.html");
 });
 
 test("the gate passes when the committed inventory matches the source", (t) => {
