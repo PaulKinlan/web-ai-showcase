@@ -240,25 +240,43 @@ function esc(s) {
     (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]),
   );
 }
-// highlight() is called twice per rendered result row (name + blurb, see renderResults) and every hit
-// in a render carries the SAME matched-term values, so compiling the alternation per call rebuilt the
-// identical RegExp: measured 40 compilations for a 20-hit render and 200 across five typed searches,
-// all of them the same pattern. One slot is enough - a render is driven by one search's term list.
+// highlight() is called twice per rendered result row (name + blurb, see renderResults), so the same
+// pattern used to be compiled per call: measured 40 compilations for a 20-hit render and 200 across
+// five typed searches.
+//
+// The cache is a bounded map because the term list varies PER HIT: the worker records, per document,
+// only the query terms that document matched (matchedByDoc in search/worker.js), so a render's hits can
+// alternate between lists. Measured compiles for a 20-hit render: 1 when every hit carries the same
+// list, 2 when they alternate between two lists, 3 for three interleaved lists (all were 40 before).
+// These are workload-conditional counts, not a render-wide guarantee: the cost is one compile per
+// DISTINCT list per render, and a search that produces more than HIGHLIGHT_CACHE_MAX distinct lists
+// evicts the oldest.
 //
 // The cache key is the FULL ORDERED term list as JSON: every term value, in order, with JSON escaping
 // rather than a join separator a term could itself contain (["a","b"] and ["a\u0000b"] must not collide).
 // A different term list of the same LENGTH can never hit a stale entry. Never key on the array identity
 // (each hit's matchedTerms is a fresh array, so nothing would ever be reused) or on the term count.
-let highlightCache = { key: null, re: null };
+const HIGHLIGHT_CACHE_MAX = 8;
+const highlightCache = new Map();
 function termRegex(terms) {
   const key = JSON.stringify(terms);
-  if (key === highlightCache.key) return highlightCache.re;
+  const cached = highlightCache.get(key);
+  if (cached) {
+    // LRU: refresh recency so a list used by every hit survives eviction by later one-off lists.
+    highlightCache.delete(key);
+    highlightCache.set(key, cached);
+    return cached;
+  }
   // TODO(baseline/regexp-escape): replace this manual metacharacter escape with RegExp.escape() once
   // the Baseline target allows it (canonical feature id regexp-escape, verified with web-features-cli;
   // currently Baseline Newly available since 2025-05-01, so a fallback would still be required).
   const escaped = terms.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
   const re = new RegExp(`\\b(${escaped})`, "gi");
-  highlightCache = { key, re };
+  if (highlightCache.size >= HIGHLIGHT_CACHE_MAX) {
+    // Deterministic eviction: the least recently used list (first key in Map insertion order).
+    highlightCache.delete(highlightCache.keys().next().value);
+  }
+  highlightCache.set(key, re);
   return re;
 }
 function highlight(text, terms) {

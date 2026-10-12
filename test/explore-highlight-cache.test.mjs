@@ -1,12 +1,18 @@
 // Deterministic tests for explore/explore.js's highlight() term-regex cache (web-ai-showcase-spc).
 //
-// WHY: highlight() runs twice per rendered result row (model name + blurb, see renderResults in
-// explore/explore.js) and every hit in a render carries the SAME matched-term values, so it used to
-// rebuild the identical RegExp per call: measured 40 compilations for a 20-hit render and 200 across
-// five typed searches, every one of them the same pattern. The fix memoises on the full ordered term
-// list. These tests pin the contract that matters, none of which needs a browser: the compile COUNT
-// (via a counted RegExp constructor), the invalidation key, the escaping/matching semantics that must
-// not change, and the shared-global-regex state contract.
+// WHY: highlight() runs twice per rendered result row (model name + blurb, see renderResults), so it
+// used to rebuild the RegExp per call: measured 40 compilations for a 20-hit render and 200 across five
+// distinct searches, every one of them a pattern that had just been built.
+//
+// The counts are WORKLOAD-CONDITIONAL, and these tests pin each case rather than a render-wide number,
+// because the term list varies PER HIT: the worker records, per document, only the query terms that
+// document matched (matchedByDoc in search/worker.js), so hits in one render can carry different lists.
+//   20-hit render, all hits one list .......... 40 -> 1
+//   20-hit render, two alternating lists ...... 40 -> 2
+//   20-hit render, three interleaved lists .... 40 -> 3
+//   20-hit render, 8 distinct lists (== cap) .. 40 -> 8
+//   20-hit render, 10 distinct lists (> cap) .. 40 -> 20   (documented degradation: the cap thrashes)
+//   five distinct searches .................... 200 -> 5
 //
 // SEAM: explore/explore.js reads the DOM at module scope (document.getElementById while building `els`),
 // so it cannot be imported in Node without a DOM shim, and the change was deliberately kept in-file
@@ -60,31 +66,76 @@ function makeHarness() {
   return { esc, highlight, compiles: () => state.compiles };
 }
 
-const rows = (n) =>
-  Array.from({ length: n }, (_, i) => ({
-    name: `model-${i}-wasm-quantized`,
-    blurb: "tensor kernels, webgpu paths and cpu fallbacks",
-  }));
-
 /** One render: renderResults calls highlight twice per hit - name always, blurb when present. */
-function render(h, hits, terms) {
-  for (const r of hits) {
-    h.highlight(r.name, terms);
-    h.highlight(r.blurb, terms);
-  }
+function render(h, perHitTerms) {
+  perHitTerms.forEach((terms, i) => {
+    h.highlight(`model-${i}-wasm-quantized`, terms);
+    h.highlight("tensor kernels, webgpu paths and cpu fallbacks", terms);
+  });
 }
+const cycles = (n) => (count) => Array.from({ length: count }, (_, i) => [`list${i % n}a`, `list${i % n}b`]);
+const termList = (n) => Array.from({ length: n }, (_, i) => `term${i % 4}-${i}`);
 
-test("a 20-hit render compiles the term regex once, not once per highlighted call", () => {
+test("a 20-hit render where every hit carries the same term list compiles once, not once per call", () => {
   const h = makeHarness();
-  render(h, rows(20), ["wasm", "webgpu", "tensor"]);
+  render(h, Array.from({ length: 20 }, () => ["wasm", "webgpu", "tensor"]));
   // 40 highlight() calls (20 names + 20 blurbs). Before the fix this was 40 compilations.
   assert.equal(h.compiles(), 1);
 });
 
-test("five typed searches compile five times, not 200", () => {
+test("a render whose hits carry different term lists compiles once per distinct list, not per hit", () => {
+  // The real shape: matchedTerms comes from per-document postings, so hits can alternate between lists.
+  const alternating = makeHarness();
+  render(alternating, Array.from({ length: 20 }, (_, i) => (i % 2 ? ["webgpu"] : ["wasm"])));
+  assert.equal(alternating.compiles(), 2, "two alternating lists must cost two compiles, not twenty");
+
+  const interleaved = makeHarness();
+  render(interleaved, Array.from({ length: 20 }, (_, i) => [["wasm"], ["webgpu"], ["wasm", "webgpu"]][i % 3]));
+  assert.equal(interleaved.compiles(), 3, "three interleaved lists must cost three compiles");
+});
+
+test("five distinct searches compile five times, not 200", () => {
+  // Realistic tokenized terms: the worker lowercases, splits on non-alphanumerics and drops tokens
+  // shorter than 2 characters and stop-words (search/worker.js tokenize), so these are the shapes the
+  // highlighter actually receives. (A one-character query tokenizes to no terms, so it compiles nothing.)
+  const searches = [
+    ["quantized"],
+    ["quantized", "wasm"],
+    ["wasm", "webgpu"],
+    ["quantized", "wasm", "webgpu"],
+    ["tensor", "webgpu"],
+  ];
   const h = makeHarness();
-  for (const q of ["w", "wa", "was", "wasm", "wasm i"]) render(h, rows(20), [q]);
-  assert.equal(h.compiles(), 5);
+  for (const terms of searches) render(h, Array.from({ length: 20 }, () => terms));
+  assert.equal(h.compiles(), searches.length);
+});
+
+test("the cache is bounded: it holds the cap, and beyond the cap effort degrades to ~one compile per hit", () => {
+  const atCap = makeHarness();
+  render(atCap, cycles(8)(20));
+  assert.equal(atCap.compiles(), 8, "8 distinct lists fit the cap, so each compiles once");
+
+  const overCap = makeHarness();
+  render(overCap, cycles(10)(20));
+  // Documented degradation, not a guarantee: a working set larger than the cap thrashes. This is still
+  // no worse than half the pre-fix cost (40), but it is deliberately asserted so the limit is visible.
+  assert.equal(overCap.compiles(), 20);
+});
+
+test("eviction is least-recently-used and deterministic", () => {
+  const h = makeHarness();
+  for (let i = 0; i < 9; i++) h.highlight("name", [`list${i}a`, `list${i}b`]);
+  assert.equal(h.compiles(), 9);
+
+  h.highlight("name", ["list0a", "list0b"]); // evicted by the ninth insert -> must recompile
+  assert.equal(h.compiles(), 10);
+  h.highlight("name", ["list8a", "list8b"]); // most recent -> still cached
+  assert.equal(h.compiles(), 10);
+
+  h.highlight("name", ["list9a", "list9b"]); // a new list evicts the least recently used
+  assert.equal(h.compiles(), 11);
+  h.highlight("name", ["list0a", "list0b"]); // list0 was refreshed by its hit above: LRU keeps it,
+  assert.equal(h.compiles(), 11, "where a FIFO (or clear-on-overflow) cache would have dropped it");
 });
 
 test("invalidation keys on the full ordered term list", () => {
@@ -149,8 +200,12 @@ test("the shared global regex stays stateless across calls (lastIndex contract)"
   assert.equal(h.compiles(), 1, "and both calls used the one compiled regex");
 });
 
-test("the retained manual escape carries the Baseline TODO marker", () => {
-  // The manual escape is kept deliberately: RegExp.escape() is Baseline Newly available (feature id
-  // regexp-escape), below the project's Baseline target, so the marker must stay next to the escape.
+test("the cached regex is only ever used with replace, and the escape keeps its Baseline marker", () => {
+  // String.prototype.replace resets lastIndex, which is what makes sharing a global regex safe. A call
+  // to test()/exec() on the cached object would be stateful and is banned by the comment above it; that
+  // ban is not observable through replace(), so it is pinned statically here.
+  assert.doesNotMatch(REGION, /\.(test|exec)\s*\(/, "the cached regex must not be used with test()/exec()");
+  // RegExp.escape() is Baseline Newly available (feature id regexp-escape), below the project's target,
+  // so the manual escape stays and must keep its marker.
   assert.match(REGION, /TODO\(baseline\/regexp-escape\):/);
 });
