@@ -11,7 +11,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execSync, spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -192,8 +192,25 @@ test("provenance names the matched token and the file it came from (import strin
   assert.equal(route.family, "transformers-pipeline");
   assert.equal(p.rule, "transformers-pipeline");
   assert.equal(p.token, "lib/webai.js");
-  assert.equal(p.kind, "string");
+  // An import specifier is a string Literal, so `strings` already contains it: the kind says so
+  // rather than pretending imports and strings can be told apart (reviewer finding on ab5a5f38).
+  assert.equal(p.kind, "string-or-import");
   // The token lives in the inline <script>, so naming worker.js here would be a false lead.
+  assert.match(p.file, /\.html$/);
+});
+
+test("one file contributing several matching script blocks is listed once, not once per block", () => {
+  const { route, evidence } = classifyWithEvidence({
+    "index.html":
+      `<!doctype html><html><body>` +
+      `<script type="module">import { loadPipeline } from "lib/webai.js";</script>` +
+      `<script type="module">import { loadPipeline } from "lib/webai.js";</script>` +
+      `</body></html>`,
+  });
+  const p = evidence.routes[route.slug];
+  assert.equal(route.family, "transformers-pipeline");
+  assert.deepEqual(p.files, [...new Set(p.files)], "files must list distinct sources");
+  assert.equal(p.files.length, 1);
   assert.match(p.file, /index\.html$/);
 });
 
@@ -258,4 +275,27 @@ test("provenance stays out of the public inventory: a route record keeps exactly
   ]);
   // ...while the diagnostic still carries what the record deliberately does not.
   assert.equal(evidence.routes[route.slug].token, "lib/webai.js");
+});
+
+test("--evidence with no path fails loudly instead of crashing or writing a file named after a flag", () => {
+  const root = mkdtempSync(join(tmpdir(), "dr-cli-"));
+  try {
+    mkdirSync(join(root, "demo"), { recursive: true });
+    writeFileSync(join(root, "demo", "index.html"), `<!doctype html><html><body></body></html>`);
+    const run = (args) => spawnSync("node", ["scripts/route-download-inventory.mjs", ...args], { encoding: "utf8" });
+    for (const args of [["--models", root, "--evidence"], ["--models", root, "--evidence", "--check"]]) {
+      const res = run(args);
+      assert.equal(res.status, 1, `expected a loud failure for ${args.join(" ")}`);
+      assert.match(res.stderr, /--evidence requires a target path/);
+      assert.doesNotMatch(res.stderr, /ERR_INVALID_ARG_TYPE/); // never the raw crash
+    }
+    assert.ok(!existsSync(join(root, "--check")), "must not create a file named after a flag");
+    // The fail-closed contract for --check is unchanged: an unparseable source still exits non-zero.
+    writeFileSync(join(root, "demo", "broken.js"), `const x = 1; /* unterminated\n`);
+    const check = run(["--models", root, "--check"]);
+    assert.equal(check.status, 1);
+    assert.match(check.stderr, /AMBIGUOUS SOURCE: .*broken\.js/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

@@ -36,6 +36,13 @@ const modelsIdx = process.argv.indexOf("--models");
 const MODELS = modelsIdx >= 0 ? process.argv[modelsIdx + 1] : "models";
 // Provenance is OPTIONAL and additive: without the flag the scanner does no extra bookkeeping at all.
 const WANT_EVIDENCE = process.argv.includes("--evidence");
+// Validate the flag up front: a trailing `--evidence` (or `--evidence --check`) must FAIL loudly, not
+// crash on an undefined path or create a file called "--check".
+const EVIDENCE_PATH = WANT_EVIDENCE ? process.argv[process.argv.indexOf("--evidence") + 1] : null;
+if (WANT_EVIDENCE && (!EVIDENCE_PATH || EVIDENCE_PATH.startsWith("--"))) {
+  console.error("FAIL — --evidence requires a target path, e.g. --evidence download-route-evidence.json");
+  process.exit(1);
+}
 const routes = [];
 
 // ── executable-source extraction ─────────────────────────────────────────────────────────────────────
@@ -317,39 +324,39 @@ const FAMILY_ORDER = Object.keys(FAMILIES);
 // the committed inventory stays field-for-field identical. Emitted only via --evidence, plus a
 // fail-closed error line naming any executable source that failed to parse.
 
-const evidenceValue = (value, set) => ({
-  token: value,
-  kind: { calls: "call", memberCalls: "member-call", idents: "identifier", members: "member",
-    imports: "import-string", strings: "string" }[set] ?? set,
-  set,
-});
+/** kind = how the signal was found; set = the signal set carrying the token (for file attribution). */
+const evidenceValue = (token, kind, set) => ({ token, kind, set });
 
-/** First string/import value matching `re` (strings first, mirroring strOrImport). */
+/**
+ * First string/import value matching `re` (strings first, mirroring strOrImport). An import specifier is
+ * a string Literal node, so it is ALREADY in `strings` — the two cannot be told apart, and the kind says
+ * so instead of pretending otherwise.
+ */
 function strToken(s, re) {
   for (const v of [...s.strings, ...s.imports]) {
-    if (re.test(v)) return evidenceValue(v, s.strings.has(v) ? "strings" : "imports");
+    if (re.test(v)) return evidenceValue(v, "string-or-import", "strings");
   }
   return null;
 }
 function strTokenWhere(s, pred) {
-  for (const v of s.strings) if (pred(v)) return evidenceValue(v, "strings");
+  for (const v of s.strings) if (pred(v)) return evidenceValue(v, "string", "strings");
   return null;
 }
 function callToken(s, name) {
-  if (s.calls.has(name)) return evidenceValue(name, "calls");
-  for (const p of s.memberCalls) if (p === name || p.endsWith(`.${name}`)) return evidenceValue(p, "memberCalls");
+  if (s.calls.has(name)) return evidenceValue(name, "call", "calls");
+  for (const p of s.memberCalls) if (p === name || p.endsWith(`.${name}`)) return evidenceValue(p, "member-call", "memberCalls");
   return null;
 }
 function identToken(s, names) {
-  for (const n of (Array.isArray(names) ? names : [names])) if (s.idents.has(n)) return evidenceValue(n, "idents");
+  for (const n of (Array.isArray(names) ? names : [names])) if (s.idents.has(n)) return evidenceValue(n, "identifier", "idents");
   return null;
 }
 function memberToken(s, paths) {
-  for (const p of (Array.isArray(paths) ? paths : [paths])) if (s.members.has(p)) return evidenceValue(p, "members");
+  for (const p of (Array.isArray(paths) ? paths : [paths])) if (s.members.has(p)) return evidenceValue(p, "member", "members");
   return null;
 }
 function memberEndingToken(s, suffix) {
-  for (const p of s.members) if (p.endsWith(suffix)) return evidenceValue(p, "members");
+  for (const p of s.members) if (p.endsWith(suffix)) return evidenceValue(p, "member", "members");
   return null;
 }
 
@@ -379,7 +386,11 @@ const FAMILY_EVIDENCE = {
 /** Provenance for the family that won: the token that satisfied it and the file(s) carrying it. */
 function familyEvidence(s, family) {
   const found = FAMILY_EVIDENCE[family]?.(s) ?? null;
-  const files = found ? s.perFile.filter((f) => f.signals[found.set].has(found.token)).map((f) => f.file) : [];
+  // One file can contribute several script blocks, so the same path can match more than once: list
+  // DISTINCT sources, not one entry per block.
+  const files = found
+    ? [...new Set(s.perFile.filter((f) => f.signals[found.set].has(found.token)).map((f) => f.file))]
+    : [];
   return { rule: family, token: found?.token ?? null, kind: found?.kind ?? null, file: files[0] ?? null, files };
 }
 
@@ -525,11 +536,10 @@ console.error(
   `multiModel: ${inventory.totals.multiModel} · UNKNOWN (need manual classification): ${unknown.length}`,
 );
 if (unknown.length) console.error("  " + unknown.map((r) => r.slug).join(", "));
-
 // OPTIONAL diagnostic provenance: written only when --evidence is passed, and read by nothing.
-const evidenceIdx = process.argv.indexOf("--evidence");
-if (evidenceIdx >= 0) {
-  writeFileSync(process.argv[evidenceIdx + 1], JSON.stringify({
+// (The path was validated when the flag was parsed.)
+if (WANT_EVIDENCE) {
+  writeFileSync(EVIDENCE_PATH, JSON.stringify({
     note:
       "OPTIONAL diagnostic provenance (bead web-ai-showcase-iem2). Not part of download-routes.json and derived from by no gate: rule = the family that matched; token/kind = the signal value that satisfied that family's test; file/files = the source file(s) carrying that token; unparseable = executable sources that failed to parse (their route fails closed).",
     routes: evidenceBySlug,
