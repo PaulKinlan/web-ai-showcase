@@ -370,7 +370,7 @@ const inventory = {
   description:
     "Every built demo route classified by download runtime/loader family, byte-transfer control, and honest resume capability. Foundation for the site-wide <model-download-status> component + its fail-closed adoption gate (Task 2b).",
   version: 1,
-  generated: "2026-07-20",
+  generated: "2026-10-12",
   legend: {
     family: "which runtime/loader transfers the model assets",
     byteControl:
